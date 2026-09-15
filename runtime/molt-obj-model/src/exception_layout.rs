@@ -517,6 +517,8 @@ enum BuiltinExceptionDefinition {
 pub struct BuiltinExceptionSpec {
     name: &'static str,
     definition: BuiltinExceptionDefinition,
+    minimum_python_minor: u32,
+    windows_only: bool,
 }
 
 const fn exception_spec(
@@ -530,6 +532,8 @@ const fn exception_spec(
             bases,
             introduced_layout_root,
         },
+        minimum_python_minor: 12,
+        windows_only: false,
     }
 }
 
@@ -537,6 +541,8 @@ const fn exception_alias(name: &'static str, canonical_name: &'static str) -> Bu
     BuiltinExceptionSpec {
         name,
         definition: BuiltinExceptionDefinition::Alias { canonical_name },
+        minimum_python_minor: 12,
+        windows_only: false,
     }
 }
 
@@ -700,7 +706,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         "PythonFinalizationError",
         ExceptionBaseSpec::One("RuntimeError"),
         None,
-    ),
+    )
+    .since_python_minor(13),
     exception_spec(
         "RecursionError",
         ExceptionBaseSpec::One("RuntimeError"),
@@ -749,7 +756,7 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
     exception_spec("EncodingWarning", ExceptionBaseSpec::One("Warning"), None),
     exception_alias("EnvironmentError", "OSError"),
     exception_alias("IOError", "OSError"),
-    exception_alias("WindowsError", "OSError"),
+    exception_alias("WindowsError", "OSError").on_windows_only(),
 ];
 
 pub fn builtin_exception_spec(name: &str) -> Option<&'static BuiltinExceptionSpec> {
@@ -758,12 +765,38 @@ pub fn builtin_exception_spec(name: &str) -> Option<&'static BuiltinExceptionSpe
         .find(|spec| spec.name == name)
 }
 
-#[cfg(test)]
-const fn builtin_exception_specs() -> &'static [BuiltinExceptionSpec] {
+/// Runtime exception identities and their target-gated Python namespace projections.
+pub const fn builtin_exception_specs() -> &'static [BuiltinExceptionSpec] {
     BUILTIN_EXCEPTION_SPECS
 }
 
 impl BuiltinExceptionSpec {
+    const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
+        self.minimum_python_minor = minimum_python_minor;
+        self
+    }
+
+    const fn on_windows_only(mut self) -> Self {
+        self.windows_only = true;
+        self
+    }
+
+    /// The schema spelling, preserving compatibility aliases.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Public Python 3 namespace availability, using target rather than host facts.
+    /// Runtime layout and canonical identity remain available independently of
+    /// whether the target Python version and platform expose this binding.
+    pub const fn public_name(&self, target_minor: u32, is_windows: bool) -> Option<&'static str> {
+        if target_minor < self.minimum_python_minor || (self.windows_only && !is_windows) {
+            None
+        } else {
+            Some(self.name)
+        }
+    }
+
     #[cfg(test)]
     const fn is_alias(&self) -> bool {
         matches!(self.definition, BuiltinExceptionDefinition::Alias { .. })
@@ -835,6 +868,40 @@ impl BuiltinExceptionSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_exception_namespace_projects_target_version_and_platform() {
+        for minor in [12, 13, 14, 99] {
+            for is_windows in [false, true] {
+                let names: std::collections::HashSet<_> = builtin_exception_specs()
+                    .iter()
+                    .filter_map(|spec| spec.public_name(minor, is_windows))
+                    .collect();
+                assert_eq!(names.contains("PythonFinalizationError"), minor >= 13);
+                assert_eq!(names.contains("WindowsError"), is_windows);
+                assert!(names.contains("EnvironmentError"));
+                assert!(names.contains("IOError"));
+                assert!(names.contains("OSError"));
+                for spec in builtin_exception_specs() {
+                    assert_eq!(builtin_exception_spec(spec.name()), Some(spec));
+                    if !matches!(spec.name(), "PythonFinalizationError" | "WindowsError") {
+                        assert!(names.contains(spec.name()));
+                    }
+                }
+            }
+        }
+        assert!(
+            builtin_exception_specs()
+                .iter()
+                .all(|spec| spec.public_name(11, true).is_none())
+        );
+        assert_eq!(
+            builtin_exception_spec("WindowsError")
+                .unwrap()
+                .canonical_name(),
+            "OSError"
+        );
+    }
 
     #[test]
     fn layouts_are_dense_and_field_tables_match_policies() {

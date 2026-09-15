@@ -64,8 +64,21 @@ def test_native_main_stub_reports_then_exits_through_runtime_custody() -> None:
     assert "molt_exception_report_uncaught(exc)" in rendered
     assert "molt_raise(exc)" not in rendered
     report = rendered.index("molt_exception_report_uncaught(exc)")
-    frame_pop = rendered.index("molt_frame_pop()", report)
-    release = rendered.index("molt_dec_ref_obj(exc)", frame_pop)
+    release = rendered.index("molt_dec_ref_obj(exc)", report)
     shutdown = rendered.index("molt_runtime_exit(exit_code)", release)
     fallback = rendered.index("_Exit(1)", shutdown)
-    assert report < frame_pop < release < shutdown < fallback
+    assert report < release < shutdown < fallback
+
+
+def test_native_main_stub_leaves_python_frame_custody_to_generated_code() -> None:
+    rendered = native_main_stub._render_native_main_stub(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+    )
+
+    for symbol in (
+        "molt_frame_push",
+        "molt_frame_pop",
+        "molt_trace_enter",
+        "molt_trace_exit",
+    ):
+        assert symbol not in rendered

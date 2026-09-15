@@ -512,32 +512,32 @@ fn legacy_cache_del(_py: &PyToken<'_>, name: &str) {
 
 // ─── Publication bridges (PR1: table ↔ legacy store coherence) ──────────────
 
-/// Mirror a `MODULE_CACHE_SET` publication into the table slot while its
-/// ensure transaction is open (publish-before-exec, invariant I6).  Slot
-/// writes outside an owned Initializing window are refused: `ensure` is the
-/// only transition owner.
-pub(crate) fn publish_from_cache_set(_py: &PyToken<'_>, name: &str, bits: u64) {
-    let Some(registry) = module_registry() else {
-        return;
-    };
-    let Some(id) = registry.id_of(name) else {
-        return;
-    };
-    let Some(table) = module_table(_py) else {
-        return;
-    };
+/// A first-publication slot owned by the current initializer, never a
+/// same-named cached object, reserved row, or another thread's transaction.
+fn initializing_publication_slot(_py: &PyToken<'_>, name: &str) -> Option<&'static AtomicU64> {
+    let id = module_id_of(name)?;
+    let table = module_table(_py)?;
     let idx = id as usize;
-    if table.states[idx].load(Ordering::Acquire) != STATE_INITIALIZING {
+    (table.states[idx].load(Ordering::Acquire) == STATE_INITIALIZING
+        && table.owners[idx].load(Ordering::Acquire) == crate::concurrency::current_thread_id()
+        && table.slots[idx].load(Ordering::Acquire) == 0)
+        .then_some(&table.slots[idx])
+}
+
+pub(crate) fn module_initialization_awaits_publication(_py: &PyToken<'_>, name: &str) -> bool {
+    initializing_publication_slot(_py, name).is_some()
+}
+
+/// Mirror `MODULE_CACHE_SET` while its ensure transaction owns publication.
+pub(crate) fn publish_from_cache_set(_py: &PyToken<'_>, name: &str, bits: u64) {
+    if bits == 0 || is_none_bits(bits) {
         return;
     }
-    if table.owners[idx].load(Ordering::Acquire) != crate::concurrency::current_thread_id() {
+    let Some(slot) = initializing_publication_slot(_py, name) else {
         return;
-    }
-    if table.slots[idx].load(Ordering::Acquire) != 0 || bits == 0 || is_none_bits(bits) {
-        return;
-    }
+    };
     inc_ref_bits(_py, bits);
-    table.slots[idx].store(bits, Ordering::Release);
+    slot.store(bits, Ordering::Release);
 }
 
 /// Mirror a failed-init `MODULE_CACHE_DEL` cleanup (module bodies emit it on
@@ -1581,6 +1581,92 @@ mod tests {
         crate::builtins::frames::frame_stack_pop(_py);
         dec_ref_bits(_py, MoltObject::from_ptr(function).bits());
         result
+    }
+
+    #[test]
+    fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletion() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            legacy_cache_del(py, "builtins");
+            let idx = test_registry_id("builtins") as usize;
+            let table = module_table(py).expect("table");
+            let name = MoltObject::from_ptr(alloc_string(py, b"builtins")).bits();
+            let module = crate::molt_module_new(name);
+            let ptr = obj_from_bits(module).as_ptr().expect("module");
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(ptr) })
+                .as_ptr()
+                .unwrap();
+            let property_name = MoltObject::from_ptr(alloc_string(py, b"property")).bits();
+            assert!(
+                unsafe { crate::dict_get_in_place(py, dict, property_name) }.is_none(),
+                "a same-named standalone module must not gain bootstrap privilege"
+            );
+            assert!(!module_initialization_awaits_publication(py, "builtins"));
+            table.states[idx].store(STATE_INITIALIZING, Ordering::Release);
+            table.owners[idx].store(crate::concurrency::current_thread_id(), Ordering::Release);
+            assert!(module_initialization_awaits_publication(py, "builtins"));
+            let result = crate::molt_module_cache_set(name, module);
+            assert!(!exception_pending(py));
+            if !is_none_bits(result) {
+                dec_ref_bits(py, result);
+            }
+            assert!(!module_initialization_awaits_publication(py, "builtins"));
+            // Before a single Python statement has run, the recursive importer
+            // sees every public runtime-backed class and admitted callable.
+            for (name, expected) in crate::builtins::classes::public_builtin_classes(py) {
+                let key = MoltObject::from_ptr(alloc_string(py, name.as_bytes())).bits();
+                assert_eq!(
+                    unsafe { crate::dict_get_in_place(py, dict, key) },
+                    Some(expected),
+                    "{name}"
+                );
+                dec_ref_bits(py, key);
+            }
+            let unrelated = crate::molt_module_new(name);
+            for builtin in [
+                "property",
+                "globals",
+                "locals",
+                "__import__",
+                "len",
+                "ValueError",
+            ] {
+                let key = MoltObject::from_ptr(alloc_string(py, builtin.as_bytes())).bits();
+                let value = crate::molt_module_get_global(unrelated, key);
+                assert!(!exception_pending(py), "recursive importer: {builtin}");
+                assert!(!is_none_bits(value));
+                dec_ref_bits(py, value);
+                dec_ref_bits(py, key);
+            }
+            for hidden in ["NoneType", "list_iterator", "GenericAlias"] {
+                let key = MoltObject::from_ptr(alloc_string(py, hidden.as_bytes())).bits();
+                assert!(
+                    unsafe { crate::dict_get_in_place(py, dict, key) }.is_none(),
+                    "{hidden}"
+                );
+                dec_ref_bits(py, key);
+            }
+            table.states[idx].store(STATE_READY, Ordering::Release);
+            table.owners[idx].store(0, Ordering::Release);
+            for builtin in ["property", "len", "ValueError"] {
+                let key = MoltObject::from_ptr(alloc_string(py, builtin.as_bytes())).bits();
+                assert!(unsafe { crate::dict_del_in_place(py, dict, key) });
+                // Republication is not permission to repair a user mutation.
+                let result = crate::molt_module_cache_set(name, module);
+                if !is_none_bits(result) {
+                    dec_ref_bits(py, result);
+                }
+                let value = crate::molt_module_get_global(unrelated, key);
+                assert!(is_none_bits(value));
+                assert!(pending_exception_text(py).contains("NameError"));
+                assert!(unsafe { crate::dict_get_in_place(py, dict, key) }.is_none());
+                dec_ref_bits(py, key);
+            }
+            for bits in [property_name, unrelated, module, name] {
+                dec_ref_bits(py, bits);
+            }
+        });
     }
 
     #[test]
