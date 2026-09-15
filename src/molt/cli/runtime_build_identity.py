@@ -738,149 +738,127 @@ def _is_host_absolute(value: str) -> bool:
     return _host_absolute_style(value) is not None
 
 
-def _canonical_path_operand(
-    raw: str,
-    *,
-    logical_paths: Sequence[tuple[str, Path]],
-) -> str:
-    value = raw.strip('"')
-    style = _host_absolute_style(value)
-    if style is None:
-        return value
-    native_style = "windows" if os.name == "nt" else "posix"
-    if style != native_style:
+@dataclass(frozen=True)
+class _RuntimeFlagProjection:
+    """Ordered logical paths captured once for one runtime identity operation.
+
+    Resolved roots and their text forms are local to this capture, never a
+    process cache. Absolute operands still resolve when inspected; response
+    files retain the Cargo plan's separate content and custody checks.
+    """
+
+    roots: tuple[tuple[str, Path, str], ...]
+    cargo_plan: RuntimeCargoPlan | None = None
+
+    @classmethod
+    def capture(
+        cls,
+        logical_paths: Sequence[tuple[str, Path]],
+        *,
+        cargo_plan: RuntimeCargoPlan | None = None,
+    ) -> _RuntimeFlagProjection:
+        return cls(
+            roots=tuple(
+                (label, resolved, os.fspath(resolved))
+                for label, root in logical_paths
+                for resolved in (root.resolve(strict=False),)
+            ),
+            cargo_plan=cargo_plan,
+        )
+
+    def prepend_root(self, label: str, root: Path) -> _RuntimeFlagProjection:
+        prefix = self.capture(((label, root),), cargo_plan=self.cargo_plan)
+        return type(self)(
+            roots=prefix.roots + self.roots,
+            cargo_plan=self.cargo_plan,
+        )
+
+    def path_operand(self, raw: str) -> str:
+        value = raw.strip('"')
+        style = _host_absolute_style(value)
+        if style is None:
+            return value
+        native_style = "windows" if os.name == "nt" else "posix"
+        if style != native_style:
+            raise ValueError(
+                f"unknown absolute host path in canonical runtime flags: {raw!r}"
+            )
+        candidate = Path(value).resolve(strict=False)
+        for label, resolved_root, _text in self.roots:
+            try:
+                relative = candidate.relative_to(resolved_root)
+            except ValueError:
+                continue
+            suffix = "" if not relative.parts else "/" + relative.as_posix()
+            return f"${{{label}}}{suffix}"
         raise ValueError(
             f"unknown absolute host path in canonical runtime flags: {raw!r}"
         )
-    candidate = Path(value).resolve(strict=False)
-    for label, root in logical_paths:
-        resolved_root = root.resolve(strict=False)
-        try:
-            relative = candidate.relative_to(resolved_root)
-        except ValueError:
-            continue
-        suffix = "" if not relative.parts else "/" + relative.as_posix()
-        return f"${{{label}}}{suffix}"
-    raise ValueError(f"unknown absolute host path in canonical runtime flags: {raw!r}")
 
-
-def _canonical_flag_token(
-    token: str,
-    *,
-    logical_paths: Sequence[tuple[str, Path]],
-    cargo_plan: RuntimeCargoPlan | None = None,
-) -> str:
-    # Response files are generated configuration inputs, not stable locations.
-    # Commit their bytes at the point where the path appears in the flag plan.
-    if "@" in token:
-        if cargo_plan is None:
-            raise ValueError(
-                "runtime response argument requires captured Cargo plan custody"
-            )
-        return cargo_plan.project_link_arguments((token,))[0]
-    for prefix in (
-        "-Clink-arg=",
-        "-Clinker=",
-        "--sysroot=",
-        "-Lnative=",
-        "-Ldependency=",
-        "/LIBPATH:",
-        "-I",
-        "-L",
-    ):
-        if token.startswith(prefix) and len(token) > len(prefix):
-            operand = token[len(prefix) :]
-            if prefix == "-Clink-arg=":
-                return prefix + _canonical_flag_token(
-                    operand,
-                    logical_paths=logical_paths,
-                    cargo_plan=cargo_plan,
+    def token(self, token: str) -> str:
+        if "@" in token:
+            if self.cargo_plan is None:
+                raise ValueError(
+                    "runtime response argument requires captured Cargo plan custody"
                 )
-            return prefix + _canonical_path_operand(
-                operand, logical_paths=logical_paths
-            )
-    if _is_host_absolute(token):
-        return _canonical_path_operand(token, logical_paths=logical_paths)
-    if "=" in token:
-        prefix, operand = token.split("=", 1)
-        if _is_host_absolute(operand):
-            return (
-                prefix
-                + "="
-                + _canonical_path_operand(operand, logical_paths=logical_paths)
-            )
-    for _label, root in logical_paths:
-        root_text = os.fspath(root.resolve(strict=False))
-        if token.find(root_text) > 0:
+            return self.cargo_plan.project_link_arguments((token,))[0]
+        for prefix in (
+            "-Clink-arg=",
+            "-Clinker=",
+            "--sysroot=",
+            "-Lnative=",
+            "-Ldependency=",
+            "/LIBPATH:",
+            "-I",
+            "-L",
+        ):
+            if token.startswith(prefix) and len(token) > len(prefix):
+                operand = token[len(prefix) :]
+                if prefix == "-Clink-arg=":
+                    return prefix + self.token(operand)
+                return prefix + self.path_operand(operand)
+        if _is_host_absolute(token):
+            return self.path_operand(token)
+        if "=" in token:
+            prefix, operand = token.split("=", 1)
+            if _is_host_absolute(operand):
+                return prefix + "=" + self.path_operand(operand)
+        for _label, _root, root_text in self.roots:
+            if token.find(root_text) > 0:
+                raise ValueError(
+                    f"embedded absolute host path in canonical runtime flags: {token!r}"
+                )
+        if (
+            re.search(r"(?i)[a-z]:[\\/]", token)
+            or "\\\\" in token
+            or re.search(r"(?:^|[=@])[/\\][A-Za-z?]", token)
+        ):
             raise ValueError(
                 f"embedded absolute host path in canonical runtime flags: {token!r}"
             )
-    if (
-        re.search(r"(?i)[a-z]:[\\/]", token)
-        or "\\\\" in token
-        or re.search(r"(?:^|[=@])[/\\][A-Za-z?]", token)
-    ):
-        raise ValueError(
-            f"embedded absolute host path in canonical runtime flags: {token!r}"
-        )
-    return token
+        return token
 
+    def rustflags(self, value: str | Sequence[str]) -> list[str]:
+        if isinstance(value, str):
+            if os.name != "nt" and re.search(r"(?i)[a-z]:[\\/]", value):
+                raise ValueError(
+                    f"unknown absolute host path in canonical runtime flags: {value!r}"
+                )
+            try:
+                tokens = shlex.split(value, posix=os.name != "nt")
+            except ValueError as exc:
+                raise ValueError(f"invalid runtime flag plan: {value!r}") from exc
+        else:
+            tokens = value
+        return [self.token(token.strip('"')) for token in tokens]
 
-def _canonical_flag_text(
-    value: str,
-    *,
-    logical_paths: Sequence[tuple[str, Path]],
-    cargo_plan: RuntimeCargoPlan | None = None,
-) -> list[str]:
-    if os.name != "nt" and re.search(r"(?i)[a-z]:[\\/]", value):
-        raise ValueError(
-            f"unknown absolute host path in canonical runtime flags: {value!r}"
-        )
-    try:
-        tokens = shlex.split(value, posix=os.name != "nt")
-    except ValueError as exc:
-        raise ValueError(f"invalid runtime flag plan: {value!r}") from exc
-    return [
-        _canonical_flag_token(
-            token.strip('"'), logical_paths=logical_paths, cargo_plan=cargo_plan
-        )
-        for token in tokens
-    ]
+    def link_args(self, args: Sequence[str]) -> list[str]:
+        return [self.token(arg) for arg in args]
 
 
 def _ambient_c_build_environment(cargo_plan: RuntimeCargoPlan) -> dict[str, list[str]]:
     """Project the exact cc-rs token/search authority captured for execution."""
     return {name: list(tokens) for name, tokens in cargo_plan.c_environment.items()}
-
-
-def _normalized_link_args(
-    args: Sequence[str],
-    *,
-    logical_paths: Sequence[tuple[str, Path]],
-    cargo_plan: RuntimeCargoPlan,
-) -> list[str]:
-    return [
-        _canonical_flag_token(arg, logical_paths=logical_paths, cargo_plan=cargo_plan)
-        for arg in args
-    ]
-
-
-def _canonical_rustflags(
-    value: str | Sequence[str],
-    *,
-    logical_paths: Sequence[tuple[str, Path]],
-    cargo_plan: RuntimeCargoPlan | None = None,
-) -> list[str]:
-    if isinstance(value, str):
-        return _canonical_flag_text(
-            value, logical_paths=logical_paths, cargo_plan=cargo_plan
-        )
-    return [
-        _canonical_flag_token(
-            token.strip('"'), logical_paths=logical_paths, cargo_plan=cargo_plan
-        )
-        for token in value
-    ]
 
 
 def _target_environment_forms(target_triple: str) -> tuple[str, ...]:
@@ -1228,7 +1206,9 @@ def resolve_native_runtime_build_identity(
     env = plan.environment
     cargo_command = plan.command
     logical_target = target_triple or "native"
-    logical_paths = (*plan.logical_paths, ("source", root))
+    flag_projection = _RuntimeFlagProjection.capture(
+        (*plan.logical_paths, ("source", root)), cargo_plan=plan
+    )
     source_roots: list[tuple[str, Path]] = []
     for path in runtime_source_paths(root, runtime_features):
         resolved = path.resolve(strict=False)
@@ -1252,25 +1232,15 @@ def resolve_native_runtime_build_identity(
     _verify_plan_toolchain_manifest(plan, toolchain_manifest)
     build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     compile_command, final_link_arguments = plan.partition_command()
-    command = _canonical_rustflags(
-        compile_command, logical_paths=logical_paths, cargo_plan=plan
-    )
+    command = flag_projection.rustflags(compile_command)
     rustflags = plan.rustflags
     member = RuntimeBuildMemberPlan(
         kind="staticlib",
-        resolved_rustflags=tuple(
-            _canonical_rustflags(
-                rustflags,
-                logical_paths=logical_paths,
-                cargo_plan=plan,
-            )
-        ),
+        resolved_rustflags=tuple(flag_projection.rustflags(rustflags)),
         link_args=(
             "--print",
             "native-static-libs",
-            *_normalized_link_args(
-                final_link_arguments, logical_paths=logical_paths, cargo_plan=plan
-            ),
+            *flag_projection.link_args(final_link_arguments),
         ),
         publication_transform="native-staticlib-and-link-manifest-v1",
         preserve_debug=plan.preserve_debug_for_profile(cargo_profile),
@@ -1285,9 +1255,7 @@ def resolve_native_runtime_build_identity(
             "runtime_features": sorted(set(runtime_features)),
             "producer_artifact_selection": artifact_selection.source_identity,
             "cargo_command": command,
-            "base_rustflags": _canonical_rustflags(
-                plan.rustflags, logical_paths=logical_paths, cargo_plan=plan
-            ),
+            "base_rustflags": flag_projection.rustflags(plan.rustflags),
             "ambient_c_build_environment": _ambient_c_build_environment(plan),
             "environment": _runtime_build_environment_identity(
                 plan,
@@ -1425,18 +1393,17 @@ def resolve_wasm_cpython_abi_build_identity(
     build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     if not cargo_command:
         raise ValueError("CPython ABI Cargo command is empty")
-    logical_paths = (
-        *plan.logical_paths,
-        ("source", root),
-        ("wasi-sysroot", wasi_sysroot),
+    flag_projection = _RuntimeFlagProjection.capture(
+        (
+            *plan.logical_paths,
+            ("source", root),
+            ("wasi-sysroot", wasi_sysroot),
+        ),
+        cargo_plan=plan,
     )
     member = RuntimeBuildMemberPlan(
         kind="staticlib",
-        resolved_rustflags=tuple(
-            _canonical_flag_text(
-                rustflags, logical_paths=logical_paths, cargo_plan=plan
-            )
-        ),
+        resolved_rustflags=tuple(flag_projection.rustflags(rustflags)),
         link_args=(),
         publication_transform="wasm-cpython-abi-staticlib-v1",
         preserve_debug=plan.preserve_debug_for_profile(cargo_profile),
@@ -1450,11 +1417,7 @@ def resolve_wasm_cpython_abi_build_identity(
             "target_triple": target_triple,
             "runtime_features": ["molt-cpython-abi-static-link"],
             "producer_artifact_selection": artifact_selection.source_identity,
-            "cargo_command": _canonical_rustflags(
-                plan.partition_command()[0],
-                logical_paths=logical_paths,
-                cargo_plan=plan,
-            ),
+            "cargo_command": flag_projection.rustflags(plan.partition_command()[0]),
             "ambient_c_build_environment": _ambient_c_build_environment(plan),
             "environment": _runtime_build_environment_identity(
                 plan,
@@ -1529,34 +1492,31 @@ def resolve_wasm_runtime_build_family_identities(
     )
     _verify_plan_toolchain_manifest(plan, toolchain_manifest)
     build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
-    logical_paths = (
-        *plan.logical_paths,
-        ("wasi-sysroot", wasi_sysroot),
-        ("tool/wasm-ld", wasm_linker),
-        ("archive/wasi-long-double", long_double_archive),
-        ("archive/clang-rt-builtins", builtins_archive),
-        ("archive/wasi-libc", wasi_libc_archive),
-        ("archive/rust-compiler-builtins", rust_builtins_archive),
+    flag_projection = _RuntimeFlagProjection.capture(
+        (
+            *plan.logical_paths,
+            ("wasi-sysroot", wasi_sysroot),
+            ("tool/wasm-ld", wasm_linker),
+            ("archive/wasi-long-double", long_double_archive),
+            ("archive/clang-rt-builtins", builtins_archive),
+            ("archive/wasi-libc", wasi_libc_archive),
+            ("archive/rust-compiler-builtins", rust_builtins_archive),
+        ),
+        cargo_plan=plan,
     )
     compile_command, cargo_link_args = plan.partition_command()
     canonical_members = tuple(
         RuntimeBuildMemberPlan(
             kind=member.kind,
             resolved_rustflags=tuple(
-                _canonical_rustflags(
-                    member.resolved_rustflags,
-                    logical_paths=logical_paths,
-                    cargo_plan=plan,
-                )
+                flag_projection.rustflags(member.resolved_rustflags)
             ),
             link_args=tuple(
-                _normalized_link_args(
+                flag_projection.link_args(
                     (
                         *member.link_args,
                         *(cargo_link_args if member.kind == "shared" else ()),
-                    ),
-                    logical_paths=logical_paths,
-                    cargo_plan=plan,
+                    )
                 )
             ),
             publication_transform=member.publication_transform,
@@ -1575,16 +1535,10 @@ def resolve_wasm_runtime_build_family_identities(
             "producer_artifact_selection": (
                 producer_artifact_selection.source_identity
             ),
-            "cargo_command": _canonical_rustflags(
-                compile_command,
-                logical_paths=(("source", root), *logical_paths),
-                cargo_plan=plan,
+            "cargo_command": flag_projection.prepend_root("source", root).rustflags(
+                compile_command
             ),
-            "base_rustflags": _canonical_rustflags(
-                plan.rustflags,
-                logical_paths=logical_paths,
-                cargo_plan=plan,
-            ),
+            "base_rustflags": flag_projection.rustflags(plan.rustflags),
             "ambient_c_build_environment": _ambient_c_build_environment(plan),
             "environment": _runtime_build_environment_identity(
                 plan,

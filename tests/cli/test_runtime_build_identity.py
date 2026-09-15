@@ -789,19 +789,81 @@ def test_identity_rejects_unknown_absolute_flag_path(identity_root: Path) -> Non
 
 def test_flag_canonicalization_enforces_path_boundaries(identity_root: Path) -> None:
     sysroot = identity_root / "wasi-sysroot"
-    logical = (("wasi-sysroot", sysroot),)
-    assert (
-        identity._canonical_flag_token(
-            f"-I{sysroot / 'include'}", logical_paths=logical
-        )
-        == "-I${wasi-sysroot}/include"
+    projection = identity._RuntimeFlagProjection.capture((("wasi-sysroot", sysroot),))
+    assert projection.token(f"-I{sysroot / 'include'}") == "-I${wasi-sysroot}/include"
+    with pytest.raises(ValueError, match="absolute host path"):
+        projection.token(f"--sysroot={sysroot}bar")
+    with pytest.raises(ValueError, match="absolute host path"):
+        projection.token(f"embedded{sysroot}")
+    with pytest.raises(ValueError, match="absolute host path"):
+        projection.token("-I/opt/poison")
+
+
+@pytest.mark.parametrize("token_count", [1, 256, 8192])
+def test_flag_projection_resolves_roots_once_not_per_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token_count: int
+) -> None:
+    roots = (("source", tmp_path), ("nested", tmp_path / "nested"))
+    resolved: list[Path] = []
+    original = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        resolved.append(path)
+        return original(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    projection = identity._RuntimeFlagProjection.capture(roots)
+    assert resolved == [path for _label, path in roots]
+    exports = tuple(
+        f"--export-if-defined=molt_test_{index}" for index in range(token_count)
     )
-    with pytest.raises(ValueError, match="absolute host path"):
-        identity._canonical_flag_token(f"--sysroot={sysroot}bar", logical_paths=logical)
-    with pytest.raises(ValueError, match="absolute host path"):
-        identity._canonical_flag_token(f"embedded{sysroot}", logical_paths=logical)
-    with pytest.raises(ValueError, match="absolute host path"):
-        identity._canonical_flag_token("-I/opt/poison", logical_paths=logical)
+    assert projection.link_args(exports) == list(exports)
+    assert projection.rustflags(exports) == list(exports)
+    assert resolved == [path for _label, path in roots]
+    operand = tmp_path / "nested" / "input.a"
+    assert projection.token(str(operand)) == "${source}/nested/input.a"
+    assert resolved == [path for _label, path in roots] + [operand]
+
+
+def test_flag_projection_preserves_ordered_root_precedence(tmp_path: Path) -> None:
+    projection = identity._RuntimeFlagProjection.capture(
+        (("parent", tmp_path), ("child", tmp_path / "nested"))
+    )
+    operand = str(tmp_path / "nested" / "input.a")
+    assert projection.token(operand) == "${parent}/nested/input.a"
+    command_projection = projection.prepend_root("command", tmp_path / "nested")
+    assert command_projection.token(operand) == "${command}/input.a"
+    assert projection.token(operand) == "${parent}/nested/input.a"
+
+
+def test_flag_projection_is_recaptured_not_process_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logical = tmp_path / "logical"
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    current = before
+    original = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        return current if path == logical else original(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    first = identity._RuntimeFlagProjection.capture((("input", logical),))
+    current = after
+    second = identity._RuntimeFlagProjection.capture((("input", logical),))
+    assert first.token(str(before / "value")) == "${input}/value"
+    assert second.token(str(after / "value")) == "${input}/value"
+    with pytest.raises(ValueError, match="unknown absolute host path"):
+        second.token(str(before / "value"))
+
+
+def test_flag_projection_requires_cargo_plan_for_response_inputs(
+    tmp_path: Path,
+) -> None:
+    projection = identity._RuntimeFlagProjection.capture((("source", tmp_path),))
+    with pytest.raises(ValueError, match="requires captured Cargo plan custody"):
+        projection.token("-Clink-arg=@" + str(tmp_path / "runtime.rsp"))
 
 
 def test_tool_version_banner_never_serializes_installed_directory(
