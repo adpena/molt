@@ -1,13 +1,9 @@
 use crate::PyToken;
+use crate::object::builders::{CanonicalSpecialSingleton, canonical_special_singleton_bits};
 use crate::*;
-use std::sync::atomic::AtomicU64;
 
 pub(crate) fn missing_bits(_py: &PyToken<'_>) -> u64 {
-    special_singleton_bits(
-        _py,
-        &runtime_state(_py).special_cache.molt_missing,
-        TYPE_ID_OBJECT,
-    )
+    canonical_special_singleton_bits(_py, CanonicalSpecialSingleton::Missing)
 }
 
 pub(crate) fn is_missing_bits(_py: &PyToken<'_>, bits: u64) -> bool {
@@ -25,11 +21,7 @@ pub(crate) fn is_missing_bits(_py: &PyToken<'_>, bits: u64) -> bool {
 }
 
 pub(crate) fn not_implemented_bits(_py: &PyToken<'_>) -> u64 {
-    special_singleton_bits(
-        _py,
-        &runtime_state(_py).special_cache.molt_not_implemented,
-        TYPE_ID_NOT_IMPLEMENTED,
-    )
+    canonical_special_singleton_bits(_py, CanonicalSpecialSingleton::NotImplemented)
 }
 
 pub(crate) fn is_not_implemented_bits(_py: &PyToken<'_>, bits: u64) -> bool {
@@ -41,30 +33,7 @@ pub(crate) fn is_not_implemented_bits(_py: &PyToken<'_>, bits: u64) -> bool {
 }
 
 pub(crate) fn ellipsis_bits(_py: &PyToken<'_>) -> u64 {
-    special_singleton_bits(
-        _py,
-        &runtime_state(_py).special_cache.molt_ellipsis,
-        TYPE_ID_ELLIPSIS,
-    )
-}
-
-fn special_singleton_bits(_py: &PyToken<'_>, slot: &AtomicU64, type_id: u32) -> u64 {
-    let bits = init_atomic_bits(_py, slot, || {
-        let total_size = std::mem::size_of::<MoltHeader>();
-        let ptr = alloc_object(_py, total_size, type_id);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    });
-    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-        return bits;
-    };
-    unsafe {
-        (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-    }
-    bits
+    canonical_special_singleton_bits(_py, CanonicalSpecialSingleton::Ellipsis)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use std::sync::Mutex;
 #[cfg(target_arch = "wasm32")]
 use std::sync::OnceLock;
 
-use crate::{PyToken, dec_ref_bits, inc_ref_bits, obj_from_bits};
+use crate::{PyToken, dec_ref_bits, inc_ref_bits};
 
 // `const_str`, `const_bytes`, and heap `const_bigint` IR ops call runtime
 // constructors with pointers into immutable compiler-emitted data segments.
@@ -80,16 +80,6 @@ static CONST_BYTES_WASM: OnceLock<Mutex<ConstDataCache>> = OnceLock::new();
 #[cfg(target_arch = "wasm32")]
 static CONST_BIGINT_WASM: OnceLock<Mutex<ConstDataCache>> = OnceLock::new();
 
-fn mark_bits_immortal(bits: u64) {
-    let obj = obj_from_bits(bits);
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let header = crate::object::header_from_obj_ptr(ptr);
-            (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
-        }
-    }
-}
-
 fn with_cache<R>(kind: ConstDataLiteralKind, f: impl FnOnce(&mut ConstDataCache) -> R) -> R {
     #[cfg(target_arch = "wasm32")]
     {
@@ -118,11 +108,18 @@ fn with_cache<R>(kind: ConstDataLiteralKind, f: impl FnOnce(&mut ConstDataCache)
 }
 
 pub(crate) fn const_data_literal_lookup(
+    py: &PyToken<'_>,
     kind: ConstDataLiteralKind,
     data_ptr: usize,
     len: usize,
 ) -> Option<u64> {
-    with_cache(kind, |cache| cache.lookup(data_ptr, len))
+    // Return an owned result before releasing shared WASM cache custody; a
+    // different thread may evict this slot as soon as its mutex is released.
+    with_cache(kind, |cache| {
+        cache
+            .lookup(data_ptr, len)
+            .inspect(|&bits| inc_ref_bits(py, bits))
+    })
 }
 
 pub(crate) fn const_data_literal_insert(
@@ -132,10 +129,10 @@ pub(crate) fn const_data_literal_insert(
     len: usize,
     bits: u64,
 ) {
-    // Publish the incoming owner before displacing the old cache edge. Any
-    // release happens after the TLS borrow or WASM mutex guard is gone.
+    // A bounded cache owns one ordinary reference, not the object's physical
+    // lifetime. Eviction can reclaim an otherwise unused literal; callers own
+    // independent results. Release after the TLS borrow or WASM mutex is gone.
     inc_ref_bits(py, bits);
-    mark_bits_immortal(bits);
     let previous = with_cache(kind, |cache| cache.insert(data_ptr, len, bits));
     if let Some(previous) = previous {
         dec_ref_bits(py, previous);
@@ -183,21 +180,15 @@ fn clear_const_data_literal_cache(py: &PyToken<'_>, kind: ConstDataLiteralKind) 
     #[cfg(not(target_arch = "wasm32"))]
     {
         let previous = match kind {
-            ConstDataLiteralKind::String => {
-                CONST_STR_TLS
-                    .try_with(|cell| cell.borrow_mut().take_entries())
-                    .ok()
-            }
-            ConstDataLiteralKind::Bytes => {
-                CONST_BYTES_TLS
-                    .try_with(|cell| cell.borrow_mut().take_entries())
-                    .ok()
-            }
-            ConstDataLiteralKind::BigInt => {
-                CONST_BIGINT_TLS
-                    .try_with(|cell| cell.borrow_mut().take_entries())
-                    .ok()
-            }
+            ConstDataLiteralKind::String => CONST_STR_TLS
+                .try_with(|cell| cell.borrow_mut().take_entries())
+                .ok(),
+            ConstDataLiteralKind::Bytes => CONST_BYTES_TLS
+                .try_with(|cell| cell.borrow_mut().take_entries())
+                .ok(),
+            ConstDataLiteralKind::BigInt => CONST_BIGINT_TLS
+                .try_with(|cell| cell.borrow_mut().take_entries())
+                .ok(),
         };
         let mut detached = false;
         if let Some(previous) = previous {

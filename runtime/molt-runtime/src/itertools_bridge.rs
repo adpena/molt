@@ -38,16 +38,15 @@ pub extern "C" fn __molt_itertools_runtime_state_get_or_init(
     })
 }
 
-/// Interned-aware shutdown release of a cached object handle held in an
-/// itertools satellite slot. Byte-for-byte the in-tree `clear_atomic_bits`
-/// release semantics (skip interned objects, otherwise shutdown-release).
+/// Release the ordinary owned reference held by an itertools satellite slot.
+/// Canonical immortal values remain owned by the runtime's canonical pool.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_release_slot_bits(bits: u64) {
     if bits == 0 {
         return;
     }
     crate::with_gil_entry_nopanic!(_py, {
-        crate::object::release_shutdown_bits(_py, bits);
+        crate::dec_ref_bits(_py, bits);
     })
 }
 

@@ -111,9 +111,6 @@ fn ensure_debug_sigtrap_handler() {}
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,
-    pub(crate) molt_missing: AtomicU64,
-    pub(crate) molt_not_implemented: AtomicU64,
-    pub(crate) molt_ellipsis: AtomicU64,
     pub(crate) awaitable_await: AtomicU64,
     pub(crate) function_code_descriptor: AtomicU64,
     pub(crate) function_globals_descriptor: AtomicU64,
@@ -481,9 +478,6 @@ impl SpecialCache {
     fn new() -> Self {
         Self {
             open_default_mode: AtomicU64::new(0),
-            molt_missing: AtomicU64::new(0),
-            molt_not_implemented: AtomicU64::new(0),
-            molt_ellipsis: AtomicU64::new(0),
             awaitable_await: AtomicU64::new(0),
             function_code_descriptor: AtomicU64::new(0),
             function_globals_descriptor: AtomicU64::new(0),

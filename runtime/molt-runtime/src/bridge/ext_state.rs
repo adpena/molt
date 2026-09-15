@@ -28,6 +28,6 @@ pub unsafe fn release_runtime_slot_bits(bits: u64) {
         return;
     }
     crate::with_gil_entry_nopanic!(py, {
-        crate::object::release_shutdown_bits(py, bits);
+        crate::dec_ref_bits(py, bits);
     })
 }

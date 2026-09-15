@@ -2581,11 +2581,10 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe {
-        let removed = dict_detach_contents(_py, ptr);
-        for pair in removed.chunks_exact(2) {
-            crate::object::release_shutdown_bits(_py, pair[0]);
-            crate::object::release_shutdown_bits(_py, pair[1]);
-        }
-    }
+    // Teardown bypasses mutation admission, not reference ownership: dictionary
+    // edges may not revoke a referent's canonical immortal lifetime.
+    drop(DetachedDictReferences {
+        py: _py,
+        bits: unsafe { dict_detach_contents(_py, ptr) },
+    });
 }
