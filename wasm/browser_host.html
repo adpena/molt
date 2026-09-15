@@ -112,8 +112,10 @@
         const linkedUrl = document.getElementById('linked-url').value.trim();
         const runtimeUrl = document.getElementById('runtime-url').value.trim();
         const dbEndpoint = document.getElementById('db-endpoint').value.trim();
+        let host;
+        const errors = [];
         try {
-          const host = await loadMoltWasm({
+          host = await loadMoltWasm({
             wasmUrl,
             linkedUrl,
             runtimeUrl,
@@ -124,8 +126,14 @@
           host.run();
           log('molt_main completed');
         } catch (err) {
-          log(`Error: ${err.message}`);
-          console.error(err);
+          errors.push(err);
+        } finally {
+          try { host?.dispose(); } catch (err) { errors.push(err); }
+        }
+        if (errors.length) {
+          const error = globalThis.MoltRuntimeLifecycle.combinedError(errors);
+          log(`Error: ${String(error)}`);
+          console.error(error);
         }
       });
     </script>

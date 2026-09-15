@@ -12,12 +12,12 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
@@ -36,6 +36,8 @@ mod engine;
 mod entrypoint;
 mod indexed;
 mod isolate_host;
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod main_tests;
 mod path_resolver;
@@ -156,6 +158,39 @@ struct HostState {
 struct SocketManager {
     next_id: u64,
     sockets: HashMap<u64, Socket>,
+}
+
+impl HostState {
+    /// Guest finalization may still use host services. Close their backing
+    /// resources only afterward, without dereferencing any guest handles.
+    fn close_resources(&mut self) -> Result<()> {
+        let mut result = Ok(());
+        if let Some(mut worker) = self.db_worker.take() {
+            result = preserve_application_and_cleanup_result(
+                result,
+                worker.close().context("close WASM database host worker"),
+            );
+        }
+        self.db_pending.clear();
+        self.db_cancel_index.clear();
+        self.db_cancel_positions.clear();
+        self.db_cancel_cursor = 0;
+        self.last_cancel_check = None;
+        result = preserve_application_and_cleanup_result(
+            result,
+            self.process_manager
+                .close()
+                .context("close WASM process host resources"),
+        );
+        result = preserve_application_and_cleanup_result(
+            result,
+            self.ws_manager
+                .close()
+                .context("close WASM WebSocket host resources"),
+        );
+        self.socket_manager.sockets.clear();
+        result
+    }
 }
 
 impl SocketManager {
@@ -465,72 +500,93 @@ fn execute_loaded_guest(
     let registry = store.data().call_indirect.clone();
     define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, is_wasi_command)?;
 
-    let runtime_instance = if let Some(runtime_module) = runtime_module {
-        let runtime_pre = linker
-            .instantiate_pre(runtime_module)
-            .context("admit runtime host imports before guest start")?;
-        admit_application_host_imports(&linker, &mut store, output_module)?;
-        log::debug!("instantiating runtime");
-        let runtime_instance = runtime_pre
-            .instantiate(&mut store)
-            .context("instantiate runtime")?;
-        log::debug!("runtime instantiated");
-        configure_wasm_table_base(&mut store, &runtime_instance, wasm_table_base)?;
-        runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
-        Some(runtime_instance)
-    } else {
-        None
-    };
+    let mut lifetime = None;
+    let result = (|| {
+        let runtime_instance = if let Some(runtime_module) = runtime_module {
+            let runtime_pre = linker
+                .instantiate_pre(runtime_module)
+                .context("admit runtime host imports before guest start")?;
+            admit_application_host_imports(&linker, &mut store, output_module)?;
+            log::debug!("instantiating runtime");
+            let runtime_instance = runtime_pre
+                .instantiate(&mut store)
+                .context("instantiate runtime")?;
+            log::debug!("runtime instantiated");
+            set_memory_from_exports(&mut store, &runtime_instance);
+            lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &runtime_instance)?);
+            configure_wasm_table_base(&mut store, &runtime_instance, wasm_table_base)?;
+            runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
+            Some(runtime_instance)
+        } else {
+            None
+        };
 
-    let output_label = if is_wasi_command {
-        "WASI command"
-    } else if runtime_instance.is_some() {
-        "output"
-    } else {
-        "linked output"
-    };
-    log::debug!("instantiating {output_label}");
-    let output_instance = if is_wasi_command {
-        match classify_wasi_command_result(
-            linker.instantiate(&mut store, output_module),
-            "instantiate WASI command",
-        )? {
-            WasiCommandResult::Value(instance) => instance,
-            WasiCommandResult::Exit(termination) => return Ok(termination),
+        let output_label = if is_wasi_command {
+            "WASI command"
+        } else if runtime_instance.is_some() {
+            "output"
+        } else {
+            "linked output"
+        };
+        log::debug!("instantiating {output_label}");
+        let output_instance = if is_wasi_command {
+            match classify_wasi_command_result(
+                linker.instantiate(&mut store, output_module),
+                "instantiate WASI command",
+            )? {
+                WasiCommandResult::Value(instance) => instance,
+                WasiCommandResult::Exit(termination) => return Ok(termination),
+            }
+        } else {
+            linker
+                .instantiate(&mut store, output_module)
+                .with_context(|| format!("instantiate {output_label}"))?
+        };
+        log::debug!("{output_label} instantiated");
+        set_memory_from_exports(&mut store, &output_instance);
+        if !is_wasi_command && runtime_instance.is_none() {
+            lifetime = Some(MoltRuntimeLifetime::admit(&mut store, &output_instance)?);
         }
-    } else {
-        linker
-            .instantiate(&mut store, output_module)
-            .with_context(|| format!("instantiate {output_label}"))?
-    };
-    log::debug!("{output_label} instantiated");
-    if !is_wasi_command {
-        register_isolate_exports(&mut store, &output_instance)?;
-    }
-    if !is_wasi_command {
-        register_call_indirect_exports(&mut store, &output_instance, &registry, &indirect_calls)?;
-    }
-    set_memory_from_exports(&mut store, &output_instance);
-    if !is_wasi_command && runtime_instance.is_none() {
-        configure_wasm_table_base(&mut store, &output_instance, wasm_table_base)?;
-    }
+        if !is_wasi_command {
+            register_isolate_exports(&mut store, &output_instance)?;
+        }
+        if !is_wasi_command {
+            register_call_indirect_exports(
+                &mut store,
+                &output_instance,
+                &registry,
+                &indirect_calls,
+            )?;
+        }
+        if !is_wasi_command && runtime_instance.is_none() {
+            configure_wasm_table_base(&mut store, &output_instance, wasm_table_base)?;
+        }
 
-    if is_wasi_command {
-        return call_guest_entrypoint(
+        if is_wasi_command {
+            return call_guest_entrypoint(
+                &mut store,
+                GuestEntrypoint::WasiCommand {
+                    command: &output_instance,
+                },
+            );
+        }
+
+        call_guest_entrypoint(
             &mut store,
-            GuestEntrypoint::WasiCommand {
-                command: &output_instance,
+            GuestEntrypoint::MoltApplication {
+                application: &output_instance,
+                runtime: runtime_instance.as_ref().unwrap_or(&output_instance),
+                lifetime: lifetime
+                    .as_mut()
+                    .context("Molt application has no runtime lifetime owner")?,
             },
-        );
-    }
-
-    call_guest_entrypoint(
-        &mut store,
-        GuestEntrypoint::MoltApplication {
-            application: &output_instance,
-            runtime: runtime_instance.as_ref().unwrap_or(&output_instance),
-        },
-    )
+        )
+    })();
+    let result = match lifetime {
+        Some(lifetime) => lifetime.finish(&mut store, result),
+        None => result,
+    };
+    preserve_application_and_cleanup_result(result, store.data_mut().close_resources())
 }
 
 fn main() -> Result<()> {

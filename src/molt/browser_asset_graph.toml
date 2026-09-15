@@ -55,6 +55,12 @@ source_type = "script"
 authority = "wasm-abi"
 
 [[asset]]
+path = "runtime_lifecycle.js"
+role = "shared"
+source_type = "script"
+authority = "wasm-runtime-lifetime"
+
+[[asset]]
 path = "loader_bridge.js"
 role = "shared"
 source_type = "script"

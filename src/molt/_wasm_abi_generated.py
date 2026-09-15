@@ -14789,6 +14789,7 @@ WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
         "molt_profile_dump",
         "molt_runtime_execution_enter",
         "molt_runtime_execution_leave",
+        "molt_runtime_shutdown",
         "molt_scratch_alloc",
         "molt_scratch_free",
         "molt_string_as_ptr",

@@ -35,4 +35,4 @@ unicode-normalization = "0.1.25"
 # the locale contract here so release-fast workspace builds are deterministic on
 # Windows.
 winapi = { version = "0.3.9", features = ["errhandlingapi"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Pipes", "Win32_System_Threading"] }

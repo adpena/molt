@@ -1,5 +1,6 @@
 import './callable_table_abi_generated.js';
 import './loader_bridge.js';
+import './runtime_lifecycle.js';
 import {
   assertBrowserTargetFeatureContract,
   parsedImportsRequireWebGpuDispatch,
@@ -92,34 +93,45 @@ const reservedRuntimeCallables = [
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 
-const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) => {
-  const exportNames = runtimeImportAbi?.export_names || {};
-  const enterName = exportNames.runtime_execution_enter;
-  const leaveName = exportNames.runtime_execution_leave;
-  if (typeof enterName !== 'string' || typeof leaveName !== 'string') {
-    throw new Error('runtime manifest missing canonical execution-boundary exports');
+const { createRuntimeLifetime, createRuntimeDisposer, combinedError } = globalThis.MoltRuntimeLifecycle;
+const runtimeLifetimes = new WeakMap();
+const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
+  let lifetime = runtimeLifetimes.get(runtimeInstance);
+  if (!lifetime) {
+    lifetime = createRuntimeLifetime(runtimeInstance, runtimeImportAbi?.export_names, () => {
+      if (runtimeExceptionPending(runtimeInstance)) {
+        const memory = runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory;
+        const detail = memory ? pendingRuntimeExceptionMessage(runtimeInstance, memory) : null;
+        throw new Error(detail ||
+          'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+      }
+    });
+    runtimeLifetimes.set(runtimeInstance, lifetime);
   }
-  const enter = runtimeInstance?.exports?.[enterName];
-  const leave = runtimeInstance?.exports?.[leaveName];
-  if (typeof enter !== 'function' || typeof leave !== 'function') {
-    throw new Error('runtime missing canonical execution-boundary exports');
-  }
-  const token = enter();
-  if (token === 0n || token === 0) {
-    throw new Error('runtime returned an empty execution-boundary token');
-  }
-  try {
-    // Validate canonical status ABI before invoking application startup/callbacks.
-    if (runtimeExceptionPending(runtimeInstance)) {
-      const memory = runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory;
-      const detail = memory ? pendingRuntimeExceptionMessage(runtimeInstance, memory) : null;
-      throw new Error(detail ||
-        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+  return lifetime;
+};
+const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) =>
+  runtimeLifetime(runtimeInstance, runtimeImportAbi).execute(operation);
+const closeBrowserSocket = (entry) => {
+  const ws = entry.ws;
+  const listeners = entry.listeners;
+  const wasClosed = entry.state === 'closed';
+  entry.state = 'closed';
+  entry.listeners = null;
+  const errors = [];
+  try { if (ws && !wasClosed) ws.close(); } catch (error) { errors.push(error); }
+  if (ws && listeners) {
+    for (const [event, listener] of [
+      ['open', listeners.handleOpen], ['message', listeners.handleMessage],
+      ['error', listeners.handleError], ['close', listeners.handleClose],
+    ]) {
+      try {
+        if (typeof ws.removeEventListener === 'function') ws.removeEventListener(event, listener);
+        else if (ws[`on${event}`] === listener) ws[`on${event}`] = null;
+      } catch (error) { errors.push(error); }
     }
-    return operation();
-  } finally {
-    leave(token);
   }
+  if (errors.length) throw combinedError(errors);
 };
 let browserVfsModulePromise = null;
 const loadBrowserVfsModule = () => {
@@ -1457,6 +1469,7 @@ const createBrowserDbHost = (state, options) => {
   const responses = [];
   let nextId = 1;
   let lastCancelCheck = 0;
+  let disposed = false;
   const getRuntime = () => state.runtimeInstance;
   const getMemory = () => state.memory;
 
@@ -1555,6 +1568,7 @@ const createBrowserDbHost = (state, options) => {
   };
 
   const queueResponse = (requestId, response) => {
+    if (disposed) return;
     responses.push({ requestId, response });
   };
 
@@ -1651,6 +1665,7 @@ const createBrowserDbHost = (state, options) => {
   };
 
   const dispatchDbHost = (entryName, reqPtr, reqLen, outPtr, tokenId) => {
+    if (disposed) return -ENOSYS;
     const runtime = getRuntime();
     const memory = getMemory();
     if (!runtime || !memory) return -ENOSYS;
@@ -1663,7 +1678,7 @@ const createBrowserDbHost = (state, options) => {
       typeof reqPtr === 'bigint' ? Number(reqPtr) : Number(reqPtr >>> 0);
     if ((!Number.isFinite(reqAddr) || reqAddr === 0) && len !== 0) return 1;
     const payload =
-      len > 0 ? new Uint8Array(memory.buffer, reqAddr, len) : new Uint8Array(0);
+      len > 0 ? new Uint8Array(memory.buffer, reqAddr, len).slice() : new Uint8Array(0);
     const streamHandle = runtime.exports.molt_stream_new(0n);
     if (!streamHandle || streamHandle === 0n) {
       return 7;
@@ -1685,6 +1700,7 @@ const createBrowserDbHost = (state, options) => {
     dispatchDbHost('db_exec', reqPtr, reqLen, outPtr, tokenId);
 
   const dbHostPoll = () => {
+    if (disposed) return 0;
     const runtime = getRuntime();
     if (!runtime) return 0;
     while (responses.length) {
@@ -1730,7 +1746,19 @@ const createBrowserDbHost = (state, options) => {
     return 0;
   };
 
-  return { dbQueryHost, dbExecHost, dbHostPoll, sendStreamError };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    const errors = [];
+    for (const entry of pending.values()) {
+      try { entry.controller.abort(); } catch (error) { errors.push(error); }
+    }
+    pending.clear();
+    responses.length = 0;
+    if (errors.length) throw combinedError(errors);
+  };
+
+  return { dbQueryHost, dbExecHost, dbHostPoll, sendStreamError, dispose };
 };
 
 export const createBrowserSocketHost = (state, options) => {
@@ -1741,6 +1769,7 @@ export const createBrowserSocketHost = (state, options) => {
   const syntheticToHost = new Map();
   let nextHandle = 1;
   let nextSynthetic = 1;
+  let disposed = false;
 
   const canBlock =
     typeof SharedArrayBuffer !== 'undefined' &&
@@ -1832,6 +1861,7 @@ export const createBrowserSocketHost = (state, options) => {
     // UDP datagram state (sendto/recvfrom)
     dgram: meta.sockType === SOCK_DGRAM,
     dgramRecvQueue: [], // [{data: Uint8Array, addr: {family, host, port}}]
+    listeners: null,
   });
 
   const notifyWaiter = (core) => {
@@ -1841,7 +1871,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const enqueueData = (core, bytes) => {
-    if (!core) return;
+    if (disposed || !core || core.refCount <= 0) return;
     if (bytes && bytes.length) {
       core.recvQueue.push(bytes);
       notifyWaiter(core);
@@ -1849,7 +1879,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const markError = (core, errno) => {
-    if (!core) return;
+    if (disposed || !core || core.refCount <= 0) return;
     if (core.state !== 'closed') {
       core.state = 'error';
       core.lastError = errno || ECONNRESET;
@@ -1858,7 +1888,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const markClosed = (core) => {
-    if (!core) return;
+    if (disposed || !core || core.refCount <= 0) return;
     if (core.state !== 'error') {
       core.state = 'closed';
     }
@@ -1965,6 +1995,7 @@ export const createBrowserSocketHost = (state, options) => {
       }
     };
     const handleOpen = () => {
+      if (disposed || core.refCount <= 0 || core.state === 'closed') return;
       core.state = 'open';
       notifyWaiter(core);
     };
@@ -1974,6 +2005,7 @@ export const createBrowserSocketHost = (state, options) => {
     const handleClose = () => {
       markClosed(core);
     };
+    core.listeners = { handleOpen, handleMessage, handleError, handleClose };
     if (ws.addEventListener) {
       ws.addEventListener('open', handleOpen);
       ws.addEventListener('message', handleMessage);
@@ -1989,6 +2021,7 @@ export const createBrowserSocketHost = (state, options) => {
   };
 
   const socketHostNew = (family, sockType, proto, fileno) => {
+    if (disposed) return BigInt(-ENOSYS);
     const fileVal = typeof fileno === 'bigint' ? Number(fileno) : Number(fileno);
     if (Number.isFinite(fileVal) && fileVal >= 0 && detached.has(fileVal)) {
       const core = detached.get(fileVal);
@@ -2016,14 +2049,7 @@ export const createBrowserSocketHost = (state, options) => {
     sockets.delete(key);
     core.refCount -= 1;
     if (core.refCount <= 0) {
-      if (core.ws && core.state !== 'closed') {
-        try {
-          core.ws.close();
-        } catch (err) {
-          // Ignore close failures.
-        }
-      }
-      core.state = 'closed';
+      closeBrowserSocket(core);
     }
     return 0;
   };
@@ -2580,6 +2606,22 @@ export const createBrowserSocketHost = (state, options) => {
 
   const socketHasIpv6Host = () => 1;
 
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    const errors = [];
+    const cores = new Set([...sockets.values(), ...detached.values()]);
+    sockets.clear();
+    detached.clear();
+    hostToSynthetic.clear();
+    syntheticToHost.clear();
+    for (const core of cores) {
+      try { closeBrowserSocket(core); } catch (error) { errors.push(error); }
+      try { notifyWaiter(core); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw combinedError(errors);
+  };
+
   return {
     socketHostNew,
     socketHostClose,
@@ -2609,6 +2651,7 @@ export const createBrowserSocketHost = (state, options) => {
     socketHostPoll,
     socketHostWait,
     socketHasIpv6Host,
+    dispose,
   };
 };
 
@@ -2616,6 +2659,7 @@ export const createBrowserWebSocketHost = (state, options) => {
   const opts = options && typeof options === 'object' ? options : {};
   const sockets = new Map();
   let nextHandle = 1;
+  let disposed = false;
   const wsFactory =
     typeof opts.websocketFactory === 'function'
       ? opts.websocketFactory
@@ -2638,40 +2682,50 @@ export const createBrowserWebSocketHost = (state, options) => {
 
   const attachHandlers = (entry) => {
     const ws = entry.ws;
+    const owned = () => !disposed && sockets.get(entry.handle) === entry;
+    const enqueue = (bytes) => {
+      if (owned()) entry.queue.push(bytes);
+    };
     const handleMessage = (event) => {
+      if (!owned()) return;
       const payload = event && event.data !== undefined ? event.data : event;
       if (payload instanceof ArrayBuffer) {
-        entry.queue.push(new Uint8Array(payload));
+        enqueue(new Uint8Array(payload));
         return;
       }
       if (payload instanceof Uint8Array) {
-        entry.queue.push(payload);
+        enqueue(payload);
         return;
       }
       if (typeof Blob !== 'undefined' && payload instanceof Blob) {
         payload
           .arrayBuffer()
-          .then((buffer) => entry.queue.push(new Uint8Array(buffer)))
+          .then((buffer) => enqueue(new Uint8Array(buffer)))
           .catch(() => {
+            if (!owned()) return;
             entry.state = 'error';
             entry.error = ECONNRESET;
           });
         return;
       }
       if (typeof payload === 'string') {
-        entry.queue.push(UTF8_ENCODER.encode(payload));
+        enqueue(UTF8_ENCODER.encode(payload));
       }
     };
     const handleOpen = () => {
+      if (!owned() || entry.state === 'closed') return;
       entry.state = 'open';
     };
     const handleError = () => {
+      if (!owned()) return;
       entry.state = 'error';
       entry.error = ECONNRESET;
     };
     const handleClose = () => {
+      if (!owned()) return;
       entry.state = 'closed';
     };
+    entry.listeners = { handleOpen, handleMessage, handleError, handleClose };
     if (ws.addEventListener) {
       ws.addEventListener('open', handleOpen);
       ws.addEventListener('message', handleMessage);
@@ -2686,6 +2740,7 @@ export const createBrowserWebSocketHost = (state, options) => {
   };
 
   const wsConnectHost = (urlPtr, urlLen, outHandlePtr) => {
+    if (disposed) return -ENOSYS;
     const memory = state.memory;
     if (!memory || !outHandlePtr) return -ENOSYS;
     if (!wsFactory) return -ENOSYS;
@@ -2698,7 +2753,7 @@ export const createBrowserWebSocketHost = (state, options) => {
       return -ECONNREFUSED;
     }
     const handle = allocHandle();
-    const entry = { handle, ws, state: 'connecting', queue: [], error: 0 };
+    const entry = { handle, ws, state: 'connecting', queue: [], error: 0, listeners: null };
     sockets.set(handle, entry);
     try {
       ws.binaryType = 'arraybuffer';
@@ -2779,18 +2834,22 @@ export const createBrowserWebSocketHost = (state, options) => {
     const entry = sockets.get(Number(handle));
     if (!entry) return -EBADF;
     sockets.delete(Number(handle));
-    try {
-      if (entry.ws && entry.state !== 'closed') {
-        entry.ws.close();
-      }
-    } catch (err) {
-      // ignore
-    }
-    entry.state = 'closed';
+    closeBrowserSocket(entry);
     return 0;
   };
 
-  return { wsConnectHost, wsPollHost, wsSendHost, wsRecvHost, wsCloseHost };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    const errors = [];
+    for (const entry of sockets.values()) {
+      try { closeBrowserSocket(entry); } catch (error) { errors.push(error); }
+    }
+    sockets.clear();
+    if (errors.length) throw combinedError(errors);
+  };
+
+  return { wsConnectHost, wsPollHost, wsSendHost, wsRecvHost, wsCloseHost, dispose };
 };
 
 const buildWasiStub = (state, logFn, options = {}) => {
@@ -3567,6 +3626,20 @@ export const loadMoltWasm = async (options = {}) => {
     wsBufferedMax: options.wsBufferedMax,
   });
   const gpuHost = createBrowserGpuHost(state, options);
+  const runtimeImportAbi = options.runtimeImportAbi || runtimeManifest?.abi?.runtime_imports || null;
+  const stdioStates = [];
+  const buildOwnedWasiStub = (ownerState) => {
+    const stub = buildWasiStub(ownerState, logFn, options);
+    stdioStates.push(ownerState);
+    return stub;
+  };
+  const flushOwnedStdio = () => {
+    const errors = [];
+    for (const ownerState of new Set(stdioStates)) {
+      try { ownerState.stdio?.flushAll(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw combinedError(errors);
+  };
   let hostExportsInitialized = false;
   const ensureHostExportsInitialized = (appInstance) => {
     if (hostExportsInitialized) {
@@ -3621,173 +3694,397 @@ export const loadMoltWasm = async (options = {}) => {
       return decodeOwnedExportResult(runtime, memory, resultBits, exportName);
     });
   };
-  const overrides = {
-    molt_db_query_host: dbHost.dbQueryHost,
-    molt_db_exec_host: dbHost.dbExecHost,
-    molt_db_host_poll: dbHost.dbHostPoll,
-    molt_socket_new_host: socketHost.socketHostNew,
-    molt_socket_close_host: socketHost.socketHostClose,
-    molt_socket_clone_host: socketHost.socketHostClone,
-    molt_socket_bind_host: socketHost.socketHostBind,
-    molt_socket_listen_host: socketHost.socketHostListen,
-    molt_socket_accept_host: socketHost.socketHostAccept,
-    molt_socket_connect_host: socketHost.socketHostConnect,
-    molt_socket_connect_ex_host: socketHost.socketHostConnectEx,
-    molt_socket_recv_host: socketHost.socketHostRecv,
-    molt_socket_send_host: socketHost.socketHostSend,
-    molt_socket_sendto_host: socketHost.socketHostSendTo,
-    molt_socket_sendmsg_host: socketHost.socketHostSendMsg,
-    molt_socket_recvfrom_host: socketHost.socketHostRecvFrom,
-    molt_socket_recvmsg_host: socketHost.socketHostRecvMsg,
-    molt_socket_shutdown_host: socketHost.socketHostShutdown,
-    molt_socket_getsockname_host: socketHost.socketHostGetsockname,
-    molt_socket_getpeername_host: socketHost.socketHostGetpeername,
-    molt_socket_setsockopt_host: socketHost.socketHostSetsockopt,
-    molt_socket_getsockopt_host: socketHost.socketHostGetsockopt,
-    molt_socket_detach_host: socketHost.socketHostDetach,
-    molt_socket_socketpair_host: socketHost.socketHostSocketpair,
-    molt_socket_getaddrinfo_host: socketHost.socketHostGetaddrinfo,
-    molt_socket_gethostname_host: socketHost.socketHostGethostname,
-    molt_socket_getservbyname_host: socketHost.socketHostGetservbyname,
-    molt_socket_getservbyport_host: socketHost.socketHostGetservbyport,
-    molt_socket_poll_host: socketHost.socketHostPoll,
-    molt_socket_wait_host: socketHost.socketHostWait,
-    molt_socket_has_ipv6_host: socketHost.socketHasIpv6Host,
-    molt_ws_connect_host: wsHost.wsConnectHost,
-    molt_ws_poll_host: wsHost.wsPollHost,
-    molt_ws_send_host: wsHost.wsSendHost,
-    molt_ws_recv_host: wsHost.wsRecvHost,
-    molt_ws_close_host: wsHost.wsCloseHost,
-    [WEBGPU_DISPATCH_HOST_IMPORT]: gpuHost.gpuWebGpuDispatchHost,
-  };
+  const dispose = createRuntimeDisposer(
+    () => state.runtimeInstance ? runtimeLifetime(state.runtimeInstance, runtimeImportAbi) : null,
+    // Runtime finalizers retain these services. Backing cleanup is host-only.
+    [...[dbHost, socketHost, wsHost, gpuHost].map(host => () => host.dispose()), flushOwnedStdio],
+  );
+  try {
+    const overrides = {
+      molt_db_query_host: dbHost.dbQueryHost,
+      molt_db_exec_host: dbHost.dbExecHost,
+      molt_db_host_poll: dbHost.dbHostPoll,
+      molt_socket_new_host: socketHost.socketHostNew,
+      molt_socket_close_host: socketHost.socketHostClose,
+      molt_socket_clone_host: socketHost.socketHostClone,
+      molt_socket_bind_host: socketHost.socketHostBind,
+      molt_socket_listen_host: socketHost.socketHostListen,
+      molt_socket_accept_host: socketHost.socketHostAccept,
+      molt_socket_connect_host: socketHost.socketHostConnect,
+      molt_socket_connect_ex_host: socketHost.socketHostConnectEx,
+      molt_socket_recv_host: socketHost.socketHostRecv,
+      molt_socket_send_host: socketHost.socketHostSend,
+      molt_socket_sendto_host: socketHost.socketHostSendTo,
+      molt_socket_sendmsg_host: socketHost.socketHostSendMsg,
+      molt_socket_recvfrom_host: socketHost.socketHostRecvFrom,
+      molt_socket_recvmsg_host: socketHost.socketHostRecvMsg,
+      molt_socket_shutdown_host: socketHost.socketHostShutdown,
+      molt_socket_getsockname_host: socketHost.socketHostGetsockname,
+      molt_socket_getpeername_host: socketHost.socketHostGetpeername,
+      molt_socket_setsockopt_host: socketHost.socketHostSetsockopt,
+      molt_socket_getsockopt_host: socketHost.socketHostGetsockopt,
+      molt_socket_detach_host: socketHost.socketHostDetach,
+      molt_socket_socketpair_host: socketHost.socketHostSocketpair,
+      molt_socket_getaddrinfo_host: socketHost.socketHostGetaddrinfo,
+      molt_socket_gethostname_host: socketHost.socketHostGethostname,
+      molt_socket_getservbyname_host: socketHost.socketHostGetservbyname,
+      molt_socket_getservbyport_host: socketHost.socketHostGetservbyport,
+      molt_socket_poll_host: socketHost.socketHostPoll,
+      molt_socket_wait_host: socketHost.socketHostWait,
+      molt_socket_has_ipv6_host: socketHost.socketHasIpv6Host,
+      molt_ws_connect_host: wsHost.wsConnectHost,
+      molt_ws_poll_host: wsHost.wsPollHost,
+      molt_ws_send_host: wsHost.wsSendHost,
+      molt_ws_recv_host: wsHost.wsRecvHost,
+      molt_ws_close_host: wsHost.wsCloseHost,
+      [WEBGPU_DISPATCH_HOST_IMPORT]: gpuHost.gpuWebGpuDispatchHost,
+    };
 
-  const runtimeImportAbi = options.runtimeImportAbi || runtimeManifest?.abi?.runtime_imports || null;
-  if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
-    throw new Error('browser host manifest missing abi.runtime_imports.names');
-  }
-
-  const manifestMode = runtimeManifest?.mode;
-  if (manifestMode !== 'linked' && manifestMode !== 'split-runtime') {
-    throw new Error(`browser host manifest has unsupported mode: ${String(manifestMode)}`);
-  }
-
-  let linkedBytes = null;
-  if (manifestMode === 'linked') {
-    if (!preferLinked) {
-      throw new Error('linked browser manifest cannot enter split-runtime mode');
+    if (!runtimeImportAbi || !Array.isArray(runtimeImportAbi.names)) {
+      throw new Error('browser host manifest missing abi.runtime_imports.names');
     }
-    linkedBytes = await tryFetch(linkedUrl);
-    if (!linkedBytes) {
-      throw new Error(`linked browser manifest module is unavailable at ${linkedUrl}`);
+
+    const manifestMode = runtimeManifest?.mode;
+    if (manifestMode !== 'linked' && manifestMode !== 'split-runtime') {
+      throw new Error(`browser host manifest has unsupported mode: ${String(manifestMode)}`);
+    }
+
+    let linkedBytes = null;
+    if (manifestMode === 'linked') {
+      if (!preferLinked) {
+        throw new Error('linked browser manifest cannot enter split-runtime mode');
+      }
+      linkedBytes = await tryFetch(linkedUrl);
+      if (!linkedBytes) {
+        throw new Error(`linked browser manifest module is unavailable at ${linkedUrl}`);
+      }
+      await verifyManifestModuleBytes(
+        linkedBytes,
+        runtimeManifest?.modules?.linked,
+        'linked wasm',
+        linkedUrl,
+        globalThis.crypto,
+        manifestUrl,
+      );
+      const imports = parseWasmImports(linkedBytes);
+      const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
+      if (hasRuntime) {
+        throw new Error('linked browser module still imports molt_runtime');
+      }
+    }
+
+    if (linkedBytes) {
+      const linkedImports = parseWasmImports(linkedBytes);
+      const linkedModule = await WebAssembly.compile(linkedBytes);
+      const linkedFunctionExports = new Set(
+        WebAssembly.Module.exports(linkedModule)
+          .filter((entry) => entry.kind === 'function')
+          .map((entry) => entry.name),
+      );
+      const actualLinkedSelfImports = linkedImports.funcImports
+        .filter(
+          (entry) => entry.module === 'env' && linkedFunctionExports.has(entry.name),
+        )
+        .map((entry) => entry.name)
+        .sort();
+      const declaredLinkedSelfImports = runtimeManifest?.abi?.linked_self_imports;
+      if (
+        !Array.isArray(declaredLinkedSelfImports) ||
+        declaredLinkedSelfImports.some((name) => typeof name !== 'string') ||
+        new Set(declaredLinkedSelfImports).size !== declaredLinkedSelfImports.length ||
+        JSON.stringify([...declaredLinkedSelfImports].sort()) !==
+          JSON.stringify(actualLinkedSelfImports)
+      ) {
+        throw new Error(
+          `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
+        );
+      }
+      const linkedCallableTable = requireWasmCallableTable(linkedBytes, 'linked wasm');
+      const linkedCallIndirectNames = linkedImports.funcImports
+        .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
+        .map((imp) => imp.name);
+      const linkedCallIndirectFns = {};
+      const memory = makeMemory(linkedImports.memory);
+      const table = makeTable(linkedImports.table);
+      state.memory = memory;
+      const linkedCallIndirect = {};
+      for (const name of linkedCallIndirectNames) {
+        linkedCallIndirect[name] = (...args) => {
+          const fn = linkedCallIndirectFns[name];
+          if (!fn) {
+            throw new Error(`${name} called before linked export wiring`);
+          }
+          return fn(...args);
+        };
+      }
+      const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
+      let linkedInstance = null;
+      for (const exportName of actualLinkedSelfImports) {
+        env[exportName] = makeDeferredLinkedSelfImportBridge(
+          () => linkedInstance,
+          exportName,
+          'linked',
+        );
+      }
+      const importObject = { env, wasi_snapshot_preview1: buildOwnedWasiStub(state) };
+      installWasmTagImports(importObject, linkedImports);
+      linkedInstance = await WebAssembly.instantiate(linkedModule, importObject);
+      const instance = linkedInstance;
+      state.runtimeInstance = instance;
+      state.memory = instance.exports.molt_memory || instance.exports.memory || memory || env.memory || null;
+      runtimeLifetime(instance, runtimeImportAbi).admit();
+      for (const name of linkedCallIndirectNames) {
+        let fn = instance.exports[name];
+        if (typeof fn !== 'function') {
+          const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
+          const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
+          const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
+          if (arityRaw) {
+            const arity = Number.parseInt(arityRaw, 10);
+            fn = instance.exports[`molt_call_indirect${arity}`];
+          }
+        }
+        if (typeof fn !== 'function') {
+          throw new Error(`linked wasm missing ${name} export`);
+        }
+        linkedCallIndirectFns[name] = fn;
+      }
+      const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
+      verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
+      const memoryExport =
+        instance.exports.molt_memory || instance.exports.memory || env.memory || null;
+      return {
+        // Low-level inspection handle only. Guest calls must use run or
+        // invokeExport so lifetime and disposed-state checks remain authoritative.
+        instance,
+        memory: memoryExport || memory || env.memory || null,
+        table: linkedTable,
+        linked: true,
+        __debugState: state,
+        invokeExport: makeExportInvoker(instance),
+        dispose,
+        run: () => {
+          withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
+            if (typeof instance.exports.molt_main !== 'function') {
+              throw new Error('molt_main export missing');
+            }
+            instance.exports.molt_main();
+            flushOwnedStdio();
+            const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
+            if (pendingException) {
+              throw new Error(pendingException);
+            }
+            hostExportsInitialized = true;
+          });
+        },
+      };
+    }
+
+    const activeReservedRuntimeCallables =
+      reservedRuntimeCallablesFromManifest(runtimeManifest) || reservedRuntimeCallables;
+    const runtimeImportFallbacks =
+      runtimeManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
+    const wasmBytes = await tryFetch(wasmUrl);
+    if (!wasmBytes) {
+      throw new Error(`Failed to load wasm at ${wasmUrl}`);
+    }
+    const runtimeBytes = await tryFetch(runtimeUrl);
+    if (!runtimeBytes) {
+      throw new Error(`Failed to load runtime wasm at ${runtimeUrl}`);
     }
     await verifyManifestModuleBytes(
-      linkedBytes,
-      runtimeManifest?.modules?.linked,
-      'linked wasm',
-      linkedUrl,
+      wasmBytes,
+      runtimeManifest?.modules?.app,
+      'app wasm',
+      wasmUrl,
       globalThis.crypto,
       manifestUrl,
     );
-    const imports = parseWasmImports(linkedBytes);
-    const hasRuntime = imports.funcImports.some((imp) => imp.module === 'molt_runtime');
-    if (hasRuntime) {
-      throw new Error('linked browser module still imports molt_runtime');
-    }
-  }
-
-  if (linkedBytes) {
-    const linkedImports = parseWasmImports(linkedBytes);
-    const linkedModule = await WebAssembly.compile(linkedBytes);
-    const linkedFunctionExports = new Set(
-      WebAssembly.Module.exports(linkedModule)
-        .filter((entry) => entry.kind === 'function')
-        .map((entry) => entry.name),
+    await verifyManifestModuleBytes(
+      runtimeBytes,
+      runtimeManifest?.modules?.runtime,
+      'runtime wasm',
+      runtimeUrl,
+      globalThis.crypto,
+      manifestUrl,
     );
-    const actualLinkedSelfImports = linkedImports.funcImports
-      .filter(
-        (entry) => entry.module === 'env' && linkedFunctionExports.has(entry.name),
-      )
-      .map((entry) => entry.name)
-      .sort();
-    const declaredLinkedSelfImports = runtimeManifest?.abi?.linked_self_imports;
-    if (
-      !Array.isArray(declaredLinkedSelfImports) ||
-      declaredLinkedSelfImports.some((name) => typeof name !== 'string') ||
-      new Set(declaredLinkedSelfImports).size !== declaredLinkedSelfImports.length ||
-      JSON.stringify([...declaredLinkedSelfImports].sort()) !==
-        JSON.stringify(actualLinkedSelfImports)
-    ) {
-      throw new Error(
-        `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
-      );
+    const outputImports = parseWasmImports(wasmBytes);
+    const runtimeImports = parseWasmImports(runtimeBytes);
+    const appCallableTable = requireWasmCallableTable(wasmBytes, 'app wasm');
+    const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
+    verifyCallableTableManifestSummary(
+      appCallableTable,
+      runtimeManifest?.abi?.callable_table?.app,
+      'app wasm',
+    );
+    verifyCallableTableManifestSummary(
+      runtimeCallableTable,
+      runtimeManifest?.abi?.callable_table?.runtime,
+      'runtime wasm',
+    );
+    assertBrowserTargetFeatureContract(
+      runtimeManifest,
+      parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
+    );
+    const detectedWasmTableBase = resolveWasmTableBase({
+      manifest: runtimeManifest,
+      extracted: extractWasmTableBase(wasmBytes),
+    });
+    state.wasmTableBase = detectedWasmTableBase;
+    if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
+      throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
     }
-    const linkedCallableTable = requireWasmCallableTable(linkedBytes, 'linked wasm');
-    const linkedCallIndirectNames = linkedImports.funcImports
+    const memory = makeMemory(mergeLimits(outputImports.memory, runtimeImports.memory, 'memory'));
+    const table = makeTable(mergeLimits(outputImports.table, runtimeImports.table, 'table'));
+    state.memory = memory;
+    const appState = { ...state, memory };
+    let outputInstance = null;
+    const callIndirectNames = runtimeImports.funcImports
       .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
       .map((imp) => imp.name);
-    const linkedCallIndirectFns = {};
-    const memory = makeMemory(linkedImports.memory);
-    const table = makeTable(linkedImports.table);
-    state.memory = memory;
-    const linkedCallIndirect = {};
-    for (const name of linkedCallIndirectNames) {
-      linkedCallIndirect[name] = (...args) => {
-        const fn = linkedCallIndirectFns[name];
-        if (!fn) {
-          throw new Error(`${name} called before linked export wiring`);
+    const callIndirect = {};
+    const traceCallIndirect =
+      typeof process !== 'undefined' &&
+      process?.env?.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
+    for (const name of callIndirectNames) {
+      callIndirect[name] = (...args) => {
+        const rawIdx = args[0];
+        const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
+        const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
+          sharedTableBase: detectedWasmTableBase,
+          defaultAppTableBase: DEFAULT_WASM_APP_TABLE_BASE,
+          reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+          reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
+          rawIndexHasInstalledEntry: (rawTableIdx) => {
+            if (!table) {
+              return false;
+            }
+            try {
+              return typeof table.get(rawTableIdx) === 'function';
+            } catch (err) {
+              return false;
+            }
+          },
+        });
+        const directSignature =
+          callableTableSignature(appCallableTable, dispatchIdx) ||
+          callableTableSignature(runtimeCallableTable, dispatchIdx);
+        const fn = table ? table.get(dispatchIdx) : null;
+        const reservedDispatch = planReservedRuntimeDispatch({
+          dispatchIdx,
+          sharedTableBase: detectedWasmTableBase,
+          reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+          reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
+          reservedRuntimeCallables: activeReservedRuntimeCallables,
+        });
+        const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
+        if (reservedDispatch.dispatchReservedRuntimeCallable) {
+          try {
+            return callReservedRuntimeCallable({
+              runtimeExports: state.runtimeInstance?.exports,
+              memory,
+              entry: reservedRuntimeCallable,
+              indirectName: name,
+              args: args.slice(1),
+            });
+          } catch (err) {
+            const detail = err && typeof err.message === 'string' ? err.message : String(err);
+            if (traceCallIndirect && err && typeof err.stack === 'string') {
+              console.error(
+                `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
+              );
+            }
+            throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
+          }
         }
-        return fn(...args);
+        if (traceCallIndirect) {
+          console.error(
+            `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
+          );
+        }
+        if (typeof fn !== 'function') {
+          throw new Error(`${name} missing table entry at ${dispatchIdx}`);
+        }
+        if (!directSignature) {
+          throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
+        }
+        return callWithWasmSignature(
+          fn,
+          directSignature,
+          args.slice(1),
+        );
       };
     }
-    const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
-    let linkedInstance = null;
-    for (const exportName of actualLinkedSelfImports) {
-      env[exportName] = makeDeferredLinkedSelfImportBridge(
-        () => linkedInstance,
-        exportName,
-        'linked',
-      );
-    }
-    const importObject = { env, wasi_snapshot_preview1: buildWasiStub(state, logFn, options) };
-    installWasmTagImports(importObject, linkedImports);
-    linkedInstance = await WebAssembly.instantiate(linkedModule, importObject);
-    const instance = linkedInstance;
-    for (const name of linkedCallIndirectNames) {
-      let fn = instance.exports[name];
-      if (typeof fn !== 'function') {
-        const mangledMatch = name.match(/^molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E$)/);
-        const plainMatch = name.match(/^molt_call_indirect(\d+)$/);
-        const arityRaw = (mangledMatch && mangledMatch[1]) || (plainMatch && plainMatch[1]);
-        if (arityRaw) {
-          const arity = Number.parseInt(arityRaw, 10);
-          fn = instance.exports[`molt_call_indirect${arity}`];
-        }
+    const env = buildEnv(memory, table, callIndirect, logFn, overrides);
+    env.molt_isolate_import = makeDeferredLinkedSelfImportBridge(
+      () => outputInstance,
+      'molt_isolate_import',
+      'output',
+    );
+    const outputImportObject = {
+      molt_runtime: buildRuntimeImports(outputImports, {
+        exports: new Proxy(
+          {},
+          {
+            get(_target, exportName) {
+              if (!state.runtimeInstance) {
+                throw new Error(`molt_runtime not initialized (${String(exportName)})`);
+              }
+              return state.runtimeInstance.exports[exportName];
+            },
+          },
+        ),
+      }, {
+        runtimeImportAbi,
+        runtimeImportFallbacks,
+        runtimeMemoryProvider: () => state.memory,
+        appMemoryProvider: () => appState.memory,
+      }),
+      env: {
+        memory,
+        __indirect_function_table: table,
+      },
+      wasi_snapshot_preview1: buildOwnedWasiStub(appState),
+    };
+    installWasmTagImports(outputImportObject, outputImports);
+    const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
+    outputInstance = outputModule.instance;
+    appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
+
+    const runtimeImportObject = {
+      env,
+      wasi_snapshot_preview1: buildOwnedWasiStub(state),
+    };
+    installWasmTagImports(runtimeImportObject, runtimeImports);
+    const runtimeModule = await WebAssembly.instantiate(runtimeBytes, runtimeImportObject);
+    const runtimeInstance = runtimeModule.instance;
+    state.runtimeInstance = runtimeInstance;
+    runtimeLifetime(runtimeInstance, runtimeImportAbi).admit();
+    if (detectedWasmTableBase !== null) {
+      const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
+      if (typeof setTableBase === 'function') {
+        setTableBase(BigInt(detectedWasmTableBase));
       }
-      if (typeof fn !== 'function') {
-        throw new Error(`linked wasm missing ${name} export`);
-      }
-      linkedCallIndirectFns[name] = fn;
     }
-    const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
-    verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
-    const memoryExport =
-      instance.exports.molt_memory || instance.exports.memory || env.memory || null;
-    state.runtimeInstance = instance;
-    state.memory = memoryExport || memory || env.memory || null;
+    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+    verifyCallableTableEntries(appCallableTable, table, 'app wasm');
     return {
-      instance,
-      memory: memoryExport || memory || env.memory || null,
-      table: linkedTable,
-      linked: true,
+      // Low-level inspection handle only. Guest calls must use run or
+      // invokeExport so lifetime and disposed-state checks remain authoritative.
+      instance: outputModule.instance,
+      memory,
+      table,
+      linked: false,
       __debugState: state,
-      invokeExport: makeExportInvoker(instance),
+      invokeExport: makeExportInvoker(outputModule.instance),
+      dispose,
       run: () => {
         withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
-          if (typeof instance.exports.molt_main !== 'function') {
+          if (typeof outputModule.instance.exports.molt_main !== 'function') {
             throw new Error('molt_main export missing');
           }
-          instance.exports.molt_main();
-          state.stdio?.flushAll();
+          outputModule.instance.exports.molt_main();
+          flushOwnedStdio();
           const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
           if (pendingException) {
             throw new Error(pendingException);
@@ -3796,215 +4093,9 @@ export const loadMoltWasm = async (options = {}) => {
         });
       },
     };
+  } catch (error) {
+    const errors = [error];
+    try { dispose(); } catch (cleanup) { errors.push(cleanup); }
+    throw combinedError(errors);
   }
-
-  const activeReservedRuntimeCallables =
-    reservedRuntimeCallablesFromManifest(runtimeManifest) || reservedRuntimeCallables;
-  const runtimeImportFallbacks =
-    runtimeManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
-  const wasmBytes = await tryFetch(wasmUrl);
-  if (!wasmBytes) {
-    throw new Error(`Failed to load wasm at ${wasmUrl}`);
-  }
-  const runtimeBytes = await tryFetch(runtimeUrl);
-  if (!runtimeBytes) {
-    throw new Error(`Failed to load runtime wasm at ${runtimeUrl}`);
-  }
-  await verifyManifestModuleBytes(
-    wasmBytes,
-    runtimeManifest?.modules?.app,
-    'app wasm',
-    wasmUrl,
-    globalThis.crypto,
-    manifestUrl,
-  );
-  await verifyManifestModuleBytes(
-    runtimeBytes,
-    runtimeManifest?.modules?.runtime,
-    'runtime wasm',
-    runtimeUrl,
-    globalThis.crypto,
-    manifestUrl,
-  );
-  const outputImports = parseWasmImports(wasmBytes);
-  const runtimeImports = parseWasmImports(runtimeBytes);
-  const appCallableTable = requireWasmCallableTable(wasmBytes, 'app wasm');
-  const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
-  verifyCallableTableManifestSummary(
-    appCallableTable,
-    runtimeManifest?.abi?.callable_table?.app,
-    'app wasm',
-  );
-  verifyCallableTableManifestSummary(
-    runtimeCallableTable,
-    runtimeManifest?.abi?.callable_table?.runtime,
-    'runtime wasm',
-  );
-  assertBrowserTargetFeatureContract(
-    runtimeManifest,
-    parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
-  );
-  const detectedWasmTableBase = resolveWasmTableBase({
-    manifest: runtimeManifest,
-    extracted: extractWasmTableBase(wasmBytes),
-  });
-  state.wasmTableBase = detectedWasmTableBase;
-  if (!outputImports.table || !runtimeImports.table || !runtimeImports.memory) {
-    throw new Error('Direct-link wasm requires split-runtime shared table plus runtime memory imports');
-  }
-  const memory = makeMemory(mergeLimits(outputImports.memory, runtimeImports.memory, 'memory'));
-  const table = makeTable(mergeLimits(outputImports.table, runtimeImports.table, 'table'));
-  state.memory = memory;
-  const appState = { ...state, memory };
-  let outputInstance = null;
-  const callIndirectNames = runtimeImports.funcImports
-    .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
-    .map((imp) => imp.name);
-  const callIndirect = {};
-  const traceCallIndirect =
-    typeof process !== 'undefined' &&
-    process?.env?.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
-  for (const name of callIndirectNames) {
-    callIndirect[name] = (...args) => {
-      const rawIdx = args[0];
-      const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
-        sharedTableBase: detectedWasmTableBase,
-        defaultAppTableBase: DEFAULT_WASM_APP_TABLE_BASE,
-        reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
-        rawIndexHasInstalledEntry: (rawTableIdx) => {
-          if (!table) {
-            return false;
-          }
-          try {
-            return typeof table.get(rawTableIdx) === 'function';
-          } catch (err) {
-            return false;
-          }
-        },
-      });
-      const directSignature =
-        callableTableSignature(appCallableTable, dispatchIdx) ||
-        callableTableSignature(runtimeCallableTable, dispatchIdx);
-      const fn = table ? table.get(dispatchIdx) : null;
-      const reservedDispatch = planReservedRuntimeDispatch({
-        dispatchIdx,
-        sharedTableBase: detectedWasmTableBase,
-        reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
-        reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
-        reservedRuntimeCallables: activeReservedRuntimeCallables,
-      });
-      const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
-      if (reservedDispatch.dispatchReservedRuntimeCallable) {
-        try {
-          return callReservedRuntimeCallable({
-            runtimeExports: state.runtimeInstance?.exports,
-            memory,
-            entry: reservedRuntimeCallable,
-            indirectName: name,
-            args: args.slice(1),
-          });
-        } catch (err) {
-          const detail = err && typeof err.message === 'string' ? err.message : String(err);
-          if (traceCallIndirect && err && typeof err.stack === 'string') {
-            console.error(
-              `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
-            );
-          }
-          throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
-        }
-      }
-      if (traceCallIndirect) {
-        console.error(
-          `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
-        );
-      }
-      if (typeof fn !== 'function') {
-        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
-      }
-      if (!directSignature) {
-        throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
-      }
-      return callWithWasmSignature(
-        fn,
-        directSignature,
-        args.slice(1),
-      );
-    };
-  }
-  const env = buildEnv(memory, table, callIndirect, logFn, overrides);
-  env.molt_isolate_import = makeDeferredLinkedSelfImportBridge(
-    () => outputInstance,
-    'molt_isolate_import',
-    'output',
-  );
-  const outputImportObject = {
-    molt_runtime: buildRuntimeImports(outputImports, {
-      exports: new Proxy(
-        {},
-        {
-          get(_target, exportName) {
-            if (!state.runtimeInstance) {
-              throw new Error(`molt_runtime not initialized (${String(exportName)})`);
-            }
-            return state.runtimeInstance.exports[exportName];
-          },
-        },
-      ),
-    }, {
-      runtimeImportAbi,
-      runtimeImportFallbacks,
-      runtimeMemoryProvider: () => state.memory,
-      appMemoryProvider: () => appState.memory,
-    }),
-    env: {
-      memory,
-      __indirect_function_table: table,
-    },
-    wasi_snapshot_preview1: buildWasiStub(appState, logFn, options),
-  };
-  installWasmTagImports(outputImportObject, outputImports);
-  const outputModule = await WebAssembly.instantiate(wasmBytes, outputImportObject);
-  outputInstance = outputModule.instance;
-  appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
-
-  const runtimeImportObject = {
-    env,
-    wasi_snapshot_preview1: buildWasiStub(state, logFn, options),
-  };
-  installWasmTagImports(runtimeImportObject, runtimeImports);
-  const runtimeModule = await WebAssembly.instantiate(runtimeBytes, runtimeImportObject);
-  const runtimeInstance = runtimeModule.instance;
-  if (detectedWasmTableBase !== null) {
-    const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
-    if (typeof setTableBase === 'function') {
-      setTableBase(BigInt(detectedWasmTableBase));
-    }
-  }
-  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-  state.runtimeInstance = runtimeInstance;
-  verifyCallableTableEntries(appCallableTable, table, 'app wasm');
-  return {
-    instance: outputModule.instance,
-    memory,
-    table,
-    linked: false,
-    __debugState: state,
-    invokeExport: makeExportInvoker(outputModule.instance),
-    run: () => {
-      withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
-        if (typeof outputModule.instance.exports.molt_main !== 'function') {
-          throw new Error('molt_main export missing');
-        }
-        outputModule.instance.exports.molt_main();
-        state.stdio?.flushAll();
-        const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-        if (pendingException) {
-          throw new Error(pendingException);
-        }
-        hostExportsInitialized = true;
-      });
-    },
-  };
 };

@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
+const { createRuntimeLifetime, combinedError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
@@ -139,32 +140,21 @@ const reservedRuntimeCallables = [
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 
-const withRuntimeExecution = (runtimeInst, operation) => {
-  const enterName = runtimeImportExportNames.runtime_execution_enter;
-  const leaveName = runtimeImportExportNames.runtime_execution_leave;
-  if (typeof enterName !== 'string' || typeof leaveName !== 'string') {
-    throw new Error('runtime manifest missing canonical execution-boundary exports');
+const runtimeLifetimes = new WeakMap();
+const runtimeLifetime = (runtimeInst) => {
+  let lifetime = runtimeLifetimes.get(runtimeInst);
+  if (!lifetime) {
+    lifetime = createRuntimeLifetime(runtimeInst, runtimeImportExportNames, () => {
+      if (runtimeExceptionPending(runtimeInst)) {
+        throw new Error(pendingRuntimeExceptionMessage(runtimeInst) ||
+          'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+      }
+    });
+    runtimeLifetimes.set(runtimeInst, lifetime);
   }
-  const enter = runtimeInst?.exports?.[enterName];
-  const leave = runtimeInst?.exports?.[leaveName];
-  if (typeof enter !== 'function' || typeof leave !== 'function') {
-    throw new Error('runtime missing canonical execution-boundary exports');
-  }
-  const token = enter();
-  if (token === 0n || token === 0) {
-    throw new Error('runtime returned an empty execution-boundary token');
-  }
-  try {
-    // Validate canonical status ABI before invoking application startup/callbacks.
-    if (runtimeExceptionPending(runtimeInst)) {
-      throw new Error(pendingRuntimeExceptionMessage(runtimeInst) ||
-        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
-    }
-    return operation();
-  } finally {
-    leave(token);
-  }
+  return lifetime;
 };
+const withRuntimeExecution = (runtimeInst, operation) => runtimeLifetime(runtimeInst).execute(operation);
 const withOwnedValue = (value, release, operation) => {
   try {
     return operation(value);
@@ -460,6 +450,7 @@ let runtimeInstance = null;
 let appInstanceForHostCalls = null;
 let wasmMemory = null;
 let appWasmMemory = null;
+let hostLifecycleState = 'live';
 const traceImports = process.env.MOLT_WASM_TRACE === '1';
 const isWasiExitSymbol = (err) => typeof err === 'symbol' && String(err) === 'Symbol(kExitCode)';
 const runMainWithWasiExit = (fn) => {
@@ -499,6 +490,7 @@ const INT_MASK = (1n << 47n) - 1n;
 
 const MAX_DB_FRAME_SIZE = 64 * 1024 * 1024;
 const CANCEL_POLL_MS = 10;
+const DB_WORKER_CLOSE_TIMEOUT_MS = 250;
 const ERRNO = (os.constants && os.constants.errno) || {};
 const errnoValue = (name, fallback) =>
   Number.isInteger(ERRNO[name]) ? ERRNO[name] : fallback;
@@ -691,11 +683,7 @@ const traceIsolateImportCall = (phase, args, result = null, error = null) => {
   if (!traceIsolateImport) {
     return;
   }
-  const handle = args && args.length ? args[0] : null;
-  const name =
-    runtimeInstance && handle !== null
-      ? readRuntimeStringBits(runtimeInstance, handle)
-      : null;
+  const moduleId = args && args.length ? args[0] : null;
   const detail =
     error && typeof error.message === 'string'
       ? ` error=${JSON.stringify(error.message)}`
@@ -704,8 +692,7 @@ const traceIsolateImportCall = (phase, args, result = null, error = null) => {
         : '';
   console.error(
     `[molt wasm] isolate_import ${phase}` +
-      ` name=${name === null ? '<unreadable>' : JSON.stringify(name)}` +
-      ` handle=${handle === null ? '<none>' : String(handle)}${detail}`,
+      ` moduleId=${moduleId === null ? '<none>' : String(moduleId)}${detail}`,
   );
 };
 
@@ -1003,7 +990,7 @@ const maybeDumpRuntimeProfile = () => {
   }
   const dump = runtimeInstance.exports.molt_profile_dump;
   if (typeof dump === 'function') {
-    dump();
+    withRuntimeExecution(runtimeInstance, () => dump());
   }
 };
 
@@ -1424,8 +1411,13 @@ const dbHostWorkerMain = () => {
   const cmd = workerData && Array.isArray(workerData.cmd) ? workerData.cmd : null;
   let responsePort = null;
   let child = null;
+  let childClosePromise = null;
+  let childErrors = [];
+  const retainedChildErrors = [];
   let buffer = Buffer.alloc(0);
   const pendingErrors = [];
+  let shuttingDown = false;
+  let workerFinalizationPromise = null;
 
   const notifyError = (message) => {
     if (responsePort) {
@@ -1435,12 +1427,17 @@ const dbHostWorkerMain = () => {
     }
   };
 
+  const reportProtocolError = (message) => {
+    retainedChildErrors.push(message);
+    if (!shuttingDown) notifyError(message);
+  };
+
   const handleFrame = (frame) => {
     let response;
     try {
       response = decodeWorkerFrame(frame);
     } catch (err) {
-      notifyError(`worker response decode failed: ${err.message}`);
+      reportProtocolError(`worker response decode failed: ${err.message}`);
       return;
     }
     if (responsePort) {
@@ -1453,7 +1450,7 @@ const dbHostWorkerMain = () => {
     while (buffer.length >= 4) {
       const size = buffer.readUInt32LE(0);
       if (size > MAX_DB_FRAME_SIZE) {
-        notifyError(`worker frame too large: ${size}`);
+        reportProtocolError(`worker frame too large: ${size}`);
         buffer = Buffer.alloc(0);
         return;
       }
@@ -1466,12 +1463,120 @@ const dbHostWorkerMain = () => {
     }
   };
 
-  const dropChild = () => {
-    child = null;
-    buffer = Buffer.alloc(0);
+  const childIsTerminal = (ownedChild) => !ownedChild ||
+    ownedChild.exitCode != null || ownedChild.signalCode != null;
+
+  const attachChildCustody = (ownedChild) => {
+    const ownedErrors = childErrors;
+    let resolveClose;
+    childClosePromise = new Promise((resolve) => { resolveClose = resolve; });
+    ownedChild.on('error', (err) => {
+      // ChildProcess error is not a terminal/reaping event. Keep custody and
+      // defer the diagnostic until close proves stdout has drained.
+      ownedErrors.push(`molt-worker error: ${err.message}`);
+    });
+    if (ownedChild.stdin) {
+      ownedChild.stdin.on('error', (err) => {
+        ownedErrors.push(`molt-worker stdin error: ${err.message}`);
+      });
+    }
+    if (ownedChild.stdout) {
+      ownedChild.stdout.on('error', (err) => {
+        ownedErrors.push(`molt-worker stdout error: ${err.message}`);
+      });
+    }
+    ownedChild.on('close', (code, signal) => {
+      if (buffer.length) {
+        ownedErrors.push(`molt-worker truncated response frame: ${buffer.length} trailing bytes`);
+      }
+      if (!shuttingDown) {
+        const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
+        ownedErrors.push(`molt-worker ${reason}`);
+        for (const message of ownedErrors) notifyError(message);
+      }
+      const result = { errors: [...ownedErrors] };
+      retainedChildErrors.push(...result.errors);
+      if (child === ownedChild) {
+        child = null;
+        buffer = Buffer.alloc(0);
+        childErrors = [];
+      }
+      resolveClose(result);
+    });
+  };
+
+  const shutdownHeldChild = async () => {
+    shuttingDown = true;
+    const ownedChild = child;
+    const closePromise = childClosePromise;
+    const errors = retainedChildErrors.splice(0);
+    if (!ownedChild) return { childClosed: true, errors };
+    if (!closePromise) return { childClosed: false,
+      errors: [...errors, 'held molt-worker child has no close custody'] };
+    const ownedErrors = childErrors;
+    if (!childIsTerminal(ownedChild)) {
+      try {
+        const signalled = ownedChild.kill('SIGKILL');
+        if (signalled === false && !childIsTerminal(ownedChild)) {
+          errors.push('failed to force-stop held molt-worker child');
+        }
+      } catch (error) {
+        errors.push(`failed to force-stop held molt-worker child: ${String(error)}`);
+      }
+    }
+    let timer = null;
+    const outcome = await Promise.race([
+      closePromise.then((result) => ({ closed: true, result })),
+      new Promise((resolve) => {
+        timer = setTimeout(
+          () => resolve({ closed: false, result: null }),
+          DB_WORKER_CLOSE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    if (timer !== null) clearTimeout(timer);
+    if (!outcome.closed) {
+      errors.push(...ownedErrors);
+      errors.push('held molt-worker child was not reaped before worker close deadline');
+    }
+    errors.push(...retainedChildErrors.splice(0));
+    return { childClosed: outcome.closed, errors };
+  };
+
+  const finalizeWorkerAfterChildClose = (closePromise, acknowledgementClosedPromise) => {
+    if (workerFinalizationPromise) return workerFinalizationPromise;
+    workerFinalizationPromise = Promise.all([closePromise, acknowledgementClosedPromise])
+      .then(() => {
+        const finalizationErrors = [];
+        const lateChildErrors = retainedChildErrors.splice(0);
+        const ownedResponsePort = responsePort;
+        responsePort = null;
+        if (ownedResponsePort) {
+          for (const message of lateChildErrors) {
+            try {
+              ownedResponsePort.postMessage({ type: 'error', message });
+            } catch (error) {
+              finalizationErrors.push(error);
+            }
+          }
+          try { ownedResponsePort.close(); } catch (error) { finalizationErrors.push(error); }
+        }
+        try { parentPort.close(); } catch (error) { finalizationErrors.push(error); }
+        // Guest polling has ended and these ports are closing. A private array
+        // or a message sent to an already closed port is not diagnostic custody.
+        const diagnostics = [...lateChildErrors, ...finalizationErrors.map(
+          error => `db worker finalization failed: ${String(error)}`,
+        )];
+        if (diagnostics.length) {
+          process.exitCode = 1;
+          for (const message of diagnostics) console.error(message);
+        }
+      });
+    return workerFinalizationPromise;
   };
 
   const ensureChild = () => {
+    if (shuttingDown) return false;
     if (child) return true;
     if (!cmd || cmd.length === 0) {
       notifyError('molt-worker not configured');
@@ -1486,21 +1591,24 @@ const dbHostWorkerMain = () => {
       notifyError(`molt-worker spawn failed: ${err.message}`);
       return false;
     }
+    childErrors = [];
+    buffer = Buffer.alloc(0);
+    attachChildCustody(child);
     if (!child.stdin || !child.stdout) {
-      notifyError('molt-worker missing stdio pipes');
-      dropChild();
+      childErrors.push('molt-worker missing stdio pipes');
+      if (!childIsTerminal(child)) {
+        try {
+          const signalled = child.kill('SIGKILL');
+          if (signalled === false && !childIsTerminal(child)) {
+            childErrors.push('failed to force-stop molt-worker missing stdio pipes');
+          }
+        } catch (error) {
+          childErrors.push(`failed to force-stop molt-worker missing stdio pipes: ${String(error)}`);
+        }
+      }
       return false;
     }
     child.stdout.on('data', handleChunk);
-    child.on('exit', (code, signal) => {
-      const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
-      notifyError(`molt-worker ${reason}`);
-      dropChild();
-    });
-    child.on('error', (err) => {
-      notifyError(`molt-worker error: ${err.message}`);
-      dropChild();
-    });
     return true;
   };
 
@@ -1556,6 +1664,37 @@ const dbHostWorkerMain = () => {
     }
     if (msg.type === 'cancel') {
       sendCancel(msg.targetId);
+      return;
+    }
+    if (msg.type === 'shutdown' && msg.port) {
+      const ackPort = msg.port;
+      let markAcknowledgementClosed;
+      const acknowledgementClosedPromise = new Promise((resolve) => {
+        markAcknowledgementClosed = resolve;
+      });
+      const closePromise = child ? childClosePromise : Promise.resolve();
+      if (closePromise) {
+        void finalizeWorkerAfterChildClose(closePromise, acknowledgementClosedPromise);
+      }
+      void shutdownHeldChild()
+        .then((outcome) => ackPort.postMessage({ type: 'shutdown-complete', ...outcome }))
+        .catch((error) => {
+          // A broken acknowledgement transport cannot carry a second reply.
+          // The parent deadline reports missing proof; finalization emits this
+          // retained error after its child has actually closed.
+          retainedChildErrors.push(`db worker shutdown failed: ${String(error)}`);
+        })
+        .finally(() => {
+          try {
+            ackPort.close();
+          } catch (error) {
+            retainedChildErrors.push(
+              `db worker shutdown acknowledgement port close failed: ${String(error)}`,
+            );
+          } finally {
+            markAcknowledgementClosed();
+          }
+        });
     }
   });
 };
@@ -1563,6 +1702,91 @@ const dbHostWorkerMain = () => {
 if (IS_DB_WORKER) {
   dbHostWorkerMain();
 }
+
+const requestDbWorkerShutdown = (worker) => {
+  if (!worker) return Promise.resolve({ childClosed: true, errors: [] });
+  if (typeof worker.postMessage !== 'function') return Promise.resolve({
+    childClosed: false, errors: [new Error('database worker has no shutdown transport')],
+  });
+  const channel = new MessageChannel();
+  const ackPort = channel.port1;
+  const transferredPort = channel.port2;
+  const errors = [];
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = (message = null) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (message && Array.isArray(message.errors)) {
+        for (const detail of message.errors) errors.push(new Error(String(detail)));
+      }
+      try { ackPort.close(); } catch (error) { errors.push(error); }
+      resolve({ childClosed: message?.childClosed === true, errors });
+    };
+    ackPort.once('message', (message) => {
+      if (message?.type !== 'shutdown-complete' || typeof message.childClosed !== 'boolean' ||
+          !Array.isArray(message.errors) || !message.errors.every(detail => typeof detail === 'string')) {
+        errors.push(new Error('db worker returned malformed shutdown acknowledgement'));
+        finish();
+        return;
+      }
+      if (!message.childClosed && message.errors.length === 0) {
+        errors.push(new Error('database worker did not close its owned child'));
+      }
+      finish(message);
+    });
+    if (typeof ackPort.start === 'function') ackPort.start();
+    timer = setTimeout(() => {
+      errors.push(new Error('db worker did not acknowledge child shutdown before close deadline'));
+      finish();
+    }, DB_WORKER_CLOSE_TIMEOUT_MS * 2);
+    try {
+      worker.postMessage({ type: 'shutdown', port: transferredPort }, [transferredPort]);
+    } catch (error) {
+      errors.push(error);
+      try { transferredPort.close(); } catch (closeError) { errors.push(closeError); }
+      finish();
+    }
+  });
+};
+
+const closeWorkerTransport = (worker, port = null) => {
+  const errors = [];
+  if (port && typeof port.close === 'function') {
+    try { port.close(); } catch (error) { errors.push(error); }
+  }
+  let termination = null;
+  if (worker && typeof worker.terminate === 'function') {
+    try { termination = worker.terminate(); } catch (error) { errors.push(error); }
+  }
+  return Promise.resolve(termination)
+    .catch((error) => { errors.push(error); })
+    .then(() => {
+      if (errors.length) throw combinedError(errors);
+    });
+};
+
+let workerClientRetirements = [];
+const retireWorkerClient = (client) => {
+  const retirement = { client, failed: false, error: undefined, promise: null };
+  let closeResult;
+  try {
+    closeResult = client.close();
+  } catch (error) {
+    retirement.failed = true;
+    retirement.error = error;
+  }
+  retirement.promise = Promise.resolve(closeResult).then(
+    () => {},
+    (error) => {
+      retirement.failed = true;
+      retirement.error = error;
+    },
+  );
+  workerClientRetirements.push(retirement);
+};
 
 class DbWorkerClient {
   constructor(cmd) {
@@ -1573,42 +1797,47 @@ class DbWorkerClient {
     this.nextId = 1;
     this.lastCancelCheck = 0;
     this.dead = false;
+    this.pendingErrors = [];
+    this.closePromise = null;
     this.worker.postMessage({ type: 'init', port: channel.port2 }, [channel.port2]);
     this.worker.on('error', (err) => {
       this.dead = true;
-      this._failAll(`molt-worker error: ${err.message}`);
+      this.pendingErrors.push(`molt-worker error: ${err.message}`);
     });
     this.worker.on('exit', (code, signal) => {
       const reason = code !== null ? `exit ${code}` : `signal ${signal}`;
       this.dead = true;
-      this._failAll(`molt-worker ${reason}`);
+      this.pendingErrors.push(`molt-worker ${reason}`);
     });
   }
 
   close() {
-    if (this.dead && !this.worker) {
-      return Promise.resolve();
-    }
+    if (this.closePromise) return this.closePromise;
     this.dead = true;
-    this._failAll('db host worker shutting down');
-    if (this.port) {
-      try {
-        this.port.close();
-      } catch (err) {
-        // Best effort.
-      }
-      this.port = null;
-    }
+    // Retirement is transport-only. Queued guest responses/errors are drained
+    // by poll before this severs worker and port custody.
+    this.pending.clear();
+    const errors = this.pendingErrors.splice(0).map(message => new Error(message));
+    const port = this.port;
     const worker = this.worker;
-    this.worker = null;
-    if (!worker || typeof worker.terminate !== 'function') {
-      return Promise.resolve();
-    }
-    try {
-      return Promise.resolve(worker.terminate()).catch(() => {});
-    } catch (err) {
-      return Promise.resolve();
-    }
+    this.closePromise = (async () => {
+      let outcome;
+      try {
+        outcome = await requestDbWorkerShutdown(worker);
+        errors.push(...outcome.errors);
+      } catch (error) { errors.push(error); }
+      // A timeout/error is not child-closure proof. Keep the owning Worker and
+      // transport reachable; terminating it would discard the held Child.
+      if (outcome?.childClosed === true) {
+        try {
+          await closeWorkerTransport(worker, port);
+          this.worker = null;
+          this.port = null;
+        } catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw combinedError(errors);
+    })();
+    return this.closePromise;
   }
 
   send(entry, payload, timeoutMs, streamHandle, tokenId) {
@@ -1644,13 +1873,14 @@ class DbWorkerClient {
   }
 
   _drainResponses() {
+    const terminalErrors = this.pendingErrors.splice(0);
     while (true) {
       const result = receiveMessageOnPort(this.port);
       if (!result) break;
       const msg = result.message;
       if (!msg || typeof msg !== 'object') continue;
       if (msg.type === 'error') {
-        this._failAll(msg.message || 'db host error');
+        terminalErrors.push(msg.message || 'db host error');
         continue;
       }
       if (msg.type !== 'response') {
@@ -1667,6 +1897,10 @@ class DbWorkerClient {
       this.pending.delete(response.requestId);
       this._deliverResponse(pending.streamHandle, response);
     }
+    // A worker exit/error can race a final response already queued on the
+    // message port. Deliver every completed response first, then fail only the
+    // requests that remain pending.
+    for (const message of terminalErrors) this._failAll(message);
   }
 
   _pollCancels() {
@@ -1745,7 +1979,18 @@ class DbWorkerClient {
 let dbWorkerClient = null;
 
 const getDbWorkerClient = () => {
-  if (dbWorkerClient && !dbWorkerClient.dead) return dbWorkerClient;
+  if (hostLifecycleState === 'host-closed') {
+    throw new Error('db host worker unavailable after runtime shutdown');
+  }
+  if (dbWorkerClient) {
+    // This call originates in a guest host import and therefore owns the
+    // active execution lease needed to deliver a queued terminal failure.
+    dbWorkerClient.poll();
+    if (!dbWorkerClient.dead) return dbWorkerClient;
+    const retiredClient = dbWorkerClient;
+    dbWorkerClient = null;
+    retireWorkerClient(retiredClient);
+  }
   const cmd = resolveWorkerCmd();
   if (!cmd) {
     throw new Error(
@@ -3593,6 +3838,7 @@ class SocketWorkerClient {
   constructor() {
     this.worker = new Worker(__filename, { workerData: { kind: 'molt_socket_host' } });
     this.dead = false;
+    this.closePromise = null;
     this.worker.on('error', () => {
       this.dead = true;
     });
@@ -3602,20 +3848,12 @@ class SocketWorkerClient {
   }
 
   close() {
-    if (this.dead && !this.worker) {
-      return Promise.resolve();
-    }
+    if (this.closePromise) return this.closePromise;
     this.dead = true;
     const worker = this.worker;
     this.worker = null;
-    if (!worker || typeof worker.terminate !== 'function') {
-      return Promise.resolve();
-    }
-    try {
-      return Promise.resolve(worker.terminate()).catch(() => {});
-    } catch (err) {
-      return Promise.resolve();
-    }
+    this.closePromise = closeWorkerTransport(worker);
+    return this.closePromise;
   }
 
   call(op, request, dataCap, timeoutMs) {
@@ -3661,6 +3899,14 @@ let socketWorkerClient = null;
 
 const getSocketWorkerClient = () => {
   if (socketWorkerClient && !socketWorkerClient.dead) return socketWorkerClient;
+  if (socketWorkerClient) {
+    const retiredClient = socketWorkerClient;
+    socketWorkerClient = null;
+    retireWorkerClient(retiredClient);
+  }
+  if (hostLifecycleState === 'host-closed') {
+    throw new Error('socket host worker unavailable after runtime shutdown');
+  }
   socketWorkerClient = new SocketWorkerClient();
   return socketWorkerClient;
 };
@@ -3682,17 +3928,156 @@ const socketCall = (op, request, dataCap, timeoutMs) => {
   }
 };
 
+const PROCESS_HOST_CLOSE_TIMEOUT_MS = 250;
+
 const shutdownHostWorkers = async () => {
   const socketClient = socketWorkerClient;
   socketWorkerClient = null;
   const dbClient = dbWorkerClient;
   dbWorkerClient = null;
+  const retirements = workerClientRetirements;
+  workerClientRetirements = [];
   const tasks = [];
-  if (socketClient) tasks.push(socketClient.close());
-  if (dbClient) tasks.push(dbClient.close());
-  if (tasks.length) {
-    await Promise.all(tasks);
+  const errors = [];
+  for (const client of [socketClient, dbClient]) {
+    if (!client) continue;
+    try {
+      tasks.push(Promise.resolve(client.close()));
+    } catch (error) {
+      errors.push(error);
+    }
   }
+  for (const retirement of retirements) {
+    tasks.push(retirement.promise.then(() => {
+      if (retirement.failed) throw retirement.error;
+    }));
+  }
+  // Observe rejections before awaiting child reaping; delayed handlers would
+  // turn an asynchronous cleanup failure into an unhandled rejection.
+  const workerResults = Promise.allSettled(tasks);
+  for (const entry of wsHandles.values()) {
+    try {
+      if (entry.ws && entry.state !== 'closed') entry.ws.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    entry.state = 'closed';
+  }
+  wsHandles.clear();
+  const captureHostCleanup = (operation) => {
+    try {
+      return operation();
+    } catch (error) {
+      errors.push(error);
+      return undefined;
+    }
+  };
+  const processCloseDeadline = performance.now() + PROCESS_HOST_CLOSE_TIMEOUT_MS;
+  const heldProcesses = [];
+  const childReaped = (entry) => !entry.child || entry.exitObserved === true ||
+    entry.child.exitCode != null || entry.child.signalCode != null;
+  const reportHostCleanupErrors = (entry) => {
+    const stored = Array.isArray(entry.hostCleanupErrors) ? entry.hostCleanupErrors : [];
+    const reported = Number.isInteger(entry.hostCleanupErrorsReported)
+      ? entry.hostCleanupErrorsReported
+      : 0;
+    for (const error of stored.slice(reported)) errors.push(error);
+    entry.hostCleanupErrorsReported = stored.length;
+  };
+  const releaseReapedProcess = (handle, entry) => {
+    const child = entry.child;
+    const listeners = entry.listeners;
+    if (child && listeners) {
+      captureHostCleanup(() => child.off('exit', listeners.onExit));
+      captureHostCleanup(() => child.off('error', listeners.onError));
+    }
+    processHandles.delete(handle);
+  };
+  for (const [handle, entry] of processHandles.entries()) {
+    // A terminal event may have arrived before host close began. Preserve its
+    // complete error cohort even when the child is already reaped.
+    reportHostCleanupErrors(entry);
+    const listeners = entry.listeners;
+    if (entry.stdout && listeners) {
+      captureHostCleanup(() => entry.stdout.off('data', listeners.onStdoutData));
+      captureHostCleanup(() => entry.stdout.off('end', listeners.onStdoutEnd));
+    }
+    if (entry.stderr && listeners) {
+      captureHostCleanup(() => entry.stderr.off('data', listeners.onStderrData));
+      captureHostCleanup(() => entry.stderr.off('end', listeners.onStderrEnd));
+    }
+    const child = entry.child;
+    if (entry.stdin && !entry.stdin.destroyed) {
+      captureHostCleanup(() => entry.stdin.destroy());
+    }
+    if (entry.stdout && !entry.stdout.destroyed) {
+      captureHostCleanup(() => entry.stdout.destroy());
+    }
+    if (entry.stderr && !entry.stderr.destroyed) {
+      captureHostCleanup(() => entry.stderr.destroy());
+    }
+    if (child && !childReaped(entry)) {
+      // The runtime process registry normally drains these owned handles during
+      // shutdown. This backing sweep is the failure-path authority when that
+      // shutdown was incomplete; no detached-process ABI exists here. Runtime
+      // shutdown owns graceful termination, so the finite backing owner now
+      // force-stops its complete held cohort before spending one shared reap
+      // deadline. Error/exit custody remains attached until reaping is proven.
+      if (typeof child.kill === 'function') {
+        const signalled = captureHostCleanup(() => child.kill('SIGKILL'));
+        if (signalled === false && !childReaped(entry)) {
+          errors.push(new Error(`failed to force-stop owned process handle ${handle}`));
+        }
+      } else {
+        errors.push(new Error(`owned process handle ${handle} cannot be terminated`));
+      }
+      heldProcesses.push([handle, entry]);
+    } else {
+      releaseReapedProcess(handle, entry);
+    }
+  }
+  for (const [handle, entry] of heldProcesses) {
+    while (!childReaped(entry) && performance.now() < processCloseDeadline) {
+      const remaining = processCloseDeadline - performance.now();
+      await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(5, remaining)));
+    }
+    reportHostCleanupErrors(entry);
+    if (childReaped(entry)) {
+      releaseReapedProcess(handle, entry);
+    } else {
+      errors.push(new Error(
+        `owned process handle ${handle} was not reaped before host close deadline`,
+      ));
+    }
+  }
+  if (tasks.length) {
+    const results = await workerResults;
+    for (const result of results) {
+      if (result.status === 'rejected') errors.push(result.reason);
+    }
+  }
+  if (errors.length) throw combinedError(errors);
+};
+
+let finiteDisposalPromise = null;
+const disposeRuntimeAndHost = () => {
+  if (finiteDisposalPromise) return finiteDisposalPromise;
+  hostLifecycleState = 'runtime-shutdown';
+  finiteDisposalPromise = (async () => {
+    const errors = [];
+    try {
+      if (runtimeInstance) runtimeLifetime(runtimeInstance).dispose();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      // Only after runtime atexit/finalizers finish do factories stop admitting
+      // host resources. Remaining teardown is host-only and cannot call guest.
+      hostLifecycleState = 'host-closed';
+    }
+    try { await shutdownHostWorkers(); } catch (error) { errors.push(error); }
+    return errors;
+  })();
+  return finiteDisposalPromise;
 };
 
 const socketHostNew = (family, sockType, proto, fileno) => {
@@ -4177,6 +4562,7 @@ const wsAttachHandlers = (entry) => {
 };
 
 const wsHostConnect = (urlPtr, urlLen, outHandlePtr) => {
+  if (hostLifecycleState === 'host-closed') return -ENOSYS;
   if (!wasmMemory) return -ENOSYS;
   if (!outHandlePtr) return -EINVAL;
   const ctor = getWebSocketCtor();
@@ -4395,6 +4781,7 @@ const processHostSpawn = (
   stderrMode,
   outHandlePtr,
 ) => {
+  if (hostLifecycleState === 'host-closed') return -ENOSYS;
   if (!wasmMemory) return -ENOSYS;
   if (!outHandlePtr) return -EINVAL;
   let args;
@@ -4446,42 +4833,29 @@ const processHostSpawn = (
     pendingOut: [],
     pendingErr: [],
     exitCode: null,
+    exitObserved: false,
+    stdoutEnded: false,
+    stderrEnded: false,
+    exitNotificationPending: false,
+    hostCleanupErrors: [],
+    hostCleanupErrorsReported: 0,
+    listeners: null,
   };
   processHandles.set(handle, entry);
 
-  if (entry.stdout) {
-    entry.stdout.on('data', (chunk) => {
-      if (!chunk || !chunk.length) return;
-      if (entry.stdoutStream) {
-        if (!sendStreamFrame(entry.stdoutStream, Buffer.from(chunk))) {
-          entry.pendingOut.push(Buffer.from(chunk));
-        }
-      } else {
-        entry.pendingOut.push(Buffer.from(chunk));
-      }
-    });
-    entry.stdout.on('end', () => {
-      flushProcessQueue(entry, 'stdout');
-      closeProcessStream(entry.stdoutStream);
-    });
-  }
-  if (entry.stderr) {
-    entry.stderr.on('data', (chunk) => {
-      if (!chunk || !chunk.length) return;
-      if (entry.stderrStream) {
-        if (!sendStreamFrame(entry.stderrStream, Buffer.from(chunk))) {
-          entry.pendingErr.push(Buffer.from(chunk));
-        }
-      } else {
-        entry.pendingErr.push(Buffer.from(chunk));
-      }
-    });
-    entry.stderr.on('end', () => {
-      flushProcessQueue(entry, 'stderr');
-      closeProcessStream(entry.stderrStream);
-    });
-  }
-  child.on('exit', (code, signal) => {
+  const onStdoutData = (chunk) => {
+    if (chunk && chunk.length) entry.pendingOut.push(Buffer.from(chunk));
+  };
+  const onStdoutEnd = () => {
+    entry.stdoutEnded = true;
+  };
+  const onStderrData = (chunk) => {
+    if (chunk && chunk.length) entry.pendingErr.push(Buffer.from(chunk));
+  };
+  const onStderrEnd = () => {
+    entry.stderrEnded = true;
+  };
+  const onExit = (code, signal) => {
     let exitCode = typeof code === 'number' ? code : null;
     if (exitCode === null && signal) {
       const sig = os.constants.signals && os.constants.signals[signal];
@@ -4489,16 +4863,39 @@ const processHostSpawn = (
     }
     if (exitCode === null) exitCode = -1;
     entry.exitCode = exitCode;
-    notifyProcessExit(entry, exitCode);
-    flushProcessQueue(entry, 'stdout');
-    flushProcessQueue(entry, 'stderr');
-    closeProcessStream(entry.stdoutStream);
-    closeProcessStream(entry.stderrStream);
-  });
-  child.on('error', () => {
+    entry.exitObserved = true;
+    entry.exitNotificationPending = true;
+    if (hostLifecycleState === 'host-closed') {
+      try { child.off('exit', onExit); } catch (error) { entry.hostCleanupErrors.push(error); }
+      try { child.off('error', onError); } catch (error) { entry.hostCleanupErrors.push(error); }
+      processHandles.delete(handle);
+    }
+  };
+  const onError = (error) => {
     entry.exitCode = -1;
-    notifyProcessExit(entry, -1);
-  });
+    entry.exitNotificationPending = true;
+    if (hostLifecycleState === 'host-closed') {
+      entry.hostCleanupErrors.push(error);
+    }
+  };
+  entry.listeners = {
+    onStdoutData,
+    onStdoutEnd,
+    onStderrData,
+    onStderrEnd,
+    onExit,
+    onError,
+  };
+  if (entry.stdout) {
+    entry.stdout.on('data', onStdoutData);
+    entry.stdout.on('end', onStdoutEnd);
+  }
+  if (entry.stderr) {
+    entry.stderr.on('data', onStderrData);
+    entry.stderr.on('end', onStderrEnd);
+  }
+  child.on('exit', onExit);
+  child.on('error', onError);
   writeU64(Number(outHandlePtr), BigInt(handle));
   return 0;
 };
@@ -4591,6 +4988,18 @@ const processHostPoll = () => {
   for (const entry of processHandles.values()) {
     flushProcessQueue(entry, 'stdout');
     flushProcessQueue(entry, 'stderr');
+    if (entry.stdoutEnded && entry.pendingOut.length === 0 && entry.stdoutStream) {
+      closeProcessStream(entry.stdoutStream);
+      entry.stdoutStream = 0n;
+    }
+    if (entry.stderrEnded && entry.pendingErr.length === 0 && entry.stderrStream) {
+      closeProcessStream(entry.stderrStream);
+      entry.stderrStream = 0n;
+    }
+    if (entry.exitNotificationPending) {
+      notifyProcessExit(entry, entry.exitCode === null ? -1 : entry.exitCode);
+      entry.exitNotificationPending = false;
+    }
   }
   return 0;
 };
@@ -5295,6 +5704,7 @@ const runDirectLink = async () => {
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, runtimeImportObject);
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
+  runtimeLifetime(runtimeInst).admit();
   if (traceRun) {
     console.error('[molt wasm] direct: runtime instantiated');
   }
@@ -5345,12 +5755,14 @@ const runDirectLink = async () => {
   const outputMemory = molt_memory || outputInstance.exports.memory || memory;
   const outputTable = molt_table || table;
   appWasmMemory = outputMemory;
-  initializeWasiContextForInstance(outputWasi.wasi, outputInstance, outputMemory);
-  initializeWasiForInstance(runtimeInst, memory);
   verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }
+  runtimeLifetime(runtimeInst).initialize(() => {
+    initializeWasiContextForInstance(outputWasi.wasi, outputInstance, outputMemory);
+    initializeWasiForInstance(runtimeInst, memory);
+  });
   withRuntimeExecution(runtimeInst, () => {
     if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
       if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
@@ -5497,6 +5909,8 @@ const runLinked = async () => {
   );
 
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
+  runtimeInstance = linkedModule.instance;
+  runtimeLifetime(runtimeInstance).admit();
   const { molt_main } = linkedModule.instance.exports;
   if (typeof molt_main !== 'function') {
     throw new Error('linked wasm missing molt_main export');
@@ -5510,12 +5924,13 @@ const runLinked = async () => {
     linkedModule.instance.exports.molt_memory ||
     linkedModule.instance.exports.memory ||
     (importObject.env && importObject.env.memory);
-  runtimeInstance = linkedModule.instance;
   appInstanceForHostCalls = linkedModule.instance;
   if (linkedMemory) {
-    initializeWasiForInstance(linkedModule.instance, linkedMemory);
     setWasmMemory(linkedMemory);
   }
+  runtimeLifetime(linkedModule.instance).initialize(() => {
+    if (linkedMemory) initializeWasiForInstance(linkedModule.instance, linkedMemory);
+  });
   withRuntimeExecution(linkedModule.instance, () => {
     // The generated molt_main wrapper is the sole normal-startup authority.
     runMainWithWasiExit(() => {
@@ -5575,17 +5990,12 @@ const runMain = async () => {
   if (traceRun) {
     console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
   }
+  const errors = [];
   try {
     await runner();
     traceMark('runMain:runner_completed');
     if (traceRun) {
       console.error('[molt wasm] runner completed');
-    }
-    const pendingException =
-      pendingRuntimeExceptionMessage(runtimeInstance);
-    if (pendingException) {
-      traceMark(`runMain:pending_exception:${pendingException.replaceAll('\n', '\\n')}`);
-      throw new Error(pendingException);
     }
     // Host exports require successful initialization; their own invoker checks
     // each call for runtime exceptions before continuing to the next call.
@@ -5599,8 +6009,11 @@ const runMain = async () => {
     }
     maybeDumpRuntimeProfile();
     return 0;
+  } catch (error) {
+    errors.push(error);
   } finally {
-    await shutdownHostWorkers();
+    errors.push(...await disposeRuntimeAndHost());
+    if (errors.length) throw combinedError(errors);
   }
 };
 
@@ -5625,12 +6038,15 @@ const installTerminationHandlers = () => {
           console.error(err);
         }
       })
-      .then(() => shutdownHostWorkers())
+      .then(() => disposeRuntimeAndHost())
+      .then((errors) => {
+        if (errors.length) throw combinedError(errors);
+      })
       .catch((err) => {
         console.error(err);
       })
       .finally(() => {
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       });
   };
   process.on('SIGTERM', () => handleTermination('SIGTERM', 143));
@@ -5642,7 +6058,7 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
   runMain()
     .then((exitCode) => {
       if (exitCode !== 0) {
-        process.exit(exitCode);
+        process.exitCode = exitCode;
       }
     })
     .catch((err) => {
@@ -5658,13 +6074,13 @@ if (require.main === module && !IS_DB_WORKER && !IS_SOCKET_WORKER) {
             `[molt wasm] caught wasi exit symbol, code=${wasiExitCode === null ? 0 : wasiExitCode}`
           );
         }
-        process.exit(wasiExitCode === null ? 0 : wasiExitCode);
+        process.exitCode = wasiExitCode === null ? 0 : wasiExitCode;
         return;
       }
       traceMark('runMain:catch_non_wasi');
       console.error(err);
       traceMark('runMain:exit_1');
-      process.exit(1);
+      process.exitCode = 1;
     });
 }
 
