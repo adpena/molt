@@ -335,6 +335,21 @@ mod tests {
     use crate::wasm_import_tracking::TrackedImportIds;
 
     #[test]
+    fn named_lookup_plan_roots_only_the_matching_generated_callable() {
+        for spec in PYTHON_BUILTIN_CALLABLES {
+            let mut plan = WasmRuntimeSurfacePlan::build(&SimpleIR {
+                functions: vec![],
+                profile: None,
+            });
+            plan.record_builtin_lookup(Some(spec.python_name));
+            assert_eq!(
+                plan.builtin_trampoline_specs,
+                BTreeMap::from([(spec.runtime_name.to_string(), spec.arity)])
+            );
+        }
+    }
+
+    #[test]
     fn overwritten_lookup_name_does_not_keep_a_stale_constant_root() {
         for mutator in [
             OpIR {
