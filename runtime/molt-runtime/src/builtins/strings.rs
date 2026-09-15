@@ -1925,9 +1925,8 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             // the same literal, so (ptr, len) is an identity key.
             let data_key = ptr as usize;
             if let Some(bits) =
-                const_data_literal_lookup(ConstDataLiteralKind::String, data_key, len)
+                const_data_literal_lookup(_py, ConstDataLiteralKind::String, data_key, len)
             {
-                inc_ref_bits(_py, bits);
                 write_bits_out(out, bits);
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] cache hit bits=0x{:x}", bits);
@@ -1949,11 +1948,6 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 }
                 return 2;
             }
-            // Make the string immortal so dec_ref becomes a no-op. Const
-            // strings from data segments live for the entire program lifetime
-            // and must not be collected out from under the cache.
-            let header = crate::object::header_from_obj_ptr(obj_ptr);
-            (*header).fetch_or_flags(crate::object::HEADER_FLAG_IMMORTAL);
             let bits = MoltObject::from_ptr(obj_ptr).bits();
 
             // Cache the newly allocated string for future calls with the
@@ -2011,9 +2005,8 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             }
             let data_key = ptr as usize;
             if let Some(bits) =
-                const_data_literal_lookup(ConstDataLiteralKind::Bytes, data_key, len)
+                const_data_literal_lookup(_py, ConstDataLiteralKind::Bytes, data_key, len)
             {
-                inc_ref_bits(_py, bits);
                 write_bits_out(out, bits);
                 if trace {
                     eprintln!("[molt bytes_from_bytes] cache hit bits=0x{:x}", bits);

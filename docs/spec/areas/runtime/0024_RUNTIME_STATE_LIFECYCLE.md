@@ -1,7 +1,7 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-09-14
+Last Updated: 2026-09-15
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
@@ -77,6 +77,24 @@ Expose a single global pointer (fast path) to the active RuntimeState:
 - Flushes TLS caches.
 - Decrefs builtin classes, tuples, and method objects.
 - Clears async registries and task metadata.
+
+### Canonical objects and ordinary owned references
+
+- `CanonicalObjectCache` owns the physical lifetime of fixed empty values,
+  interned strings, Missing, NotImplemented and Ellipsis. One publication
+  protocol installs the immortal refcount and flag before exposing a fixed
+  singleton. Hits remain lock-free; failed initialization publishes nothing.
+- Dictionaries, module caches, atomic caches and extension-state slots own
+  ordinary references, not permission to make their referents mortal. Their
+  teardown uses the same reference-release primitive as ordinary execution.
+- Only the canonical pool's final teardown makes its detached allocations
+  mortal, after callback, class, ABI and ordinary root retirement. Arbitrary
+  shutdown edges cannot revoke immortal lifetime, regardless of interning.
+- Literal string/bytes/bigint caches are bounded ordinary-reference owners.
+  Eviction releases only the displaced cache edge; each constructor result
+  has independent ownership. Lookup acquires that result while cache custody
+  is held, including the shared WASM mutex. Literal caching does not grant
+  immortality or suppress accounting for later users.
 
 ### Executable Process Exit
 - Native executable stubs and backend-generated `molt_main` success exits use
