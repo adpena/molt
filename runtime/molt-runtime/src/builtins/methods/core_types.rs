@@ -129,63 +129,13 @@ pub(crate) fn object_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_object_init),
             1,
         )),
-        "__init_subclass__" => {
-            if matches!(
-                std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
-                Some("1")
-            ) {
-                let slot = &runtime_state(_py).method_cache.object_init_subclass;
-                let existing = slot.load(std::sync::atomic::Ordering::Acquire);
-                eprintln!(
-                    "molt object.__init_subclass__ slot_ptr={:p} existing_bits=0x{:x} fn_obj=0x{:x} fn_type_init=0x{:x}",
-                    slot,
-                    existing,
-                    fn_addr!(molt_object_init_subclass),
-                    fn_addr!(molt_type_init),
-                );
-            }
-            let bits = builtin_func_bits(
-                _py,
-                &runtime_state(_py).method_cache.object_init_subclass,
-                fn_addr!(molt_object_init_subclass),
-                1,
-            );
-            if matches!(
-                std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
-                Some("1")
-            ) {
-                if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                    if unsafe { object_type_id(ptr) } == TYPE_ID_FUNCTION {
-                        unsafe {
-                            eprintln!(
-                                "molt object.__init_subclass__ func_bits=0x{:x} stored_fn_ptr=0x{:x} stored_call_target=0x{:x} mapped_call_target=0x{:x} stored_arity={}",
-                                bits,
-                                function_fn_ptr(ptr),
-                                crate::object::layout::function_call_target_ptr(ptr) as usize,
-                                crate::builtins::functions::runtime_callable_target_ptr(
-                                    function_fn_ptr(ptr)
-                                )
-                                .unwrap_or(std::ptr::null())
-                                    as usize,
-                                function_arity(ptr),
-                            );
-                        }
-                    } else {
-                        eprintln!(
-                            "molt object.__init_subclass__ func_bits=0x{:x} type_id={}",
-                            bits,
-                            unsafe { object_type_id(ptr) },
-                        );
-                    }
-                } else {
-                    eprintln!(
-                        "molt object.__init_subclass__ func_bits=0x{:x} (immediate)",
-                        bits
-                    );
-                }
-            }
-            Some(bits)
-        }
+        // Class hooks bind the lookup owner even for class-mode super.
+        "__init_subclass__" => Some(builtin_classmethod_bits(
+            _py,
+            &runtime_state(_py).method_cache.object_init_subclass,
+            fn_addr!(molt_object_init_subclass),
+            1,
+        )),
         "__setattr__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.object_setattr,
