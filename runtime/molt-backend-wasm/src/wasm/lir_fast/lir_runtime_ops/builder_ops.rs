@@ -1,11 +1,25 @@
 use super::super::lir_context::LirLowerCtx;
+use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::LirRuntimeCall;
-use super::call_abi::{
-    LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_call_with_result,
-};
+use super::call_abi::{LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_result};
 use molt_codegen_abi::box_int_bits;
 use molt_tir::tir::lir::LirOp;
-use wasm_encoder::Instruction;
+use wasm_encoder::{Instruction, ValType};
+
+/// Materialize borrowed element views before acquiring an aggregate resource.
+/// They stay owned by the operation; successful append retains each element.
+fn prepare_builder_operands(ctx: &mut LirLowerCtx, op: &LirOp) -> Vec<u32> {
+    op.tir_op
+        .operands
+        .iter()
+        .map(|&value| {
+            emit_get_boxed_for_repr(ctx, value);
+            let local = ctx.alloc_scratch_local(ValType::I64);
+            ctx.instructions.push(Instruction::LocalSet(local));
+            local
+        })
+        .collect()
+}
 
 #[derive(Clone, Copy)]
 pub(in crate::wasm::lir_fast) enum LirSequenceBuilderFinish {
@@ -27,10 +41,12 @@ pub(in crate::wasm::lir_fast) fn emit_lir_sequence_builder(
     op: &LirOp,
     finish: LirSequenceBuilderFinish,
 ) {
-    let Some(result) = op.result_values.first() else {
-        panic!("sequence builder op requires result");
-    };
-    let out = result.id;
+    assert!(
+        !op.result_values.is_empty(),
+        "sequence builder op requires result"
+    );
+    let operands = prepare_builder_operands(ctx, op);
+    let owner = ctx.alloc_operation_owner();
     emit_lir_runtime_call_with_args(
         ctx,
         LirRuntimeCall::ListBuilderNew,
@@ -38,16 +54,21 @@ pub(in crate::wasm::lir_fast) fn emit_lir_sequence_builder(
             op.tir_op.operands.len() as i64,
         ))],
     );
-    ctx.emit_set(out);
+    ctx.instructions.push(Instruction::LocalSet(owner));
+    ctx.guard_operation_exception();
 
-    for &operand in &op.tir_op.operands {
-        ctx.emit_get(out);
-        LirRuntimeArg::BoxedOperand(operand).emit(ctx);
+    for operand in operands {
+        ctx.instructions.push(Instruction::LocalGet(owner));
+        ctx.instructions.push(Instruction::LocalGet(operand));
         ctx.emit_runtime_call(LirRuntimeCall::ListBuilderAppend);
+        ctx.branch_to_operation_cleanup_if();
     }
 
-    ctx.emit_get(out);
-    emit_lir_runtime_call_with_result(ctx, op, finish.finish_call());
+    ctx.instructions.push(Instruction::LocalGet(owner));
+    ctx.emit_runtime_call(finish.finish_call());
+    // Finish consumes the builder on both success and failure.
+    ctx.forget_operation_owner(owner);
+    emit_lir_runtime_result(ctx, op);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -58,6 +79,8 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: 
         panic!("BuildDict requires result");
     };
     let out = result.id;
+    let operands = prepare_builder_operands(ctx, op);
+    let owner = ctx.alloc_operation_owner();
     emit_lir_runtime_call_with_args(
         ctx,
         LirRuntimeCall::DictNew,
@@ -65,15 +88,22 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: 
             (op.tir_op.operands.len() / 2) as i64,
         )],
     );
-    ctx.emit_set(out);
+    ctx.instructions.push(Instruction::LocalSet(owner));
+    ctx.guard_operation_exception();
 
-    for pair in op.tir_op.operands.chunks(2) {
-        ctx.emit_get(out);
-        LirRuntimeArg::BoxedOperand(pair[0]).emit(ctx);
-        LirRuntimeArg::BoxedOperand(pair[1]).emit(ctx);
+    for pair in operands.chunks(2) {
+        ctx.instructions.push(Instruction::LocalGet(owner));
+        ctx.instructions.push(Instruction::LocalGet(pair[0]));
+        ctx.instructions.push(Instruction::LocalGet(pair[1]));
         ctx.emit_runtime_call(LirRuntimeCall::DictSet);
-        ctx.emit_set(out);
+        // DictSet borrows the dictionary and can return None on failure.
+        // Never overwrite the only owner with its status/result word.
+        ctx.instructions.push(Instruction::Drop);
+        ctx.guard_operation_exception();
     }
+    ctx.instructions.push(Instruction::LocalGet(owner));
+    ctx.emit_set(out);
+    ctx.forget_operation_owner(owner);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -81,17 +111,26 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &
         panic!("BuildSet requires result");
     };
     let out = result.id;
+    let operands = prepare_builder_operands(ctx, op);
+    let owner = ctx.alloc_operation_owner();
     emit_lir_runtime_call_with_args(
         ctx,
         LirRuntimeCall::SetNew,
-        &[LirRuntimeArg::I64Const(op.tir_op.operands.len() as i64)],
+        &[LirRuntimeArg::I64Const(box_int_bits(
+            op.tir_op.operands.len() as i64,
+        ))],
     );
-    ctx.emit_set(out);
+    ctx.instructions.push(Instruction::LocalSet(owner));
+    ctx.guard_operation_exception();
 
-    for &operand in &op.tir_op.operands {
-        ctx.emit_get(out);
-        LirRuntimeArg::BoxedOperand(operand).emit(ctx);
+    for operand in operands {
+        ctx.instructions.push(Instruction::LocalGet(owner));
+        ctx.instructions.push(Instruction::LocalGet(operand));
         ctx.emit_runtime_call(LirRuntimeCall::SetAdd);
         ctx.instructions.push(Instruction::Drop);
+        ctx.guard_operation_exception();
     }
+    ctx.instructions.push(Instruction::LocalGet(owner));
+    ctx.emit_set(out);
+    ctx.forget_operation_owner(owner);
 }

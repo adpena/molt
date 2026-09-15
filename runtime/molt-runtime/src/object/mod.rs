@@ -4275,11 +4275,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                         drop_detached_tracked_vec(dict_table_ptr(ptr));
                         drop_detached_tracked_vec(dict_hashes_ptr(ptr));
                     }
-                    Some(
-                        HeapDropPolicy::ListBuilder
-                        | HeapDropPolicy::DictBuilder
-                        | HeapDropPolicy::SetBuilder,
-                    ) => {
+                    Some(HeapDropPolicy::ListBuilder) => {
                         drop_detached_linear_builder_vec(ptr);
                     }
                     Some(HeapDropPolicy::Bytearray) => {

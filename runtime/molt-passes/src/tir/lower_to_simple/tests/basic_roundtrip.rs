@@ -1,6 +1,80 @@
 use super::*;
 
 #[test]
+fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
+    let mut func = TirFunction::new("full_width_projection".into(), vec![], TirType::None);
+    let raw = func.fresh_value();
+    let boxed = func.fresh_value();
+    let unboxed = func.fresh_value();
+    func.value_types.insert(raw, TirType::I64);
+    func.value_types
+        .insert(boxed, TirType::Box(Box::new(TirType::I64)));
+    func.value_types.insert(unboxed, TirType::I64);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops = vec![
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![raw],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(i64::MAX))]),
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BoxVal,
+            operands: vec![raw],
+            results: vec![boxed],
+            attrs: AttrDict::new(),
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnboxVal,
+            operands: vec![boxed],
+            results: vec![unboxed],
+            attrs: AttrDict::new(),
+            source_span: None,
+        },
+    ];
+    entry.terminator = Terminator::Return { values: vec![] };
+    let ranges = crate::representation_facts::value_range_for(&func);
+    let raw_carriers = crate::representation_facts::non_heap_values_for(&func, &ranges);
+    assert!(raw_carriers.contains(&raw));
+    // An UnboxVal annotation does not mint exact raw-carrier provenance.
+    // The independent result remains drop-eligible across boxed projection.
+    assert!(!raw_carriers.contains(&boxed));
+    assert!(!raw_carriers.contains(&unboxed));
+    crate::tir::passes::drop_insertion::run(
+        &mut func,
+        &mut crate::tir::analysis::AnalysisManager::new(),
+    );
+    for owner in [boxed, unboxed] {
+        assert!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .any(|op| op.opcode == OpCode::DecRef && op.operands == [owner]),
+            "independent owner {owner:?} must have a terminal release"
+        );
+    }
+    let ops = lower_to_simple_ir(&func);
+    assert!(ops.iter().any(|op| op.kind == "drop_inserted"));
+    let aliases: Vec<_> = ops.iter().filter(|op| op.kind == "binding_alias").collect();
+    assert_eq!(aliases.len(), 2);
+    for alias in aliases {
+        assert!(
+            ops.iter().any(|op| op.kind == "dec_ref"
+                && op
+                    .args
+                    .as_ref()
+                    .is_some_and(|args| args.first() == alias.out.as_ref())),
+            "boxed owner must retain its matching release after projection: {ops:?}"
+        );
+    }
+}
+
+#[test]
 fn linearize_simple_function_compiles() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);

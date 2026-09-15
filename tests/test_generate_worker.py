@@ -568,6 +568,12 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
 
     assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content
     assert "for (const entry of WebAssembly.Module.imports(module)) {" in content
+    assert "boxRuntimeInt, withRuntimeOwnedValues" in content
+    assert "withRuntimeOwnedValues(runtimeInstance, [arity, 0]" in content
+    assert "value => boxRuntimeInt(runtimeInstance, value)" in content
+    assert "const boxInt =" not in content
+    assert "const TAG_INT =" not in content
+    assert "const INT_MASK =" not in content
 
     def declaration(name: str):
         match = re.search(rf"const {name} = (.*);", content)

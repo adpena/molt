@@ -308,18 +308,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.backend
                 .builder
                 .build_call(get_fn, &call_args_generic, runtime_name)
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
         } else {
             let get_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
-            let name = self.intern_string_const(attr_name);
-            let name_bits = self.ensure_i64(name);
-            let call_args_name = [obj_bits.into(), name_bits.into()];
-            self.backend
-                .builder
-                .build_call(get_fn, &call_args_name, runtime_name)
-        }
-        .unwrap()
-        .try_as_basic_value()
-        .unwrap_basic();
+            self.with_owned_name(attr_name, |this, name_bits| {
+                this.backend
+                    .builder
+                    .build_call(get_fn, &[obj_bits.into(), name_bits.into()], runtime_name)
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+            })
+        };
         // Runtime getattr entry points return one owned result on every
         // successful path, including IC hits. Preserve that single authority;
         // a backend-side retain would leak bound-method receivers.
@@ -532,7 +534,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             })
             .unwrap_or("<unknown>");
-        let name = self.intern_string_const(attr_name);
         let val = self.resolve(op.operands[1]);
         let obj_i64 = self.materialize_dynbox_bits(
             obj,
@@ -542,7 +543,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .cloned()
                 .unwrap_or(TirType::DynBox),
         );
-        let name_i64 = self.ensure_i64(name);
         let val_i64 = self.materialize_dynbox_bits(
             val,
             &self
@@ -556,17 +556,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .module
             .get_function("molt_set_attr_name")
             .unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(
-                set_fn,
-                &[obj_i64.into(), name_i64.into(), val_i64.into()],
-                "setattr",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
+        let result = self.with_owned_name(attr_name, |this, name_i64| {
+            this.backend
+                .builder
+                .build_call(
+                    set_fn,
+                    &[obj_i64.into(), name_i64.into(), val_i64.into()],
+                    "setattr",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+        });
         if !op.results.is_empty() {
             self.values.insert(op.results[0], result);
             self.value_types.insert(op.results[0], TirType::DynBox);
@@ -611,20 +612,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             })
             .unwrap_or("<unknown>");
-        let name = self.intern_string_const(attr_name);
-        let name_bits = self.ensure_i64(name);
         let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
-        let val = self
-            .backend
-            .builder
-            .build_call(
-                del_fn,
-                &[obj_bits.into(), name_bits.into()],
-                "del_attr_name",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
+        let val = self.with_owned_name(attr_name, |this, name_bits| {
+            this.backend
+                .builder
+                .build_call(
+                    del_fn,
+                    &[obj_bits.into(), name_bits.into()],
+                    "del_attr_name",
+                )
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+        });
         if !op.results.is_empty() {
             self.values.insert(op.results[0], val);
             self.value_types.insert(op.results[0], TirType::DynBox);

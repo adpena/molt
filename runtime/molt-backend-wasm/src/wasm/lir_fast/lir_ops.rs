@@ -6,7 +6,10 @@ mod numeric_selection;
 mod refcount_ops;
 
 use self::const_ops::emit_lir_const;
-use self::copy_ops::{emit_lir_copy_or_original_kind, emit_lir_identity_copy};
+use self::copy_ops::{
+    emit_lir_box_value, emit_lir_copy_or_original_kind, emit_lir_identity_copy,
+    emit_lir_unbox_value,
+};
 use self::fallback::emit_lir_unsupported_fallback;
 use self::generated_calls::emit_lir_generated_fixed_runtime_call;
 use self::numeric_selection::numeric_selection_for_opcode;
@@ -32,7 +35,9 @@ use molt_tir::tir::ops::{AttrValue, OpCode};
 
 pub(super) fn emit_lir_block_ops(ctx: &mut LirLowerCtx, block: &LirBlock) {
     for op in &block.ops {
+        ctx.begin_operation_owners();
         emit_lir_op(ctx, op);
+        ctx.finish_operation_owners(op);
     }
 }
 
@@ -101,9 +106,9 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::ClosureLoad => emit_lir_closure_load(ctx, op),
         OpCode::ClosureStore => emit_lir_closure_store(ctx, op),
         OpCode::Copy => emit_lir_copy_or_original_kind(ctx, op),
-        OpCode::DeleteVar | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
-            emit_lir_identity_copy(ctx, op)
-        }
+        OpCode::BoxVal => emit_lir_box_value(ctx, op),
+        OpCode::UnboxVal => emit_lir_unbox_value(ctx, op),
+        OpCode::DeleteVar | OpCode::TypeGuard => emit_lir_identity_copy(ctx, op),
         OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
             emit_lir_comparison(ctx, op, numeric_selection_for_opcode(tir_op.opcode))
         }
@@ -163,14 +168,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::WarnStderr => {
             emit_lir_unsupported_fallback(ctx, op);
         }
-        // RC drop-insertion ops (design 20, §4.3 Phase 4). `molt_dec_ref_obj` /
-        // `molt_inc_ref_obj` take the NaN-boxed value by value and fast-path
-        // non-pointers, so passing the operand's boxed form is always safe; the
-        // repr filter in the drop pass already excludes raw-scalar carriers, so
-        // the operand here is a heap-carrying (NaN-boxed-pointer) value. A NAMED
-        // runtime call keeps the function in the LIR fast lane rather than
-        // bailing it to the generic emitter, preserving the WASM perf contract
-        // for drop-inserted functions. Neither op has a result.
+        // RC acts on existing owners, never on a newly boxed raw carrier.
         OpCode::DecRef | OpCode::DelBoundary => {
             emit_lir_refcount_op(ctx, op, LirRuntimeCall::DecRefObj)
         }

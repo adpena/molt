@@ -132,6 +132,12 @@ const fakeMemory = new WebAssembly.Memory({{ initial: 1 }});
 const releasedItems = [];
 const nonIntRuntime = {{
   exports: {{
+    molt_int_from_i64: (value) => {{
+      if (value !== 0n) throw new Error('unexpected list index');
+      return 0x7ff9000000000000n;
+    }},
+    molt_exception_pending_fast: () => 0n,
+    molt_exception_pending: () => 0n,
     molt_len: () => 0x7ff9000000000001n,
     molt_index: () => 0x1234n,
     molt_dec_ref_obj: (bits) => releasedItems.push(bits),
@@ -140,8 +146,9 @@ const nonIntRuntime = {{
 if (tryDecodeListIntBits(nonIntRuntime, fakeMemory, 0x4444n) !== null) {{
   throw new Error('non-int list item unexpectedly decoded');
 }}
-if (releasedItems.length !== 1 || releasedItems[0] !== 0x1234n) {{
-  throw new Error('owned non-int index result was not released exactly once');
+if (releasedItems.length !== 2 || releasedItems[0] !== 0x7ff9000000000000n ||
+    releasedItems[1] !== 0x1234n) {{
+  throw new Error('temporary index and owned non-int result were not released exactly once');
 }}
 let lenFailureObserved = false;
 try {{
@@ -162,6 +169,7 @@ try {{
   decodeOwnedExportResult({{
     exports: {{
       molt_type_tag_of_bits: () => 99,
+      molt_exception_pending: () => 0n,
       molt_object_repr: () => {{ throw new Error('repr exploded'); }},
       molt_dec_ref_obj: (bits) => releasedResults.push(bits),
     }},

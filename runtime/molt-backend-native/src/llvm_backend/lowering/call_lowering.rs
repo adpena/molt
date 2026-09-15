@@ -184,13 +184,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // Decode the NaN-boxed argument into the raw representation the
             // target parameter expects, BEFORE the LLVM-type cast. The args
             // array always carries `DynBox` (NaN-boxed) values; a raw-`I64`
-            // param needs its 47-bit payload sign-extended back, a `Bool` its
+            // param needs full-width integer extraction, a `Bool` its
             // low payload bit. `F64`/reference params are already the raw bits.
             let param_index = idx + usize::from(has_closure);
             let arg = match param_tir_types.and_then(|tys| tys.get(param_index)) {
                 Some(param_ty) => unbox_dynbox_to_param_ty_with_builder(
                     &builder,
                     self.backend.context,
+                    &self.backend.module,
                     arg,
                     param_ty,
                 ),
@@ -743,70 +744,78 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(result_id, TirType::DynBox);
             }
         } else {
-            // Generic builtin call via molt_call_builtin.
-            let builtin_name_bits = match call.target {
-                molt_ir::tir::ops::BuiltinCallTarget::Named(name) => {
-                    let name_val = self.intern_string_const(name);
-                    self.ensure_i64(name_val)
-                }
+            // Build arguments only after a synthesized name is admitted. The
+            // dynamic-name lane borrows its existing SSA operand instead.
+            let result = match call.target {
+                molt_ir::tir::ops::BuiltinCallTarget::Named(name) => self
+                    .with_owned_name(name, |this, name_bits| {
+                        this.emit_builtin_with_name(name_bits, call.arguments)
+                    }),
                 molt_ir::tir::ops::BuiltinCallTarget::Dynamic(name) => {
-                    self.materialize_dynbox_operand(*name)
+                    let name_bits = self.materialize_dynbox_operand(*name);
+                    self.emit_builtin_with_name(name_bits, call.arguments)
                 }
             };
-
-            let n_args = call.arguments.len() as u64;
-            let new_fn = self
-                .backend
-                .module
-                .get_function("molt_callargs_new")
-                .unwrap();
-            let args_builder = self
-                .backend
-                .builder
-                .build_call(
-                    new_fn,
-                    &[
-                        i64_ty.const_int(n_args, false).into(),
-                        i64_ty.const_int(0, false).into(),
-                    ],
-                    "cb_args",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            let push_fn = self
-                .backend
-                .module
-                .get_function("molt_callargs_push_pos")
-                .unwrap();
-            for &arg_id in call.arguments {
-                let arg_i64 = self.materialize_dynbox_operand(arg_id);
-                self.backend
-                    .builder
-                    .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
-                    .unwrap();
-            }
-
-            let call_builtin_fn = self
-                .backend
-                .module
-                .get_function("molt_call_builtin")
-                .unwrap();
-            let result = self
-                .backend
-                .builder
-                .build_call(
-                    call_builtin_fn,
-                    &[builtin_name_bits.into(), args_builder.into()],
-                    "call_builtin",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
             if let Some(&result_id) = op.results.first() {
                 self.values.insert(result_id, result);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
         }
+    }
+
+    fn emit_builtin_with_name(
+        &mut self,
+        builtin_name_bits: inkwell::values::IntValue<'ctx>,
+        arguments: &[ValueId],
+    ) -> BasicValueEnum<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let n_args = arguments.len() as u64;
+        let new_fn = self
+            .backend
+            .module
+            .get_function("molt_callargs_new")
+            .unwrap();
+        let args_builder = self
+            .backend
+            .builder
+            .build_call(
+                new_fn,
+                &[
+                    i64_ty.const_int(n_args, false).into(),
+                    i64_ty.const_int(0, false).into(),
+                ],
+                "cb_args",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        let push_fn = self
+            .backend
+            .module
+            .get_function("molt_callargs_push_pos")
+            .unwrap();
+        for &arg_id in arguments {
+            let arg_i64 = self.materialize_dynbox_operand(arg_id);
+            self.backend
+                .builder
+                .build_call(push_fn, &[args_builder.into(), arg_i64.into()], "cb_push")
+                .unwrap();
+        }
+
+        let call_builtin_fn = self
+            .backend
+            .module
+            .get_function("molt_call_builtin")
+            .unwrap();
+        self.backend
+            .builder
+            .build_call(
+                call_builtin_fn,
+                &[builtin_name_bits.into(), args_builder.into()],
+                "call_builtin",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
     }
 }

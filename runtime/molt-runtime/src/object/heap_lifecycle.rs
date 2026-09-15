@@ -674,9 +674,7 @@ pub(crate) unsafe fn visit_owned_values(
             | HeapLifecycleHandler::ListBool
             | HeapLifecycleHandler::GlobIter => {}
             HeapLifecycleHandler::NativeHandle | HeapLifecycleHandler::Foreign => {}
-            HeapLifecycleHandler::ListBuilder
-            | HeapLifecycleHandler::DictBuilder
-            | HeapLifecycleHandler::SetBuilder => {
+            HeapLifecycleHandler::ListBuilder => {
                 let values = *(ptr as *mut *mut Vec<u64>);
                 if !values.is_null() {
                     for &bits in &*values {
@@ -1082,12 +1080,10 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::ListBuilder
-            | HeapLifecycleHandler::DictBuilder
             | HeapLifecycleHandler::Bytearray
             | HeapLifecycleHandler::Range
             | HeapLifecycleHandler::Buffer2d
             | HeapLifecycleHandler::Intarray
-            | HeapLifecycleHandler::SetBuilder
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex
             | HeapLifecycleHandler::Callargs
@@ -1236,9 +1232,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16], sink)
             }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
-            HeapLifecycleHandler::ListBuilder
-            | HeapLifecycleHandler::DictBuilder
-            | HeapLifecycleHandler::SetBuilder => {
+            HeapLifecycleHandler::ListBuilder => {
                 let values = *(ptr as *mut *mut Vec<u64>);
                 if !values.is_null() {
                     for bits in std::mem::take(&mut *values) {

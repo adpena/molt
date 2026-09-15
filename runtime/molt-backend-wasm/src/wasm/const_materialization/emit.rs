@@ -26,6 +26,18 @@ impl WasmConstMaterialization {
         }
     }
 
+    pub(in crate::wasm::const_materialization) fn scalar_i64(
+        import: WasmRuntimeImport,
+        out_local: u32,
+        value: i64,
+    ) -> Self {
+        Self {
+            import,
+            out_local,
+            payload: WasmConstMaterializationPayload::ScalarI64(value),
+        }
+    }
+
     pub(in crate::wasm::const_materialization) fn literal(
         import: WasmRuntimeImport,
         out_local: u32,
@@ -59,6 +71,11 @@ impl WasmConstMaterialization {
     ) {
         match &self.payload {
             WasmConstMaterializationPayload::RuntimeSingleton => {
+                emit_call(func, reloc_enabled, import_id);
+                func.instruction(&Instruction::LocalSet(self.out_local));
+            }
+            WasmConstMaterializationPayload::ScalarI64(value) => {
+                func.instruction(&Instruction::I64Const(*value));
                 emit_call(func, reloc_enabled, import_id);
                 func.instruction(&Instruction::LocalSet(self.out_local));
             }
@@ -105,6 +122,7 @@ impl WasmConstMaterialization {
 #[derive(Debug, Clone)]
 enum WasmConstMaterializationPayload {
     RuntimeSingleton,
+    ScalarI64(i64),
     Literal {
         payload: WasmConstLiteralPayload,
         bytes: Arc<[u8]>,

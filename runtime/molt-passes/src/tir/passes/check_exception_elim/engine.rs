@@ -2,7 +2,10 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 
 use super::super::PassStats;
-use super::classify::{const_int_values, op_clears_pending_exception, op_may_raise};
+use super::classify::{
+    check_has_exception_edge, const_int_values, op_clears_pending_exception, op_may_raise,
+    pending_after_check,
+};
 use super::flow::compute_block_entry_pending;
 
 pub fn run(func: &mut TirFunction) -> PassStats {
@@ -21,9 +24,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for op in block.ops.drain(..) {
             match op.opcode {
                 OpCode::CheckException => {
-                    let async_work_poll = op.is_async_work_poll();
-                    if pending_exception_possible || async_work_poll {
-                        pending_exception_possible = false;
+                    let keep = pending_exception_possible
+                        || op.is_async_work_poll()
+                        || !op.results.is_empty()
+                        || !check_has_exception_edge(&op);
+                    pending_exception_possible =
+                        pending_after_check(&op, pending_exception_possible);
+                    if keep {
                         new_ops.push(op);
                     } else {
                         stats.ops_removed += 1;

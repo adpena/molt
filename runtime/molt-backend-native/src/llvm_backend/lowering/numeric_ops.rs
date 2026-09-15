@@ -362,6 +362,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             _ => unbox_dynbox_to_param_ty_with_builder(
                 &self.backend.builder,
                 self.backend.context,
+                &self.backend.module,
                 boxed,
                 &out_ty,
             )

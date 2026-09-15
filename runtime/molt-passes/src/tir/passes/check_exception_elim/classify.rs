@@ -76,3 +76,18 @@ pub(crate) fn op_clears_pending_exception(op: &TirOp) -> bool {
         Some(AttrValue::Str(orig)) if orig == "exception_clear"
     )
 }
+
+/// Only a targeted check transfers the pending case away from fallthrough.
+/// An untargeted observer leaves existing failures untouched, and a fused poll
+/// can create a failure even when its incoming state was proven clean.
+pub(super) fn check_has_exception_edge(op: &TirOp) -> bool {
+    op.opcode == OpCode::CheckException && matches!(op.attrs.get("value"), Some(AttrValue::Int(_)))
+}
+
+pub(super) fn pending_after_check(op: &TirOp, pending: bool) -> bool {
+    if check_has_exception_edge(op) {
+        false
+    } else {
+        pending || op.is_async_work_poll()
+    }
+}

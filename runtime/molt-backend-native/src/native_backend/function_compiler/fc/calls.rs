@@ -32,7 +32,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     op_idx: usize,
     func_name: &str,
     emit_traces: bool,
-    owned_frame_entered: Option<Variable>,
+    master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
@@ -70,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             op,
             op_idx,
             emit_traces,
-            owned_frame_entered,
+            master_return_block,
             returns_value,
             rc_authority,
             &mut *module,
@@ -122,7 +122,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             op_idx,
             func_name,
             emit_traces,
-            owned_frame_entered,
+            master_return_block,
             returns_value,
             &mut *module,
             &mut *import_ids,
@@ -251,7 +251,7 @@ fn handle_call_direct_op(
     op: &OpIR,
     op_idx: usize,
     emit_traces: bool,
-    owned_frame_entered: Option<Variable>,
+    master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
     module: &mut ObjectModule,
@@ -552,25 +552,9 @@ fn handle_call_direct_op(
             } else {
                 raise_results[0]
             };
-            emit_owned_execution_frame_exit(
-                owned_frame_entered,
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-            );
-            builder.ins().return_(&[err_val]);
+            jump_block(builder, master_return_block, &[err_val]);
         } else {
-            emit_owned_execution_frame_exit(
-                owned_frame_entered,
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-            );
-            builder.ins().return_(&[]);
+            jump_block(builder, master_return_block, &[]);
         }
 
         // Call block: direct call to the target function.
@@ -907,7 +891,7 @@ fn handle_call_guarded_op(
     op_idx: usize,
     func_name: &str,
     emit_traces: bool,
-    owned_frame_entered: Option<Variable>,
+    master_return_block: Block,
     returns_value: bool,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -1216,19 +1200,11 @@ fn handle_call_guarded_op(
     // the pending RecursionError propagates to the caller
     // instead of being silently swallowed as None (which
     // caused TypeError: NoneType + int downstream).
-    emit_owned_execution_frame_exit(
-        owned_frame_entered,
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-    );
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
-        builder.ins().return_(&[none_bits]);
+        jump_block(builder, master_return_block, &[none_bits]);
     } else {
-        builder.ins().return_(&[]);
+        jump_block(builder, master_return_block, &[]);
     }
 
     switch_to_block_materialized(&mut *builder, else_block);
@@ -1265,19 +1241,11 @@ fn handle_call_guarded_op(
     seal_block_once(&mut *builder, &mut *sealed_blocks, else_fail_block);
     // Same as then_fail_block: return immediately on recursion
     // guard failure so the pending RecursionError propagates.
-    emit_owned_execution_frame_exit(
-        owned_frame_entered,
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-    );
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
-        builder.ins().return_(&[none_bits]);
+        jump_block(builder, master_return_block, &[none_bits]);
     } else {
-        builder.ins().return_(&[]);
+        jump_block(builder, master_return_block, &[]);
     }
 
     switch_to_block_materialized(&mut *builder, merge_block);

@@ -435,15 +435,25 @@ fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
 
 /// # Safety
 /// - `ptr` must be null or valid for `len_bits` bytes.
+/// Invalid input or failed materialization returns None with a pending exception.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let Some(len) = usize_from_bits(len_bits) else {
-                return MoltObject::none().bits();
+            let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
+            else {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "integer literal byte length is too large",
+                );
             };
             if ptr.is_null() {
-                return MoltObject::none().bits();
+                return raise_exception::<_>(
+                    _py,
+                    "ValueError",
+                    "integer literal input pointer is null",
+                );
             }
             let data_key = ptr as usize;
             if let Some(bits) =
@@ -2070,6 +2080,69 @@ pub(crate) fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
 mod int_literal_tests {
     use super::parse_int_from_str;
     use num_bigint::BigInt;
+
+    #[test]
+    fn bigint_literal_invalid_inputs_return_none_with_pending_exception() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            static INVALID_DECIMAL: &[u8] = b"invalid-bigint-literal";
+            static INVALID_UTF8: &[u8] = &[0xff];
+            for (ptr, len) in [
+                (std::ptr::null(), 0),
+                (std::ptr::null(), u64::MAX),
+                (INVALID_DECIMAL.as_ptr(), INVALID_DECIMAL.len() as u64),
+                (INVALID_UTF8.as_ptr(), INVALID_UTF8.len() as u64),
+            ] {
+                let bits = unsafe { super::molt_bigint_from_str(ptr, len) };
+                assert_eq!(bits, crate::MoltObject::none().bits());
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+            }
+        });
+    }
+
+    #[test]
+    fn bigint_literal_budget_failures_cover_i64_and_large_decimal_materialization() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // One takes the ASCII-i64 shortcut, one the arbitrary-precision parser;
+            // both must propagate allocation failure through bigint_bits.
+            let payloads: [&[u8]; 2] = [
+                b"9123456709876543210",
+                b"953170286449503927614875310629784503162907451638209",
+            ];
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            let reset = RestoreTracker;
+            for bytes in payloads {
+                let bits =
+                    unsafe { super::molt_bigint_from_str(bytes.as_ptr(), bytes.len() as u64) };
+                assert_eq!(bits, crate::MoltObject::none().bits());
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+            }
+            drop(reset);
+            for bytes in payloads {
+                let bits =
+                    unsafe { super::molt_bigint_from_str(bytes.as_ptr(), bytes.len() as u64) };
+                let ptr = crate::obj_from_bits(bits)
+                    .as_ptr()
+                    .expect("owned bigint result");
+                assert_eq!(unsafe { crate::object_type_id(ptr) }, crate::TYPE_ID_BIGINT);
+                assert!(!crate::exception_pending(py));
+                crate::dec_ref_bits(py, bits);
+            }
+        });
+    }
 
     #[test]
     fn integer_runtime_parser_consumes_shared_cpython_lexical_authority() {

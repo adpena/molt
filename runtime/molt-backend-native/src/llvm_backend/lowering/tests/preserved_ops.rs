@@ -39,6 +39,11 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
             "{ir}"
         );
         assert!(ir.contains("@molt_call_builtin("), "{ir}");
+        assert_eq!(
+            ir.matches("@molt_dec_ref_obj(").count(),
+            usize::from(named),
+            "only synthesized names are temporary owners; dynamic names remain borrowed: {ir}"
+        );
     }
 }
 
@@ -119,12 +124,52 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             "preserved `{kind}` must lower to `{sym}` (not an operand-0 \
                  passthrough); IR:\n{ir}"
         );
-        if matches!(kind, "guard_layout" | "guard_dict_shape") {
-            assert!(
-                ir.contains("@molt_guard_layout(i64 %0, i64 %1, i64 %2)"),
-                "layout guards must preserve the receiver tag: {ir}"
-            );
-        }
+    }
+}
+
+#[test]
+fn layout_guards_preserve_tagged_parameters_at_runtime_admission() {
+    for kind in ["guard_layout", "guard_dict_shape"] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            kind.into(),
+            vec![
+                TirType::UserClass("C".into()),
+                TirType::DynBox,
+                TirType::DynBox,
+            ],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: entry.args.iter().map(|arg| arg.id).collect(),
+            results: vec![result],
+            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .expect("layout guard must lower")
+            .print_to_string()
+            .to_string();
+        backend
+            .module
+            .verify()
+            .expect("tagged layout guard ABI must verify");
+        assert!(
+            ir.contains("@molt_guard_layout(i64 %0, i64 %1, i64 %2)"),
+            "layout guards must preserve the receiver tag: {ir}"
+        );
+        assert!(
+            !ir.contains("inttoptr") && !ir.contains("ptr_unbox"),
+            "{ir}"
+        );
     }
 }
 

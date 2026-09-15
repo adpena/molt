@@ -960,6 +960,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::IntAsI64,
+        name: "int_as_i64",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::StrConcat,
         name: "str_concat",
         type_idx: 3,
@@ -1752,7 +1757,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListBuilderAppend,
         name: "list_builder_append",
-        type_idx: 6,
+        type_idx: 49,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ListContains,
@@ -15460,6 +15465,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_add" => Some(WasmRuntimeImport::Add),
         "int_from_i64" => Some(WasmRuntimeImport::IntFromI64),
         "molt_int_from_i64" => Some(WasmRuntimeImport::IntFromI64),
+        "int_as_i64" => Some(WasmRuntimeImport::IntAsI64),
+        "molt_int_as_i64" => Some(WasmRuntimeImport::IntAsI64),
         "str_concat" => Some(WasmRuntimeImport::StrConcat),
         "molt_str_concat" => Some(WasmRuntimeImport::StrConcat),
         "str_contains" => Some(WasmRuntimeImport::StrContains),

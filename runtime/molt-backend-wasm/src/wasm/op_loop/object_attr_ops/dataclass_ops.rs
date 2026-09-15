@@ -4,6 +4,7 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_values::box_none;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_dataclass_op(
@@ -46,6 +47,10 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 BuilderFinish::Tuple,
             );
+            func.instruction(&Instruction::LocalGet(out));
+            func.instruction(&Instruction::I64Const(box_none()));
+            func.instruction(&Instruction::I64Ne);
+            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             func.instruction(&Instruction::LocalGet(name));
             func.instruction(&Instruction::LocalGet(fields));
             func.instruction(&Instruction::LocalGet(out));
@@ -55,7 +60,16 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
             );
+            // Dataclass construction borrows the completed values tuple. Keep
+            // its result on the stack while releasing that temporary owner.
+            func.instruction(&Instruction::LocalGet(out));
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+            );
             func.instruction(&Instruction::LocalSet(out));
+            func.instruction(&Instruction::End);
         }
         "dataclass_get" => {
             let args = op.args.as_ref().unwrap();

@@ -194,49 +194,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- Refcount --
-            OpCode::IncRef => {
-                let val = self.resolve(op.operands[0]);
-                let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-                let bits = self.ensure_i64(val);
-                self.backend
-                    .builder
-                    .build_call(inc_fn, &[bits.into()], "")
-                    .unwrap();
-                // IncRef has no result, but if it does, pass through.
-                if !op.results.is_empty() {
-                    self.values.insert(op.results[0], val);
-                    let ty = self
-                        .value_types
-                        .get(&op.operands[0])
-                        .cloned()
-                        .unwrap_or(TirType::DynBox);
-                    self.value_types.insert(op.results[0], ty);
-                }
-            }
-            // Python lifetime boundary (#58): when a `del`/rebind/scope-exit
-            // marker survives to LLVM, it is the release authority for that
-            // named-local owner. The drop phase may rewrite some markers to
-            // `DecRef`; any marker left here must still lower to the same
-            // runtime release, matching the native backend's direct
-            // `del_boundary` arm.
-            OpCode::DelBoundary => {
-                let val = self.resolve(op.operands[0]);
-                let bits = self.ensure_i64(val);
-                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(dec_fn, &[bits.into()], "")
-                    .unwrap();
-            }
-            OpCode::DecRef => {
-                let val = self.resolve(op.operands[0]);
-                let dec_fn = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                let bits = self.ensure_i64(val);
-                self.backend
-                    .builder
-                    .build_call(dec_fn, &[bits.into()], "")
-                    .unwrap();
-            }
+            OpCode::IncRef => self.emit_refcount(op, MOLT_INC_REF_OBJ),
+            // Surviving Python lifetime boundaries share terminal release
+            // with inserted drops. Raw carriers have no runtime heap owner.
+            OpCode::DelBoundary | OpCode::DecRef => self.emit_refcount(op, MOLT_DEC_REF_OBJ),
 
             // -- Memory / Attribute / Index --
             OpCode::LoadAttr => self.emit_load_attr(op),
@@ -571,19 +532,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    on a mid-iteration raise.  Non-foldable: it observes mutable
             //    runtime state, so the value (and the break) always survive.
             OpCode::ExceptionPending => {
-                let pend_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_exception_pending")
-                    .unwrap_or_else(|| {
-                        let i64_ty = self.backend.context.i64_type();
-                        let fn_ty = i64_ty.fn_type(&[], false);
-                        self.backend.module.add_function(
-                            "molt_exception_pending",
-                            fn_ty,
-                            Some(inkwell::module::Linkage::External),
-                        )
-                    });
+                let pend_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
                 let raw = self
                     .backend
                     .builder
@@ -637,25 +586,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- CheckException: inspect the current exception state --
             OpCode::CheckException => {
-                let pending_symbol =
-                    if matches!(op.attrs.get("async_work_poll"), Some(AttrValue::Bool(true))) {
-                        "molt_async_work_poll_and_exception_pending"
-                    } else {
-                        "molt_exception_pending"
-                    };
-                let check_fn = self
-                    .backend
-                    .module
-                    .get_function(pending_symbol)
-                    .unwrap_or_else(|| {
-                        let i64_ty = self.backend.context.i64_type();
-                        let fn_ty = i64_ty.fn_type(&[], false);
-                        self.backend.module.add_function(
-                            pending_symbol,
-                            fn_ty,
-                            Some(inkwell::module::Linkage::External),
-                        )
-                    });
+                let pending_symbol = if op.is_async_work_poll() {
+                    "molt_async_work_poll_and_exception_pending"
+                } else {
+                    "molt_exception_pending"
+                };
+                let check_fn = self.ensure_runtime_i64_fn(pending_symbol, 0);
                 let result = self
                     .backend
                     .builder
@@ -733,33 +669,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Import: import module by name --
             OpCode::Import => {
                 let result_id = op.results[0];
-                let name = if let Some(&name_id) = op.operands.first() {
-                    self.resolve(name_id)
-                } else if let Some(AttrValue::Str(module_name)) = op.attrs.get("module") {
-                    self.intern_string_const(module_name)
-                } else if let Some(AttrValue::Str(module_name)) = op.attrs.get("s_value") {
-                    self.intern_string_const(module_name)
-                } else if let Some(AttrValue::Str(module_name)) = op.attrs.get("_var") {
-                    self.intern_string_const(module_name)
-                } else {
-                    panic!(
-                        "Import op missing module operand/attr in {}",
-                        self.func.name
-                    );
+                let import_fn = self.ensure_runtime_i64_fn("molt_module_import", 1);
+                let import = |this: &mut Self, name_i64: inkwell::values::IntValue<'ctx>| {
+                    this.backend
+                        .builder
+                        .build_call(import_fn, &[name_i64.into()], "import")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
                 };
-                let name_i64 = self.ensure_i64(name);
-                let import_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_module_import")
-                    .unwrap();
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(import_fn, &[name_i64.into()], "import")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
+                let result = if let Some(&name_id) = op.operands.first() {
+                    let name_i64 = self.materialize_dynbox_operand(name_id);
+                    import(self, name_i64)
+                } else {
+                    let module_name = ["module", "s_value", "_var"]
+                        .iter()
+                        .find_map(|key| match op.attrs.get(*key) {
+                            Some(AttrValue::Str(name)) => Some(name.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "Import op missing module operand/attr in {}",
+                                self.func.name
+                            )
+                        });
+                    self.with_owned_name(module_name, import)
+                };
                 self.values.insert(result_id, result);
                 self.value_types.insert(result_id, TirType::DynBox);
             }

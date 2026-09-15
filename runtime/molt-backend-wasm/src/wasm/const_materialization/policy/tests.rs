@@ -63,6 +63,21 @@ fn const_policy_classifies_inline_seed_bits() {
 }
 
 #[test]
+fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
+    let mut op = op("const");
+    op.value = Some(i64::MAX);
+    let policy = WasmConstOpPolicy::for_op(&op).expect("const policy");
+
+    assert_eq!(policy.inline_seed_bits(&op), None);
+    assert_eq!(
+        policy.materializer_import(),
+        Some(WasmRuntimeImport::IntFromI64)
+    );
+    assert!(policy.needs_runtime_anchor());
+    assert!(policy.materialization_can_fail());
+}
+
+#[test]
 fn const_policy_classifies_runtime_seed_and_literal_scratch() {
     for (kind, payload, import, parse_scalar, lir_policy) in [
         (
@@ -97,8 +112,8 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
         assert_eq!(policy.parse_scalar_literal(), parse_scalar);
         assert_eq!(policy.lir_fast_policy(), lir_policy);
         assert!(
-            policy.needs_dispatch_runtime_seed(),
-            "{kind} must be materialized for dispatch seeds"
+            policy.needs_runtime_anchor(),
+            "{kind} must be materialized into a function anchor"
         );
     }
 
@@ -115,8 +130,8 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
             WasmConstLirFastPolicy::Materialize
         );
         assert!(
-            policy.needs_dispatch_runtime_seed(),
-            "{kind} must be materialized for dispatch seeds"
+            policy.needs_runtime_anchor(),
+            "{kind} must be materialized into a function anchor"
         );
     }
 }

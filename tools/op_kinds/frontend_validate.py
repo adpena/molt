@@ -352,6 +352,8 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
             )
 
     required_raising = {
+        "BOX": True,
+        "BOX_FROM_RAW_INT": True,
         "ADD": True,
         "EQ": True,
         "NEG": True,
@@ -367,7 +369,9 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         "MODULE_GET_ATTR": True,
         "SETATTR_GENERIC_OBJ": True,
         "PHI": False,
-        "CONST_STR": False,
+        "CONST_STR": True,
+        "CONST_BYTES": True,
+        "CONST_BIGINT": True,
         "LOAD_VAR": False,
         "STORE_VAR": False,
     }

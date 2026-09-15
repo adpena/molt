@@ -8,6 +8,7 @@ mod execution_context_split;
 mod extern_functions;
 mod field_ownership;
 mod import_codegen;
+mod literal_ownership;
 mod native_callable;
 mod runtime_callable;
 mod task_trampoline;

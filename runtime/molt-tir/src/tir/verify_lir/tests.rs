@@ -17,6 +17,36 @@ fn value(id: u32, ty: TirType, repr: LirRepr) -> LirValue {
     }
 }
 
+#[test]
+fn semantic_unbox_preserves_the_shared_boxed_carrier_plan() {
+    let mut function = crate::tir::function::TirFunction::new(
+        "boxed_unbox".into(),
+        vec![TirType::Box(Box::new(TirType::I64))],
+        TirType::I64,
+    );
+    let result = function.fresh_value();
+    function.value_types.insert(result, TirType::I64);
+    let block = function.blocks.get_mut(&function.entry_block).unwrap();
+    block.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::UnboxVal,
+        operands: vec![ValueId(0)],
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    block.terminator = crate::tir::blocks::Terminator::Return {
+        values: vec![result],
+    };
+    let lir = crate::tir::lower_to_lir::lower_function_to_lir(&function);
+    assert_eq!(
+        lir.blocks[&lir.entry_block].ops[0].result_values[0].repr,
+        LirRepr::DynBox
+    );
+    verify_lir_function(&lir)
+        .expect("a semantic type unwrap need not change physical representation");
+}
+
 fn ref64_provenance_func(entry: LirBlock) -> LirFunction {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);

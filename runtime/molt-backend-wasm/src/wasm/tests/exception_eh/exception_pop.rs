@@ -126,8 +126,8 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         .count();
     assert_eq!(
         (inc_count, dec_count),
-        (0, 1),
-        "store_var/load_var aliases share one allocation owner; DelBoundary releases that root once, without a second slot owner or backend-minted retain: calls={drop_calls:?} imports={drop_imports:?}"
+        (1, 2),
+        "the literal site mints one result owner from its function anchor; store_var/load_var alias that owner without another retain, DelBoundary releases it once, and function teardown releases the distinct anchor once: calls={drop_calls:?} imports={drop_imports:?}"
     );
 
     let (binding_calls, binding_imports) = compile_local_alias_body(

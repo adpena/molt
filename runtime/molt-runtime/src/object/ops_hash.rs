@@ -1056,8 +1056,6 @@ fn is_unhashable_type(type_id: u32) -> bool {
             | TYPE_ID_SET
             | TYPE_ID_BYTEARRAY
             | TYPE_ID_LIST_BUILDER
-            | TYPE_ID_DICT_BUILDER
-            | TYPE_ID_SET_BUILDER
             | TYPE_ID_DICT_KEYS_VIEW
             | TYPE_ID_DICT_VALUES_VIEW
             | TYPE_ID_DICT_ITEMS_VIEW

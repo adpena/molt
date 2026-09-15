@@ -207,35 +207,6 @@ fn lower_preserved_kind_ir(
     try_lower_tir_to_llvm(&func, backend).map(|f| f.print_to_string().to_string())
 }
 
-/// Helper: build a function with `num_blocks` empty blocks (terminators
-/// initialized to `Unreachable`; tests overwrite them).
-fn make_func_with_blocks(name: &str, num_blocks: u32) -> TirFunction {
-    let mut func = TirFunction::new(name.into(), vec![], TirType::I64);
-    for _ in 1..num_blocks {
-        let bid = func.fresh_block();
-        func.blocks.insert(
-            bid,
-            TirBlock {
-                id: bid,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Unreachable,
-            },
-        );
-    }
-    func
-}
-
-fn set_term(func: &mut TirFunction, b: BlockId, term: Terminator) {
-    func.blocks.get_mut(&b).unwrap().terminator = term;
-}
-
-fn position_of(rpo: &[BlockId], b: BlockId) -> usize {
-    rpo.iter()
-        .position(|x| *x == b)
-        .unwrap_or_else(|| panic!("BlockId {:?} not present in RPO {:?}", b, rpo))
-}
-
 mod arithmetic;
 mod calls_and_containers;
 mod control_flow;

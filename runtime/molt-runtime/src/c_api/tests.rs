@@ -1548,11 +1548,18 @@ fn owned_list_builder_drop_runs_remaining_element_finalizer() {
             crate::object::builders::molt_list_builder_new(MoltObject::from_int(2).bits());
         assert!(!obj_from_bits(builder_bits).is_none());
         unsafe {
-            crate::object::builders::molt_list_builder_append(builder_bits, first_bits);
-            crate::object::builders::molt_list_builder_append(builder_bits, second_bits);
+            assert_eq!(
+                crate::object::builders::molt_list_builder_append(builder_bits, first_bits),
+                0
+            );
+            assert_eq!(
+                crate::object::builders::molt_list_builder_append(builder_bits, second_bits),
+                0
+            );
         }
-        let list_bits =
-            unsafe { crate::object::builders::molt_list_builder_finish_owned(builder_bits) };
+        dec_ref_bits(_py, first_bits);
+        dec_ref_bits(_py, second_bits);
+        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(builder_bits) };
         assert!(!obj_from_bits(list_bits).is_none());
 
         let popped_bits = crate::object::ops_list::molt_list_pop(list_bits, none_bits());
@@ -1600,8 +1607,7 @@ fn list_append_retains_finalizer_element_until_clear() {
 
         let list_bits =
             crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
-        let list_bits =
-            unsafe { crate::object::builders::molt_list_builder_finish_owned(list_bits) };
+        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(list_bits) };
         assert!(!obj_from_bits(list_bits).is_none());
 
         let item_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
@@ -1676,8 +1682,7 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
 
         let list_bits =
             crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
-        let list_bits =
-            unsafe { crate::object::builders::molt_list_builder_finish_owned(list_bits) };
+        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(list_bits) };
         assert!(!obj_from_bits(list_bits).is_none());
         assert!(obj_from_bits(crate::molt_list_append(list_bits, item_bits)).is_none());
         dec_ref_bits(_py, item_bits);

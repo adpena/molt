@@ -692,6 +692,7 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_gvn_always_numberable_facts(data, opcodes_by_name)
     _validate_gvn_value_keyed_constant_facts(data, opcodes_by_name)
     _validate_gvn_numberable_attr_key_facts(data, opcodes_by_name)
     _validate_opcode_rule_rows(
@@ -1279,6 +1280,18 @@ def _validate_disjoint_opcode_role_sets(
             owners[opcode] = key
 
 
+def _validate_gvn_always_numberable_facts(
+    data: dict, opcodes: dict[str, dict]
+) -> None:
+    for opcode in data.get("gvn_always_numberable_opcodes", []):
+        row = opcodes[opcode]
+        if row["may_throw"] or row["side_effecting"] or row["purity"] != "pure":
+            raise OpKindTableError(
+                f"gvn_always_numberable_opcodes {opcode}: unconditional "
+                "elimination requires pure, non-throwing effects"
+            )
+
+
 def _validate_gvn_value_keyed_constant_facts(
     data: dict, opcodes: dict[str, dict]
 ) -> None:
@@ -1314,13 +1327,15 @@ def _validate_gvn_value_keyed_constant_facts(
                 f"duplicate gvn_value_keyed_constant_opcodes opcode: {opcode}"
             )
         seen.add(opcode)
+        # These keys number successful values; GVN preserves each constant
+        # materialization and its exception edge instead of replacing it by Copy.
         if (
-            opcode_row.get("purity") != "pure"
+            opcode_row.get("purity") not in {"pure", "pure_may_throw"}
             or opcode_row.get("result_arity") != "one"
         ):
             raise OpKindTableError(
                 f"gvn_value_keyed_constant_opcodes {opcode}: value-keyed constants "
-                "must be pure single-result opcodes"
+                "must be deterministic single-result opcodes"
             )
         key = row.get("key")
         if key not in _GVN_VALUE_KEY_KINDS:

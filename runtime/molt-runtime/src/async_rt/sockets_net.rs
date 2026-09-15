@@ -374,7 +374,7 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             }
 
             let builder_bits = molt_list_builder_new(MoltObject::from_int(0).bits());
-            if builder_bits == 0 {
+            if obj_from_bits(builder_bits).is_none() {
                 libc::freeaddrinfo(res);
                 return MoltObject::none().bits();
             }
@@ -390,10 +390,23 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                 );
                 let sockaddr = sock_addr_from_storage(storage, len);
                 let sockaddr_bits = sockaddr_to_bits(_py, &sockaddr);
+                if obj_from_bits(sockaddr_bits).is_none()
+                    && sockaddr.as_socket().is_some()
+                    && !exception_pending(_py)
+                {
+                    crate::record_memory_error_without_allocation(_py);
+                }
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, sockaddr_bits);
+                    break;
+                }
                 let canon_bits = if !ai.ai_canonname.is_null() {
                     let name = CStr::from_ptr(ai.ai_canonname).to_string_lossy();
                     let ptr = alloc_string(_py, name.as_bytes());
                     if ptr.is_null() {
+                        if !exception_pending(_py) {
+                            crate::record_memory_error_without_allocation(_py);
+                        }
                         MoltObject::none().bits()
                     } else {
                         MoltObject::from_ptr(ptr).bits()
@@ -401,6 +414,11 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                 } else {
                     MoltObject::none().bits()
                 };
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, canon_bits);
+                    dec_ref_bits(_py, sockaddr_bits);
+                    break;
+                }
                 let family_bits = MoltObject::from_int(ai.ai_family as i64).bits();
                 let sock_type_bits = MoltObject::from_int(ai.ai_socktype as i64).bits();
                 let proto_bits = MoltObject::from_int(ai.ai_protocol as i64).bits();
@@ -415,18 +433,30 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                     ],
                 );
                 if tuple_ptr.is_null() {
+                    if !exception_pending(_py) {
+                        crate::record_memory_error_without_allocation(_py);
+                    }
                     dec_ref_bits(_py, canon_bits);
                     dec_ref_bits(_py, sockaddr_bits);
                     break;
                 }
                 let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                molt_list_builder_append(builder_bits, tuple_bits);
+                let status = molt_list_builder_append(builder_bits, tuple_bits);
+                dec_ref_bits(_py, tuple_bits);
                 dec_ref_bits(_py, canon_bits);
                 dec_ref_bits(_py, sockaddr_bits);
+                if status != 0 {
+                    break;
+                }
                 cur = ai.ai_next;
             }
             libc::freeaddrinfo(res);
-            molt_list_builder_finish_owned(builder_bits)
+            if exception_pending(_py) {
+                dec_ref_bits(_py, builder_bits);
+                MoltObject::none().bits()
+            } else {
+                molt_list_builder_finish(builder_bits)
+            }
         })
     }
 }

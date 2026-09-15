@@ -1873,7 +1873,10 @@ unsafe fn write_bits_out(out: *mut u64, bits: u64) {
 }
 
 /// # Safety
-/// Caller must ensure ptr is valid for len bytes.
+/// Caller must ensure ptr is null or valid for len bytes, and a nonnull out
+/// points to eight writable bytes (alignment is not required).
+/// A valid out is initialized to None before failure; nonzero status records
+/// a pending exception (1: invalid input, 2: output/allocation failure).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_string_from_bytes(
     ptr: *const u8,
@@ -1881,8 +1884,17 @@ pub unsafe extern "C" fn molt_string_from_bytes(
     out: *mut u64,
 ) -> i32 {
     unsafe {
+        if !out.is_null() {
+            write_bits_out(out, MoltObject::none().bits());
+        }
         crate::with_gil_entry_nopanic!(_py, {
-            let Some(len) = usize_from_bits(len_bits) else {
+            let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
+            else {
+                crate::raise_exception::<()>(
+                    _py,
+                    "OverflowError",
+                    "string literal byte length is too large",
+                );
                 return 1;
             };
             if trace_string_from_bytes() {
@@ -1895,6 +1907,11 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] out null");
                 }
+                crate::raise_exception::<()>(
+                    _py,
+                    "SystemError",
+                    "string literal output pointer is null",
+                );
                 return 2;
             }
             if ptr.is_null() {
@@ -1902,6 +1919,11 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                     if trace_string_from_bytes() {
                         eprintln!("[molt string_from_bytes] ptr null with nonzero len");
                     }
+                    crate::raise_exception::<()>(
+                        _py,
+                        "ValueError",
+                        "string literal input pointer is null",
+                    );
                     return 1;
                 }
                 // Empty string: allocate directly to avoid from_raw_parts UB
@@ -1911,6 +1933,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                     if trace_string_from_bytes() {
                         eprintln!("[molt string_from_bytes] alloc empty failed");
                     }
+                    crate::record_memory_error_without_allocation(_py);
                     return 2;
                 }
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
@@ -1939,6 +1962,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] invalid wtf8");
                 }
+                crate::raise_exception::<()>(_py, "ValueError", "invalid WTF-8 string literal");
                 return 1;
             }
             let obj_ptr = alloc_string(_py, slice);
@@ -1946,6 +1970,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
                 if trace_string_from_bytes() {
                     eprintln!("[molt string_from_bytes] alloc_string failed");
                 }
+                crate::record_memory_error_without_allocation(_py);
                 return 2;
             }
             let bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -1964,7 +1989,10 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 }
 
 /// # Safety
-/// Caller must ensure ptr is valid for len bytes.
+/// Caller must ensure ptr is null or valid for len bytes, and a nonnull out
+/// points to eight writable bytes (alignment is not required).
+/// A valid out is initialized to None before failure; nonzero status records
+/// a pending exception (1: invalid input, 2: output/allocation failure).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_from_bytes(
     ptr: *const u8,
@@ -1972,23 +2000,43 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
     out: *mut u64,
 ) -> i32 {
     unsafe {
+        if !out.is_null() {
+            write_bits_out(out, MoltObject::none().bits());
+        }
         crate::with_gil_entry_nopanic!(_py, {
             let trace = matches!(
                 std::env::var("MOLT_TRACE_BYTES_FROM_BYTES").ok().as_deref(),
                 Some("1")
             );
-            let Some(len) = usize_from_bits(len_bits) else {
+            let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
+            else {
+                crate::raise_exception::<()>(
+                    _py,
+                    "OverflowError",
+                    "bytes literal byte length is too large",
+                );
                 return 1;
             };
             if out.is_null() {
+                crate::raise_exception::<()>(
+                    _py,
+                    "SystemError",
+                    "bytes literal output pointer is null",
+                );
                 return 2;
             }
             if ptr.is_null() {
                 if len != 0 {
+                    crate::raise_exception::<()>(
+                        _py,
+                        "ValueError",
+                        "bytes literal input pointer is null",
+                    );
                     return 1;
                 }
                 let obj_ptr = alloc_bytes(_py, &[]);
                 if obj_ptr.is_null() {
+                    crate::record_memory_error_without_allocation(_py);
                     return 2;
                 }
                 if trace {
@@ -2016,6 +2064,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             let slice = std::slice::from_raw_parts(ptr, len);
             let obj_ptr = alloc_bytes(_py, slice);
             if obj_ptr.is_null() {
+                crate::record_memory_error_without_allocation(_py);
                 return 2;
             }
             let bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -2033,6 +2082,128 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             write_bits_out(out, bits);
             0
         })
+    }
+}
+
+#[cfg(test)]
+mod literal_failure_tests {
+    use super::{molt_bytes_from_bytes, molt_string_from_bytes};
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::{MoltObject, dec_ref_bits, exception_pending, obj_from_bits};
+
+    type Materializer = unsafe extern "C" fn(*const u8, u64, *mut u64) -> i32;
+
+    struct RestoreTracker;
+
+    impl Drop for RestoreTracker {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    #[test]
+    fn literal_invalid_inputs_define_unaligned_outputs_and_record_exceptions() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for materialize in [
+                molt_string_from_bytes as Materializer,
+                molt_bytes_from_bytes as Materializer,
+            ] {
+                for len in [1, u64::MAX] {
+                    let mut storage = [0xa5_u8; 10];
+                    let out = unsafe { storage.as_mut_ptr().add(1).cast::<u64>() };
+                    assert_eq!(unsafe { materialize(std::ptr::null(), len, out) }, 1);
+                    assert_eq!(unsafe { out.read_unaligned() }, MoltObject::none().bits());
+                    assert_eq!(storage[0], 0xa5);
+                    assert_eq!(storage[9], 0xa5);
+                    assert!(exception_pending(py));
+                    crate::clear_exception(py);
+                }
+                assert_eq!(
+                    unsafe { materialize(std::ptr::null(), 0, std::ptr::null_mut()) },
+                    2
+                );
+                assert!(exception_pending(py));
+                crate::clear_exception(py);
+
+                // A null input with zero length is a valid empty literal.
+                let mut out = MoltObject::none().bits();
+                assert_eq!(unsafe { materialize(std::ptr::null(), 0, &mut out) }, 0);
+                assert!(obj_from_bits(out).as_ptr().is_some());
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, out);
+            }
+        });
+    }
+
+    #[test]
+    fn invalid_wtf8_string_defines_none_but_binary_bytes_remain_valid() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            static INVALID_WTF8: &[u8] = &[0xff, 0, 0x80];
+            let mut out = 0;
+            assert_eq!(
+                unsafe { molt_string_from_bytes(INVALID_WTF8.as_ptr(), 3, &mut out) },
+                1
+            );
+            assert_eq!(out, MoltObject::none().bits());
+            assert!(exception_pending(py));
+            crate::clear_exception(py);
+            assert_eq!(
+                unsafe { molt_bytes_from_bytes(INVALID_WTF8.as_ptr(), 3, &mut out) },
+                0
+            );
+            let ptr = obj_from_bits(out).as_ptr().expect("owned bytes result");
+            assert_eq!(unsafe { crate::object_type_id(ptr) }, crate::TYPE_ID_BYTES);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, out);
+        });
+    }
+
+    #[test]
+    fn literal_budget_failure_defines_none_and_does_not_poison_later_materialization() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let cases: [(Materializer, &[u8], u32); 2] = [
+                (
+                    molt_string_from_bytes,
+                    b"non-interned string literal budget failure postcondition",
+                    crate::TYPE_ID_STRING,
+                ),
+                (
+                    molt_bytes_from_bytes,
+                    b"\xff binary literal budget failure postcondition",
+                    crate::TYPE_ID_BYTES,
+                ),
+            ];
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            let reset = RestoreTracker;
+            for (materialize, bytes, _) in cases {
+                let mut out = 0;
+                assert_eq!(
+                    unsafe { materialize(bytes.as_ptr(), bytes.len() as u64, &mut out) },
+                    2
+                );
+                assert_eq!(out, MoltObject::none().bits());
+                assert!(exception_pending(py));
+                crate::clear_exception(py);
+            }
+            drop(reset);
+            for (materialize, bytes, type_id) in cases {
+                let mut out = MoltObject::none().bits();
+                assert_eq!(
+                    unsafe { materialize(bytes.as_ptr(), bytes.len() as u64, &mut out) },
+                    0
+                );
+                let ptr = obj_from_bits(out).as_ptr().expect("owned literal result");
+                assert_eq!(unsafe { crate::object_type_id(ptr) }, type_id);
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, out);
+            }
+        });
     }
 }
 

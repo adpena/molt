@@ -86,6 +86,7 @@ fn emit_finish_channel_yield(
     func.instruction(&Instruction::I64Eq);
     func.instruction(&Instruction::If(BlockType::Empty));
     func.instruction(&Instruction::I64Const(box_pending()));
+    op_emitter.emit_const_anchor_releases(func);
     func.instruction(&Instruction::Return);
     func.instruction(&Instruction::End);
     super::super::common::emit_obj_set_state_arg(func, locals);

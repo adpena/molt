@@ -34,7 +34,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let exception_handler_region_indices = self.exception_handler_region_indices;
         let frame = self.frame;
         let runtime_lookup_only_vars = frame.runtime_lookup_only_vars();
-        let seeded_runtime_const_op_indices = frame.seeded_runtime_const_op_indices();
         let locals = frame.locals();
         let const_cache = frame.const_cache();
         let scalar_plan = frame.scalar_plan();
@@ -55,10 +54,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
         for (rel_idx, op) in ops.iter().enumerate() {
             let op_idx = base_idx + rel_idx;
-
-            if seeded_runtime_const_op_indices.contains(&op_idx) {
-                continue;
-            }
 
             if skip_next {
                 skip_next = false;
@@ -113,6 +108,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 import_ids,
                 locals,
                 const_cache,
+                frame,
                 func_index,
                 reloc_enabled,
             ) {
@@ -134,6 +130,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func_index,
                 func_import_count: backend.func_import_count,
                 table_relocations: &mut backend.table_relocations,
+                frame,
                 tail_call_enabled,
                 tail_call_eligible,
                 tail_call_count,
@@ -162,8 +159,11 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     import_ids,
                     locals,
                     const_cache,
+                    frame,
                     reloc_enabled,
                     native_eh_enabled,
+                    raise_exits_function: try_stack.is_empty()
+                        && !exception_handler_region_indices.contains(&op_idx),
                     func_index,
                     func_import_count: backend.func_import_count,
                     table_relocations: &mut backend.table_relocations,
@@ -183,6 +183,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     const_cache,
                     func_index,
                     reloc_enabled,
+                    anchor_local: frame.const_anchor_for_op(op_idx),
                 },
                 func,
                 op,
@@ -198,6 +199,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     locals,
                     const_cache,
                     scalar_plan,
+                    frame,
                     exception_handler_region_indices,
                     control_stack,
                     try_stack,

@@ -2846,7 +2846,6 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
     gvn = _read_rs_module_cluster(tir_path("passes/gvn.rs"))
 
     expected_always = {
-        "BoxVal",
         "UnboxVal",
     }
     expected_type_gated = {
@@ -4405,7 +4404,7 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         raise AssertionError("overlapping alias transparent-alias role was accepted")
 
     gvn_role_overlap = json.loads(json.dumps(data))
-    gvn_role_overlap["gvn_type_gated_numberable_opcodes"].append("BoxVal")
+    gvn_role_overlap["gvn_type_gated_numberable_opcodes"].append("UnboxVal")
     try:
         gen._validate_disjoint_opcode_role_sets(
             gvn_role_overlap,
@@ -4413,7 +4412,7 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
             "GVN numbering role",
         )
     except gen.OpKindTableError as e:
-        assert "BoxVal" in str(e)
+        assert "UnboxVal" in str(e)
     else:
         raise AssertionError("overlapping GVN numbering role was accepted")
 
@@ -4843,7 +4842,9 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
     assert py.FRONTEND_EFFECT_CLASS["STATE_TRANSITION"] == "control"
     assert py.FRONTEND_EFFECT_CLASS["GUARD_TAG"] == "control"
     assert py.FRONTEND_EFFECT_CLASS["CONST_STR"] == "pure"
-    assert "CONST_STR" not in py.RAISING_KIND_NAMES
+    for kind in ("CONST_STR", "CONST_BYTES", "CONST_BIGINT"):
+        assert kind in py.RAISING_KIND_NAMES
+        assert kind not in py.CHECK_EXCEPTION_SKIP_KINDS
 
     for kind in ("ADD", "SUB", "MUL"):
         assert py.frontend_operator_facts(kind, "int", "int") == ("pure", True)

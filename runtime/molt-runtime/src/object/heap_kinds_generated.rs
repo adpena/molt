@@ -6,7 +6,6 @@ pub(crate) const TYPE_ID_LIST: u32 = 201;
 pub(crate) const TYPE_ID_BYTES: u32 = 202;
 pub(crate) const TYPE_ID_LIST_BUILDER: u32 = 203;
 pub(crate) const TYPE_ID_DICT: u32 = 204;
-pub(crate) const TYPE_ID_DICT_BUILDER: u32 = 205;
 pub(crate) const TYPE_ID_TUPLE: u32 = 206;
 pub(crate) const TYPE_ID_DICT_KEYS_VIEW: u32 = 207;
 pub(crate) const TYPE_ID_DICT_VALUES_VIEW: u32 = 208;
@@ -32,7 +31,6 @@ pub(crate) const TYPE_ID_STATICMETHOD: u32 = 227;
 pub(crate) const TYPE_ID_PROPERTY: u32 = 228;
 pub(crate) const TYPE_ID_SUPER: u32 = 229;
 pub(crate) const TYPE_ID_SET: u32 = 230;
-pub(crate) const TYPE_ID_SET_BUILDER: u32 = 231;
 pub(crate) const TYPE_ID_FROZENSET: u32 = 232;
 pub(crate) const TYPE_ID_BIGINT: u32 = 233;
 pub(crate) const TYPE_ID_COMPLEX: u32 = 234;
@@ -62,14 +60,13 @@ pub(crate) const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
 pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_NATIVE_DESCRIPTOR;
-pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 59] = [
+pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 57] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
     TYPE_ID_BYTES,
     TYPE_ID_LIST_BUILDER,
     TYPE_ID_DICT,
-    TYPE_ID_DICT_BUILDER,
     TYPE_ID_TUPLE,
     TYPE_ID_DICT_KEYS_VIEW,
     TYPE_ID_DICT_VALUES_VIEW,
@@ -95,7 +92,6 @@ pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 59] = [
     TYPE_ID_PROPERTY,
     TYPE_ID_SUPER,
     TYPE_ID_SET,
-    TYPE_ID_SET_BUILDER,
     TYPE_ID_FROZENSET,
     TYPE_ID_BIGINT,
     TYPE_ID_COMPLEX,
@@ -194,7 +190,6 @@ pub(crate) enum HeapDropPolicy {
     ContextManager,
     Dataclass,
     Dict,
-    DictBuilder,
     DictView,
     Enumerate,
     Exception,
@@ -222,7 +217,6 @@ pub(crate) enum HeapDropPolicy {
     Range,
     Reversed,
     Set,
-    SetBuilder,
     Slice,
     Staticmethod,
     String,
@@ -311,7 +305,6 @@ pub(crate) enum HeapLifecycleHandler {
     Bytes,
     ListBuilder,
     Dict,
-    DictBuilder,
     Tuple,
     DictKeysView,
     DictValuesView,
@@ -337,7 +330,6 @@ pub(crate) enum HeapLifecycleHandler {
     Property,
     Super,
     Set,
-    SetBuilder,
     Frozenset,
     Bigint,
     Complex,
@@ -384,8 +376,8 @@ pub(crate) struct HeapKindDescriptor {
     pub(crate) acyclic: HeapAcyclicCapability,
 }
 
-pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
-    HeapKindDescriptor {
+pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 59] = [
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_OBJECT,
         name: "OBJECT",
         layout: HeapLayoutPolicy::Object,
@@ -400,8 +392,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_STRING,
         name: "STRING",
         layout: HeapLayoutPolicy::Inline,
@@ -416,8 +408,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_LIST,
         name: "LIST",
         layout: HeapLayoutPolicy::VecBits,
@@ -432,8 +424,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_BYTES,
         name: "BYTES",
         layout: HeapLayoutPolicy::Inline,
@@ -448,8 +440,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_LIST_BUILDER,
         name: "LIST_BUILDER",
         layout: HeapLayoutPolicy::VecBits,
@@ -464,8 +456,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::LinearUnpublished,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_DICT,
         name: "DICT",
         layout: HeapLayoutPolicy::Dict,
@@ -480,24 +472,9 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
-        type_id: TYPE_ID_DICT_BUILDER,
-        name: "DICT_BUILDER",
-        layout: HeapLayoutPolicy::VecBits,
-        edges: HeapEdgePolicy::Dynamic,
-        cycle: HeapCyclePolicy::Never,
-        weakref: HeapWeakrefPolicy::Deny,
-        shape: HeapShapePolicy::Fixed,
-        drop: HeapDropPolicy::DictBuilder,
-        metrics: HeapMetricsPolicy::None,
-        track: HeapTrackProjection::Never,
-        handler: HeapLifecycleHandler::DictBuilder,
-        publication: HeapPublicationPolicy::LinearUnpublished,
-        external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    None, // Retired ABI slot; never a heap kind.
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_TUPLE,
         name: "TUPLE",
         layout: HeapLayoutPolicy::Tuple,
@@ -512,8 +489,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_DICT_KEYS_VIEW,
         name: "DICT_KEYS_VIEW",
         layout: HeapLayoutPolicy::FixedBits,
@@ -528,8 +505,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_DICT_VALUES_VIEW,
         name: "DICT_VALUES_VIEW",
         layout: HeapLayoutPolicy::FixedBits,
@@ -544,8 +521,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_DICT_ITEMS_VIEW,
         name: "DICT_ITEMS_VIEW",
         layout: HeapLayoutPolicy::FixedBits,
@@ -560,8 +537,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_ITER,
         name: "ITER",
         layout: HeapLayoutPolicy::Iterator,
@@ -576,8 +553,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_BYTEARRAY,
         name: "BYTEARRAY",
         layout: HeapLayoutPolicy::VecU8,
@@ -592,8 +569,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_RANGE,
         name: "RANGE",
         layout: HeapLayoutPolicy::FixedBits,
@@ -608,8 +585,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::IntTriplet,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_SLICE,
         name: "SLICE",
         layout: HeapLayoutPolicy::FixedBits,
@@ -624,8 +601,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_EXCEPTION,
         name: "EXCEPTION",
         layout: HeapLayoutPolicy::Exception,
@@ -640,8 +617,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_DATACLASS,
         name: "DATACLASS",
         layout: HeapLayoutPolicy::Dynamic,
@@ -656,8 +633,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_BUFFER2D,
         name: "BUFFER2D",
         layout: HeapLayoutPolicy::Boxed,
@@ -672,8 +649,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_CONTEXT_MANAGER,
         name: "CONTEXT_MANAGER",
         layout: HeapLayoutPolicy::FixedBits,
@@ -688,8 +665,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FILE_HANDLE,
         name: "FILE_HANDLE",
         layout: HeapLayoutPolicy::Boxed,
@@ -704,8 +681,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_MEMORYVIEW,
         name: "MEMORYVIEW",
         layout: HeapLayoutPolicy::Memoryview,
@@ -720,8 +697,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_INTARRAY,
         name: "INTARRAY",
         layout: HeapLayoutPolicy::Inline,
@@ -736,8 +713,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FUNCTION,
         name: "FUNCTION",
         layout: HeapLayoutPolicy::Function,
@@ -752,8 +729,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_BOUND_METHOD,
         name: "BOUND_METHOD",
         layout: HeapLayoutPolicy::FixedBits,
@@ -768,8 +745,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_MODULE,
         name: "MODULE",
         layout: HeapLayoutPolicy::Module,
@@ -784,8 +761,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_TYPE,
         name: "TYPE",
         layout: HeapLayoutPolicy::Type,
@@ -800,8 +777,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_GENERATOR,
         name: "GENERATOR",
         layout: HeapLayoutPolicy::Generator,
@@ -816,8 +793,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_CLASSMETHOD,
         name: "CLASSMETHOD",
         layout: HeapLayoutPolicy::Object,
@@ -832,8 +809,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_STATICMETHOD,
         name: "STATICMETHOD",
         layout: HeapLayoutPolicy::Object,
@@ -848,8 +825,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_PROPERTY,
         name: "PROPERTY",
         layout: HeapLayoutPolicy::Object,
@@ -864,8 +841,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_SUPER,
         name: "SUPER",
         layout: HeapLayoutPolicy::FixedBits,
@@ -880,8 +857,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_SET,
         name: "SET",
         layout: HeapLayoutPolicy::Set,
@@ -896,24 +873,9 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
-        type_id: TYPE_ID_SET_BUILDER,
-        name: "SET_BUILDER",
-        layout: HeapLayoutPolicy::VecBits,
-        edges: HeapEdgePolicy::Dynamic,
-        cycle: HeapCyclePolicy::Never,
-        weakref: HeapWeakrefPolicy::Deny,
-        shape: HeapShapePolicy::Fixed,
-        drop: HeapDropPolicy::SetBuilder,
-        metrics: HeapMetricsPolicy::None,
-        track: HeapTrackProjection::Never,
-        handler: HeapLifecycleHandler::SetBuilder,
-        publication: HeapPublicationPolicy::LinearUnpublished,
-        external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    None, // Retired ABI slot; never a heap kind.
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FROZENSET,
         name: "FROZENSET",
         layout: HeapLayoutPolicy::Set,
@@ -928,8 +890,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_BIGINT,
         name: "BIGINT",
         layout: HeapLayoutPolicy::InlineRust,
@@ -944,8 +906,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_COMPLEX,
         name: "COMPLEX",
         layout: HeapLayoutPolicy::Inline,
@@ -960,8 +922,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_ENUMERATE,
         name: "ENUMERATE",
         layout: HeapLayoutPolicy::Iterator,
@@ -976,8 +938,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_CALLARGS,
         name: "CALLARGS",
         layout: HeapLayoutPolicy::BoxedBits,
@@ -992,8 +954,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::LinearUnpublished,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_NOT_IMPLEMENTED,
         name: "NOT_IMPLEMENTED",
         layout: HeapLayoutPolicy::Inline,
@@ -1008,8 +970,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_CALL_ITER,
         name: "CALL_ITER",
         layout: HeapLayoutPolicy::Iterator,
@@ -1024,8 +986,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_REVERSED,
         name: "REVERSED",
         layout: HeapLayoutPolicy::Iterator,
@@ -1040,8 +1002,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_ZIP,
         name: "ZIP",
         layout: HeapLayoutPolicy::Iterator,
@@ -1056,8 +1018,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_MAP,
         name: "MAP",
         layout: HeapLayoutPolicy::Iterator,
@@ -1072,8 +1034,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FILTER,
         name: "FILTER",
         layout: HeapLayoutPolicy::Iterator,
@@ -1088,8 +1050,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_CODE,
         name: "CODE",
         layout: HeapLayoutPolicy::Code,
@@ -1104,8 +1066,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::CodeMetadata,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_ELLIPSIS,
         name: "ELLIPSIS",
         layout: HeapLayoutPolicy::Inline,
@@ -1120,8 +1082,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_GENERIC_ALIAS,
         name: "GENERIC_ALIAS",
         layout: HeapLayoutPolicy::FixedBits,
@@ -1136,8 +1098,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_ASYNC_GENERATOR,
         name: "ASYNC_GENERATOR",
         layout: HeapLayoutPolicy::AsyncGenerator,
@@ -1152,8 +1114,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_UNION,
         name: "UNION",
         layout: HeapLayoutPolicy::FixedBits,
@@ -1168,8 +1130,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_LIST_INT,
         name: "LIST_INT",
         layout: HeapLayoutPolicy::BoxedI64,
@@ -1184,8 +1146,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FLOAT,
         name: "FLOAT",
         layout: HeapLayoutPolicy::Inline,
@@ -1200,8 +1162,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_LIST_BOOL,
         name: "LIST_BOOL",
         layout: HeapLayoutPolicy::BoxedU8,
@@ -1216,8 +1178,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_TRACEBACK_PAYLOAD,
         name: "TRACEBACK_PAYLOAD",
         layout: HeapLayoutPolicy::FixedBits,
@@ -1232,8 +1194,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_NATIVE_HANDLE,
         name: "NATIVE_HANDLE",
         layout: HeapLayoutPolicy::Boxed,
@@ -1248,8 +1210,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::OpaqueRustArc,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_GLOB_ITER,
         name: "GLOB_ITER",
         layout: HeapLayoutPolicy::Boxed,
@@ -1264,8 +1226,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_FOREIGN,
         name: "FOREIGN",
         layout: HeapLayoutPolicy::Foreign,
@@ -1280,8 +1242,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::CpythonBridge,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_WEAK_CONTAINER_STATE,
         name: "WEAK_CONTAINER_STATE",
         layout: HeapLayoutPolicy::Boxed,
@@ -1296,8 +1258,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_WEAKREF,
         name: "WEAKREF",
         layout: HeapLayoutPolicy::Object,
@@ -1312,8 +1274,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
-    HeapKindDescriptor {
+    }),
+    Some(HeapKindDescriptor {
         type_id: TYPE_ID_NATIVE_DESCRIPTOR,
         name: "NATIVE_DESCRIPTOR",
         layout: HeapLayoutPolicy::FixedBits,
@@ -1328,23 +1290,23 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; 59] = [
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
-    },
+    }),
 ];
 
 #[inline(always)]
 pub(crate) const fn heap_kind_descriptor(type_id: u32) -> Option<&'static HeapKindDescriptor> {
     if type_id == TYPE_ID_OBJECT {
-        return Some(&HEAP_KIND_DESCRIPTORS[0]);
+        return HEAP_KIND_DESCRIPTORS[0].as_ref();
     }
     if type_id < MIN_HEAP_TYPE_ID || type_id > MAX_HEAP_TYPE_ID {
         return None;
     }
-    Some(&HEAP_KIND_DESCRIPTORS[(type_id - MIN_HEAP_TYPE_ID) as usize + 1])
+    HEAP_KIND_DESCRIPTORS[(type_id - MIN_HEAP_TYPE_ID) as usize + 1].as_ref()
 }
 
 #[inline(always)]
 pub(crate) const fn is_valid_heap_type_id(type_id: u32) -> bool {
-    type_id == TYPE_ID_OBJECT || (type_id >= MIN_HEAP_TYPE_ID && type_id <= MAX_HEAP_TYPE_ID)
+    heap_kind_descriptor(type_id).is_some()
 }
 
 #[inline(always)]
@@ -1356,7 +1318,6 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_BYTES => Some(HeapTrackProjection::Never),
         TYPE_ID_LIST_BUILDER => Some(HeapTrackProjection::Never),
         TYPE_ID_DICT => Some(HeapTrackProjection::DictDynamic),
-        TYPE_ID_DICT_BUILDER => Some(HeapTrackProjection::Never),
         TYPE_ID_TUPLE => Some(HeapTrackProjection::TupleDynamic),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapTrackProjection::Always),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapTrackProjection::Always),
@@ -1382,7 +1343,6 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_PROPERTY => Some(HeapTrackProjection::Always),
         TYPE_ID_SUPER => Some(HeapTrackProjection::Always),
         TYPE_ID_SET => Some(HeapTrackProjection::Always),
-        TYPE_ID_SET_BUILDER => Some(HeapTrackProjection::Never),
         TYPE_ID_FROZENSET => Some(HeapTrackProjection::Always),
         TYPE_ID_BIGINT => Some(HeapTrackProjection::Never),
         TYPE_ID_COMPLEX => Some(HeapTrackProjection::Never),
@@ -1422,7 +1382,6 @@ pub(crate) const fn heap_drop_policy(type_id: u32) -> Option<HeapDropPolicy> {
         TYPE_ID_BYTES => Some(HeapDropPolicy::None),
         TYPE_ID_LIST_BUILDER => Some(HeapDropPolicy::ListBuilder),
         TYPE_ID_DICT => Some(HeapDropPolicy::Dict),
-        TYPE_ID_DICT_BUILDER => Some(HeapDropPolicy::DictBuilder),
         TYPE_ID_TUPLE => Some(HeapDropPolicy::Tuple),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapDropPolicy::DictView),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapDropPolicy::DictView),
@@ -1448,7 +1407,6 @@ pub(crate) const fn heap_drop_policy(type_id: u32) -> Option<HeapDropPolicy> {
         TYPE_ID_PROPERTY => Some(HeapDropPolicy::Property),
         TYPE_ID_SUPER => Some(HeapDropPolicy::Super),
         TYPE_ID_SET => Some(HeapDropPolicy::Set),
-        TYPE_ID_SET_BUILDER => Some(HeapDropPolicy::SetBuilder),
         TYPE_ID_FROZENSET => Some(HeapDropPolicy::Frozenset),
         TYPE_ID_BIGINT => Some(HeapDropPolicy::Bigint),
         TYPE_ID_COMPLEX => Some(HeapDropPolicy::None),
@@ -1488,7 +1446,6 @@ pub(crate) const fn heap_metrics_policy(type_id: u32) -> Option<HeapMetricsPolic
         TYPE_ID_BYTES => Some(HeapMetricsPolicy::None),
         TYPE_ID_LIST_BUILDER => Some(HeapMetricsPolicy::List),
         TYPE_ID_DICT => Some(HeapMetricsPolicy::Dict),
-        TYPE_ID_DICT_BUILDER => Some(HeapMetricsPolicy::None),
         TYPE_ID_TUPLE => Some(HeapMetricsPolicy::Tuple),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapMetricsPolicy::None),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapMetricsPolicy::None),
@@ -1514,7 +1471,6 @@ pub(crate) const fn heap_metrics_policy(type_id: u32) -> Option<HeapMetricsPolic
         TYPE_ID_PROPERTY => Some(HeapMetricsPolicy::None),
         TYPE_ID_SUPER => Some(HeapMetricsPolicy::None),
         TYPE_ID_SET => Some(HeapMetricsPolicy::None),
-        TYPE_ID_SET_BUILDER => Some(HeapMetricsPolicy::None),
         TYPE_ID_FROZENSET => Some(HeapMetricsPolicy::None),
         TYPE_ID_BIGINT => Some(HeapMetricsPolicy::Bigint),
         TYPE_ID_COMPLEX => Some(HeapMetricsPolicy::None),
@@ -1554,7 +1510,6 @@ pub(crate) const fn heap_weakref_policy(type_id: u32) -> Option<HeapWeakrefPolic
         TYPE_ID_BYTES => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_LIST_BUILDER => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_DICT => Some(HeapWeakrefPolicy::Deny),
-        TYPE_ID_DICT_BUILDER => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_TUPLE => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapWeakrefPolicy::Deny),
@@ -1580,7 +1535,6 @@ pub(crate) const fn heap_weakref_policy(type_id: u32) -> Option<HeapWeakrefPolic
         TYPE_ID_PROPERTY => Some(HeapWeakrefPolicy::Class),
         TYPE_ID_SUPER => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_SET => Some(HeapWeakrefPolicy::Allow),
-        TYPE_ID_SET_BUILDER => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_FROZENSET => Some(HeapWeakrefPolicy::Allow),
         TYPE_ID_BIGINT => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_COMPLEX => Some(HeapWeakrefPolicy::Deny),
@@ -1620,7 +1574,6 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_BYTES => Some(HeapCyclePolicy::Never),
         TYPE_ID_LIST_BUILDER => Some(HeapCyclePolicy::Never),
         TYPE_ID_DICT => Some(HeapCyclePolicy::Dynamic),
-        TYPE_ID_DICT_BUILDER => Some(HeapCyclePolicy::Never),
         TYPE_ID_TUPLE => Some(HeapCyclePolicy::Dynamic),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapCyclePolicy::Always),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapCyclePolicy::Always),
@@ -1646,7 +1599,6 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_PROPERTY => Some(HeapCyclePolicy::Always),
         TYPE_ID_SUPER => Some(HeapCyclePolicy::Always),
         TYPE_ID_SET => Some(HeapCyclePolicy::Always),
-        TYPE_ID_SET_BUILDER => Some(HeapCyclePolicy::Never),
         TYPE_ID_FROZENSET => Some(HeapCyclePolicy::Always),
         TYPE_ID_BIGINT => Some(HeapCyclePolicy::Never),
         TYPE_ID_COMPLEX => Some(HeapCyclePolicy::Never),
@@ -1686,7 +1638,6 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_BYTES => Some(HeapLayoutPolicy::Inline),
         TYPE_ID_LIST_BUILDER => Some(HeapLayoutPolicy::VecBits),
         TYPE_ID_DICT => Some(HeapLayoutPolicy::Dict),
-        TYPE_ID_DICT_BUILDER => Some(HeapLayoutPolicy::VecBits),
         TYPE_ID_TUPLE => Some(HeapLayoutPolicy::Tuple),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapLayoutPolicy::FixedBits),
@@ -1712,7 +1663,6 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_PROPERTY => Some(HeapLayoutPolicy::Object),
         TYPE_ID_SUPER => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_SET => Some(HeapLayoutPolicy::Set),
-        TYPE_ID_SET_BUILDER => Some(HeapLayoutPolicy::VecBits),
         TYPE_ID_FROZENSET => Some(HeapLayoutPolicy::Set),
         TYPE_ID_BIGINT => Some(HeapLayoutPolicy::InlineRust),
         TYPE_ID_COMPLEX => Some(HeapLayoutPolicy::Inline),
@@ -1752,7 +1702,6 @@ pub(crate) const fn heap_shape_policy(type_id: u32) -> Option<HeapShapePolicy> {
         TYPE_ID_BYTES => Some(HeapShapePolicy::Fixed),
         TYPE_ID_LIST_BUILDER => Some(HeapShapePolicy::Fixed),
         TYPE_ID_DICT => Some(HeapShapePolicy::Fixed),
-        TYPE_ID_DICT_BUILDER => Some(HeapShapePolicy::Fixed),
         TYPE_ID_TUPLE => Some(HeapShapePolicy::Fixed),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapShapePolicy::Fixed),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapShapePolicy::Fixed),
@@ -1778,7 +1727,6 @@ pub(crate) const fn heap_shape_policy(type_id: u32) -> Option<HeapShapePolicy> {
         TYPE_ID_PROPERTY => Some(HeapShapePolicy::Class),
         TYPE_ID_SUPER => Some(HeapShapePolicy::Fixed),
         TYPE_ID_SET => Some(HeapShapePolicy::Fixed),
-        TYPE_ID_SET_BUILDER => Some(HeapShapePolicy::Fixed),
         TYPE_ID_FROZENSET => Some(HeapShapePolicy::Fixed),
         TYPE_ID_BIGINT => Some(HeapShapePolicy::Fixed),
         TYPE_ID_COMPLEX => Some(HeapShapePolicy::Fixed),
@@ -1818,7 +1766,6 @@ pub(crate) const fn heap_publication_policy(type_id: u32) -> Option<HeapPublicat
         TYPE_ID_BYTES => Some(HeapPublicationPolicy::Python),
         TYPE_ID_LIST_BUILDER => Some(HeapPublicationPolicy::LinearUnpublished),
         TYPE_ID_DICT => Some(HeapPublicationPolicy::Python),
-        TYPE_ID_DICT_BUILDER => Some(HeapPublicationPolicy::LinearUnpublished),
         TYPE_ID_TUPLE => Some(HeapPublicationPolicy::Python),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapPublicationPolicy::Python),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapPublicationPolicy::Python),
@@ -1844,7 +1791,6 @@ pub(crate) const fn heap_publication_policy(type_id: u32) -> Option<HeapPublicat
         TYPE_ID_PROPERTY => Some(HeapPublicationPolicy::Python),
         TYPE_ID_SUPER => Some(HeapPublicationPolicy::Python),
         TYPE_ID_SET => Some(HeapPublicationPolicy::Python),
-        TYPE_ID_SET_BUILDER => Some(HeapPublicationPolicy::LinearUnpublished),
         TYPE_ID_FROZENSET => Some(HeapPublicationPolicy::Python),
         TYPE_ID_BIGINT => Some(HeapPublicationPolicy::Python),
         TYPE_ID_COMPLEX => Some(HeapPublicationPolicy::Python),
@@ -1884,7 +1830,6 @@ pub(crate) const fn heap_external_gc_policy(type_id: u32) -> Option<HeapExternal
         TYPE_ID_BYTES => Some(HeapExternalGcPolicy::None),
         TYPE_ID_LIST_BUILDER => Some(HeapExternalGcPolicy::None),
         TYPE_ID_DICT => Some(HeapExternalGcPolicy::None),
-        TYPE_ID_DICT_BUILDER => Some(HeapExternalGcPolicy::None),
         TYPE_ID_TUPLE => Some(HeapExternalGcPolicy::None),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapExternalGcPolicy::None),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapExternalGcPolicy::None),
@@ -1910,7 +1855,6 @@ pub(crate) const fn heap_external_gc_policy(type_id: u32) -> Option<HeapExternal
         TYPE_ID_PROPERTY => Some(HeapExternalGcPolicy::None),
         TYPE_ID_SUPER => Some(HeapExternalGcPolicy::None),
         TYPE_ID_SET => Some(HeapExternalGcPolicy::None),
-        TYPE_ID_SET_BUILDER => Some(HeapExternalGcPolicy::None),
         TYPE_ID_FROZENSET => Some(HeapExternalGcPolicy::None),
         TYPE_ID_BIGINT => Some(HeapExternalGcPolicy::None),
         TYPE_ID_COMPLEX => Some(HeapExternalGcPolicy::None),
@@ -1950,7 +1894,6 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_BYTES => Some(HeapAcyclicCapability::None),
         TYPE_ID_LIST_BUILDER => Some(HeapAcyclicCapability::None),
         TYPE_ID_DICT => Some(HeapAcyclicCapability::None),
-        TYPE_ID_DICT_BUILDER => Some(HeapAcyclicCapability::None),
         TYPE_ID_TUPLE => Some(HeapAcyclicCapability::None),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapAcyclicCapability::None),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapAcyclicCapability::None),
@@ -1976,7 +1919,6 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_PROPERTY => Some(HeapAcyclicCapability::None),
         TYPE_ID_SUPER => Some(HeapAcyclicCapability::None),
         TYPE_ID_SET => Some(HeapAcyclicCapability::None),
-        TYPE_ID_SET_BUILDER => Some(HeapAcyclicCapability::None),
         TYPE_ID_FROZENSET => Some(HeapAcyclicCapability::None),
         TYPE_ID_BIGINT => Some(HeapAcyclicCapability::None),
         TYPE_ID_COMPLEX => Some(HeapAcyclicCapability::None),
@@ -2035,7 +1977,6 @@ pub(crate) const fn heap_lifecycle_handler(type_id: u32) -> Option<HeapLifecycle
         TYPE_ID_BYTES => Some(HeapLifecycleHandler::Bytes),
         TYPE_ID_LIST_BUILDER => Some(HeapLifecycleHandler::ListBuilder),
         TYPE_ID_DICT => Some(HeapLifecycleHandler::Dict),
-        TYPE_ID_DICT_BUILDER => Some(HeapLifecycleHandler::DictBuilder),
         TYPE_ID_TUPLE => Some(HeapLifecycleHandler::Tuple),
         TYPE_ID_DICT_KEYS_VIEW => Some(HeapLifecycleHandler::DictKeysView),
         TYPE_ID_DICT_VALUES_VIEW => Some(HeapLifecycleHandler::DictValuesView),
@@ -2061,7 +2002,6 @@ pub(crate) const fn heap_lifecycle_handler(type_id: u32) -> Option<HeapLifecycle
         TYPE_ID_PROPERTY => Some(HeapLifecycleHandler::Property),
         TYPE_ID_SUPER => Some(HeapLifecycleHandler::Super),
         TYPE_ID_SET => Some(HeapLifecycleHandler::Set),
-        TYPE_ID_SET_BUILDER => Some(HeapLifecycleHandler::SetBuilder),
         TYPE_ID_FROZENSET => Some(HeapLifecycleHandler::Frozenset),
         TYPE_ID_BIGINT => Some(HeapLifecycleHandler::Bigint),
         TYPE_ID_COMPLEX => Some(HeapLifecycleHandler::Complex),
@@ -2112,7 +2052,6 @@ pub(crate) fn heap_kind_id_by_name(name: &str) -> Option<u32> {
         "BYTES" => Some(TYPE_ID_BYTES),
         "LIST_BUILDER" => Some(TYPE_ID_LIST_BUILDER),
         "DICT" => Some(TYPE_ID_DICT),
-        "DICT_BUILDER" => Some(TYPE_ID_DICT_BUILDER),
         "TUPLE" => Some(TYPE_ID_TUPLE),
         "DICT_KEYS_VIEW" => Some(TYPE_ID_DICT_KEYS_VIEW),
         "DICT_VALUES_VIEW" => Some(TYPE_ID_DICT_VALUES_VIEW),
@@ -2138,7 +2077,6 @@ pub(crate) fn heap_kind_id_by_name(name: &str) -> Option<u32> {
         "PROPERTY" => Some(TYPE_ID_PROPERTY),
         "SUPER" => Some(TYPE_ID_SUPER),
         "SET" => Some(TYPE_ID_SET),
-        "SET_BUILDER" => Some(TYPE_ID_SET_BUILDER),
         "FROZENSET" => Some(TYPE_ID_FROZENSET),
         "BIGINT" => Some(TYPE_ID_BIGINT),
         "COMPLEX" => Some(TYPE_ID_COMPLEX),

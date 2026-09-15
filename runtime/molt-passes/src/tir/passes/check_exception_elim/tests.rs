@@ -178,6 +178,146 @@ fn redundant_check_after_pure_ops_dropped() {
 }
 
 #[test]
+fn full_width_boxing_preserves_local_and_successor_exception_edges() {
+    use crate::tir::op_kinds_generated::{GvnNumberingRole, opcode_gvn_numbering_role_table};
+
+    assert_eq!(
+        opcode_gvn_numbering_role_table(OpCode::BoxVal),
+        GvnNumberingRole::Never,
+        "a repeated box can independently fail allocation"
+    );
+    for split_block in [false, true] {
+        let boxed = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BoxVal,
+            operands: vec![ValueId(0)],
+            results: vec![ValueId(1)],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        let mut ops = vec![
+            make_const_int(i64::MAX, ValueId(0)),
+            make_check_exception(),
+            boxed,
+        ];
+        let mut func = if split_block {
+            make_two_block_func(ops, vec![make_check_exception()])
+        } else {
+            ops.push(make_check_exception());
+            make_func_with_block(ops)
+        };
+        let stats = run(&mut func);
+        assert_eq!(stats.ops_removed, 0, "split_block={split_block}");
+        assert_eq!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::CheckException)
+                .count(),
+            2,
+            "successful input materialization cannot prove boxing non-throwing"
+        );
+    }
+}
+
+#[test]
+fn untargeted_observers_preserve_literal_and_poll_failures_locally_and_across_cfg() {
+    for literal in [
+        None,
+        Some(OpCode::ConstStr),
+        Some(OpCode::ConstBytes),
+        Some(OpCode::ConstBigInt),
+    ] {
+        for split_block in [false, true] {
+            let mut observer = make_check_exception();
+            observer.attrs.remove("value");
+            if literal.is_none() {
+                observer.mark_async_work_poll();
+            }
+            let mut ops = vec![make_check_exception()];
+            if let Some(opcode) = literal {
+                ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![],
+                    results: vec![ValueId(0)],
+                    attrs: AttrDict::from([("s_value".into(), AttrValue::Str("123".into()))]),
+                    source_span: None,
+                });
+            }
+            ops.push(observer);
+            let mut func = if split_block {
+                make_two_block_func(ops, vec![make_check_exception()])
+            } else {
+                ops.push(make_check_exception());
+                make_func_with_block(ops)
+            };
+            let stats = run(&mut func);
+            assert_eq!(
+                stats.ops_removed, 0,
+                "{literal:?} split_block={split_block}: observation does not clear pending state"
+            );
+            assert_eq!(
+                func.blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .filter(|op| op.opcode == OpCode::CheckException)
+                    .count(),
+                3
+            );
+        }
+    }
+}
+
+#[test]
+fn result_bearing_checks_and_untargeted_observers_survive_clean_state() {
+    for targeted in [false, true] {
+        let mut observer = make_check_exception();
+        observer.results.push(ValueId(0));
+        if !targeted {
+            observer.attrs.remove("value");
+        }
+        let mut func = make_func_with_block(vec![make_check_exception(), observer]);
+        func.blocks.get_mut(&BlockId(0)).unwrap().terminator = Terminator::Return {
+            values: vec![ValueId(0)],
+        };
+        let stats = run(&mut func);
+        assert_eq!(
+            stats.ops_removed, 0,
+            "observer result must retain its definition"
+        );
+        assert_eq!(func.blocks[&BlockId(0)].ops[1].results, vec![ValueId(0)]);
+    }
+    let mut observer = make_check_exception();
+    observer.attrs.remove("value");
+    let mut func = make_func_with_block(vec![
+        make_check_exception(),
+        observer,
+        make_check_exception(),
+    ]);
+    let stats = run(&mut func);
+    assert_eq!(
+        stats.ops_removed, 1,
+        "passive observer preserves an already clean state"
+    );
+    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 2);
+}
+
+#[test]
+fn targeted_poll_proves_clean_fallthrough_but_must_execute() {
+    let mut poll = make_check_exception();
+    poll.mark_async_work_poll();
+    let mut func = make_two_block_func(
+        vec![make_check_exception(), poll],
+        vec![make_check_exception()],
+    );
+    let stats = run(&mut func);
+    assert_eq!(stats.ops_removed, 1);
+    assert!(func.blocks[&BlockId(1)].ops.is_empty());
+    assert!(func.blocks[&BlockId(0)].ops[1].is_async_work_poll());
+}
+
+#[test]
 fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
     let unmarked = make_original_kind("exception_finally_pending_observer");
     let mut observer = make_original_kind("exception_finally_pending_observer");

@@ -11,6 +11,7 @@ use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables
 use debug::emit_seed_debug;
 use local_alloc::{FrameLocalAllocationPolicy, ensure_frame_local};
 use requirements::FrameRuntimeRequirements;
+pub(super) use seeds::FrameConstAnchor;
 use seeds::FrameConstSeedPlan;
 use wasm_encoder::{Function, ValType};
 
@@ -163,15 +164,10 @@ impl WasmFunctionFramePlan {
 
         let dispatch_locals =
             locals.allocate_dispatch_locals(stateful, jumpful, &mut local_types, &mut local_count);
-        let (const_seed_locals, seeded_runtime_const_ops, seeded_runtime_const_op_indices) =
-            seed_plan.into_dispatch_seeds(stateful || jumpful);
+        let (const_seed_locals, const_anchors, const_anchor_by_op_index) =
+            seed_plan.into_frame_plans(stateful || jumpful);
 
-        emit_seed_debug(
-            func_ir,
-            &locals,
-            &const_seed_locals,
-            seeded_runtime_const_ops.len(),
-        );
+        emit_seed_debug(func_ir, &locals, &const_seed_locals, const_anchors.len());
 
         let control_mode = if stateful {
             WasmFrameControlMode::Stateful
@@ -194,8 +190,8 @@ impl WasmFunctionFramePlan {
                 dispatch_locals,
                 const_cache,
                 const_seed_locals,
-                seeded_runtime_const_ops,
-                seeded_runtime_const_op_indices,
+                const_anchors,
+                const_anchor_by_op_index,
             },
         }
     }

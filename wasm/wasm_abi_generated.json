@@ -3693,6 +3693,7 @@
     "inspect_isgeneratorfunction": "molt_inspect_isgeneratorfunction",
     "inspect_ismodule": "molt_inspect_ismodule",
     "inspect_signature_data": "molt_inspect_signature_data",
+    "int_as_i64": "molt_int_as_i64",
     "int_from_i64": "molt_int_from_i64",
     "int_from_obj": "molt_int_from_obj",
     "int_from_str_of_obj": "molt_int_from_str_of_obj",

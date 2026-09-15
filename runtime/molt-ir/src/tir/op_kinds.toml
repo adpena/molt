@@ -1248,7 +1248,6 @@ literal_payload_opcodes = [
 # key GVN may extract; omitted/malformed attrs fail closed to identity numbering
 # rather than colliding through a pass-local default.
 gvn_always_numberable_opcodes = [
-    "BoxVal",
     "UnboxVal",
 ]
 
@@ -3238,9 +3237,11 @@ result_absorbs_operands = false
 [[opcode]]
 name = "BoxVal"
 operand_arity = 1
-may_throw = false
+# Full-width i64 boxing allocates a BigInt outside the inline payload range.
+# Each materialization can fail, so this is also excluded from GVN numbering.
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
@@ -3601,9 +3602,9 @@ name = "ConstBigInt"
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
 exact_scalar_result_type = "BigInt"
-may_throw = false
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 result_arity = "one"
 # ConstBigInt is semantically `int`, but its value exceeds the raw i64 window.
 # The carrier is always boxed (DynBox; repr axis says MaybeBigInt). Typing it
@@ -3628,9 +3629,9 @@ result_absorbs_operands = false
 name = "ConstStr"
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
-may_throw = false
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 result_arity = "one"
 operand_independent_result_types = ["str"]
 operand_ownership = "all_borrowed"
@@ -3664,9 +3665,9 @@ result_absorbs_operands = false
 name = "ConstBytes"
 operand_arity = 0
 frontend_intrinsic_scalar_arity = 1
-may_throw = false
+may_throw = true
 side_effecting = false
-purity = "pure"
+purity = "pure_may_throw"
 result_arity = "one"
 operand_independent_result_types = ["bytes"]
 operand_ownership = "all_borrowed"
@@ -4619,6 +4620,26 @@ branch_arg = "none"
 
 # OPCODE-MAPPED-RAISING: kind ⇒ may_throw OpCode (cross-checked at generation).
 [[frontend_raising_kind]]
+kind = "BOX"
+opcode = "BoxVal"
+
+[[frontend_raising_kind]]
+kind = "BOX_FROM_RAW_INT"
+opcode = "BoxVal"
+
+[[frontend_raising_kind]]
+kind = "CONST_STR"
+opcode = "ConstStr"
+
+[[frontend_raising_kind]]
+kind = "CONST_BYTES"
+opcode = "ConstBytes"
+
+[[frontend_raising_kind]]
+kind = "CONST_BIGINT"
+opcode = "ConstBigInt"
+
+[[frontend_raising_kind]]
 kind = "DIV"
 opcode = "Div"
 
@@ -5382,16 +5403,8 @@ kind = "CONST_BOOL"
 opcode = "ConstBool"
 
 [[frontend_check_exception_skip]]
-kind = "CONST_STR"
-opcode = "ConstStr"
-
-[[frontend_check_exception_skip]]
 kind = "CONST_FLOAT"
 opcode = "ConstFloat"
-
-[[frontend_check_exception_skip]]
-kind = "CONST_BYTES"
-opcode = "ConstBytes"
 
 [[frontend_check_exception_skip]]
 kind = "IS"

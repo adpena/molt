@@ -235,14 +235,10 @@ fn verify_unbox_op(
         });
         return;
     }
-    let result = &op.result_values[0];
-    if result.repr == LirRepr::DynBox {
-        errors.push(LirVerifyError {
-            block: Some(bid),
-            op_index: Some(op_index),
-            message: "unbox op must produce a non-DynBox result".to_string(),
-        });
-    }
+    // The shared carrier proof may keep the semantic unbox result boxed.
+    // UnboxVal removes Box<T> from its semantic type; it does not authorize a
+    // scalar carrier solely from that type annotation. Boxed results retain an
+    // independent owner, just like a boxed-to-boxed BoxVal.
     match values.get(&op.tir_op.operands[0]) {
         Some(def)
             if def.value.repr == LirRepr::DynBox

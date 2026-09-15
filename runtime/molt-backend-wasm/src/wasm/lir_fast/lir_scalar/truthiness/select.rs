@@ -1,6 +1,7 @@
 use super::super::super::lir_context::LirLowerCtx;
 use super::super::super::runtime_calls::LirRuntimeCall;
 use super::super::boxing::emit_get_boxed_for_repr;
+use super::predicate::emit_lir_truthiness_i32;
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use wasm_encoder::{BlockType, Instruction, ValType};
 
@@ -44,10 +45,12 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bool_select(
         "boxed Python boolean selection must mint an owned selected operand"
     );
 
-    emit_get_boxed_for_repr(ctx, lhs);
-    ctx.emit_runtime_call(LirRuntimeCall::IsTruthy);
-    ctx.instructions.push(Instruction::I64Const(0));
-    ctx.instructions.push(Instruction::I64Ne);
+    emit_lir_truthiness_i32(ctx, lhs);
+    if matches!(ctx.repr_of(lhs), LirRepr::DynBox | LirRepr::Ref64) {
+        // A user __bool__/__len__ failure must reach its existing exception
+        // edge before constructing or retaining the selected value.
+        ctx.guard_operation_exception();
+    }
     ctx.instructions
         .push(Instruction::If(BlockType::Result(ValType::I64)));
     if is_and {

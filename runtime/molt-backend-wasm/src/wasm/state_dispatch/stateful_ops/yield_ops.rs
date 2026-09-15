@@ -41,5 +41,6 @@ pub(in crate::wasm::state_dispatch) fn emit_state_yield(
         op_emitter.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
     );
     func.instruction(&Instruction::LocalGet(pair));
+    op_emitter.emit_const_anchor_releases(func);
     func.instruction(&Instruction::Return);
 }

@@ -65,7 +65,7 @@ mod object_proofs {
     const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 
     // Type IDs — must match the real constants in object/type_ids.rs.
-    const ALL_TYPE_IDS: [u32; 58] = ALL_HEAP_TYPE_IDS;
+    const ALL_TYPE_IDS: &[u32] = &ALL_HEAP_TYPE_IDS;
 
     /// All header flags as a static array for bit-independence checks.
     const ALL_FLAGS: [u32; 30] = [
