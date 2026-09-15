@@ -116,6 +116,8 @@ def _prepare_backend_setup(
     is_rust_transpile: bool,
     is_luau_transpile: bool = False,
     is_wasm: bool,
+    is_wasm_freestanding: bool = False,
+    required_link_features: frozenset[str] = frozenset(),
     emit_mode: str,
     molt_root: Path,
     runtime_cargo_profile: str,
@@ -204,6 +206,35 @@ def _prepare_backend_setup(
         return None, _fail(backend_ensure_result.message, json_output, command="build")
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
+    runtime_wasm_codegen_digest = ""
+    if is_wasm:
+        # Runtime layout is an input to every WASM cache tier, including cache
+        # hits that never dispatch the backend. Bind before admitting artifacts.
+        if not _ensure_runtime_wasm_both(
+            runtime_state,
+            json_output=json_output,
+            cargo_profile=runtime_cargo_profile,
+            cargo_timeout=cargo_timeout,
+            project_root=molt_root,
+            simd_enabled=not is_wasm_freestanding,
+            freestanding=is_wasm_freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=native_artifact_plan.runtime_export_symbols() or None,
+            bind_for_codegen=True,
+        ):
+            return None, _fail(
+                "Runtime wasm build failed", json_output, command="build"
+            )
+        binding = runtime_state.runtime_wasm_codegen_binding
+        if binding is None:
+            return None, _fail(
+                "Runtime WASM code generation lacks a bound pair",
+                json_output,
+                command="build",
+            )
+        runtime_wasm_codegen_digest = binding.generation.manifest.name
     cache_setup_start = time.perf_counter()
     try:
         cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
@@ -227,6 +258,7 @@ def _prepare_backend_setup(
             stdlib_profile=stdlib_profile,
             native_artifact_plan=native_artifact_plan,
             runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+            runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
             resolved_capability_policy=resolved_capability_policy,
             stage_timings_ms=stage_timings_ms,
@@ -299,10 +331,18 @@ def _prepare_backend_runtime_context(
     def ensure_runtime_wasm_both(
         required_exports: set[str] | frozenset[str] | None = None,
     ) -> bool:
+        if (
+            required_exports is None
+            and runtime_state.runtime_wasm_codegen_binding is not None
+        ):
+            # Setup already admitted the pair before cache lookup. Dispatch
+            # consumes it; final emitted imports still take fresh admission below.
+            return True
         # The pair authority selects the exact staticlib+cdylib producer once,
         # validates both nested finalizers with per-member Cargo building
         # disabled, and commits one immutable generation. It fails closed rather
         # than falling back to per-member compilation or publication.
+        bind_for_codegen = required_exports is None
         required_exports = runtime_export_requirements(required_exports)
         return _ensure_runtime_wasm_both(
             runtime_state,
@@ -316,6 +356,7 @@ def _prepare_backend_runtime_context(
             resolved_modules=resolved_modules,
             required_link_features=required_link_features,
             required_exports=required_exports,
+            bind_for_codegen=bind_for_codegen,
         )
 
     if not prepared_backend_setup.runtime_callable_symbols_digest:

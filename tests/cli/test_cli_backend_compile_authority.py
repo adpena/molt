@@ -31,19 +31,21 @@ def test_cli_backend_compile_authority_is_single_home() -> None:
         assert f"def {name}(" not in cli_source
 
 
-def test_backend_compiler_fingerprint_is_exact_in_process_and_child_environments(
+def test_backend_compiler_fingerprint_is_exact_without_mutating_ambient_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     name = "MOLT_BACKEND_COMPILER_FINGERPRINT"
     monkeypatch.setenv(name, "stale")
-    child_env = {name: "stale"}
-
-    backend_compile._apply_backend_compiler_fingerprint(
-        "compiler-build-v2", backend_env=child_env
+    source_env = {name: "stale", "unrelated": "preserved"}
+    child_env = backend_compile._backend_environment_with_compiler_fingerprint(
+        source_env, "compiler-build-v2"
     )
-    assert os.environ[name] == "compiler-build-v2"
+    assert os.environ[name] == "stale"
+    assert source_env == {name: "stale", "unrelated": "preserved"}
     assert child_env[name] == "compiler-build-v2"
-
-    backend_compile._apply_backend_compiler_fingerprint(None, backend_env=child_env)
-    assert name not in os.environ
-    assert name not in child_env
+    cleared_env = backend_compile._backend_environment_with_compiler_fingerprint(
+        child_env, None
+    )
+    assert cleared_env == {"unrelated": "preserved"}
+    assert child_env[name] == "compiler-build-v2"
+    assert os.environ[name] == "stale"

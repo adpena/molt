@@ -6605,9 +6605,11 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
     ), errors
 
 
+@pytest.mark.parametrize("runtime_symbol", ["molt_alloc", "hash_new"])
 def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
+    runtime_symbol: str,
 ) -> None:
     external_root = tmp_path / "site"
     _write_external_native_artifact(
@@ -6619,7 +6621,7 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
         artifact_bytes=_wasm_extension_artifact(
             "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
-            imports=("molt_alloc",),
+            imports=(runtime_symbol,),
         ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -6627,8 +6629,8 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
             "runtime_linkage": "static_link",
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
-                "runtime_symbols": ["molt_alloc"],
-                "undefined_symbols": ["molt_alloc"],
+                "runtime_symbols": [runtime_symbol],
+                "undefined_symbols": [runtime_symbol],
             },
         },
     )
@@ -6644,12 +6646,13 @@ def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
     assert plan is not None
     assert [symbol.digest_payload() for symbol in plan.artifacts[0].abi_symbols] == [
         {
-            "symbol": "molt_alloc",
+            "symbol": runtime_symbol,
             "status": "runtime_backed",
             "primitive_class": "wasm_runtime_import",
             "source": "runtime_symbols+undefined_symbols",
         }
     ]
+    assert plan.runtime_export_symbols() == frozenset({runtime_symbol})
 
 
 def test_archive_provider_candidate_authority_excludes_non_provider_classes() -> None:
@@ -19702,14 +19705,28 @@ def _stub_backend_binary_ensure(
     return backend_bin
 
 
+@pytest.mark.parametrize("is_wasm", [False, True])
 def test_prepare_backend_setup_materializes_backend_before_cache_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    is_wasm: bool,
 ) -> None:
     runtime_state = cli._RuntimeArtifactState(runtime_lib=tmp_path / "runtime.a")
     output_artifact = tmp_path / "output.o"
     call_order: list[str] = []
     backend_bin = _stub_backend_binary_ensure(monkeypatch, tmp_path, order=call_order)
+
+    def bind_runtime(state, **kwargs):
+        assert kwargs["bind_for_codegen"] is True
+        call_order.append("runtime_binding")
+        state.runtime_wasm_codegen_binding = types.SimpleNamespace(
+            generation=types.SimpleNamespace(
+                manifest=tmp_path / "exact-pair.generation.json"
+            )
+        )
+        return True
+
+    monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", bind_runtime)
 
     empty_module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -19737,7 +19754,9 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     )
 
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
-        del kwargs
+        assert kwargs["runtime_wasm_codegen_digest"] == (
+            "exact-pair.generation.json" if is_wasm else ""
+        )
         call_order.append("cache_setup")
         assert backend_bin.exists()
         assert not cli._backend_binary_identity(backend_bin).startswith("missing:")
@@ -19766,7 +19785,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
             is_rust_transpile=False,
-            is_wasm=False,
+            is_wasm=is_wasm,
             emit_mode="bin",
             molt_root=tmp_path,
             runtime_cargo_profile="dev",
@@ -19792,7 +19811,12 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
     assert prepared_backend_setup.backend_bin == backend_bin
-    assert call_order == ["runtime_callables", "backend_binary", "cache_setup"]
+    assert call_order == [
+        "runtime_callables",
+        "backend_binary",
+        *(["runtime_binding"] if is_wasm else []),
+        "cache_setup",
+    ]
 
 
 def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
