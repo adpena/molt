@@ -64,7 +64,7 @@ pub(crate) use function_abi::python_builtin_functions_clear_runtime_state;
 #[cfg(test)]
 pub(crate) use wasm_callables_generated::resolve_test_python_builtin_symbol;
 pub(crate) use wasm_callables_generated::{
-    python_builtin_function_info, runtime_callable_symbol_is_non_callable,
+    PYTHON_BUILTIN_FUNCTIONS, python_builtin_function_info, runtime_callable_symbol_is_non_callable,
 };
 
 #[cfg(target_arch = "wasm32")]

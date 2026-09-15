@@ -1,76 +1,27 @@
 """Importable builtins for Molt.
 
-Bind supported builtins to module globals so `import builtins` works in
-compiled code without introducing dynamic indirection.
+Runtime publication owns primitive bindings; this facade supplies Python
+wrappers and public metadata without a second bootstrap binding path.
 """
 
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_SYS_MODULES = _require_intrinsic("molt_sys_modules")
-
-
-def _modules_dict() -> dict[str, object]:
-    modules = _MOLT_SYS_MODULES()
-    if not isinstance(modules, dict):
-        raise RuntimeError("molt_sys_modules returned invalid value")
-    return modules
-
-
-def _module_namespace(name: str) -> dict[str, object]:
-    module = _modules_dict().get(name)
-    namespace = getattr(module, "__dict__", None)
-    if isinstance(namespace, dict):
-        return namespace
-    return globals()
-
-
-# During builtins bootstrap we cannot rely on `globals()` / `locals()` being present
-# yet (we are defining them). Use the module object dict via the runtime modules map.
-_NS = _module_namespace(__name__)
+# globals is already published and the executing module frame owns this dict.
+_NS = globals()
 
 # `builtins` must match CPython's public API surface; keep typing helpers out of the
 # runtime module namespace.
 if False:  # TYPE_CHECKING
     from typing import Any  # noqa: F401
 
-_MOLT_BOOTSTRAP_DESCRIPTOR_TYPES = _require_intrinsic(
-    "molt_bootstrap_descriptor_types", _NS
-)
-_MOLT_IMPORTLIB_IMPORT_TRANSACTION = _require_intrinsic(
-    "molt_importlib_import_transaction", _NS
-)
+    # The runtime publishes this name only for Python >= 3.13.
+    PythonFinalizationError: type[RuntimeError]
 
-# Provide `builtins.globals` / `builtins.locals` early during bootstrap. Other stdlib
-# modules may import `builtins` during their own initialization and expect these to
-# exist (CPython parity).
-globals = _require_intrinsic("molt_globals_builtin", _NS)
-locals = _require_intrinsic("molt_locals_builtin", _NS)
-try:
-    globals.__text_signature__ = "()"  # type: ignore[attr-defined]
-    locals.__text_signature__ = "()"  # type: ignore[attr-defined]
-except Exception:  # noqa: BLE001
-    pass  # Non-fatal: cosmetic for inspect.signature parity
-
-
-try:
-    classmethod, staticmethod, property = _MOLT_BOOTSTRAP_DESCRIPTOR_TYPES()
-except Exception as _exc:  # noqa: BLE001
-    raise RuntimeError(
-        "descriptor bootstrap unresolved: expected (classmethod, staticmethod, property)"
-    ) from _exc
-
-
-def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
-    return _MOLT_IMPORTLIB_IMPORT_TRANSACTION(name, globals, locals, fromlist, level)
-
-
-__import__ = _intrinsic_import
-
-# Publish the bootstrap callable family before entering sys: sys initialization
-# itself uses these names. A partial builtins namespace must not be treated as
-# permission to resurrect a deleted binding in another executing module.
+# The canonical module initializer publishes runtime-backed builtins before
+# module metadata or this Python body can recursively import another module.
+# This facade only supplies Python-defined wrappers and public API metadata.
 import sys as _sys
 
 if False:  # TYPE_CHECKING
@@ -82,7 +33,6 @@ if False:  # TYPE_CHECKING
     _molt_trace_exit: Callable[[], object]
     _molt_getrecursionlimit: Callable[[], int]
     _molt_setrecursionlimit: Callable[[int], None]
-    _molt_sys_version_info: Callable[[], tuple[int, int, int, str, int]]
     _molt_sys_version: Callable[[], str]
     _molt_sys_stdin: Callable[[], object]
     _molt_sys_stdout: Callable[[], object]
@@ -356,83 +306,12 @@ __all__ = [
     "EncodingWarning",
 ]
 
-object = object
-
-type = type
-
-isinstance = isinstance
-issubclass = issubclass
-
-len = len
-hash = hash
-ord = ord
-chr = chr
-ascii = ascii
-bin = bin
-oct = oct
-hex = hex
-abs = abs
-divmod = divmod
-open = open
 try:
     open.__module__ = "_io"
 except Exception:
     pass
-repr = repr
-format = format
-dir = dir
-callable = callable
-any = any
-all = all
-sum = sum
-sorted = sorted
-min = min
-max = max
-id = id
-str = str
-range = range
-enumerate = enumerate
-slice = slice
-list = list
-tuple = tuple
-dict = dict
-float = float
-_complex_type = _NS.get("complex")
-if not isinstance(_complex_type, type):
-    try:
-        _complex_type = type(0j)
-    except Exception as _exc:
-        raise RuntimeError(
-            "builtins.complex requires runtime complex-type support"
-        ) from _exc
-complex = _complex_type
-int = int
-bool = bool
-round = round
-set = set
-frozenset = frozenset
-bytes = bytes
-bytearray = bytearray
-memoryview = memoryview
-iter = iter
-_molt_builtin_class_lookup = _require_builtin_intrinsic("molt_builtin_class_lookup")
-enumerate = _molt_builtin_class_lookup("enumerate")
-reversed = _molt_builtin_class_lookup("reversed")
-zip = _molt_builtin_class_lookup("zip")
-map = _molt_builtin_class_lookup("map")
-filter = _molt_builtin_class_lookup("filter")
-next = next
-aiter = aiter
-anext = anext
-getattr = getattr
-setattr = setattr
-delattr = delattr
-hasattr = hasattr
-super = super
-print = print
 
-# CPython exposes these via `site`, but compiled Molt binaries should have them
-# available without importing host Python. This is a Molt-native `_sitebuiltins`.
+# CPython exposes these through site; Molt supplies its native site helpers.
 import _sitebuiltins as _sitebuiltins  # noqa: PLC0415,E402
 
 help = _sitebuiltins.help
@@ -441,92 +320,10 @@ copyright = _sitebuiltins.copyright
 license = _sitebuiltins.license
 quit = _sitebuiltins.quit
 exit = _sitebuiltins.exit
-vars = vars
-Ellipsis = ...
-# Avoid bootstrap-time global lookup of NotImplemented in runtimes where builtins
-# are still being initialized; rich-compare returns the singleton directly.
-NotImplemented = object.__eq__(object(), object())
-_NS["True"] = True
-_NS["False"] = False
-_NS["None"] = None
-BaseException = BaseException
-BaseExceptionGroup = BaseExceptionGroup
-Exception = Exception
-ExceptionGroup = ExceptionGroup
 
-
-ArithmeticError = ArithmeticError
-AssertionError = AssertionError
-AttributeError = AttributeError
-BufferError = BufferError
-EOFError = EOFError
-FloatingPointError = FloatingPointError
-GeneratorExit = GeneratorExit
-ImportError = ImportError
-ModuleNotFoundError = ModuleNotFoundError
-IndexError = IndexError
-KeyError = KeyError
-KeyboardInterrupt = KeyboardInterrupt
-LookupError = LookupError
-MemoryError = MemoryError
-NameError = NameError
-UnboundLocalError = UnboundLocalError
-NotImplementedError = NotImplementedError
-_molt_sys_version_info = _require_builtin_intrinsic("molt_sys_version_info")
-_target_python_version = _molt_sys_version_info()
-if _target_python_version[:2] >= (3, 13):
-    PythonFinalizationError = PythonFinalizationError
-else:
-    __all__.remove("PythonFinalizationError")
-    _NS.pop("PythonFinalizationError", None)
-OSError = OSError
-EnvironmentError = EnvironmentError
-IOError = IOError
-BlockingIOError = BlockingIOError
-ChildProcessError = ChildProcessError
-ConnectionError = ConnectionError
-BrokenPipeError = BrokenPipeError
-ConnectionAbortedError = ConnectionAbortedError
-ConnectionRefusedError = ConnectionRefusedError
-ConnectionResetError = ConnectionResetError
-FileExistsError = FileExistsError
-OverflowError = OverflowError
-PermissionError = PermissionError
-FileNotFoundError = FileNotFoundError
-InterruptedError = InterruptedError
-IsADirectoryError = IsADirectoryError
-NotADirectoryError = NotADirectoryError
-RecursionError = RecursionError
-ReferenceError = ReferenceError
-RuntimeError = RuntimeError
-StopIteration = StopIteration
-StopAsyncIteration = StopAsyncIteration
-SyntaxError = SyntaxError
-IndentationError = IndentationError
-TabError = TabError
-SystemError = SystemError
-SystemExit = SystemExit
-TimeoutError = TimeoutError
-ProcessLookupError = ProcessLookupError
-TypeError = TypeError
-UnicodeError = UnicodeError
-UnicodeDecodeError = UnicodeDecodeError
-UnicodeEncodeError = UnicodeEncodeError
-UnicodeTranslateError = UnicodeTranslateError
-ValueError = ValueError
-ZeroDivisionError = ZeroDivisionError
-Warning = Warning
-DeprecationWarning = DeprecationWarning
-PendingDeprecationWarning = PendingDeprecationWarning
-RuntimeWarning = RuntimeWarning
-SyntaxWarning = SyntaxWarning
-UserWarning = UserWarning
-FutureWarning = FutureWarning
-ImportWarning = ImportWarning
-UnicodeWarning = UnicodeWarning
-BytesWarning = BytesWarning
-ResourceWarning = ResourceWarning
-EncodingWarning = EncodingWarning
+# Runtime publication owns version, platform, and executable/profile admission.
+# Project the public list from that namespace instead of repeating its gates.
+__all__ = [name for name in __all__ if name in _NS]
 
 _molt_getargv = _require_builtin_intrinsic("molt_getargv")
 _molt_getframe = _require_builtin_intrinsic("molt_getframe")
@@ -578,10 +375,5 @@ _molt_class_new = _require_builtin_intrinsic("molt_class_new")
 _molt_class_set_base = _require_builtin_intrinsic("molt_class_set_base")
 _molt_class_apply_set_name = _require_builtin_intrinsic("molt_class_apply_set_name")
 _molt_sys_platform = _require_builtin_intrinsic("molt_sys_platform")
-if _molt_sys_platform() == "win32":
-    WindowsError = OSError
-else:
-    __all__.remove("WindowsError")
-    _NS.pop("WindowsError", None)
 _molt_getpid = _require_builtin_intrinsic("molt_getpid")
 _molt_getcwd = _require_builtin_intrinsic("molt_getcwd")

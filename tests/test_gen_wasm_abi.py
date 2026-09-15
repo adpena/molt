@@ -931,7 +931,14 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
             + f"\n        arity: {entry['arity']},"
         ) in rendered_builtin_rs
     assert offsets == sorted(offsets), "binary-search projection must be name-sorted"
-    assert '        "len" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
+    runtime_offsets = [
+        rendered_runtime_rs.index(f'python_name: "{entry["python_name"]}",')
+        for entry in builtin_entries
+    ]
+    assert runtime_offsets == sorted(runtime_offsets), (
+        "runtime metadata shares sorted lookup and enumeration"
+    )
+    assert '            python_name: "len",' in rendered_runtime_rs
     assert "            index: 2," in rendered_runtime_rs
     assert '            runtime_name: "molt_len",' in rendered_runtime_rs
     assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
@@ -949,7 +956,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert '#[cfg(not(target_arch = "wasm32"))]' not in rendered_runtime_rs
     assert '            posonly_params: &["obj"],' in rendered_runtime_rs
     assert "            defaults: &[]," in rendered_runtime_rs
-    assert '        "print" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
+    assert '            python_name: "print",' in rendered_runtime_rs
     assert '            runtime_name: "molt_print_builtin",' in rendered_runtime_rs
     assert '            vararg: Some("args"),' in rendered_runtime_rs
     assert (
@@ -963,7 +970,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         '("flush", GeneratedBuiltinDefaultValue::Bool(false))],'
     ) in rendered_runtime_rs
     assert (
-        f"pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = {len(builtin_entries)};"
+        "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = PYTHON_BUILTIN_FUNCTIONS.len();"
         in rendered_runtime_rs
     )
     assert "RUNTIME_VOID_CALLABLE_NAMES" not in rendered_runtime_rs
@@ -1080,8 +1087,8 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
 
     runtime_callables = gen.render_runtime_callables_rs(loaded)
     hash_builtin_projection = runtime_callables.split(
-        '        "hash" => Some(PythonBuiltinFunctionInfo {', 1
-    )[1].split("        }),", 1)[0]
+        '            python_name: "hash",', 1
+    )[1].split("        },", 1)[0]
     assert 'runtime_name: "molt_hash_builtin"' in hash_builtin_projection
     assert '#[cfg(feature = "stdlib_crypto")]' not in hash_builtin_projection
 

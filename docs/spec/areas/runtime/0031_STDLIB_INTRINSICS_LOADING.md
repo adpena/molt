@@ -48,10 +48,24 @@ names and `_molt_` aliases, not inferred Python spellings. Runtime unit tests
 without a compiled app use generated, test-only callable address fixtures; an
 installed app resolver's miss is authoritative even in tests.
 
-The builtins module publishes its early callable family before importing `sys`.
-Runtime synthesis is allowed with no builtins module or in its own actively
-initializing namespace. Published values win, and a completed dictionary miss
-remains a miss: deletion must not resurrect the original builtin.
+Canonical `builtins` publication atomically seeds the runtime-backed Python
+namespace before either generated module metadata or the Python body can import
+another module. Class names and their public/internal distinction come from the
+runtime class authority; exception names and version/platform gates come from
+the object-model exception schema; callable names come from the generated
+builtin table and are admitted by the app resolver. Class constructors remain
+classes, not their lower-level callable adapters. Canonical publication retains
+the supported callable family explicitly in the shared reachability collector.
+The Python facade supplies wrappers and projects its public list from this
+namespace; it does not duplicate primitive binding or platform/version gates.
+
+Only the current ModuleTable initializer before its first publication can seed
+the namespace. A standalone same-named module or a repeated cache publication
+cannot refill it. Runtime synthesis is allowed with no builtins module or in
+its own actively initializing namespace. Published values win, and a completed
+dictionary miss remains a miss. Exception class cache lookup never mutates the
+Python namespace, so even constructing/raising a deleted exception cannot
+resurrect its binding.
 
 ## Checklist
 

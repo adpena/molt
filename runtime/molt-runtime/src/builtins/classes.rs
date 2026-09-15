@@ -1127,63 +1127,91 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
     }
 }
 
-pub(crate) fn builtin_class_bits_from_name(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    let builtins = builtin_classes(_py);
-    let bits = match name {
-        "object" => builtins.object,
-        "type" => builtins.type_obj,
-        "NoneType" => builtins.none_type,
-        "ellipsis" => builtins.ellipsis_type,
-        "NotImplementedType" => builtins.not_implemented_type,
-        "BaseException" => builtins.base_exception,
-        "Exception" => builtins.exception,
-        "BaseExceptionGroup" => builtins.base_exception_group,
-        "ExceptionGroup" => builtins.exception_group,
-        "int" => builtins.int,
-        "float" => builtins.float,
-        "complex" => builtins.complex,
-        "bool" => builtins.bool,
-        "str" => builtins.str,
-        "bytes" => builtins.bytes,
-        "bytearray" => builtins.bytearray,
-        "list" => builtins.list,
-        "tuple" => builtins.tuple,
-        "dict" => builtins.dict,
-        "set" => builtins.set,
-        "frozenset" => builtins.frozenset,
-        "range" => builtins.range,
-        "slice" => builtins.slice,
-        "memoryview" => builtins.memoryview,
-        "enumerate" => builtins.enumerate,
-        "bytes_iterator" => builtins.bytes_iterator,
-        "bytearray_iterator" => builtins.bytearray_iterator,
-        "dict_keyiterator" => builtins.dict_keyiterator,
-        "dict_valueiterator" => builtins.dict_valueiterator,
-        "dict_itemiterator" => builtins.dict_itemiterator,
-        "dict_reversekeyiterator" => builtins.dict_reversekeyiterator,
-        "dict_reversevalueiterator" => builtins.dict_reversevalueiterator,
-        "dict_reverseitemiterator" => builtins.dict_reverseitemiterator,
-        "list_iterator" => builtins.list_iterator,
-        "list_reverseiterator" => builtins.list_reverseiterator,
-        "range_iterator" => builtins.range_iterator,
-        "longrange_iterator" => builtins.longrange_iterator,
-        "set_iterator" => builtins.set_iterator,
-        "str_iterator" => builtins.str_iterator,
-        "str_ascii_iterator" => builtins.str_ascii_iterator,
-        "tuple_iterator" => builtins.tuple_iterator,
-        "reversed" => builtins.reversed,
-        "zip" => builtins.zip,
-        "map" => builtins.map,
-        "filter" => builtins.filter,
-        "super" => builtins.super_type,
-        "classmethod" => builtins.classmethod,
-        "staticmethod" => builtins.staticmethod,
-        "property" => builtins.property,
-        "GenericAlias" => builtins.generic_alias,
-        _ => return None,
+// One name-to-anchor authority supplies both intrinsic lookup and the public
+// namespace projection. Internal runtime types must never leak into builtins.
+macro_rules! builtin_class_names {
+    (public { $( $public:literal => $public_field:ident ),* $(,)? }
+     internal { $( $internal:literal => $internal_field:ident ),* $(,)? }) => {
+        pub(crate) fn builtin_class_bits_from_name(py: &PyToken<'_>, name: &str) -> Option<u64> {
+            let builtins = builtin_classes(py);
+            let bits = match name {
+                $( $public => builtins.$public_field, )*
+                $( $internal => builtins.$internal_field, )*
+                _ => return None,
+            };
+            inc_ref_bits(py, bits);
+            Some(bits)
+        }
+
+        pub(crate) fn is_public_builtin_class_name(name: &str) -> bool {
+            matches!(name, $( $public )|*)
+        }
+
+        /// Borrowed anchors: the destination dictionary acquires its own refs.
+        pub(crate) fn public_builtin_classes(py: &PyToken<'_>)
+            -> impl Iterator<Item = (&'static str, u64)>
+        {
+            let builtins = builtin_classes(py);
+            [$( ($public, builtins.$public_field), )*].into_iter()
+        }
     };
-    inc_ref_bits(_py, bits);
-    Some(bits)
+}
+
+builtin_class_names! {
+    public {
+        "object" => object,
+        "type" => type_obj,
+        "BaseException" => base_exception,
+        "Exception" => exception,
+        "BaseExceptionGroup" => base_exception_group,
+        "ExceptionGroup" => exception_group,
+        "int" => int,
+        "float" => float,
+        "complex" => complex,
+        "bool" => bool,
+        "str" => str,
+        "bytes" => bytes,
+        "bytearray" => bytearray,
+        "list" => list,
+        "tuple" => tuple,
+        "dict" => dict,
+        "set" => set,
+        "frozenset" => frozenset,
+        "range" => range,
+        "slice" => slice,
+        "memoryview" => memoryview,
+        "enumerate" => enumerate,
+        "reversed" => reversed,
+        "zip" => zip,
+        "map" => map,
+        "filter" => filter,
+        "super" => super_type,
+        "classmethod" => classmethod,
+        "staticmethod" => staticmethod,
+        "property" => property,
+    }
+    internal {
+        "NoneType" => none_type,
+        "ellipsis" => ellipsis_type,
+        "NotImplementedType" => not_implemented_type,
+        "bytes_iterator" => bytes_iterator,
+        "bytearray_iterator" => bytearray_iterator,
+        "dict_keyiterator" => dict_keyiterator,
+        "dict_valueiterator" => dict_valueiterator,
+        "dict_itemiterator" => dict_itemiterator,
+        "dict_reversekeyiterator" => dict_reversekeyiterator,
+        "dict_reversevalueiterator" => dict_reversevalueiterator,
+        "dict_reverseitemiterator" => dict_reverseitemiterator,
+        "list_iterator" => list_iterator,
+        "list_reverseiterator" => list_reverseiterator,
+        "range_iterator" => range_iterator,
+        "longrange_iterator" => longrange_iterator,
+        "set_iterator" => set_iterator,
+        "str_iterator" => str_iterator,
+        "str_ascii_iterator" => str_ascii_iterator,
+        "tuple_iterator" => tuple_iterator,
+        "GenericAlias" => generic_alias,
+    }
 }
 
 #[unsafe(no_mangle)]

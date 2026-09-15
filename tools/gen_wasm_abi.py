@@ -2066,8 +2066,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],\n",
             "    pub(crate) bind_kind: Option<i64>,\n",
             "}\n\n",
-            "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = ",
-            f"{len(python_builtin_callables)};\n\n",
+            "pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = PYTHON_BUILTIN_FUNCTIONS.len();\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
         ]
@@ -2208,18 +2207,16 @@ def render_runtime_callables_rs(data: dict) -> str:
             "        .find(|entry| entry.index == index)\n",
             "        .map(|entry| entry.dispatch)\n",
             "}\n\n",
-            "#[inline]\n",
             "#[rustfmt::skip]\n",
-            "pub(crate) fn python_builtin_function_info(\n",
-            "    python_name: &str,\n",
-            ") -> Option<PythonBuiltinFunctionInfo> {\n",
-            "    match python_name {\n",
+            "pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[\n",
         ]
     )
-    for entry in python_builtin_callables:
+    for entry in sorted(
+        python_builtin_callables, key=lambda entry: entry["python_name"]
+    ):
         lines.extend(
             [
-                f'        "{entry["python_name"]}" => Some(PythonBuiltinFunctionInfo {{\n',
+                "        PythonBuiltinFunctionInfo {\n",
                 f"            index: {entry['index']},\n",
                 f'            python_name: "{entry["python_name"]}",\n',
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
@@ -2232,13 +2229,19 @@ def render_runtime_callables_rs(data: dict) -> str:
                 f"            defaults: {_rust_builtin_default_slice(entry['defaults'])},\n",
                 f"            kw_defaults: {_rust_builtin_kw_default_slice(entry['kw_defaults'])},\n",
                 f"            bind_kind: {_rust_optional_i64(entry['bind_kind'])},\n",
-                "        }),\n",
+                "        },\n",
             ]
         )
     lines.extend(
         [
-            "        _ => None,\n",
-            "    }\n",
+            "];\n\n",
+            "#[inline]\n",
+            "pub(crate) fn python_builtin_function_info(\n",
+            "    python_name: &str,\n",
+            ") -> Option<PythonBuiltinFunctionInfo> {\n",
+            "    PYTHON_BUILTIN_FUNCTIONS\n",
+            "        .binary_search_by_key(&python_name, |info| info.python_name)\n",
+            "        .ok().map(|index| PYTHON_BUILTIN_FUNCTIONS[index])\n",
             "}\n\n",
             "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
