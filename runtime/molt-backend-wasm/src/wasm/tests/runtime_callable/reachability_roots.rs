@@ -26,12 +26,26 @@ fn compile_lookup_functions(
     reloc_enabled: bool,
     profile: WasmProfile,
 ) -> Vec<u8> {
-    functions.push(wasm_test_function(
-        "molt_main",
-        vec![],
-        None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+    // The production pipeline eliminates unreachable functions. Make every
+    // lookup helper escape through an actual function object, preserving its
+    // dynamic parameters while establishing real callable reachability.
+    let mut entry_ops = Vec::new();
+    let mut callables = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        let name = format!("callable_{index}");
+        let mut object = wasm_test_op("func_new", Some(&name), vec![]);
+        object.s_value = Some(function.name.clone());
+        object.value = Some(function.params.len() as i64);
+        entry_ops.push(object);
+        callables.push(name);
+    }
+    entry_ops.push(wasm_test_op(
+        "tuple_new",
+        Some("callables"),
+        callables.iter().map(String::as_str).collect(),
     ));
+    entry_ops.push(wasm_test_op("ret", None, vec!["callables"]));
+    functions.insert(0, wasm_test_function("molt_main", vec![], None, entry_ops));
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
         reloc_enabled,
