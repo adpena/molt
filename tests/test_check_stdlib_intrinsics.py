@@ -22,6 +22,18 @@ def _load_gate_module():
     return module
 
 
+def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> None:
+    from molt.stdlib_intrinsic_policy import module_required_intrinsic_names
+
+    module = _load_gate_module()
+    path = REPO_ROOT / "src" / "molt" / "stdlib" / "builtins.py"
+    errors, intrinsic_names, status, _ = module._scan_file(path)
+    assert errors == []
+    assert status == "intrinsic-backed"
+    assert "molt_compile_builtin" in intrinsic_names
+    assert frozenset(intrinsic_names) == module_required_intrinsic_names(path)
+
+
 @pytest.mark.parametrize(
     "names, expected",
     [

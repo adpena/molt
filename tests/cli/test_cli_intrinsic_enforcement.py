@@ -1,7 +1,58 @@
 from pathlib import Path
+import re
+import sys
 
+import pytest
+
+from molt import stdlib_intrinsic_policy
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
-from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+from molt.target_python import (
+    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_target_python_version,
+)
+
+
+@pytest.mark.parametrize("version", SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)
+def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
+    version: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    path = root / "builtins.py"
+    # These are actual facade operations, not bootstrap self-binding markers.
+    assert {
+        "molt_compile_builtin",
+        "molt_input_builtin",
+        "molt_pow",
+        "molt_pow_mod",
+        "molt_getframe",
+    } <= stdlib_intrinsic_policy.module_required_intrinsic_names(path)
+    target = _parse_target_python_version(version)
+    if sys.version_info[:2] < target.feature_version:
+        # Version support is a real frontend capability, not a policy bypass.
+        with pytest.raises(
+            UnresolvedStaticImportError,
+            match=rf"requires a Python {re.escape(version)}\+ frontend",
+        ):
+            cli_module_stdlib_policy._enforce_intrinsic_stdlib(
+                {"builtins": path}, root, json_output=False, target_python=target
+            )
+        return
+    assert (
+        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
+            {"builtins": path},
+            root,
+            json_output=False,
+            target_python=target,
+        )
+        is None
+    )
+
+
+def test_builtin_spelling_does_not_exempt_python_only_source(tmp_path: Path) -> None:
+    path = _write_module(tmp_path, "builtins.py", "VALUE = 1\n")
+    assert stdlib_intrinsic_policy.stdlib_module_intrinsic_status(path) == "python-only"
 
 
 def _write_module(tmp_path: Path, name: str, source: str) -> Path:
