@@ -9,6 +9,7 @@ pub use exception_layout::{
     BuiltinExceptionSpec, ExceptionBaseSpec, ExceptionFieldPolicy, ExceptionFieldStorage,
     ExceptionLayoutKind, ExceptionLayoutRoot, ExceptionMissingRead, ExceptionTypedField,
     MAX_EXCEPTION_TYPED_FIELDS, MAX_EXCEPTION_TYPED_TAIL_WORDS, builtin_exception_spec,
+    builtin_exception_specs,
 };
 
 use std::backtrace::Backtrace;

@@ -16,22 +16,29 @@ ROOT_INTRINSICS_PATH = ROOT / "src" / "_intrinsics.py"
 STDLIB_INTRINSICS_PATH = ROOT / "src" / "molt" / "stdlib" / "_intrinsics.py"
 
 
-def test_builtins_publishes_bootstrap_callable_family_before_importing_sys() -> None:
+def test_builtins_facade_does_not_duplicate_runtime_namespace_publication() -> None:
     tree = ast.parse((STDLIB_INTRINSICS_PATH.parent / "builtins.py").read_text())
-    published = set()
-    for statement in tree.body:
+    rebound = set()
+    for statement in ast.walk(tree):
         if isinstance(statement, ast.Assign):
-            published.update(
+            rebound.update(
                 target.id
                 for target in statement.targets
                 if isinstance(target, ast.Name)
             )
-        if isinstance(statement, ast.Import) and any(
-            alias.name == "sys" for alias in statement.names
-        ):
-            assert {"globals", "locals", "__import__"} <= published
-            return
-    pytest.fail("expected the builtins sys dependency to remain explicit")
+    assert (
+        not {"globals", "locals", "__import__", "property", "len", "ValueError"}
+        & rebound
+    )
+    assert any(
+        isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.ListComp)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        )
+        for node in tree.body
+    ), "public names must project runtime admission rather than duplicate its gates"
 
 
 def _load_intrinsics(path: Path, module_name: str) -> types.ModuleType:

@@ -327,6 +327,85 @@ fn checked_dict_insert(py: &PyToken<'_>, dict_ptr: *mut u8, name: &[u8], value_b
     inserted
 }
 
+/// Publish the runtime-backed Python namespace before the compiler's module
+/// metadata can recursively import Python code. The caller must hold the
+/// canonical module initialization transaction. There is no lazy refill after
+/// publication: dictionary edits and deletions remain authoritative.
+pub(crate) fn publish_python_builtins(py: &PyToken<'_>, module_bits: u64) -> bool {
+    let Some(live) = obj_from_bits(module_bits)
+        .as_ptr()
+        .and_then(module_dict_ptr)
+    else {
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            "builtins initializer must publish a module",
+        );
+        return false;
+    };
+    let Some(publication) = StagedDictPublication::prepare(py, live) else {
+        return false;
+    };
+    let staged = publication.staged_ptr();
+    for (name, bits) in crate::builtins::classes::public_builtin_classes(py) {
+        if !checked_dict_insert(py, staged, name.as_bytes(), bits) {
+            return false;
+        }
+    }
+    let minor = crate::object::ops_sys::runtime_target_minor(py) as u32;
+    for spec in molt_obj_model::builtin_exception_specs() {
+        let Some(name) = spec.public_name(minor, cfg!(target_os = "windows")) else {
+            continue;
+        };
+        let Some(bits) =
+            crate::builtins::exceptions::builtin_exception_type_bits_from_name(py, name)
+        else {
+            ensure_registry_memory_error(py, "builtin exception materialization failed");
+            return false;
+        };
+        let inserted = checked_dict_insert(py, staged, name.as_bytes(), bits);
+        dec_ref_bits(py, bits);
+        if !inserted {
+            return false;
+        }
+    }
+    for spec in crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS {
+        // The per-app resolver is the executable/profile authority. Excluded
+        // providers stay unavailable; allocation errors must never be skipped.
+        if crate::builtins::classes::is_public_builtin_class_name(spec.python_name)
+            || try_app_resolve_symbol(spec.runtime_name).is_none()
+        {
+            continue;
+        }
+        let Some(bits) =
+            crate::builtins::functions::python_builtin_function_bits(py, spec.python_name)
+        else {
+            ensure_registry_memory_error(py, "builtin callable materialization failed");
+            return false;
+        };
+        let inserted = checked_dict_insert(py, staged, spec.python_name.as_bytes(), bits);
+        dec_ref_bits(py, bits);
+        if !inserted {
+            return false;
+        }
+    }
+    for (name, bits) in [
+        ("None", MoltObject::none().bits()),
+        ("False", MoltObject::from_bool(false).bits()),
+        ("True", MoltObject::from_bool(true).bits()),
+        ("Ellipsis", crate::ellipsis_bits(py)),
+        ("NotImplemented", crate::not_implemented_bits(py)),
+    ] {
+        if !checked_dict_insert(py, staged, name.as_bytes(), bits) {
+            return false;
+        }
+    }
+    unsafe {
+        publication.publish(py);
+    }
+    !exception_pending(py)
+}
+
 pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
     let Some(live_module_dict) = module_dict_ptr(module_ptr) else {
         return;

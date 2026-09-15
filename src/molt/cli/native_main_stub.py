@@ -165,7 +165,6 @@ extern void molt_set_argv(int argc, const char** argv);
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
-extern unsigned long long molt_frame_pop();
 extern unsigned long long molt_exception_pending();
 extern unsigned long long molt_exception_last();
 extern unsigned long long molt_exception_report_uncaught(unsigned long long exc_bits);
@@ -230,7 +229,6 @@ static int molt_finish() {
     if (pending != 0) {
         unsigned long long exc = molt_exception_last();
         unsigned long long exit_code = molt_exception_report_uncaught(exc);
-        molt_frame_pop();  /* pop frame after traceback formatting */
         molt_dec_ref_obj(exc);
         molt_runtime_exit(exit_code);
         _Exit(1);

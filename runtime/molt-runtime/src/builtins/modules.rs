@@ -829,6 +829,10 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         crate::intrinsics::install_into_builtins(_py, ptr);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return MoltObject::none().bits();
+        }
         MoltObject::from_ptr(ptr).bits()
     })
 }
@@ -2030,6 +2034,15 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
         let trace_cache = trace_module_cache();
         if let Err(bits) = execution::on_module_publish(_py, &name, module_bits) {
             return bits;
+        }
+        // Seed only the exact namespace being published by the canonical
+        // initializer. Constructing a same-named ModuleType, replacing the
+        // visible cache, or re-publishing a live module grants no privilege.
+        if name == "builtins"
+            && crate::builtins::module_table::module_initialization_awaits_publication(_py, &name)
+            && !crate::intrinsics::registry::publish_python_builtins(_py, module_bits)
+        {
+            return MoltObject::none().bits();
         }
         let sys_modules_policy = execution::python_sys_modules_sync_policy(_py, &name);
         let suppress_sys_modules = sys_modules_policy != execution::PythonSysModulesSync::Normal;

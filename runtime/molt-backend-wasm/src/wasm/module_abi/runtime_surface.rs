@@ -28,11 +28,22 @@ impl WasmRuntimeSurfacePlan {
         let known_imports: BTreeSet<WasmRuntimeImport> =
             IMPORT_REGISTRY.iter().map(|spec| spec.import).collect();
         let requirements = collect_app_callable_requirements(&ir.functions);
+        let mut builtin_trampoline_specs = requirements.builtin_trampolines;
+        // Namespace construction publishes what this profile supports; it is
+        // not a demand to execute every public builtin. Actual global lookup
+        // and materialization roots remain mandatory and are never filtered.
+        for (name, arity) in requirements.builtin_namespace_trampolines {
+            if runtime_callable_import(&name)
+                .is_some_and(|import| profile.allows_runtime_import(import))
+            {
+                builtin_trampoline_specs.entry(name).or_insert(arity);
+            }
+        }
         let mut plan = Self {
             max_func_arity: 0,
             max_call_arity: 0,
             max_class_def_words: 0,
-            builtin_trampoline_specs: requirements.builtin_trampolines,
+            builtin_trampoline_specs,
             direct_import_call_specs: BTreeMap::new(),
             manifest_intrinsic_names: requirements
                 .intrinsic_names
@@ -232,6 +243,116 @@ mod tests {
     use super::*;
     use crate::wasm_import_tracking::TrackedImportIds;
     use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
+
+    fn builtin_publication_ir(extra_ops: Vec<OpIR>) -> SimpleIR {
+        let mut ops = vec![
+            OpIR {
+                kind: "const_str".into(),
+                out: Some("module_name".into()),
+                s_value: Some("builtins".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "module_cache_set".into(),
+                args: Some(vec!["module_name".into(), "module".into()]),
+                ..Default::default()
+            },
+        ];
+        ops.extend(extra_ops);
+        SimpleIR {
+            functions: vec![FunctionIR {
+                name: "builtin_bootstrap".into(),
+                params: vec!["module".into()],
+                ops,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                execution_context: Default::default(),
+            }],
+            profile: None,
+        }
+    }
+
+    #[test]
+    fn builtin_namespace_publication_admits_only_profile_supported_candidates() {
+        let ir = builtin_publication_ir(vec![]);
+        for profile in [WasmProfile::Pure, WasmProfile::Auto, WasmProfile::Full] {
+            let plan = WasmRuntimeSurfacePlan::build(&ir, profile);
+            for spec in PYTHON_BUILTIN_CALLABLES {
+                let import = runtime_callable_import(spec.runtime_name).unwrap();
+                assert_eq!(
+                    plan.builtin_trampoline_specs.get(spec.runtime_name),
+                    profile.allows_runtime_import(import).then_some(&spec.arity),
+                    "{:?}: {}",
+                    profile,
+                    spec.python_name
+                );
+            }
+        }
+        let pure = WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
+        assert!(
+            !pure
+                .builtin_trampoline_specs
+                .contains_key("molt_open_builtin")
+        );
+        assert!(pure.builtin_trampoline_specs.contains_key("molt_len"));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'"
+    )]
+    fn builtin_namespace_publication_does_not_weaken_mandatory_global_lookup() {
+        let ir = builtin_publication_ir(vec![
+            OpIR {
+                kind: "const_str".into(),
+                out: Some("lookup_name".into()),
+                s_value: Some("open".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "module_get_global".into(),
+                args: Some(vec!["module".into(), "lookup_name".into()]),
+                out: Some("value".into()),
+                ..Default::default()
+            },
+        ]);
+        WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'"
+    )]
+    fn builtin_namespace_publication_does_not_weaken_mandatory_materialization() {
+        let ir = builtin_publication_ir(vec![OpIR {
+            kind: "builtin_func".into(),
+            s_value: Some("molt_open_builtin".into()),
+            value: Some(runtime_callable_arity("molt_open_builtin").unwrap() as i64),
+            out: Some("value".into()),
+            ..Default::default()
+        }]);
+        WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'"
+    )]
+    fn builtin_namespace_publication_does_not_weaken_mandatory_direct_calls() {
+        let ir = builtin_publication_ir(vec![OpIR {
+            kind: "call".into(),
+            s_value: Some("molt_open_builtin".into()),
+            args: Some(vec![
+                "module".into();
+                runtime_callable_arity("molt_open_builtin").unwrap()
+            ]),
+            out: Some("value".into()),
+            ..Default::default()
+        }]);
+        WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
+    }
 
     #[test]
     fn stored_intrinsic_names_share_resolver_and_import_reachability() {

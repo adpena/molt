@@ -2906,29 +2906,15 @@ fn exception_type_bits_from_builtins(_py: &PyToken<'_>, name: &str) -> Option<u6
 /// Borrow a runtime exception identity. Schema names are canonical runtime
 /// classes; mutable Python builtins bindings are projections, never authority.
 /// Names outside the schema retain dynamic lookup and synthetic-class behavior.
+/// Lookup does not publish or repair Python namespace bindings: only module
+/// initialization owns that projection, so deleted names remain deleted.
 pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u64 {
     let builtins = builtin_classes(_py);
     match name {
-        "Exception" => {
-            let bits = builtins.exception;
-            ensure_exception_in_builtins(_py, name, bits);
-            return bits;
-        }
-        "BaseException" => {
-            let bits = builtins.base_exception;
-            ensure_exception_in_builtins(_py, name, bits);
-            return bits;
-        }
-        "BaseExceptionGroup" => {
-            let bits = builtins.base_exception_group;
-            ensure_exception_in_builtins(_py, name, bits);
-            return bits;
-        }
-        "ExceptionGroup" => {
-            let bits = builtins.exception_group;
-            ensure_exception_in_builtins(_py, name, bits);
-            return bits;
-        }
+        "Exception" => return builtins.exception,
+        "BaseException" => return builtins.base_exception,
+        "BaseExceptionGroup" => return builtins.base_exception_group,
+        "ExceptionGroup" => return builtins.exception_group,
         _ => {}
     }
     let spec = builtin_exception_spec(name);
@@ -2937,11 +2923,7 @@ pub(crate) fn exception_type_bits_from_name(_py: &PyToken<'_>, name: &str) -> u6
     {
         // Aliases have no second owning cache slot. One canonical cache entry
         // owns the class; each Python module entry owns its own projection.
-        let bits = exception_type_bits_from_name(_py, spec.canonical_name());
-        if bits != 0 {
-            ensure_exception_in_builtins(_py, name, bits);
-        }
-        return bits;
+        return exception_type_bits_from_name(_py, spec.canonical_name());
     }
     if let Some(bits) = exception_type_cache(_py).lock().unwrap().get(name).copied() {
         return bits;
@@ -3119,43 +3101,7 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
         dec_ref_bits(_py, class_bits);
         return bits;
     }
-    // Namespace publication may allocate or release references. Never do it
-    // under the exception identity-cache mutex.
-    ensure_exception_in_builtins(_py, name, class_bits);
     class_bits
-}
-
-fn ensure_exception_in_builtins(_py: &PyToken<'_>, name: &str, class_bits: u64) {
-    let module_bits = {
-        let cache = module_cache(_py);
-        let guard = cache.lock().unwrap();
-        guard.get("builtins").copied()
-    };
-    let Some(module_bits) = module_bits else {
-        return;
-    };
-    let module_ptr = match obj_from_bits(module_bits).as_ptr() {
-        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
-        _ => return,
-    };
-    let dict_bits = unsafe { module_dict_bits(module_ptr) };
-    let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
-        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
-        _ => return,
-    };
-    let name_ptr = alloc_string(_py, name.as_bytes());
-    if name_ptr.is_null() {
-        return;
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let existing = unsafe { dict_get_in_place(_py, dict_ptr, name_bits) };
-    let needs_set = existing.is_none();
-    if needs_set {
-        unsafe {
-            dict_set_in_place(_py, dict_ptr, name_bits, class_bits);
-        }
-    }
-    dec_ref_bits(_py, name_bits);
 }
 
 pub(crate) fn exception_type_bits(_py: &PyToken<'_>, kind_bits: u64) -> u64 {
@@ -4827,6 +4773,61 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
+    fn exception_identity_lookup_never_publishes_or_resurrects_builtin_names() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name = crate::attr_name_bits_from_bytes(_py, b"builtins").unwrap();
+            let module = crate::alloc_module_obj(_py, name);
+            assert!(!module.is_null());
+            dec_ref_bits(_py, name);
+            let module_bits = MoltObject::from_ptr(module).bits();
+            let previous_module = super::module_cache(_py)
+                .lock()
+                .unwrap()
+                .insert("builtins".to_string(), module_bits);
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(module) })
+                .as_ptr()
+                .unwrap();
+
+            // Sweep roots, cold/warm cached classes, and aliases. Canonical
+            // identity is independent of target-specific namespace visibility.
+            for spec in molt_obj_model::builtin_exception_specs() {
+                let key = crate::attr_name_bits_from_bytes(_py, spec.name().as_bytes()).unwrap();
+                assert_eq!(unsafe { crate::dict_get_in_place(_py, dict, key) }, None);
+                let canonical = super::exception_type_bits_from_name(_py, spec.name());
+                assert_eq!(
+                    unsafe { crate::dict_get_in_place(_py, dict, key) },
+                    None,
+                    "identity lookup must not publish {}",
+                    spec.name()
+                );
+                unsafe { crate::dict_set_in_place(_py, dict, key, canonical) };
+                assert!(!exception_pending(_py));
+                assert!(unsafe { crate::object::ops::dict_del_in_place(_py, dict, key) });
+                let owned = super::builtin_exception_type_bits_from_name(_py, spec.name()).unwrap();
+                assert_eq!(owned, canonical);
+                dec_ref_bits(_py, owned);
+                assert_eq!(
+                    unsafe { crate::dict_get_in_place(_py, dict, key) },
+                    None,
+                    "identity lookup must not resurrect {}",
+                    spec.name()
+                );
+                dec_ref_bits(_py, key);
+            }
+            assert!(!exception_pending(_py));
+            {
+                let mut cache = super::module_cache(_py).lock().unwrap();
+                assert_eq!(cache.remove("builtins"), Some(module_bits));
+                if let Some(previous) = previous_module {
+                    cache.insert("builtins".to_string(), previous);
+                }
+            }
+            dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
     fn canonical_exception_identity_ignores_cold_and_warm_builtins_rebinding() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -4929,8 +4930,6 @@ mod tests {
     fn exception_aliases_share_one_cache_owner_and_new_classes_transfer_their_owner() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            // Exclude independently owned module projections from the cache RC assertion.
-            let previous_module = super::module_cache(_py).lock().unwrap().remove("builtins");
             let canonical = super::exception_type_bits_from_name(_py, "OSError");
             let ptr = obj_from_bits(canonical).as_ptr().unwrap();
             let before = unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
@@ -4949,19 +4948,10 @@ mod tests {
                 unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() },
                 before
             );
-            if let Some(previous) = previous_module {
-                super::module_cache(_py)
-                    .lock()
-                    .unwrap()
-                    .insert("builtins".to_string(), previous);
-            }
-
             let fresh = super::alloc_class_obj_from_name(_py, "CacheOwnershipProbe");
             assert!(!fresh.is_null());
             let fresh_bits = MoltObject::from_ptr(fresh).bits();
             let before = unsafe { (*header_from_obj_ptr(fresh)).ref_count_snapshot() };
-            // Keep projection absent here too, so only constructor/cache custody is measured.
-            let previous_module = super::module_cache(_py).lock().unwrap().remove("builtins");
             assert_eq!(
                 super::cache_exception_type(_py, "CacheOwnershipProbe", fresh_bits),
                 fresh_bits
@@ -4976,12 +4966,6 @@ mod tests {
                 .remove("CacheOwnershipProbe")
                 .unwrap();
             dec_ref_bits(_py, owned);
-            if let Some(previous) = previous_module {
-                super::module_cache(_py)
-                    .lock()
-                    .unwrap()
-                    .insert("builtins".to_string(), previous);
-            }
             assert!(!exception_pending(_py));
         });
     }

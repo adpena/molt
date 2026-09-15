@@ -10,7 +10,16 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Default)]
 pub struct AppCallableRequirements {
     pub builtin_trampolines: BTreeMap<String, usize>,
+    /// Namespace publication exposes only providers admitted by the target;
+    /// unlike actual global lookups, these are not mandatory profile roots.
+    pub builtin_namespace_trampolines: BTreeMap<String, usize>,
     pub intrinsic_names: BTreeSet<String>,
+}
+
+fn builtin_callable_family() -> impl Iterator<Item = (String, usize)> {
+    PYTHON_BUILTIN_CALLABLES
+        .iter()
+        .map(|spec| (spec.runtime_name.to_owned(), spec.arity))
 }
 
 impl AppCallableRequirements {
@@ -21,17 +30,14 @@ impl AppCallableRequirements {
                     .insert(spec.runtime_name.to_owned(), spec.arity);
             }
         } else {
-            // Only a computed/overwritten name can select the whole family.
-            for spec in PYTHON_BUILTIN_CALLABLES {
-                self.builtin_trampolines
-                    .insert(spec.runtime_name.to_owned(), spec.arity);
-            }
+            self.builtin_trampolines.extend(builtin_callable_family());
         }
     }
 
     fn into_names(self) -> BTreeSet<String> {
         let mut names = self.intrinsic_names;
         names.extend(self.builtin_trampolines.into_keys());
+        names.extend(self.builtin_namespace_trampolines.into_keys());
         names
     }
 }
@@ -67,6 +73,24 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
             })
             .collect();
         for op in &function.ops {
+            let is_module_publication = op.kind == "module_cache_set"
+                || (op.kind == "call"
+                    && op.s_value.as_deref().is_some_and(|name| {
+                        matches!(name, "molt_module_cache_set" | "module_cache_set")
+                            && !defined_functions.contains(name)
+                    }));
+            if is_module_publication {
+                let name = op
+                    .args
+                    .as_deref()
+                    .and_then(|args| args.first())
+                    .and_then(|name| const_strings.get(name.as_str()).copied());
+                if name.is_none() || name == Some("builtins") {
+                    requirements
+                        .builtin_namespace_trampolines
+                        .extend(builtin_callable_family());
+                }
+            }
             if matches!(op.kind.as_str(), "const_str" | "builtin_func") {
                 if let Some(name) = op
                     .s_value

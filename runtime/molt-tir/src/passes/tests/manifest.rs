@@ -2,6 +2,59 @@ use super::*;
 use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
 
 #[test]
+fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
+    let symbols: BTreeSet<String> = PYTHON_BUILTIN_CALLABLES
+        .iter()
+        .map(|spec| spec.runtime_name.to_owned())
+        .collect();
+    for target in [
+        None,
+        Some("molt_module_cache_set"),
+        Some("module_cache_set"),
+    ] {
+        for name in [Some("builtins"), Some("other"), None] {
+            let mut ops = Vec::new();
+            if let Some(name) = name {
+                ops.push(make_const_str("name", name));
+            }
+            ops.push(OpIR {
+                kind: if target.is_some() {
+                    "call"
+                } else {
+                    "module_cache_set"
+                }
+                .into(),
+                s_value: target.map(str::to_owned),
+                args: Some(vec!["name".into(), "module".into()]),
+                ..Default::default()
+            });
+            let expected = if name == Some("other") {
+                BTreeSet::new()
+            } else {
+                symbols.clone()
+            };
+            let functions = [manifest_func(ops)];
+            let requirements = collect_app_callable_requirements(&functions);
+            assert!(
+                requirements.builtin_trampolines.is_empty(),
+                "publication must not add mandatory capability roots"
+            );
+            assert_eq!(
+                requirements
+                    .builtin_namespace_trampolines
+                    .into_keys()
+                    .collect::<BTreeSet<_>>(),
+                expected
+            );
+            assert_eq!(
+                compute_app_callable_manifest(&functions, &symbols),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
 fn app_callable_manifest_canonicalizes_explicit_intrinsic_alias_candidates() {
     let function = manifest_func(vec![
         make_const_str("alias", "_molt_time_time"),
