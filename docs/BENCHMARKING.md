@@ -77,6 +77,25 @@ It is mirrored by `.github/workflows/perf-gate.yml`. Use `tools/bench.py` for
 native triage and `tools/bench_wasm.py` for WASM triage; their JSON and Markdown
 outputs are non-canonical evidence and must not be cited as PR/release
 performance authority.
+
+`tools/bench_suites.py` is also the complete local benchmark inventory: every
+`tests/benchmarks/bench_*.py` file belongs to exactly one primary runnable suite
+or to the typed `EXCLUDED_BENCHMARKS` table with a category and reason. The smoke
+tuple is only a subset alias of the core suite. Diagnostic/profile-epoch and
+external-driver scripts are not silently treated as outer-wall-time benchmarks.
+
+For each runnable scoreboard cell, exact stdout, user stderr, and exit status
+are compared through `tools.compat.comparison` across the cold observation,
+all existing warmup runs, and all timed warm samples. Runtime profiler/leak
+modes are disabled for this user-output boundary. The board stores only hashes,
+stability axes, and the first mismatch sample identity. Missing or failed
+evidence is `RUN_ERROR`; a
+faster wrong or unstable output can never be GREEN. Historical schema-v3 boards
+remain historical and cannot be rebuilt/merged into schema v4 without remeasurement.
+The `safe_run` receipt is accepted only as the final invocation-bound stderr
+suffix. Since child output and the receipt share one stream, this binding cannot
+cryptographically exclude a hostile child spoof when the wrapper emits nothing;
+that stronger guarantee would require a dedicated receipt channel.
 To exercise single-module linking, add `--linked` (requires `wasm-ld` and
 `wasm-tools`).
 Use `tools/bench_individual.py` for focused native micro-benchmark slices. It

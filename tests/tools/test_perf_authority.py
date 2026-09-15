@@ -188,7 +188,10 @@ def _canonical_scoreboard_doc(
             "codon_ratio": None,
             "codon_equivalent": None,
             "cpython_peak_rss_mib": 15.0,
-            "output_parity": True,
+            "output_parity": pa.perf_schema.output_parity_evidence(
+                reference_observations=[("cpython:cold", "result\n", "", 0)],
+                molt_observations=[("molt:cold", "result\n", "", 0)],
+            ),
             "log_artifact": f"bench/scoreboard/logs/{Path(benchmark).stem}-{backend}.log",
             "classification": "GREEN_STABLE",
         }

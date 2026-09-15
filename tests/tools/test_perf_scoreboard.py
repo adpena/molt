@@ -20,9 +20,23 @@ for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import harness_memory_guard  # noqa: E402
+import perf_schema as schema  # noqa: E402
 import perf_scoreboard as ps  # noqa: E402
 import perf_scoreboard_measure as measure  # noqa: E402
-import harness_memory_guard  # noqa: E402
+
+
+def _matching_output_parity() -> dict[str, object]:
+    return schema.output_parity_evidence(
+        reference_observations=[
+            ("cpython:cold", "result\n", "", 0),
+            ("cpython:warm:p0:s0", "result\n", "", 0),
+        ],
+        molt_observations=[
+            ("molt:cold", "result\n", "", 0),
+            ("molt:warm:p0:s0", "result\n", "", 0),
+        ],
+    )
 
 
 def _cell(
@@ -59,7 +73,7 @@ def _cell(
     if cpython_ok:
         c.cpython_peak_rss_mib = 15.0
     if build_ok and molt_ok and cpython_ok and not run_blocked:
-        c.output_parity = True
+        c.output_parity = _matching_output_parity()
     return c
 
 
@@ -210,6 +224,82 @@ def test_unstable_is_gated() -> None:
     c.finalize(budget_ms=100.0, authoritative=True)
     assert c.verdict == ps.VERDICT_UNSTABLE
     assert ps.verdict_fails_gate(c.verdict) is True
+
+
+def test_faster_wrong_output_is_run_error() -> None:
+    c = _cell(
+        warm_molt_s=0.01,
+        warm_cpython_s=0.20,
+        cold_molt_s=0.02,
+        cold_cpython_s=0.25,
+    )
+    c.output_parity = schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "correct\n", "", 0)],
+        molt_observations=[("molt:cold", "wrong\n", "", 0)],
+    )
+
+    c.finalize(budget_ms=100.0, authoritative=True)
+
+    assert c.verdict == ps.VERDICT_RUN_ERROR
+    assert ps.verdict_fails_gate(c.verdict) is True
+
+
+def test_missing_output_comparison_evidence_fails_closed() -> None:
+    c = _cell(
+        warm_molt_s=0.01,
+        warm_cpython_s=0.20,
+        cold_molt_s=0.02,
+        cold_cpython_s=0.25,
+    )
+    c.output_parity = None
+
+    c.finalize(budget_ms=100.0, authoritative=True)
+
+    assert c.verdict == ps.VERDICT_RUN_ERROR
+
+
+def test_exit_code_mismatch_is_run_error() -> None:
+    c = _cell(
+        warm_molt_s=0.01,
+        warm_cpython_s=0.20,
+        cold_molt_s=0.02,
+        cold_cpython_s=0.25,
+    )
+    c.output_parity = schema.output_parity_evidence(
+        reference_observations=[("cpython:cold", "same\n", "", 0)],
+        molt_observations=[("molt:cold", "same\n", "", 7)],
+    )
+
+    c.finalize(budget_ms=100.0, authoritative=True)
+
+    assert c.output_parity["reason"] == "exit_mismatch"
+    assert c.verdict == ps.VERDICT_RUN_ERROR
+
+
+def test_warm_output_instability_is_run_error_with_sample_identity() -> None:
+    c = _cell(
+        warm_molt_s=0.01,
+        warm_cpython_s=0.20,
+        cold_molt_s=0.02,
+        cold_cpython_s=0.25,
+    )
+    c.output_parity = schema.output_parity_evidence(
+        reference_observations=[
+            ("cpython:cold", "same\n", "", 0),
+            ("cpython:warm:p0:s0", "same\n", "", 0),
+        ],
+        molt_observations=[
+            ("molt:cold", "same\n", "", 0),
+            ("molt:warm:p0:s0", "changed\n", "", 0),
+        ],
+    )
+
+    c.finalize(budget_ms=100.0, authoritative=True)
+
+    assert c.output_parity["reason"] == "molt_unstable"
+    assert c.output_parity["mismatch_observation"] == "molt:warm:p0:s0"
+    assert c.output_parity["mismatch_observation_sha256"]
+    assert c.verdict == ps.VERDICT_RUN_ERROR
 
 
 def test_build_failed_and_run_error_and_blocked_and_incompat() -> None:
@@ -449,6 +539,99 @@ def test_measure_cell_records_molt_failure_payload_without_live_build(
     assert ps.validate_board(doc) == []
     log_text = (tmp_path / cell.log_artifact).read_text(encoding="utf-8")
     assert "BUILD FAILURE MESSAGE: backend daemon returned empty response" in log_text
+
+
+def test_measure_cell_includes_existing_warmups_in_output_parity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "bench_fib.py"
+    script.write_text("print('same')\n", encoding="utf-8")
+    binary_path = tmp_path / "bench_fib.exe"
+    binary_path.write_bytes(b"binary")
+    captured: dict[str, list[tuple[str, str | None, str | None, int | None]]] = {}
+    run_labels: list[str] = []
+
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec: {})
+    monkeypatch.setattr(measure, "_cpython_run_env", lambda: {})
+    monkeypatch.setattr(
+        measure.bench_suites,
+        "canonical_benchmark_key",
+        lambda _script: "tests/benchmarks/bench_fib.py",
+    )
+    monkeypatch.setattr(
+        measure.bench_suites,
+        "molt_args_for_benchmark",
+        lambda _script: [],
+    )
+    monkeypatch.setattr(measure.bench, "resolve_benchmark_run_args", lambda _path: [])
+    monkeypatch.setattr(
+        measure.bench,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: measure.bench.MoltBinary(
+            binary_path, None, 0.1, 1.0
+        ),
+    )
+
+    def fake_run(*args, label: str, capture_output: bool = False, **kwargs):
+        run_labels.append(label)
+        assert capture_output is True
+        return measure.RunOutcome(
+            True,
+            0.1,
+            1.0,
+            "ok",
+            0,
+            stdout="same\n",
+            stderr="",
+        )
+
+    def capture_parity(*, reference_observations, molt_observations):
+        captured["reference"] = list(reference_observations)
+        captured["molt"] = list(molt_observations)
+        return schema.output_parity_evidence(
+            reference_observations=reference_observations,
+            molt_observations=molt_observations,
+        )
+
+    monkeypatch.setattr(measure, "_safe_run_json", fake_run)
+    monkeypatch.setattr(measure, "output_parity_evidence", capture_parity)
+
+    cell = measure.measure_cell(
+        script_path=script,
+        spec=measure.BackendSpec("native", "llvm", "llvm", "native"),
+        profile="release-fast",
+        samples=1,
+        warmup=1,
+        repeat=2,
+        rss_mb=64,
+        timeout_s=1.0,
+        batch_server=None,
+        cpython_cmd=(sys.executable,),
+        log_dir=tmp_path / "logs",
+    )
+
+    assert cell.output_parity["reference_observation_count"] == 5
+    assert cell.output_parity["molt_observation_count"] == 5
+    assert [row[0] for row in captured["molt"]] == [
+        "molt:cold",
+        "molt:warmup:p0:s0",
+        "molt:warm:p0:s0",
+        "molt:warmup:p1:s0",
+        "molt:warm:p1:s0",
+    ]
+    assert [row[0] for row in captured["reference"]] == [
+        "cpython:cold",
+        "cpython:warmup:p0:s0",
+        "cpython:warm:p0:s0",
+        "cpython:warmup:p1:s0",
+        "cpython:warm:p1:s0",
+    ]
+    assert any(
+        "molt-warmup:tests/benchmarks/bench_fib.py:p0:s0" in label
+        for label in run_labels
+    )
 
 
 def _oracle_payload(
@@ -1548,6 +1731,49 @@ def test_main_refuses_nonauthoritative_before_batch_build(
 # --- safe_run custody -------------------------------------------------------
 
 
+@pytest.mark.parametrize("encoded", ["[]", '"string"', "null", "1"])
+def test_parse_safe_run_stderr_rejects_non_object_receipt(encoded: str) -> None:
+    stderr = f"user stderr\nSAFE_RUN {encoded}\n"
+
+    payload, child_stderr = ps._parse_safe_run_stderr(stderr)
+
+    assert payload is None
+    assert child_stderr == stderr
+
+
+def test_parse_safe_run_stderr_removes_only_terminal_receipt() -> None:
+    stderr = (
+        "user warning without final newline"
+        'SAFE_RUN {"status":"ok","exit":0,"elapsed_s":0.1}\n'
+    )
+
+    payload, child_stderr = ps._parse_safe_run_stderr(stderr)
+
+    assert payload == {"status": "ok", "exit": 0, "elapsed_s": 0.1}
+    assert child_stderr == "user warning without final newline"
+
+
+def test_parse_safe_run_stderr_does_not_fall_back_before_malformed_terminal() -> None:
+    stderr = (
+        'child SAFE_RUN {"status":"ok","exit":0}\n'
+        "SAFE_RUN {malformed}\n"
+    )
+
+    payload, child_stderr = ps._parse_safe_run_stderr(stderr)
+
+    assert payload is None
+    assert child_stderr == stderr
+
+
+def test_parse_safe_run_stderr_rejects_nonterminal_object() -> None:
+    stderr = 'SAFE_RUN {"status":"ok","exit":0}\nchild trailer\n'
+
+    payload, child_stderr = ps._parse_safe_run_stderr(stderr)
+
+    assert payload is None
+    assert child_stderr == stderr
+
+
 def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
     calls: list[dict] = []
 
@@ -1557,7 +1783,9 @@ def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
             returncode=0,
             stdout="child-output\n",
             stderr=(
-                'SAFE_RUN {"status":"ok","exit":0,"elapsed_s":0.125,"peak_rss_mib":9}\n'
+                'SAFE_RUN {"label":"unit","status":"ok","exit":0,'
+                '"elapsed_s":0.125,"peak_rss_mib":9,"rss_limit_mib":123,'
+                '"timeout_s":4.0}\n'
             ),
             timed_out=False,
         )
@@ -1574,13 +1802,14 @@ def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
         rss_mb=123,
         timeout_s=4.0,
         label="unit",
-        capture_stdout=True,
+        capture_output=True,
     )
 
     assert outcome.ok is True
     assert outcome.elapsed_s == 0.125
     assert outcome.peak_rss_mib == 9.0
     assert outcome.stdout == "child-output\n"
+    assert outcome.stderr == ""
     assert outcome.stdout_tail == "child-output\n"
     assert outcome.stderr_tail is not None
     assert "SAFE_RUN" in outcome.stderr_tail
@@ -1595,6 +1824,96 @@ def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
     assert "--json" in call["cmd"]
     assert "--rss-mb" in call["cmd"]
     assert "--timeout" in call["cmd"]
+
+
+def test_safe_run_json_preserves_child_stderr_without_wrapper_receipt(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="result\n",
+            stderr=(
+                "user warning without final newline"
+                'SAFE_RUN {"label":"stderr-unit","status":"ok","exit":0,'
+                '"elapsed_s":0.1,"peak_rss_mib":4,"rss_limit_mib":64,'
+                '"timeout_s":1.0}\n'
+            ),
+            timed_out=False,
+        ),
+    )
+
+    outcome = ps._safe_run_json(
+        [sys.executable, "-c", "pass"],
+        env={},
+        rss_mb=64,
+        timeout_s=1.0,
+        label="stderr-unit",
+        capture_output=True,
+    )
+
+    assert outcome.ok is True
+    assert outcome.stderr == "user warning without final newline"
+    assert "SAFE_RUN" not in (outcome.stderr or "")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("label", "wrong-label"),
+        ("exit", 7),
+        ("exit", True),
+        ("status", "nonzero"),
+        ("status", ["ok"]),
+        ("elapsed_s", True),
+        ("elapsed_s", -0.1),
+        ("peak_rss_mib", float("inf")),
+        ("rss_limit_mib", True),
+        ("rss_limit_mib", 65),
+        ("timeout_s", float("nan")),
+    ],
+)
+def test_safe_run_json_rejects_receipt_not_bound_to_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    receipt: dict[str, object] = {
+        "label": "bound-unit",
+        "status": "ok",
+        "exit": 0,
+        "elapsed_s": 0.1,
+        "peak_rss_mib": 4,
+        "rss_limit_mib": 64,
+        "timeout_s": 1.0,
+    }
+    receipt[field] = value
+    stderr = "child stderr\nSAFE_RUN " + json.dumps(receipt) + "\n"
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="result\n",
+            stderr=stderr,
+            timed_out=False,
+        ),
+    )
+
+    outcome = ps._safe_run_json(
+        [sys.executable, "-c", "pass"],
+        env={},
+        rss_mb=64,
+        timeout_s=1.0,
+        label="bound-unit",
+        capture_output=True,
+    )
+
+    assert outcome.ok is False
+    assert outcome.status == "error"
+    assert outcome.stderr == stderr
 
 
 def test_profiling_popen_uses_benchmark_process_group(monkeypatch) -> None:
