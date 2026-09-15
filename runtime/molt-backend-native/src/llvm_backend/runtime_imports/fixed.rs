@@ -268,6 +268,7 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_invert", 1, ATTR_NONE),
     i64_ret("molt_chan_new", 1, ATTR_NONE),
     i64_ret("molt_int_from_i64", 1, ATTR_WILLRETURN),
+    i64_ret("molt_int_as_i64", 1, ATTR_WILLRETURN),
     i64_ret("molt_is_truthy", 1, ATTR_NONE),
     i64_ret("molt_is_function_obj", 1, ATTR_WILLRETURN),
     i64_ret("molt_is_truthy_int", 1, ATTR_WILLRETURN_MEMORY_READ),
@@ -321,6 +322,14 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_exception_clear", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last_pending", 0, ATTR_WILLRETURN),
+    // Polling services GC and arbitrary pending Python callbacks; unlike a
+    // passive observer, neither projection promises termination or read-only memory.
+    i64_ret("molt_async_work_poll_and_exception_pending", 0, ATTR_NONE),
+    i64_ret(
+        "molt_async_work_poll_and_exception_last_pending",
+        0,
+        ATTR_NONE,
+    ),
     i64_ret("molt_exception_current", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_push", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_pop", 0, ATTR_WILLRETURN),
@@ -443,21 +452,26 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
         ATTR_WILLRETURN,
     ),
     custom(
+        "molt_bytes_from_bytes",
+        PTR_I64_PTR,
+        FixedRuntimeReturnAbi::I32,
+        ATTR_WILLRETURN,
+    ),
+    custom(
         "molt_bigint_from_str",
         PTR_I64,
         FixedRuntimeReturnAbi::I64,
         ATTR_WILLRETURN,
     ),
     i64_ret("molt_list_builder_new", 1, ATTR_WILLRETURN),
-    void_ret("molt_list_builder_append", 2, ATTR_WILLRETURN),
+    custom(
+        "molt_list_builder_append",
+        &[FixedRuntimeParamAbi::I64, FixedRuntimeParamAbi::I64],
+        FixedRuntimeReturnAbi::I32,
+        ATTR_WILLRETURN,
+    ),
     i64_ret("molt_list_builder_finish", 1, ATTR_WILLRETURN),
     i64_ret("molt_tuple_builder_finish", 1, ATTR_WILLRETURN),
-    i64_ret("molt_dict_builder_new", 1, ATTR_WILLRETURN),
-    void_ret("molt_dict_builder_append", 3, ATTR_WILLRETURN),
-    i64_ret("molt_dict_builder_finish", 1, ATTR_WILLRETURN),
-    i64_ret("molt_set_builder_new", 1, ATTR_WILLRETURN),
-    void_ret("molt_set_builder_append", 2, ATTR_WILLRETURN),
-    i64_ret("molt_set_builder_finish", 1, ATTR_WILLRETURN),
     i64_ret("molt_exception_pending", 0, ATTR_WILLRETURN_MEMORY_READ),
 ];
 

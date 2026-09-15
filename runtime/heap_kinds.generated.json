@@ -99,22 +99,6 @@
     {
       "acyclic_capability": "none",
       "acyclic_slots": {},
-      "cycle": "never",
-      "drop": "dict_builder",
-      "edges": "dynamic",
-      "external_gc": "none",
-      "id": 205,
-      "layout": "vec_bits",
-      "metrics": "none",
-      "name": "DICT_BUILDER",
-      "publication": "linear_unpublished",
-      "shape": "fixed",
-      "track": "never",
-      "weakref": "deny"
-    },
-    {
-      "acyclic_capability": "none",
-      "acyclic_slots": {},
       "cycle": "dynamic",
       "drop": "tuple",
       "edges": "dynamic",
@@ -515,22 +499,6 @@
       "shape": "fixed",
       "track": "always",
       "weakref": "allow"
-    },
-    {
-      "acyclic_capability": "none",
-      "acyclic_slots": {},
-      "cycle": "never",
-      "drop": "set_builder",
-      "edges": "dynamic",
-      "external_gc": "none",
-      "id": 231,
-      "layout": "vec_bits",
-      "metrics": "none",
-      "name": "SET_BUILDER",
-      "publication": "linear_unpublished",
-      "shape": "fixed",
-      "track": "never",
-      "weakref": "deny"
     },
     {
       "acyclic_capability": "none",
@@ -1357,6 +1325,10 @@
       "name": "ITERTOOLS_ZIP_LONGEST",
       "resource_slot0": "none"
     }
+  ],
+  "retired_ids": [
+    205,
+    231
   ],
   "schema_version": 1,
   "source": "runtime/heap_kinds.toml"

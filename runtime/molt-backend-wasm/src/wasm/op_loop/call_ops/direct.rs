@@ -144,14 +144,17 @@ fn emit_internal_call(
             is_tail_call_candidate(call_ctx, target_name, args_names, out_name)
         });
 
-    push_call_args(func, locals, args_names);
-
     if is_tail_call {
+        call_ctx
+            .frame
+            .emit_const_anchor_releases(func, import_ids, reloc_enabled);
+        push_call_args(func, locals, args_names);
         emit_return_call(func, reloc_enabled, func_idx);
         tail_call_count.set(tail_call_count.get() + 1);
         return CallOpEmission::HandledAndSkipNext;
     }
 
+    push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
     normalize_direct_call_result(func, abi_returns_value, out.is_some());
     if let Some(out) = out {

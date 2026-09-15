@@ -166,100 +166,125 @@ fn user_definitions_and_extern_declarations_never_claim_termination() {
 
 #[test]
 fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
-    let typed_provider = crate::ir::FunctionIR {
-        name: "typed_provider".to_string(),
-        params: vec![
-            "value".to_string(),
-            "flag".to_string(),
-            "integer".to_string(),
-        ],
-        ops: vec![crate::ir::OpIR {
-            kind: "ret".to_string(),
-            args: Some(vec!["value".to_string()]),
-            ..crate::ir::OpIR::default()
-        }],
-        param_types: Some(vec![
-            "float".to_string(),
-            "bool".to_string(),
-            "int".to_string(),
-        ]),
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: Default::default(),
-    };
-    let void_provider = crate::ir::FunctionIR {
-        name: "void_provider".to_string(),
-        params: vec![],
-        ops: vec![crate::ir::OpIR {
-            kind: "ret_void".to_string(),
-            ..crate::ir::OpIR::default()
-        }],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: Default::default(),
-    };
-    let context = crate::SimpleBackend::prepare_module_context(&mut vec![
-        typed_provider.clone(),
-        void_provider.clone(),
-    ]);
-    let typed_abi = context
-        .function_linkage_abi("typed_provider")
-        .expect("typed provider linkage ABI")
-        .clone();
-    assert_eq!(
-        typed_abi.param_types,
-        vec![TirType::F64, TirType::Bool, TirType::DynBox],
-        "unproven Python int parameters must freeze as boxed while exact float/bool carriers survive"
-    );
-    assert_eq!(typed_abi.return_type, Some(TirType::F64));
-    let void_abi = context
-        .function_linkage_abi("void_provider")
-        .expect("void provider linkage ABI")
-        .clone();
-    assert_eq!(void_abi.return_type, None);
+    for exact_return in [false, true] {
+        let mut typed_provider = crate::ir::FunctionIR {
+            name: "typed_provider".to_string(),
+            params: vec![
+                "value".to_string(),
+                "flag".to_string(),
+                "integer".to_string(),
+            ],
+            ops: vec![crate::ir::OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["value".to_string()]),
+                ..crate::ir::OpIR::default()
+            }],
+            param_types: Some(vec![
+                "float".to_string(),
+                "bool".to_string(),
+                "int".to_string(),
+            ]),
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        };
+        if exact_return {
+            typed_provider.ops = vec![
+                crate::ir::OpIR {
+                    kind: "const_float".to_string(),
+                    out: Some("exact_value".to_string()),
+                    f_value: Some(1.25),
+                    ..crate::ir::OpIR::default()
+                },
+                crate::ir::OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["exact_value".to_string()]),
+                    ..crate::ir::OpIR::default()
+                },
+            ];
+        }
+        let void_provider = crate::ir::FunctionIR {
+            name: "void_provider".to_string(),
+            params: vec![],
+            ops: vec![crate::ir::OpIR {
+                kind: "ret_void".to_string(),
+                ..crate::ir::OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        };
+        let context = crate::SimpleBackend::prepare_module_context(&mut vec![
+            typed_provider.clone(),
+            void_provider.clone(),
+        ]);
+        let typed_abi = context
+            .function_linkage_abi("typed_provider")
+            .expect("typed provider linkage ABI")
+            .clone();
+        assert_eq!(
+            typed_abi.param_types,
+            vec![TirType::F64, TirType::Bool, TirType::DynBox],
+            "unproven Python int parameters must freeze as boxed while exact float/bool carriers survive"
+        );
+        assert_eq!(
+            typed_abi.return_type,
+            Some(if exact_return {
+                TirType::F64
+            } else {
+                TirType::DynBox
+            }),
+            "only exact scalar provenance, not a parameter annotation, establishes the return ABI"
+        );
+        let void_abi = context
+            .function_linkage_abi("void_provider")
+            .expect("void provider linkage ABI")
+            .clone();
+        assert_eq!(void_abi.return_type, None);
 
-    let provider_ctx = Context::create();
-    let mut provider_backend = make_backend(&provider_ctx);
-    provider_backend
-        .function_linkage_abis
-        .insert("typed_provider".to_string(), typed_abi.clone());
-    provider_backend
-        .function_linkage_abis
-        .insert("void_provider".to_string(), void_abi.clone());
-    let typed_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&typed_provider);
-    let void_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&void_provider);
-    let typed_definition = declare_tir_function(&typed_provider_tir, &provider_backend);
-    let void_definition = declare_tir_function(&void_provider_tir, &provider_backend);
-    lower_tir_to_llvm(&typed_provider_tir, &provider_backend);
-    lower_tir_to_llvm(&void_provider_tir, &provider_backend);
-    provider_backend
-        .module
-        .verify()
-        .expect("typed and void provider bodies must verify against their frozen linkage rows");
+        let provider_ctx = Context::create();
+        let mut provider_backend = make_backend(&provider_ctx);
+        provider_backend
+            .function_linkage_abis
+            .insert("typed_provider".to_string(), typed_abi.clone());
+        provider_backend
+            .function_linkage_abis
+            .insert("void_provider".to_string(), void_abi.clone());
+        let typed_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&typed_provider);
+        let void_provider_tir = crate::tir::lower_from_simple::lower_to_tir(&void_provider);
+        let typed_definition = declare_tir_function(&typed_provider_tir, &provider_backend);
+        let void_definition = declare_tir_function(&void_provider_tir, &provider_backend);
+        lower_tir_to_llvm(&typed_provider_tir, &provider_backend);
+        lower_tir_to_llvm(&void_provider_tir, &provider_backend);
+        provider_backend
+            .module
+            .verify()
+            .expect("typed and void provider bodies must verify against their frozen linkage rows");
 
-    let consumer_ctx = Context::create();
-    let mut consumer_backend = make_backend(&consumer_ctx);
-    consumer_backend
-        .function_linkage_abis
-        .insert("typed_provider".to_string(), typed_abi);
-    consumer_backend
-        .function_linkage_abis
-        .insert("void_provider".to_string(), void_abi);
-    let typed_declaration = declare_extern_tir_function(&typed_provider_tir, &consumer_backend);
-    let void_declaration = declare_extern_tir_function(&void_provider_tir, &consumer_backend);
+        let consumer_ctx = Context::create();
+        let mut consumer_backend = make_backend(&consumer_ctx);
+        consumer_backend
+            .function_linkage_abis
+            .insert("typed_provider".to_string(), typed_abi);
+        consumer_backend
+            .function_linkage_abis
+            .insert("void_provider".to_string(), void_abi);
+        let typed_declaration = declare_extern_tir_function(&typed_provider_tir, &consumer_backend);
+        let void_declaration = declare_extern_tir_function(&void_provider_tir, &consumer_backend);
 
-    assert_eq!(
-        typed_definition.get_type().print_to_string(),
-        typed_declaration.get_type().print_to_string()
-    );
-    assert_eq!(
-        void_definition.get_type().print_to_string(),
-        void_declaration.get_type().print_to_string()
-    );
-    assert_eq!(void_definition.get_type().get_return_type(), None);
+        assert_eq!(
+            typed_definition.get_type().print_to_string(),
+            typed_declaration.get_type().print_to_string()
+        );
+        assert_eq!(
+            void_definition.get_type().print_to_string(),
+            void_declaration.get_type().print_to_string()
+        );
+        assert_eq!(void_definition.get_type().get_return_type(), None);
+    }
 }
 
 #[test]

@@ -21,6 +21,16 @@ impl WasmConstOpPolicy {
             WasmConstRawIntEffect::Clear => forget_output_raw_int(op, locals, known_raw_ints),
         }
     }
+
+    pub(in crate::wasm) fn clear_raw_int_output(
+        self,
+        op: &OpIR,
+        locals: &WasmFrameLocals,
+        known_raw_ints: &mut BTreeMap<u32, i64>,
+    ) {
+        let _ = self;
+        forget_output_raw_int(op, locals, known_raw_ints);
+    }
 }
 
 fn forget_output_raw_int(

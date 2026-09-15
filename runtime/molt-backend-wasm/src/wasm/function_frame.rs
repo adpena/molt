@@ -3,10 +3,10 @@ mod planning;
 
 use super::frame_locals::{WasmDispatchFrameLocals, WasmFrameLocals};
 use super::state_dispatch::NonLinearDispatchLocals;
-use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_values::ConstantCache;
-use std::collections::BTreeSet;
+use planning::FrameConstAnchor;
+use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::ValType;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,8 +40,8 @@ pub(super) struct WasmFunctionFrame {
     dispatch_locals: Option<WasmDispatchFrameLocals>,
     const_cache: ConstantCache,
     const_seed_locals: Vec<(u32, i64)>,
-    seeded_runtime_const_ops: Vec<(usize, OpIR)>,
-    seeded_runtime_const_op_indices: BTreeSet<usize>,
+    const_anchors: Vec<FrameConstAnchor>,
+    const_anchor_by_op_index: BTreeMap<usize, u32>,
 }
 
 impl WasmFunctionFrame {
@@ -69,8 +69,14 @@ impl WasmFunctionFrame {
         &self.runtime_lookup_only_vars
     }
 
-    pub(super) fn seeded_runtime_const_op_indices(&self) -> &BTreeSet<usize> {
-        &self.seeded_runtime_const_op_indices
+    pub(super) fn const_anchor_for_op(&self, op_idx: usize) -> Option<u32> {
+        self.const_anchor_by_op_index.get(&op_idx).copied()
+    }
+
+    pub(super) fn const_anchor_locals(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = u32> + ExactSizeIterator + '_ {
+        self.const_anchors.iter().map(|anchor| anchor.local)
     }
 
     pub(super) fn const_cache(&self) -> &ConstantCache {

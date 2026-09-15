@@ -2,7 +2,8 @@
 """Generate heap-kind IDs and lifetime descriptors from runtime/heap_kinds.toml.
 
 The table is the sole authority for the cross-crate numeric ABI and for cold-path
-lifetime policy. Fixed builtins resolve through a dense array; subtype-specific
+lifetime policy. Fixed builtins resolve through an indexed array with invalid
+retired slots; subtype-specific
 TYPE_ID_OBJECT behavior is selected by an immutable shape descriptor without
 enlarging the hot object header.
 
@@ -104,7 +105,6 @@ ALLOWED = {
         "list",
         "list_builder",
         "dict",
-        "dict_builder",
         "tuple",
         "dict_view",
         "iter",
@@ -127,7 +127,6 @@ ALLOWED = {
         "property",
         "super",
         "set",
-        "set_builder",
         "frozenset",
         "bigint",
         "enumerate",
@@ -288,11 +287,22 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
         ("OBJECT", 100)
     ]:
         raise ValueError("OBJECT=100 must be the only sparse pre-200 heap kind")
-    dense_ids = [int(row["id"]) for row in kinds if int(row["id"]) >= 200]
-    if dense_ids != list(range(200, dense_ids[-1] + 1)):
+    retired = data.get("retired_ids", [])
+    if (
+        not isinstance(retired, list)
+        or any(type(value) is not int or value < 200 for value in retired)
+        or len(set(retired)) != len(retired)
+    ):
+        raise ValueError("retired heap IDs must be distinct builtin integers")
+    if ids.intersection(retired):
+        raise ValueError("retired heap IDs must never be reused")
+    dense_ids = sorted([value for value in ids if value >= 200] + retired)
+    if not dense_ids or dense_ids != list(range(200, dense_ids[-1] + 1)):
         raise ValueError(
-            "builtin heap IDs must remain dense from 200 through MAX_HEAP_TYPE_ID"
+            "active and retired builtin heap IDs must cover the allocated ABI domain"
         )
+    if retired and max(retired) > int(kinds[-1]["id"]):
+        raise ValueError("retired heap IDs must precede the last active ABI pin")
     pins = {"OBJECT": 100, "FUNCTION": 221, "TYPE": 224, "LIST_BOOL": 250}
     by_name = {str(row["name"]): int(row["id"]) for row in kinds}
     for name, expected in pins.items():
@@ -484,9 +494,14 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         "}\n\n"
     )
     lines.append(
-        f"pub(crate) const HEAP_KIND_DESCRIPTORS: [HeapKindDescriptor; {len(kinds)}] = [\n"
+        f"pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; {int(kinds[-1]['id']) - 200 + 2}] = [\n"
     )
-    for row in kinds:
+    by_id = {int(row["id"]): row for row in kinds}
+    for type_id in [100, *range(200, int(kinds[-1]["id"]) + 1)]:
+        row = by_id.get(type_id)
+        if row is None:
+            lines.append("    None, // Retired ABI slot; never a heap kind.\n")
+            continue
         fields = ", ".join(
             f"{field}: {enum_fields[field]}::{_variant(str(row[field]))}"
             for field in enum_fields
@@ -503,25 +518,25 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         )
         fields += f", acyclic: HeapAcyclicCapability::{_variant(str(row['acyclic_capability']))}"
         lines.append(
-            "    HeapKindDescriptor { "
+            "    Some(HeapKindDescriptor { "
             f'type_id: TYPE_ID_{row["name"]}, name: "{row["name"]}", {fields}'
-            " },\n"
+            " }),\n"
         )
     lines.append("];\n\n")
     lines.append(
         "#[inline(always)]\n"
         "pub(crate) const fn heap_kind_descriptor(type_id: u32) -> Option<&'static HeapKindDescriptor> {\n"
         "    if type_id == TYPE_ID_OBJECT {\n"
-        "        return Some(&HEAP_KIND_DESCRIPTORS[0]);\n"
+        "        return HEAP_KIND_DESCRIPTORS[0].as_ref();\n"
         "    }\n"
         "    if type_id < MIN_HEAP_TYPE_ID || type_id > MAX_HEAP_TYPE_ID {\n"
         "        return None;\n"
         "    }\n"
-        "    Some(&HEAP_KIND_DESCRIPTORS[(type_id - MIN_HEAP_TYPE_ID) as usize + 1])\n"
+        "    HEAP_KIND_DESCRIPTORS[(type_id - MIN_HEAP_TYPE_ID) as usize + 1].as_ref()\n"
         "}\n\n"
         "#[inline(always)]\n"
         "pub(crate) const fn is_valid_heap_type_id(type_id: u32) -> bool {\n"
-        "    type_id == TYPE_ID_OBJECT || (type_id >= MIN_HEAP_TYPE_ID && type_id <= MAX_HEAP_TYPE_ID)\n"
+        "    heap_kind_descriptor(type_id).is_some()\n"
         "}\n"
     )
     lines.append(
@@ -606,6 +621,10 @@ def render_audit(
                 "schema_version": 1,
                 "source": "runtime/heap_kinds.toml",
                 "kinds": kinds,
+                "retired_ids": sorted(
+                    set(range(200, int(kinds[-1]["id"]) + 1))
+                    - {int(row["id"]) for row in kinds}
+                ),
                 "object_shapes": shapes,
             },
             indent=2,

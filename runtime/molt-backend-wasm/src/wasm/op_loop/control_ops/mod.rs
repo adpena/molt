@@ -1,6 +1,7 @@
 use super::super::control_flow::{ControlKind, dispatch_control_panic};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::function_frame::WasmFunctionFrame;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::is_shared_drop_fact_marker;
 use crate::wasm_values::ConstantCache;
@@ -19,6 +20,7 @@ pub(super) struct ControlOpContext<'a> {
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
+    pub(super) frame: &'a WasmFunctionFrame,
     pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) control_stack: &'a mut Vec<ControlKind>,
     pub(super) try_stack: &'a mut Vec<usize>,

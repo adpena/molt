@@ -1,5 +1,6 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::function_frame::WasmFunctionFrame;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{ConstantCache, box_int, stable_ic_site_id};
@@ -178,8 +179,15 @@ pub(super) fn emit_call_site_id(func: &mut Function, func_name: &str, op_idx: us
     func.instruction(&Instruction::I64Const(site_bits));
 }
 
-pub(super) fn emit_pending_exception_return(func: &mut Function, const_cache: &ConstantCache) {
+pub(super) fn emit_pending_exception_return(
+    func: &mut Function,
+    const_cache: &ConstantCache,
+    frame: &WasmFunctionFrame,
+    import_ids: &TrackedImportIds,
+    reloc_enabled: bool,
+) {
     const_cache.emit_none(func);
+    frame.emit_const_anchor_releases(func, import_ids, reloc_enabled);
     func.instruction(&Instruction::Return);
 }
 

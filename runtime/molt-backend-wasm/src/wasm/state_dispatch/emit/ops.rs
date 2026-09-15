@@ -214,6 +214,7 @@ pub(super) fn emit_dispatch_op(
                     format_args!("ret target args {:?} are not present", op.args),
                 );
             }
+            op_emitter.emit_const_anchor_releases(func);
             func.instruction(&Instruction::Return);
             true
         }
@@ -221,6 +222,7 @@ pub(super) fn emit_dispatch_op(
             == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
         {
             func.instruction(&Instruction::I64Const(0));
+            op_emitter.emit_const_anchor_releases(func);
             func.instruction(&Instruction::Return);
             true
         }

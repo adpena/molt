@@ -93,7 +93,7 @@ const reservedRuntimeCallables = [
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 
-const { createRuntimeLifetime, createRuntimeDisposer, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const runtimeLifetimes = new WeakMap();
 const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
   let lifetime = runtimeLifetimes.get(runtimeInstance);
@@ -572,23 +572,7 @@ const makeStringObjectWithRuntime = (runtime, memory, text) => {
   }
 };
 
-const makeListIntObjectWithRuntime = (runtime, values) => {
-  if (!runtime || !runtime.exports) {
-    throw new Error('runtime not initialized');
-  }
-  if (
-    typeof runtime.exports.molt_list_builder_new !== 'function' ||
-    typeof runtime.exports.molt_list_builder_append !== 'function' ||
-    typeof runtime.exports.molt_list_builder_finish !== 'function'
-  ) {
-    throw new Error('runtime list builder exports are unavailable');
-  }
-  const builder = runtime.exports.molt_list_builder_new(boxInt(values.length));
-  for (const value of values) {
-    runtime.exports.molt_list_builder_append(builder, boxInt(value));
-  }
-  return runtime.exports.molt_list_builder_finish(builder);
-};
+const makeListIntObjectWithRuntime = (runtime, values) => makeRuntimeIntList(runtime, values);
 
 const reprObjectBitsWithRuntime = (runtime, memory, bits) => {
   if (!runtime || !runtime.exports || typeof runtime.exports.molt_object_repr !== 'function') {
@@ -637,7 +621,8 @@ export const tryDecodeListIntBits = (runtime, memory, bits) => {
   }
   const out = [];
   for (let i = 0; i < len; i += 1) {
-    const itemBits = runtime.exports.molt_index(bits, boxInt(i));
+    const itemBits = withRuntimeOwnedValues(runtime, [i],
+      value => boxRuntimeInt(runtime, value), ([indexBits]) => runtime.exports.molt_index(bits, indexBits), true);
     try {
       const indexPending = pendingRuntimeExceptionMessage(runtime, memory);
       if (indexPending) {
@@ -707,7 +692,9 @@ export const decodeOwnedExportResult = (
   resultBits,
   exportName = '<export>',
 ) => {
-  try {
+  return withRuntimeOwnedValues(runtime, [resultBits], bits => bits, () => {
+    const pending = pendingRuntimeExceptionMessage(runtime, memory);
+    if (pending) throw new Error(pending);
     if (
       typeof process !== 'undefined' &&
       process?.env?.MOLT_TRACE_EXPORT_RETURN_BITS === '1'
@@ -728,16 +715,14 @@ export const decodeOwnedExportResult = (
       resultJson: resultJson ?? fallbackJson,
       resultBytes,
     };
-  } finally {
-    decRefMaybeWithRuntime(runtime, resultBits);
-  }
+  });
 };
 
 const makeBrowserHostArgObject = (runtime, memory, spec) => {
   if (spec && typeof spec === 'object' && 'kind' in spec && typeof spec.kind === 'string') {
     switch (spec.kind) {
       case 'int':
-        return boxInt(spec.value);
+        return boxRuntimeInt(runtime, spec.value);
       case 'string':
         return makeStringObjectWithRuntime(runtime, memory, String(spec.value));
       case 'bytes':
@@ -748,16 +733,16 @@ const makeBrowserHostArgObject = (runtime, memory, spec) => {
         if (!Array.isArray(spec.value)) {
           throw new Error('list_int host arg requires an array value');
         }
-        return makeListIntObjectWithRuntime(runtime, spec.value.map((value) => Number(value)));
+        return makeListIntObjectWithRuntime(runtime, spec.value);
       default:
         throw new Error(`unsupported browser host arg kind: ${spec.kind}`);
     }
   }
   if (typeof spec === 'number' && Number.isInteger(spec)) {
-    return boxInt(spec);
+    return boxRuntimeInt(runtime, spec);
   }
   if (typeof spec === 'bigint') {
-    return boxInt(spec);
+    return boxRuntimeInt(runtime, spec);
   }
   if (typeof spec === 'string') {
     return makeStringObjectWithRuntime(runtime, memory, spec);
@@ -774,8 +759,8 @@ const makeBrowserHostArgObject = (runtime, memory, spec) => {
   if (ArrayBuffer.isView(spec)) {
     return makeBytesObjectWithRuntime(runtime, memory, bytesLikeToUint8Array(spec, 'typed-array host arg'));
   }
-  if (Array.isArray(spec) && spec.every((value) => Number.isInteger(value))) {
-    return makeListIntObjectWithRuntime(runtime, spec.map((value) => Number(value)));
+  if (Array.isArray(spec) && spec.every((value) => typeof value === 'number' || typeof value === 'bigint')) {
+    return makeListIntObjectWithRuntime(runtime, spec);
   }
   throw new Error(`unsupported browser host arg: ${Object.prototype.toString.call(spec)}`);
 };
@@ -942,14 +927,6 @@ const TYPE_TAG_LIST = 8;
 const TYPE_TAG_TUPLE = 9;
 const CANCEL_POLL_MS = 10;
 const I64_MIN = -(1n << 63n);
-
-const boxInt = (value) => {
-  let v = BigInt(value);
-  if (v < 0n) {
-    v = (1n << 47n) + v;
-  }
-  return QNAN | TAG_INT | (v & INT_MASK);
-};
 
 const isIntBits = (bits) => (bits & (QNAN | TAG_MASK)) === (QNAN | TAG_INT);
 const unboxInt = (bits) => {
@@ -1370,11 +1347,14 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
       throw new Error(`runtime missing fallback exports for ${entryName}`);
     }
     return (methodBits, ...argBits) => {
-      const builderBits = callargsNew(boxInt(fallback.call_arity), boxInt(0));
-      for (const argBitsValue of argBits) {
-        callargsPushPos(builderBits, argBitsValue);
-      }
-      return callBindIc(boxInt(0), methodBits, builderBits);
+      return withRuntimeOwnedValues(runtimeInstance, [fallback.call_arity, 0],
+        value => boxRuntimeInt(runtimeInstance, value), ([arityBits, zeroBits]) => {
+          const builderBits = callargsNew(arityBits, zeroBits);
+          for (const argBitsValue of argBits) {
+            callargsPushPos(builderBits, argBitsValue);
+          }
+          return callBindIc(zeroBits, methodBits, builderBits);
+        }, true);
     };
   };
   const resolveFallback = (entryName) => {
@@ -1722,8 +1702,9 @@ const createBrowserDbHost = (state, options) => {
     for (const [requestId, entry] of pending.entries()) {
       if (!entry.tokenId || entry.tokenId === 0n) continue;
       try {
-        const tokenBits = boxInt(entry.tokenId);
-        const result = runtime.exports.molt_cancel_token_is_cancelled(tokenBits);
+        const result = withRuntimeOwnedValues(runtime, [entry.tokenId],
+          value => boxRuntimeInt(runtime, value), ([tokenBits]) =>
+            runtime.exports.molt_cancel_token_is_cancelled(tokenBits));
         if (typeof result === 'bigint' && isBoolBits(result) && unboxBool(result)) {
           entry.controller.abort();
           queueResponse(requestId, {
@@ -3675,23 +3656,9 @@ export const loadMoltWasm = async (options = {}) => {
       if (typeof fn !== 'function') {
         throw new Error(`app export missing: ${exportName}`);
       }
-      const argBits = Array.isArray(args)
-        ? args.map((arg) => makeBrowserHostArgObject(runtime, memory, arg))
-        : [];
-      let resultBits = 0n;
-      try {
-        resultBits = fn(...argBits);
-      } finally {
-        for (const bits of argBits) {
-          decRefMaybeWithRuntime(runtime, bits);
-        }
-      }
-      const pending = pendingRuntimeExceptionMessage(runtime, memory);
-      if (pending) {
-        decRefMaybeWithRuntime(runtime, resultBits);
-        throw new Error(pending);
-      }
-      return decodeOwnedExportResult(runtime, memory, resultBits, exportName);
+      return withRuntimeOwnedValues(runtime, Array.isArray(args) ? args : [],
+        arg => makeBrowserHostArgObject(runtime, memory, arg), argBits =>
+          decodeOwnedExportResult(runtime, memory, fn(...argBits), exportName));
     });
   };
   const dispose = createRuntimeDisposer(

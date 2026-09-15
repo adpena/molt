@@ -453,10 +453,14 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     static_types = data["static_type"]
     static_type_count = len(static_types)
 
-    assert static_type_count == 49
+    assert static_type_count == 50
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert {"params": [], "results": ["i32"]} in static_types
+    append = next(entry for entry in data["import"] if entry["name"] == "list_builder_append")
+    assert static_types[append["type"]] == {
+        "params": ["i64", "i64"], "results": ["i32"]
+    }
     assert static_types[31] == {"params": ["i64"] * 9, "results": ["i64"]}
     assert static_types[34] == {"params": ["i64"] * 12, "results": ["i64"]}
     assert all(len(signature["results"]) <= 1 for signature in static_types)
@@ -1320,6 +1324,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "import_name": "context_depth",
     }
     assert calls["IntFromI64"]["import_name"] == "int_from_i64"
+    assert calls["IntAsI64"]["import_name"] == "int_as_i64"
     assert op_loop_calls["module_import_star"]["lir_variant"] == "ModuleImportStar"
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
@@ -1816,8 +1821,9 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
         "scalar_payload": "int",
         "raw_int_effect": "set_int",
         "lir_fast": "lower",
+        "materializer_import": "int_from_i64",
         "parse_scalar_literal": False,
-        "dispatch_runtime_seed": False,
+        "dispatch_runtime_seed": True,
     }
     assert policies["const_bool"]["scalar_payload"] == "bool"
     assert policies["const_float"]["scalar_payload"] == "float"

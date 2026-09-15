@@ -145,6 +145,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // a block-local value number so expressions like two adjacent
                 // `i + 1` computations CSE without emitting a constant Copy or
                 // leaking the constant leader into dominated child blocks.
+                // Heap literals remain fallible materializations; numbering
+                // equal successful values never deletes either allocation or
+                // its exception edge.
                 let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
                 let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::new();
 

@@ -320,44 +320,13 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
 fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
     builder: &inkwell::builder::Builder<'ctx>,
     context: &'ctx inkwell::context::Context,
+    module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
     target_ty: &TirType,
 ) -> inkwell::values::IntValue<'ctx> {
     let i64_ty = context.i64_type();
     match target_ty {
-        TirType::I64 => {
-            // Sign-extend the 47-bit inline payload back into a full i64. Mirrors
-            // `unbox_from_dynbox`'s `I64` arm exactly.
-            let masked = builder
-                .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "payload")
-                .unwrap();
-            let sign_test = builder
-                .build_and(
-                    masked,
-                    i64_ty.const_int(nanbox::INT_SIGN_BIT, false),
-                    "sign_test",
-                )
-                .unwrap();
-            let is_neg = builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    sign_test,
-                    i64_ty.const_zero(),
-                    "is_neg",
-                )
-                .unwrap();
-            let extended = builder
-                .build_or(
-                    masked,
-                    i64_ty.const_int(!nanbox::INT_MASK, false),
-                    "sign_extend",
-                )
-                .unwrap();
-            builder
-                .build_select(is_neg, extended, masked, "unbox_i64")
-                .unwrap()
-                .into_int_value()
-        }
+        TirType::I64 => unbox_i64_with_builder(builder, context, module, raw),
         TirType::Bool => builder
             .build_and(raw, i64_ty.const_int(1, false), "bool_payload")
             .unwrap(),
@@ -366,6 +335,30 @@ fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
         // body bitcasts as needed). No payload decode.
         _ => raw,
     }
+}
+
+/// Typed extraction: the caller proves an integer representable in i64.
+/// The runtime decodes both inline integers and heap BigInts and preserves a
+/// pre-existing exception. Invalid inputs are outside UnboxVal's pure contract.
+/// Keep this branchless at the LLVM boundary: phi predecessor coercions insert
+/// it before an existing terminator and cannot split the predecessor block.
+#[cfg(feature = "llvm")]
+fn unbox_i64_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    module: &inkwell::module::Module<'ctx>,
+    raw: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let runtime = module.get_function("molt_int_as_i64").unwrap_or_else(|| {
+        declare_fixed_runtime_function(context, module, "molt_int_as_i64")
+            .expect("integer extractor has a fixed runtime ABI")
+    });
+    builder
+        .build_call(runtime, &[raw.into()], "unbox_i64")
+        .unwrap()
+        .try_as_basic_value()
+        .unwrap_basic()
+        .into_int_value()
 }
 
 // ── LLVM fast-math flag constants (from llvm-sys LLVMFastMath* definitions) ──

@@ -6,14 +6,14 @@ pub(super) fn emit_seed_debug(
     func_ir: &FunctionIR,
     locals: &WasmFrameLocals,
     const_seed_locals: &[(u32, i64)],
-    runtime_const_op_count: usize,
+    const_anchor_count: usize,
 ) {
     if std::env::var("MOLT_DEBUG_WASM_SEEDS_FUNC").ok().as_deref() != Some(func_ir.name.as_str()) {
         return;
     }
     eprintln!(
-        "WASM_SEEDS_FUNC name={} seeds={:?} runtime_const_ops={}",
-        func_ir.name, const_seed_locals, runtime_const_op_count
+        "WASM_SEEDS_FUNC name={} seeds={:?} const_anchors={}",
+        func_ir.name, const_seed_locals, const_anchor_count
     );
     for name in &func_ir.params {
         if let Some(idx) = locals.get(name) {

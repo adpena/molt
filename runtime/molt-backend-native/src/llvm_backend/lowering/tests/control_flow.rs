@@ -184,65 +184,84 @@ fn unreachable_predecessor_does_not_feed_phi() {
 
 #[test]
 fn check_exception_edge_feeds_handler_phi() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
+    for poll in [false, true] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("check_exception_phi".into(), vec![], TirType::DynBox);
-    let exit_id = func.fresh_block();
-    let handler_id = func.fresh_block();
-    let live_value = func.fresh_value();
-    let exit_value = func.fresh_value();
-    let handler_arg = func.fresh_value();
+        let mut func = TirFunction::new("check_exception_phi".into(), vec![], TirType::DynBox);
+        let exit_id = func.fresh_block();
+        let handler_id = func.fresh_block();
+        let live_value = func.fresh_value();
+        let exit_value = func.fresh_value();
+        let handler_arg = func.fresh_value();
 
-    let mut handler_attrs = AttrDict::new();
-    handler_attrs.insert("value".into(), AttrValue::Int(100));
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+        if poll {
+            handler_attrs.insert("async_work_poll".into(), AttrValue::Bool(true));
+        }
 
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(const_none_def(live_value));
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::CheckException,
-        operands: vec![live_value],
-        results: vec![],
-        attrs: handler_attrs,
-        source_span: None,
-    });
-    entry.terminator = Terminator::Branch {
-        target: exit_id,
-        args: vec![],
-    };
-    func.blocks.insert(
-        exit_id,
-        TirBlock {
-            id: exit_id,
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Import,
+            operands: vec![],
+            results: vec![live_value],
+            attrs: AttrDict::from([("module".into(), AttrValue::Str("checked_name".into()))]),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![live_value],
+            results: vec![],
+            attrs: handler_attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: exit_id,
             args: vec![],
-            ops: vec![const_none_def(exit_value)],
-            terminator: Terminator::Return {
-                values: vec![exit_value],
+        };
+        func.blocks.insert(
+            exit_id,
+            TirBlock {
+                id: exit_id,
+                args: vec![],
+                ops: vec![const_none_def(exit_value)],
+                terminator: Terminator::Return {
+                    values: vec![exit_value],
+                },
             },
-        },
-    );
-    func.blocks.insert(
-        handler_id,
-        TirBlock {
-            id: handler_id,
-            args: vec![TirValue {
-                id: handler_arg,
-                ty: TirType::DynBox,
-            }],
-            ops: vec![],
-            terminator: Terminator::Return {
-                values: vec![handler_arg],
+        );
+        func.blocks.insert(
+            handler_id,
+            TirBlock {
+                id: handler_id,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![handler_arg],
+                },
             },
-        },
-    );
-    func.has_exception_handling = true;
-    func.label_id_map.insert(handler_id.0, 100);
+        );
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler_id.0, 100);
 
-    try_lower_tir_to_llvm(&func, &backend)
-        .expect("check_exception operands must feed handler block phi args");
-    backend
-        .module
-        .verify()
-        .expect("check_exception handler phi lowering should verify");
+        let llvm_fn = try_lower_tir_to_llvm(&func, &backend)
+            .expect("check_exception operands must feed handler block phi args");
+        backend
+            .module
+            .verify()
+            .expect("check_exception handler phi lowering should verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        let symbol = if poll {
+            "molt_async_work_poll_and_exception_pending"
+        } else {
+            "molt_exception_pending"
+        };
+        assert!(ir.contains(&format!("call i64 @{symbol}()")), "{ir}");
+    }
 }

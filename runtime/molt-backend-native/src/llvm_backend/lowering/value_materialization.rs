@@ -63,37 +63,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Box / Unbox ──
 
-    /// NaN-box a raw signed `i64`, promoting to a heap BigInt when the value
-    /// does not fit the 47-bit inline payload.
-    ///
-    /// The inline integer representation is a sign-extended 47-bit payload
-    /// (range `[-(1<<46), (1<<46)-1]`). An unconditional `raw & INT_MASK | TAG`
-    /// silently truncates any value outside that range to 47 bits — the LLVM
-    /// integer-overflow miscompile this fixes. Instead we emit a single
-    /// fits-inline range check: on the hot path (fits) we box inline; on the
-    /// cold path we call `molt_int_from_i64`. This mirrors the native backend's
-    /// `ensure_boxed_overflow_safe` and the WASM backend's
-    /// `emit_inline_int_range_check` + runtime fallback.
-    ///
-    /// LLVM's range analysis (SCEV / known-bits) folds the branch away whenever
-    /// it can prove `raw` fits inline (e.g. bounded loop induction variables and
-    /// constants), so the check is free on values that are statically small.
-    ///
-    /// This form splits the current block, so callers that must keep the boxed
-    /// value as a single SSA value in a fixed block (phi-incoming
-    /// materialization, function-return coercion) use [`Self::box_i64_branchless`]
-    /// instead.
-    pub(super) fn box_i64_overflow_safe(
-        &self,
-        raw: inkwell::values::IntValue<'ctx>,
-    ) -> inkwell::values::IntValue<'ctx> {
-        box_i64_overflow_safe_with_builder(
-            &self.backend.builder,
-            self.backend.context,
-            &self.backend.module,
-            self.llvm_fn,
-            raw,
-        )
+    /// RC consumes the lowered physical carrier, never an annotation or a
+    /// freshly boxed view. In particular, extracting a full-width raw integer
+    /// must not feed its payload bits to the object reference-count ABI.
+    pub(super) fn emit_refcount(&mut self, op: &TirOp, signature: RuntimeImportSignature) {
+        let operand = op.operands[0];
+        let value = self.resolve(operand);
+        let ty = self
+            .value_types
+            .get(&operand)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        if Self::tir_type_is_dynbox_like(&ty) {
+            let runtime = self.ensure_runtime_import(signature);
+            let bits = self.ensure_i64(value);
+            self.backend
+                .builder
+                .build_call(runtime, &[bits.into()], "")
+                .unwrap();
+        }
+        if let Some(&result) = op.results.first() {
+            self.values.insert(result, value);
+            self.value_types.insert(result, ty);
+        }
     }
 
     /// Branchless overflow-safe integer box: a single `molt_int_from_i64` call
@@ -101,7 +93,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// boxed value must be a single value in a fixed block (phi-incoming
     /// materialization, function-return coercion). `molt_int_from_i64` returns
     /// the inline NaN-box for values that fit the 47-bit payload and a heap
-    /// BigInt otherwise, so the result matches `box_i64_overflow_safe`.
+    /// BigInt otherwise, matching the shared builder-parametric materializer.
     pub(super) fn box_i64_branchless(
         &self,
         raw: inkwell::values::IntValue<'ctx>,
@@ -121,53 +113,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         operand: BasicValueEnum<'ctx>,
         operand_ty: &TirType,
     ) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        match operand_ty {
-            TirType::I64 => {
-                let raw = self.ensure_i64(operand);
-                self.box_i64_overflow_safe(raw)
-            }
-            TirType::Bool => {
-                let raw = match operand {
-                    BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => self
-                        .backend
-                        .builder
-                        .build_int_z_extend(iv, i64_ty, "zext_bool")
-                        .unwrap(),
-                    _ => self.ensure_i64(operand),
-                };
-                self.backend
-                    .builder
-                    .build_or(
-                        raw,
-                        i64_ty.const_int(nanbox::QNAN | nanbox::TAG_BOOL, false),
-                        "box_bool",
-                    )
-                    .unwrap()
-            }
-            TirType::None => i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
-            TirType::F64 => self
-                .backend
-                .builder
-                .build_bit_cast(operand, i64_ty, "f64_to_i64")
-                .unwrap()
-                .into_int_value(),
-            TirType::DynBox
-            | TirType::BigInt
-            | TirType::Str
-            | TirType::Bytes
-            | TirType::List(_)
-            | TirType::Dict(_, _)
-            | TirType::Iterator(_)
-            | TirType::Set(_)
-            | TirType::Tuple(_)
-            | TirType::UserClass(_)
-            | TirType::Ptr(_)
-            | TirType::Func(_)
-            | TirType::Box(_)
-            | TirType::Union(_)
-            | TirType::Never => self.ensure_i64(operand),
-        }
+        materialize_dynbox_bits_with_builder(
+            &self.backend.builder,
+            self.backend.context,
+            &self.backend.module,
+            self.llvm_fn,
+            operand,
+            operand_ty,
+        )
     }
 
     pub(super) fn materialize_dynbox_operand(
@@ -236,6 +189,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or(TirType::DynBox);
 
         let boxed: BasicValueEnum<'ctx> = self.materialize_dynbox_bits(operand, &operand_ty).into();
+        // BoxVal's borrowed operand never donates its owner. Scalar boxing
+        // creates the result owner; an already-boxed carrier must retain it.
+        if Self::tir_type_is_dynbox_like(&operand_ty) {
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[boxed.into()], "box_result_retain")
+                .unwrap();
+        }
 
         self.values.insert(result_id, boxed);
         self.value_types.insert(result_id, TirType::DynBox);
@@ -255,79 +217,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 _ => TirType::DynBox,
             }
         } else {
-            TirType::I64 // default unbox target
+            self.value_types
+                .get(&result_id)
+                .cloned()
+                .or_else(|| match self.value_types.get(&operand_id) {
+                    Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
+                    _ => None,
+                })
+                .unwrap_or(TirType::I64)
         };
 
-        let i64_ty = self.backend.context.i64_type();
-        let raw = self.ensure_i64(operand);
-
-        let unboxed: BasicValueEnum<'ctx> = match &target_ty {
-            TirType::I64 => {
-                // Extract payload: sign-extend from 47 bits
-                let masked = self
-                    .backend
-                    .builder
-                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "payload")
-                    .unwrap();
-                // Sign extension: if bit 46 is set, fill upper bits
-                let sign_bit = self
-                    .backend
-                    .builder
-                    .build_and(
-                        raw,
-                        i64_ty.const_int(nanbox::INT_SIGN_BIT, false),
-                        "sign_bit",
-                    )
-                    .unwrap();
-                let is_neg = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        sign_bit,
-                        i64_ty.const_int(0, false),
-                        "is_neg",
-                    )
-                    .unwrap();
-                let sign_extend = i64_ty.const_int(!nanbox::INT_MASK, false);
-                let extended = self
-                    .backend
-                    .builder
-                    .build_or(masked, sign_extend, "sign_extended")
-                    .unwrap();
-                let extended_basic: inkwell::values::BasicValueEnum = extended.into();
-                let masked_basic: inkwell::values::BasicValueEnum = masked.into();
-
-                self.backend
-                    .builder
-                    .build_select(is_neg, extended_basic, masked_basic, "unbox_i64")
-                    .unwrap()
-            }
-            TirType::F64 => {
-                // Bitcast i64 back to f64.
-                let f64_ty = self.backend.context.f64_type();
-                self.backend
-                    .builder
-                    .build_bit_cast(raw, f64_ty, "unbox_f64")
-                    .unwrap()
-            }
-            TirType::Bool => {
-                // Extract lowest bit
-                let one = i64_ty.const_int(1, false);
-                let bit = self
-                    .backend
-                    .builder
-                    .build_and(raw, one, "bool_bit")
-                    .unwrap();
-                let bool_val = self
-                    .backend
-                    .builder
-                    .build_int_truncate(bit, self.backend.context.bool_type(), "unbox_bool")
-                    .unwrap();
-                bool_val.into()
-            }
-            _ => raw.into(),
-        };
+        let unboxed = self.unbox_from_dynbox(operand, &target_ty);
+        if Self::tir_type_is_dynbox_like(&target_ty) {
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[unboxed.into()], "unbox_result_retain")
+                .unwrap();
+        }
 
         self.values.insert(result_id, unboxed);
         self.value_types.insert(result_id, target_ty);
@@ -964,42 +871,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i64_ty = self.backend.context.i64_type();
         let f64_ty = self.backend.context.f64_type();
         match target_ty {
-            TirType::I64 => {
-                let masked = self
-                    .backend
-                    .builder
-                    .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "payload")
-                    .unwrap();
-                let sign_test = self
-                    .backend
-                    .builder
-                    .build_and(
-                        masked,
-                        i64_ty.const_int(nanbox::INT_SIGN_BIT, false),
-                        "sign_test",
-                    )
-                    .unwrap();
-                let is_neg = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        sign_test,
-                        i64_ty.const_zero(),
-                        "is_neg",
-                    )
-                    .unwrap();
-                let sign_extend = i64_ty.const_int(!nanbox::INT_MASK, false);
-                let extended = self
-                    .backend
-                    .builder
-                    .build_or(masked, sign_extend, "sign_extend")
-                    .unwrap();
-                self.backend
-                    .builder
-                    .build_select(is_neg, extended, masked, "unbox_i64")
-                    .unwrap()
-            }
+            TirType::I64 => unbox_i64_with_builder(
+                &self.backend.builder,
+                self.backend.context,
+                &self.backend.module,
+                raw,
+            )
+            .into(),
             TirType::F64 => self
                 .backend
                 .builder

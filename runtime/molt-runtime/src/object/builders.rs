@@ -213,6 +213,9 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
     capacity_hint: usize,
     pairs: &[u64],
 ) -> *mut u8 {
+    if exception_pending(_py) {
+        return std::ptr::null_mut();
+    }
     let Some(order_capacity) = capacity_hint.checked_mul(2) else {
         return std::ptr::null_mut();
     };
@@ -266,6 +269,10 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
         for pair in pairs.chunks(2) {
             if pair.len() == 2 {
                 dict_set_in_place(_py, ptr, pair[0], pair[1]);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                    return std::ptr::null_mut();
+                }
             }
         }
         crate::object::gc::gc_publish_initialized(_py, ptr);
@@ -282,6 +289,19 @@ pub(crate) fn alloc_set_like_with_entries(
     entries: &[u64],
     type_id: u32,
 ) -> *mut u8 {
+    alloc_set_like_with_capacity_and_entries(_py, entries.len(), entries, type_id)
+}
+
+pub(crate) fn alloc_set_like_with_capacity_and_entries(
+    _py: &PyToken<'_>,
+    capacity_hint: usize,
+    entries: &[u64],
+    type_id: u32,
+) -> *mut u8 {
+    if exception_pending(_py) {
+        return std::ptr::null_mut();
+    }
+    let capacity_hint = capacity_hint.max(entries.len());
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
         + std::mem::size_of::<*mut Vec<usize>>()
@@ -292,15 +312,15 @@ pub(crate) fn alloc_set_like_with_entries(
     }
     unsafe {
         let Some(order_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(entries.len())
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
         else {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
-        let table_cap = if entries.is_empty() {
+        let table_cap = if capacity_hint == 0 {
             0
         } else {
-            set_table_capacity(entries.len())
+            set_table_capacity(capacity_hint)
         };
         let Some(table_ptr) = crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
         else {
@@ -309,7 +329,7 @@ pub(crate) fn alloc_set_like_with_entries(
             return std::ptr::null_mut();
         };
         let Some(hashes_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(entries.len())
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
         else {
             drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
             drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
@@ -322,6 +342,10 @@ pub(crate) fn alloc_set_like_with_entries(
             as *mut *mut Vec<u64>) = hashes_ptr;
         for &entry in entries {
             set_add_in_place(_py, ptr, entry, HashContext::SetElement);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return std::ptr::null_mut();
+            }
         }
     }
     ptr
@@ -356,6 +380,9 @@ fn trace_callargs_enabled() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_builder_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let debug = debug_list_builder_enabled();
         if debug {
             eprintln!(
@@ -438,17 +465,25 @@ impl Drop for PtrDropGuard {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a list builder.
-pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
+/// Caller must ensure `builder_bits` points to a live list builder. `val` is
+/// borrowed. Return 0 after retaining it into owned storage, or 1 on failure
+/// without retaining it. A pending exception must abort the builder, not publish
+/// its partial contents.
+pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) -> i32 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            if exception_pending(_py) {
+                return 1;
+            }
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
-                return;
+                raise_exception::<()>(_py, "RuntimeError", "invalid list builder");
+                return 1;
             }
             let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
             if vec_ptr.is_null() {
-                return;
+                raise_exception::<()>(_py, "RuntimeError", "consumed list builder");
+                return 1;
             }
             let vec = &mut *vec_ptr;
             if !crate::object::backing::tracked_vec_reserve_or_raise(
@@ -457,109 +492,80 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) {
                 vec.len().saturating_add(1),
                 "list allocation failed",
             ) {
-                return;
+                return 1;
             }
+            inc_ref_bits(_py, val);
             vec.push(val);
+            0
         })
     }
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a list builder.
+/// Caller must transfer one live list-builder owner. Success transfers all
+/// retained elements into the list; failure releases them and returns None.
 pub unsafe extern "C" fn molt_list_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-
-            // Reconstruct Box to drop it later, but we need the data
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let slice = vec.as_slice();
-            let capacity = vec.capacity().max(MAX_SMALL_LIST);
-            let list_ptr = alloc_list_with_capacity(_py, slice, capacity);
-
-            // Builder object will be cleaned up by GC/Ref counting eventually,
-            // but the Vec heap allocation is owned by the Box we just reconstructed.
-            // So dropping 'vec' here frees the temporary buffer. Correct.
-
-            if list_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
-            }
+            finish_sequence_builder(_py, builder_bits, |py, values, capacity| {
+                alloc_list_with_capacity_owned(py, values, capacity.max(MAX_SMALL_LIST))
+            })
         })
     }
 }
 
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a list builder with owned refs.
-pub unsafe extern "C" fn molt_list_builder_finish_owned(builder_bits: u64) -> u64 {
+/// Both finish exports consume the builder and its owned element references.
+/// A preexisting failure drops the partial builder without allocating a result.
+/// After detaching storage, allocator failure releases each element exactly once.
+unsafe fn finish_sequence_builder(
+    py: &PyToken<'_>,
+    builder_bits: u64,
+    allocate: impl FnOnce(&PyToken<'_>, &[u64], usize) -> *mut u8,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
+        let builder_ptr = ptr_from_bits(builder_bits);
+        if builder_ptr.is_null() {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, "RuntimeError", "invalid list builder");
             }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
+            return MoltObject::none().bits();
+        }
+        let _guard = PtrDropGuard::new(builder_ptr);
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
+        if vec_ptr.is_null() {
+            return raise_exception::<_>(py, "RuntimeError", "consumed list builder");
+        }
+        *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
+        let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
+        let result = allocate(py, vec.as_slice(), vec.capacity());
+        if result.is_null() {
+            if !exception_pending(py) {
+                crate::record_memory_error_without_allocation(py);
             }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let slice = vec.as_slice();
-            let capacity = vec.capacity().max(MAX_SMALL_LIST);
-            let list_ptr = alloc_list_with_capacity_owned(_py, slice, capacity);
-
-            if list_ptr.is_null() {
-                for &elem in slice {
-                    dec_ref_bits(_py, elem);
-                }
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(list_ptr).bits()
+            for &elem in vec.iter() {
+                dec_ref_bits(py, elem);
             }
-        })
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result).bits()
+        }
     }
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a tuple builder.
+/// Caller must transfer one live list-builder owner. Success transfers all
+/// retained elements into the tuple; failure releases them and returns None.
 pub unsafe extern "C" fn molt_tuple_builder_finish(builder_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let slice = vec.as_slice();
-            let tuple_ptr = alloc_tuple(_py, slice);
-
-            if tuple_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(tuple_ptr).bits()
-            }
+            finish_sequence_builder(_py, builder_bits, |py, values, _| {
+                alloc_tuple_owned(py, values)
+            })
         })
     }
 }
@@ -587,204 +593,6 @@ pub unsafe extern "C" fn molt_tuple_from_values(values_ptr: *const u64, len: u64
             } else {
                 MoltObject::from_ptr(tuple_ptr).bits()
             }
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid. Elements in the builder's Vec
-/// are assumed to already have their own reference (the compiler emitted
-/// inc_ref before each append). No additional inc_ref is performed.
-pub unsafe extern "C" fn molt_tuple_builder_finish_owned(builder_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let slice = vec.as_slice();
-            let tuple_ptr = alloc_tuple_owned(_py, slice);
-
-            if tuple_ptr.is_null() {
-                for &elem in slice {
-                    dec_ref_bits(_py, elem);
-                }
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(tuple_ptr).bits()
-            }
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
-        let ptr = alloc_object(_py, total, TYPE_ID_DICT_BUILDER);
-        if ptr.is_null() {
-            return 0;
-        }
-        unsafe {
-            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return 0;
-            };
-            let Some(vec_capacity) = capacity_hint.checked_mul(2) else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return 0;
-            };
-            let Some(vec_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(vec_capacity)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return 0;
-            };
-            *(ptr as *mut *mut Vec<u64>) = vec_ptr;
-        }
-        bits_from_ptr(ptr)
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a dict builder.
-pub unsafe extern "C" fn molt_dict_builder_append(builder_bits: u64, key: u64, val: u64) {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return;
-            }
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return;
-            }
-            let vec = &mut *vec_ptr;
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                vec.len().saturating_add(2),
-                "dict allocation failed",
-            ) {
-                return;
-            }
-            vec.push(key);
-            vec.push(val);
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a dict builder.
-pub unsafe extern "C" fn molt_dict_builder_finish(builder_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let ptr = alloc_dict_with_pairs(_py, vec.as_slice());
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(ptr).bits()
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_builder_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
-        let ptr = alloc_object(_py, total, TYPE_ID_SET_BUILDER);
-        if ptr.is_null() {
-            return 0;
-        }
-        unsafe {
-            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return 0;
-            };
-            let Some(vec_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return 0;
-            };
-            *(ptr as *mut *mut Vec<u64>) = vec_ptr;
-        }
-        bits_from_ptr(ptr)
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a set builder.
-pub unsafe extern "C" fn molt_set_builder_append(builder_bits: u64, key: u64) {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return;
-            }
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return;
-            }
-            let vec = &mut *vec_ptr;
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                vec.len().saturating_add(1),
-                "set allocation failed",
-            ) {
-                return;
-            }
-            vec.push(key);
-        })
-    }
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-/// Caller must ensure `builder_bits` is valid and points to a set builder.
-pub unsafe extern "C" fn molt_set_builder_finish(builder_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let builder_ptr = ptr_from_bits(builder_bits);
-            if builder_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let _guard = PtrDropGuard::new(builder_ptr);
-            let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
-            if vec_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
-            let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
-            let ptr = alloc_set_with_entries(_py, vec.as_slice());
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(ptr).bits()
         })
     }
 }
@@ -2330,6 +2138,270 @@ pub(crate) fn alloc_memoryview_from_storage(
     }
     inc_ref_bits(_py, storage.format_bits);
     ptr
+}
+
+#[cfg(test)]
+mod sequence_builder_tests {
+    use super::*;
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+    struct RestoreBudget;
+    impl Drop for RestoreBudget {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    fn deny_allocations() -> RestoreBudget {
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_memory: Some(0),
+            max_allocations: Some(0),
+            ..Default::default()
+        })));
+        RestoreBudget
+    }
+
+    fn refs(bits: u64) -> u32 {
+        unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn direct_hash_aggregate_abort_releases_only_admitted_borrowed_edges() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for dict in [false, true] {
+                let item = bits_from_ptr(alloc_string(py, b"aggregate-borrowed-owner"));
+                let baseline = refs(item);
+                let invalid = bits_from_ptr(alloc_list(py, &[]));
+                let aggregate = if dict {
+                    molt_dict_new(2)
+                } else {
+                    molt_set_new(MoltObject::from_int(2).bits())
+                };
+                assert!(!obj_from_bits(aggregate).is_none());
+                if dict {
+                    molt_dict_set(aggregate, MoltObject::from_int(1).bits(), item);
+                    molt_dict_set(aggregate, MoltObject::from_int(2).bits(), item);
+                    assert_eq!(refs(item), baseline + 2);
+                    molt_dict_set(aggregate, invalid, item);
+                } else {
+                    molt_set_add(aggregate, item);
+                    molt_set_add(aggregate, item);
+                    assert_eq!(refs(item), baseline + 1);
+                    molt_set_add(aggregate, invalid);
+                }
+                assert!(exception_pending(py));
+                dec_ref_bits(py, aggregate);
+                assert_eq!(refs(item), baseline, "only admitted edges were retained");
+                assert_eq!(
+                    refs(invalid),
+                    1,
+                    "failed hashing never acquired the operand"
+                );
+                clear_exception(py);
+                dec_ref_bits(py, invalid);
+                dec_ref_bits(py, item);
+            }
+        });
+    }
+
+    #[test]
+    fn dict_conversion_failure_releases_partial_aggregate_edges() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for malformed_pair in [false, true] {
+                let item = bits_from_ptr(alloc_string(py, b"dict-conversion-borrowed-owner"));
+                let invalid = bits_from_ptr(alloc_list(py, &[]));
+                let first = bits_from_ptr(alloc_tuple(py, &[MoltObject::from_int(1).bits(), item]));
+                let second = bits_from_ptr(alloc_tuple(
+                    py,
+                    if malformed_pair {
+                        &[item][..]
+                    } else {
+                        &[invalid, item][..]
+                    },
+                ));
+                let source = bits_from_ptr(alloc_list(py, &[first, second]));
+                let baseline = refs(item);
+                let result = molt_dict_from_obj(source);
+                assert!(obj_from_bits(result).is_none());
+                assert!(exception_pending(py));
+                assert_eq!(
+                    refs(item),
+                    baseline,
+                    "partial dict must release every admitted edge"
+                );
+                clear_exception(py);
+                dec_ref_bits(py, source);
+                dec_ref_bits(py, second);
+                dec_ref_bits(py, first);
+                dec_ref_bits(py, invalid);
+                dec_ref_bits(py, item);
+            }
+        });
+    }
+
+    #[test]
+    fn hash_aggregate_constructors_fail_with_pending_error_and_never_publish() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (constructor, capacity) in [
+                (molt_dict_new as extern "C" fn(u64) -> u64, 1),
+                (molt_set_new, MoltObject::from_int(1).bits()),
+                (molt_frozenset_new, MoltObject::from_int(1).bits()),
+            ] {
+                let budget = deny_allocations();
+                assert!(obj_from_bits(constructor(capacity)).is_none());
+                drop(budget);
+                assert!(exception_pending(py));
+                let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                assert!(obj_from_bits(constructor(capacity)).is_none());
+                let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                assert_eq!(
+                    still_pending, pending,
+                    "constructor must preserve first failure"
+                );
+                dec_ref_bits(py, still_pending);
+                dec_ref_bits(py, pending);
+                clear_exception(py);
+            }
+        });
+    }
+
+    #[test]
+    fn internal_hash_aggregate_construction_aborts_on_hash_failure() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = bits_from_ptr(alloc_string(py, b"partial-hash-aggregate-owner"));
+            let invalid = bits_from_ptr(alloc_list(py, &[]));
+            let baseline = refs(item);
+            for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
+                let construct = || {
+                    if type_id == TYPE_ID_DICT {
+                        alloc_dict_with_pairs(
+                            py,
+                            &[
+                                item,
+                                item,
+                                invalid,
+                                item,
+                                MoltObject::from_int(1).bits(),
+                                item,
+                            ],
+                        )
+                    } else {
+                        alloc_set_like_with_entries(py, &[item, invalid, item], type_id)
+                    }
+                };
+                assert!(construct().is_null());
+                assert!(exception_pending(py));
+                assert_eq!(refs(item), baseline);
+                assert_eq!(refs(invalid), 1);
+                let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                assert!(
+                    construct().is_null(),
+                    "pending failure rejects construction"
+                );
+                let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                assert_eq!(still_pending, pending);
+                assert_eq!(refs(item), baseline);
+                dec_ref_bits(py, still_pending);
+                dec_ref_bits(py, pending);
+                clear_exception(py);
+            }
+            dec_ref_bits(py, invalid);
+            dec_ref_bits(py, item);
+        });
+    }
+
+    #[test]
+    fn sequence_builder_append_borrows_and_abort_releases_every_admitted_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = bits_from_ptr(alloc_string(py, b"builder-abort-owner"));
+            let baseline = refs(item);
+            let builder = molt_list_builder_new(MoltObject::from_int(2).bits());
+            assert!(!obj_from_bits(builder).is_none());
+            unsafe {
+                assert_eq!(molt_list_builder_append(builder, item), 0);
+                assert_eq!(molt_list_builder_append(builder, item), 0);
+            }
+            assert_eq!(refs(item), baseline + 2);
+            dec_ref_bits(py, builder);
+            assert_eq!(
+                refs(item),
+                baseline,
+                "lifecycle detaches each owned edge before dropping storage"
+            );
+            dec_ref_bits(py, item);
+        });
+    }
+
+    #[test]
+    fn rejected_append_never_retains_or_publishes_partial_contents() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = bits_from_ptr(alloc_string(py, b"builder-rejected-owner"));
+            let baseline = refs(item);
+            let builder = molt_list_builder_new(MoltObject::from_int(0).bits());
+            assert!(!obj_from_bits(builder).is_none());
+            let budget = deny_allocations();
+            assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 1);
+            drop(budget);
+            assert!(exception_pending(py));
+            assert_eq!(refs(item), baseline);
+            assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 1);
+            assert_eq!(
+                refs(item),
+                baseline,
+                "pending failures reject without admitting a new owner"
+            );
+            dec_ref_bits(py, builder);
+            clear_exception(py);
+            dec_ref_bits(py, item);
+        });
+    }
+
+    #[test]
+    fn sequence_finish_transfers_or_releases_owned_storage_for_both_container_types() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for finish in [
+                molt_list_builder_finish as unsafe extern "C" fn(u64) -> u64,
+                molt_tuple_builder_finish,
+            ] {
+                for failure in ["none", "pending", "allocation"] {
+                    let item = bits_from_ptr(alloc_string(py, b"builder-finish-owner"));
+                    let baseline = refs(item);
+                    let builder = molt_list_builder_new(MoltObject::from_int(1).bits());
+                    assert!(!obj_from_bits(builder).is_none());
+                    assert_eq!(unsafe { molt_list_builder_append(builder, item) }, 0);
+                    assert_eq!(refs(item), baseline + 1);
+                    if failure == "pending" {
+                        crate::record_memory_error_without_allocation(py);
+                    }
+                    let budget = (failure == "allocation").then(deny_allocations);
+                    let result = unsafe { finish(builder) };
+                    drop(budget);
+                    if failure == "none" {
+                        assert!(!obj_from_bits(result).is_none());
+                        assert_eq!(
+                            refs(item),
+                            baseline + 1,
+                            "finish transfers, never retains again"
+                        );
+                        dec_ref_bits(py, result);
+                    } else {
+                        assert!(obj_from_bits(result).is_none());
+                        assert!(exception_pending(py));
+                        clear_exception(py);
+                    }
+                    assert_eq!(refs(item), baseline, "failure={failure}");
+                    dec_ref_bits(py, item);
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]

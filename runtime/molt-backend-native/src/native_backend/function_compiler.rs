@@ -212,7 +212,7 @@ impl SimpleBackend {
         // mis-pairs with the slot-store transport's inc — re-opening the O(n)
         // accumulator leak. Retire it (empty skip sets) for those functions so the
         // TIR drops lower verbatim; the legacy native-RC functions keep it.
-        let (rc_skip_inc, mut rc_skip_dec) = if drop_inserted {
+        let (rc_skip_inc, rc_skip_dec) = if drop_inserted {
             (HashSet::new(), HashSet::new())
         } else {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
@@ -774,12 +774,23 @@ impl SimpleBackend {
             }
         }
 
+        // Initialize frame custody before any fallible literal constructor can
+        // branch to the shared return. Frame entry itself remains at its IR op.
+        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        let owned_frame_entered = has_frame_slot.then(|| {
+            let entered = builder.declare_var(types::I8);
+            let inactive = builder.ins().iconst(types::I8, 0);
+            builder.def_var(entered, inactive);
+            entered
+        });
+
         // ── Heap-literal prologue hoisting ──────────────────────────────
         //
         // Hoist ALL immutable heap literals to the entry block. Each unique
         // string/bytes payload is allocated once and stored in a dedicated
         // stack slot. Subsequent const_str/const_bytes ops with the same
-        // content load from the slot instead of re-allocating.
+        // content retain an independent owned result from the slot instead of
+        // re-allocating. The frame releases its anchors at the master return.
         //
         // This is the correct fix for loop-carried heap literals:
         // Cranelift SSA variables for heap constants can be corrupted to
@@ -797,6 +808,10 @@ impl SimpleBackend {
             &mut builder,
             &vars,
             representation_plan,
+            fc::const_literals::LiteralFailureExit {
+                block: master_return_block,
+                returns_value,
+            },
         );
 
         // Semantic execution-frame ownership is separate from full call tracing. The
@@ -804,14 +819,6 @@ impl SimpleBackend {
         // for every Python frame; native codegen lowers the enter marker at its
         // IR position so module code can initialize code slots first, then pops
         // exactly once in the unified return block.
-        let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
-        let owned_frame_entered = has_frame_slot.then(|| {
-            let entered = builder.declare_var(types::I8);
-            let inactive = builder.ins().iconst(types::I8, 0);
-            builder.def_var(entered, inactive);
-            entered
-        });
-
         let label_transport_plans: BTreeMap<i64, BlockTransportPlan> = if stateful {
             // Stateful live-across-suspend values have frame custody, not a
             // simultaneously-live SSA predecessor. Their state-label ABI is a
@@ -844,6 +851,14 @@ impl SimpleBackend {
 
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
         sealed_blocks.insert(entry_block);
+
+        // Literal failure checks split the prologue from the Python body.
+        // Entry-value tracking is rooted at the successful body entry, not the
+        // now-terminated ABI parameter/anchor-initialization block.
+        let body_entry_block = builder
+            .current_block()
+            .expect("literal prologue has a success continuation");
+        sealed_blocks.insert(body_entry_block);
 
         // Keep textual control-flow labels and persisted resume states in
         // disjoint block maps. A numeric ready-continuation state may collide
@@ -1048,13 +1063,11 @@ impl SimpleBackend {
                         &op,
                         &mut self.module,
                         &mut self.import_ids,
-                        &mut self.data_pool,
-                        &mut self.next_data_id,
                         &mut builder,
                         &vars,
                         representation_plan,
                         &literal_hoists,
-                        &mut rc_skip_dec,
+                        local_inc_ref_obj,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1231,7 +1244,6 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
-                        local_inc_ref_obj,
                         &mut list_index_fast_paths,
                     );
                     match __flow {
@@ -1609,7 +1621,7 @@ impl SimpleBackend {
                         op_idx,
                         func_ir.name.as_str(),
                         emit_traces,
-                        owned_frame_entered,
+                        master_return_block,
                         returns_value,
                         rc_authority,
                         &mut self.module,
@@ -1782,7 +1794,7 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         &func_ir.name,
-                        entry_block,
+                        body_entry_block,
                         loop_depth,
                         &label_blocks,
                         &label_transport_plans,
@@ -2109,7 +2121,10 @@ impl SimpleBackend {
                     );
                 }
             }
-            if !is_block_filled && loop_depth == 0 && builder.current_block() == Some(entry_block) {
+            if !is_block_filled
+                && loop_depth == 0
+                && builder.current_block() == Some(body_entry_block)
+            {
                 let cleanup_skip = match op.kind.as_str() {
                     "call_func" | "call_bind" | "call_indirect" | "invoke_ffi" => op
                         .args
@@ -2163,7 +2178,7 @@ impl SimpleBackend {
                         .get(src_name)
                         .map(String::as_str)
                         .unwrap_or(src_name);
-                    if builder.current_block() == Some(entry_block) && loop_depth == 0 {
+                    if builder.current_block() == Some(body_entry_block) && loop_depth == 0 {
                         remove_tracked_alias_group(&mut tracked_vars, &alias_roots, root);
                         tracked_vars_set
                             .retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
@@ -2182,7 +2197,7 @@ impl SimpleBackend {
                         }
                     }
                 } else if last_use.get(src_name).copied() == Some(op_idx) {
-                    if builder.current_block() == Some(entry_block) && loop_depth == 0 {
+                    if builder.current_block() == Some(body_entry_block) && loop_depth == 0 {
                         remove_tracked_name(&mut tracked_vars, src_name);
                         tracked_vars_set.remove(src_name);
                         remove_tracked_name(&mut tracked_obj_vars, src_name);
@@ -2223,7 +2238,7 @@ impl SimpleBackend {
                 // for cleanup dec_ref. The caller owns the reference.
                 && !param_name_set.contains(name.as_str())
             {
-                if block == entry_block && loop_depth == 0 {
+                if block == body_entry_block && loop_depth == 0 {
                     if output_is_ptr {
                         if tracked_vars_set.insert(name.to_string()) {
                             tracked_vars.push(name.clone());
@@ -2304,6 +2319,8 @@ impl SimpleBackend {
 
         switch_to_block_materialized(&mut builder, master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
+
+        literal_hoists.release_anchors(&mut builder, local_dec_ref_obj);
 
         emit_owned_execution_frame_exit(
             owned_frame_entered,

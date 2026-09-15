@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
-const { createRuntimeLifetime, combinedError } = require('./runtime_lifecycle.js');
+const { createRuntimeLifetime, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
@@ -155,13 +155,6 @@ const runtimeLifetime = (runtimeInst) => {
   return lifetime;
 };
 const withRuntimeExecution = (runtimeInst, operation) => runtimeLifetime(runtimeInst).execute(operation);
-const withOwnedValue = (value, release, operation) => {
-  try {
-    return operation(value);
-  } finally {
-    release(value);
-  }
-};
 let activeReservedRuntimeCallables = reservedRuntimeCallables;
 let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;
 const formatTraceError = (err) => {
@@ -483,10 +476,8 @@ const initializeWasiForInstance = (instance, memory) => {
 };
 
 const QNAN = 0x7ff8000000000000n;
-const TAG_INT = 0x0001000000000000n;
 const TAG_BOOL = 0x0002000000000000n;
 const TAG_MASK = 0x0007000000000000n;
-const INT_MASK = (1n << 47n) - 1n;
 
 const MAX_DB_FRAME_SIZE = 64 * 1024 * 1024;
 const CANCEL_POLL_MS = 10;
@@ -522,14 +513,6 @@ const PROCESS_STDIO_STDIN = 0;
 const PROCESS_STDIO_STDOUT = 1;
 const PROCESS_STDIO_STDERR = 2;
 const WS_BUFFER_MAX = Number.parseInt(process.env.MOLT_WASM_WS_BUFFER_MAX || '1048576', 10);
-
-const boxInt = (value) => {
-  let v = BigInt(value);
-  if (v < 0n) {
-    v = (1n << 47n) + v;
-  }
-  return QNAN | TAG_INT | (v & INT_MASK);
-};
 
 const isBoolBits = (bits) => (bits & (QNAN | TAG_MASK)) === (QNAN | TAG_BOOL);
 const unboxBool = (bits) => (bits & 1n) === 1n;
@@ -942,16 +925,7 @@ const makeStringObject = (text) => {
   }
 };
 
-const makeListIntObject = (values) => {
-  if (!runtimeInstance || !runtimeInstance.exports) {
-    throw new Error('runtime not initialized');
-  }
-  const builder = runtimeInstance.exports.molt_list_builder_new(boxInt(values.length));
-  for (const value of values) {
-    runtimeInstance.exports.molt_list_builder_append(builder, boxInt(value));
-  }
-  return runtimeInstance.exports.molt_list_builder_finish(builder);
-};
+const makeListIntObject = (values) => makeRuntimeIntList(runtimeInstance, values);
 
 const reprObjectBits = (bits) => {
   if (!runtimeInstance || !runtimeInstance.exports) {
@@ -1000,7 +974,7 @@ const makeHostArgObject = (spec) => {
   }
   switch (spec.kind) {
     case 'int':
-      return boxInt(spec.value);
+      return boxRuntimeInt(runtimeInstance, spec.value);
     case 'string':
       return makeStringObject(String(spec.value));
     case 'text_path':
@@ -1013,7 +987,7 @@ const makeHostArgObject = (spec) => {
       if (!Array.isArray(spec.value)) {
         throw new Error('list_int value must be an array');
       }
-      return makeListIntObject(spec.value.map((v) => Number(v)));
+      return makeListIntObject(spec.value);
     default:
       throw new Error(`unsupported host export arg kind: ${spec.kind}`);
   }
@@ -1031,53 +1005,49 @@ const runHostExportCalls = () => {
     // runMain admits this path only after successful main initialization.
     const results = [];
     for (const call of calls) {
-    if (!call || typeof call !== 'object' || typeof call.export !== 'string') {
-      throw new Error('each host export call must provide an export name');
-    }
-    const fn = appInstanceForHostCalls.exports[call.export];
-    if (typeof fn !== 'function') {
-      throw new Error(`app export missing: ${call.export}`);
-    }
-    const argBits = Array.isArray(call.args) ? call.args.map(makeHostArgObject) : [];
-    let argReprs = null;
-    if (traceRun) {
-      argReprs = argBits.map((bits) => {
-        try {
-          return reprObjectBits(bits);
-        } catch (err) {
-          return `<repr failed: ${err instanceof Error ? err.message : String(err)}>`;
-        }
-      });
-    }
-    let resultBits = 0n;
-    const started = Date.now();
-    try {
-      if (traceRun) {
-        console.error(
-          `[molt wasm] host-call: invoking ${call.export} args=${argBits.map((x) => String(x)).join(',')} reprs=${JSON.stringify(argReprs)}`,
-        );
+      if (!call || typeof call !== 'object' || typeof call.export !== 'string') {
+        throw new Error('each host export call must provide an export name');
       }
-      resultBits = fn(...argBits);
-    } finally {
-      for (const bits of argBits) {
-        decRefMaybe(bits);
+      const fn = appInstanceForHostCalls.exports[call.export];
+      if (typeof fn !== 'function') {
+        throw new Error(`app export missing: ${call.export}`);
       }
-    }
-      withOwnedValue(resultBits, decRefMaybe, (ownedResultBits) => {
-        const pending = pendingRuntimeExceptionMessage(runtimeInstance);
-        if (pending) {
-          throw new Error(pending);
+      withRuntimeOwnedValues(runtimeInstance, Array.isArray(call.args) ? call.args : [], makeHostArgObject, (argBits) => {
+        let argReprs = null;
+        if (traceRun) {
+          argReprs = argBits.map((bits) => {
+            try {
+              return reprObjectBits(bits);
+            } catch (err) {
+              return `<repr failed: ${err instanceof Error ? err.message : String(err)}>`;
+            }
+          });
         }
+        const started = Date.now();
         if (traceRun) {
           console.error(
-            `[molt wasm] host-call: ${call.export} returned ${String(resultBits)} (${typeof resultBits})`,
+            `[molt wasm] host-call: invoking ${call.export} args=${argBits.map((x) => String(x)).join(',')} reprs=${JSON.stringify(argReprs)}`,
           );
         }
-        const resultRepr = reprObjectBits(ownedResultBits);
-        results.push({
-          export: call.export,
-          duration_ms: Date.now() - started,
-          result_repr: resultRepr,
+        // Acquire the result inside the shared transaction. Decode failures and
+        // result-release failures remain primary/cleanup peers; neither can
+        // prevent the enclosing argument transaction from releasing its owners.
+        withRuntimeOwnedValues(runtimeInstance, [argBits], ownedArgs => fn(...ownedArgs), ([ownedResultBits]) => {
+          const pending = pendingRuntimeExceptionMessage(runtimeInstance);
+          if (pending) {
+            throw new Error(pending);
+          }
+          if (traceRun) {
+            console.error(
+              `[molt wasm] host-call: ${call.export} returned ${String(ownedResultBits)} (${typeof ownedResultBits})`,
+            );
+          }
+          const resultRepr = reprObjectBits(ownedResultBits);
+          results.push({
+            export: call.export,
+            duration_ms: Date.now() - started,
+            result_repr: resultRepr,
+          });
         });
       });
     }
@@ -1918,8 +1888,9 @@ class DbWorkerClient {
       }
       let cancelled = false;
       try {
-        const tokenBits = boxInt(pending.tokenId);
-        const result = runtimeInstance.exports.molt_cancel_token_is_cancelled(tokenBits);
+        const result = withRuntimeOwnedValues(runtimeInstance, [pending.tokenId],
+          value => boxRuntimeInt(runtimeInstance, value), ([tokenBits]) =>
+            runtimeInstance.exports.molt_cancel_token_is_cancelled(tokenBits));
         if (typeof result === 'bigint' && isBoolBits(result) && unboxBool(result)) {
           cancelled = true;
         }
@@ -5335,11 +5306,15 @@ const runtimeFallbackFunction = (runtimeExports, name) => {
       return null;
     }
     return (methodBits, ...argBits) => {
-      const builderBits = callargsNew(boxInt(fallback.call_arity), boxInt(0));
-      for (const argBitsValue of argBits) {
-        callargsPushPos(builderBits, argBitsValue);
-      }
-      return callBindIc(boxInt(0), methodBits, builderBits);
+      const runtime = { exports: runtimeExports };
+      return withRuntimeOwnedValues(runtime, [fallback.call_arity, 0],
+        value => boxRuntimeInt(runtime, value), ([arityBits, zeroBits]) => {
+          const builderBits = callargsNew(arityBits, zeroBits);
+          for (const argBitsValue of argBits) {
+            callargsPushPos(builderBits, argBitsValue);
+          }
+          return callBindIc(zeroBits, methodBits, builderBits);
+        }, true);
     };
   }
   if (fallback.strategy === 'direct_export' && fallback.exports.length === 1) {
@@ -6089,6 +6064,5 @@ module.exports = {
   parseWasmImports,
   resolveManifestModulePath,
   resolveWasmPaths,
-  withOwnedValue,
   withRuntimeExecution,
 };

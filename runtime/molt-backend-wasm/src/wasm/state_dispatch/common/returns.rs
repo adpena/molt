@@ -16,10 +16,12 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_trailing_return(
         func.instruction(&Instruction::LocalSet(locals.return_local));
         func.instruction(&Instruction::End);
         func.instruction(&Instruction::LocalGet(locals.return_local));
+        op_emitter.emit_const_anchor_releases(func);
         func.instruction(&Instruction::Return);
         func.instruction(&Instruction::End);
     } else {
         op_emitter.const_cache().emit_none(func);
+        op_emitter.emit_const_anchor_releases(func);
         func.instruction(&Instruction::Return);
         func.instruction(&Instruction::End);
     }

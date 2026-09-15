@@ -11,6 +11,11 @@ pub(super) fn emit_return_control_op(
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => emit_ret(context, func, op),
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
             func.instruction(&Instruction::I64Const(0));
+            context.frame.emit_const_anchor_releases(
+                func,
+                context.import_ids,
+                context.reloc_enabled,
+            );
             func.instruction(&Instruction::Return);
         }
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::NotReturn
@@ -35,5 +40,8 @@ fn emit_ret(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
             format_args!("ret target args {:?} are not present", op.args),
         );
     }
+    context
+        .frame
+        .emit_const_anchor_releases(func, context.import_ids, context.reloc_enabled);
     func.instruction(&Instruction::Return);
 }

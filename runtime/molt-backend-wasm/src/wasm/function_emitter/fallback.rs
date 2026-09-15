@@ -29,7 +29,8 @@ pub(super) fn emit_fallback_function_body(
     if let (Some(plan), Some(locals)) = (dispatch_plan.as_ref(), dispatch_locals) {
         plan.emit_table_bases(backend, func_index, &mut func, reloc_enabled, locals);
     }
-    frame.emit_dispatch_seed_initializers(
+    frame.emit_entry_initializers(&mut func);
+    frame.emit_const_anchor_initializers(
         backend,
         &mut func,
         func_index,
@@ -37,7 +38,6 @@ pub(super) fn emit_fallback_function_body(
         import_ids,
         ctx.const_str_scratch_segment,
     );
-    frame.emit_entry_initializers(&mut func);
 
     // Capture native_eh_enabled before the closure to avoid borrowing backend.
     // Native EH requires non-relocatable output because wasm-ld does not

@@ -7,6 +7,152 @@ use crate::tir::verify::verify_function;
 
 use super::run;
 
+#[test]
+fn full_width_or_unknown_integer_boxing_is_never_elided_even_when_dead() {
+    for value in [Some(i64::MIN), Some(i64::MAX), None] {
+        for used in [false, true] {
+            let mut func =
+                TirFunction::new("fallible_box".into(), vec![TirType::I64], TirType::I64);
+            let raw = if value.is_some() {
+                func.fresh_value()
+            } else {
+                ValueId(0)
+            };
+            let boxed = func.fresh_value();
+            let unboxed = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            if let Some(value) = value {
+                entry.ops.push(const_int_op(raw, value));
+            }
+            entry.ops.push(box_op(raw, boxed));
+            if used {
+                entry.ops.push(unbox_op(boxed, unboxed));
+            }
+            entry.terminator = Terminator::Return {
+                values: vec![if used { unboxed } else { raw }],
+            };
+            assert_eq!(
+                run(&mut func).ops_removed,
+                0,
+                "value={value:?}, used={used}"
+            );
+            assert!(
+                func.blocks[&func.entry_block]
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::BoxVal)
+            );
+        }
+    }
+}
+
+#[test]
+fn full_width_box_keeps_its_cross_block_exception_observer() {
+    use crate::tir::blocks::TirBlock;
+    let mut func = TirFunction::new("box_exception".into(), vec![], TirType::I64);
+    let next = func.fresh_block();
+    let raw = func.fresh_value();
+    let boxed = func.fresh_value();
+    let unboxed = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry
+        .ops
+        .extend([const_int_op(raw, i64::MAX), box_op(raw, boxed)]);
+    entry.terminator = Terminator::Branch {
+        target: next,
+        args: vec![],
+    };
+    func.blocks.insert(
+        next,
+        TirBlock {
+            id: next,
+            args: vec![],
+            ops: vec![
+                TirOp {
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    ..box_op(raw, boxed)
+                },
+                unbox_op(boxed, unboxed),
+            ],
+            terminator: Terminator::Return {
+                values: vec![unboxed],
+            },
+        },
+    );
+    assert_eq!(run(&mut func).ops_removed, 0);
+    assert_eq!(func.blocks[&next].ops[0].opcode, OpCode::CheckException);
+    assert!(verify_function(&func).is_ok());
+}
+
+#[test]
+fn proven_nonallocating_scalar_pairs_remain_optimizable() {
+    for (opcode, value, ty) in [
+        (OpCode::ConstInt, Some(AttrValue::Int(42)), TirType::I64),
+        (
+            OpCode::ConstBool,
+            Some(AttrValue::Bool(true)),
+            TirType::Bool,
+        ),
+        (
+            OpCode::ConstFloat,
+            Some(AttrValue::Float(1.25)),
+            TirType::F64,
+        ),
+        (OpCode::ConstNone, None, TirType::None),
+    ] {
+        let mut func = TirFunction::new("safe_box".into(), vec![], ty.clone());
+        let raw = func.fresh_value();
+        let boxed = func.fresh_value();
+        let unboxed = func.fresh_value();
+        func.value_types.insert(raw, ty.clone());
+        func.value_types
+            .insert(boxed, TirType::Box(Box::new(ty.clone())));
+        func.value_types.insert(unboxed, ty);
+        let mut constant = const_int_op(raw, 0);
+        constant.opcode = opcode;
+        constant.attrs.clear();
+        if let Some(value) = value {
+            constant.attrs.insert("value".into(), value);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([constant, box_op(raw, boxed), unbox_op(boxed, unboxed)]);
+        entry.terminator = Terminator::Return {
+            values: vec![unboxed],
+        };
+        assert_eq!(run(&mut func).ops_removed, 2, "{opcode:?}");
+    }
+}
+
+#[test]
+fn box_unbox_elision_requires_matching_semantic_result_and_target() {
+    for mismatch_hint in [false, true] {
+        let mut func = TirFunction::new("mismatched_unbox".into(), vec![], TirType::F64);
+        let raw = func.fresh_value();
+        let boxed = func.fresh_value();
+        let unboxed = func.fresh_value();
+        let mut unbox = unbox_op(boxed, unboxed);
+        if mismatch_hint {
+            unbox
+                .attrs
+                .insert("type".into(), AttrValue::Str("f64".into()));
+        } else {
+            func.value_types.insert(unboxed, TirType::F64);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .extend([const_int_op(raw, 1), box_op(raw, boxed), unbox]);
+        entry.terminator = Terminator::Return {
+            values: vec![unboxed],
+        };
+        assert_eq!(run(&mut func).ops_removed, 0);
+    }
+}
+
 fn box_op(operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         dialect: Dialect::Molt,

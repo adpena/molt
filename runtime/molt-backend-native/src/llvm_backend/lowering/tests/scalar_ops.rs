@@ -1,5 +1,404 @@
 use super::*;
 
+#[test]
+fn refcount_uses_lowered_carriers_without_boxing() {
+    for ty in [
+        TirType::I64,
+        TirType::F64,
+        TirType::Bool,
+        TirType::DynBox,
+        TirType::Str,
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func = TirFunction::new("rc_carriers".into(), vec![], TirType::None);
+        let llvm_fn =
+            backend
+                .module
+                .add_function("rc_carriers", ctx.void_type().fn_type(&[], false), None);
+        backend
+            .builder
+            .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
+        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        let value: BasicValueEnum<'_> = match ty {
+            TirType::F64 => ctx.f64_type().const_float(-0.0).into(),
+            TirType::Bool => ctx.bool_type().const_int(1, false).into(),
+            _ => ctx.i64_type().const_int(i64::MAX as u64, false).into(),
+        };
+        lowering.values.insert(ValueId(0), value);
+        lowering.value_types.insert(ValueId(0), ty.clone());
+        for opcode in [OpCode::IncRef, OpCode::DecRef, OpCode::DelBoundary] {
+            lowering.lower_op(
+                func.entry_block,
+                &TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![ValueId(0)],
+                    results: vec![],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                },
+            );
+        }
+        backend.builder.build_return(None).unwrap();
+        backend.module.verify().unwrap();
+        let ir = llvm_fn.print_to_string().to_string();
+        let expected = if FunctionLowering::tir_type_is_dynbox_like(&ty) {
+            3
+        } else {
+            0
+        };
+        assert_eq!(ir.matches("call ").count(), expected, "{ty:?}: {ir}");
+        assert!(
+            !ir.contains("@molt_int_from_i64"),
+            "RC must never allocate: {ir}"
+        );
+    }
+}
+
+#[test]
+fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let func = TirFunction::new("owned_box".into(), vec![TirType::DynBox], TirType::Str);
+    let llvm_fn = backend.module.add_function(
+        "owned_box",
+        ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+        None,
+    );
+    backend
+        .builder
+        .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
+    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    lowering
+        .values
+        .insert(ValueId(0), llvm_fn.get_first_param().unwrap());
+    lowering.value_types.insert(ValueId(0), TirType::DynBox);
+    let mut op = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::BoxVal,
+        operands: vec![ValueId(0)],
+        results: vec![ValueId(1)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    };
+    lowering.emit_box(&op);
+    op.opcode = OpCode::UnboxVal;
+    op.operands = vec![ValueId(1)];
+    op.results = vec![ValueId(2)];
+    lowering.value_types.insert(ValueId(2), TirType::Str);
+    lowering.emit_unbox(&op);
+    backend
+        .builder
+        .build_return(Some(&lowering.resolve(ValueId(2))))
+        .unwrap();
+    backend.module.verify().unwrap();
+    let ir = llvm_fn.print_to_string().to_string();
+    assert_eq!(ir.matches("call void @molt_inc_ref_obj").count(), 2, "{ir}");
+}
+
+#[test]
+fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let func = TirFunction::new("decode_i64".into(), vec![TirType::DynBox], TirType::I64);
+    let llvm_fn = backend.module.add_function(
+        "decode_i64",
+        ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+        None,
+    );
+    let entry = ctx.append_basic_block(llvm_fn, "entry");
+    backend.builder.position_at_end(entry);
+    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let raw = llvm_fn.get_first_param().unwrap().into_int_value();
+    lowering.values.insert(ValueId(0), raw.into());
+    lowering.value_types.insert(ValueId(0), TirType::DynBox);
+    lowering.value_types.insert(ValueId(1), TirType::I64);
+    lowering.emit_unbox(&TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::UnboxVal,
+        operands: vec![ValueId(0)],
+        results: vec![ValueId(1)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    let trampoline = unbox_dynbox_to_param_ty_with_builder(
+        &backend.builder,
+        &ctx,
+        &backend.module,
+        raw,
+        &TirType::I64,
+    );
+    backend.builder.build_return(Some(&trampoline)).unwrap();
+    backend.module.verify().unwrap();
+    let ir = llvm_fn.print_to_string().to_string();
+    assert_eq!(ir.matches("call i64 @molt_int_as_i64").count(), 2, "{ir}");
+    assert_eq!(
+        llvm_fn.count_basic_blocks(),
+        1,
+        "phi insertions must remain in their predecessor"
+    );
+    assert!(
+        !ir.contains("sign_extend") && !ir.contains("payload"),
+        "{ir}"
+    );
+}
+
+#[test]
+fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() {
+    for (opcode, result_ty, runtime_name, payload) in [
+        (
+            OpCode::ConstStr,
+            TirType::Str,
+            "molt_string_from_bytes",
+            AttrValue::Bytes(b"same\0literal".to_vec()),
+        ),
+        (
+            OpCode::ConstBytes,
+            TirType::Bytes,
+            "molt_bytes_from_bytes",
+            AttrValue::Bytes(vec![0xff, 0, 0x80]),
+        ),
+        (
+            OpCode::ConstBigInt,
+            TirType::DynBox,
+            "molt_bigint_from_str",
+            AttrValue::Str("123456789012345678901234567890".into()),
+        ),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func = TirFunction::new("literal_ownership".into(), vec![], result_ty.clone());
+        let llvm_fn = backend.module.add_function(
+            "literal_ownership",
+            ctx.i64_type().fn_type(&[], false),
+            None,
+        );
+        let entry = ctx.append_basic_block(llvm_fn, "entry");
+        backend.builder.position_at_end(entry);
+        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        let mut attrs = AttrDict::new();
+        let payload_key = if opcode == OpCode::ConstBigInt {
+            "s_value"
+        } else {
+            "bytes"
+        };
+        attrs.insert(payload_key.into(), payload);
+        for result in [ValueId(0), ValueId(1)] {
+            lowering.lower_op(
+                func.entry_block,
+                &TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![],
+                    results: vec![result],
+                    attrs: attrs.clone(),
+                    source_span: None,
+                },
+            );
+            assert_eq!(lowering.value_types[&result], result_ty);
+            if result == ValueId(0) {
+                lowering.lower_op(
+                    func.entry_block,
+                    &TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::DecRef,
+                        operands: vec![result],
+                        results: vec![],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                );
+            }
+        }
+        assert_ne!(lowering.values[&ValueId(0)], lowering.values[&ValueId(1)]);
+        let result = lowering.ensure_i64(lowering.values[&ValueId(1)]);
+        backend.builder.build_return(Some(&result)).unwrap();
+        assert!(lowering.diagnostics.borrow().is_empty());
+        backend.module.verify().expect("literal module verifies");
+        let ir = llvm_fn.print_to_string().to_string();
+        let calls: Vec<_> = ir.lines().filter(|line| line.contains("call ")).collect();
+        assert_eq!(
+            calls.len(),
+            3,
+            "one owned call per result and one drop: {ir}"
+        );
+        assert!(calls[0].contains(&format!("@{runtime_name}(")), "{ir}");
+        assert!(calls[1].contains("@molt_dec_ref_obj("), "{ir}");
+        assert!(calls[2].contains(&format!("@{runtime_name}(")), "{ir}");
+        let materializer = backend.module.get_function(runtime_name).unwrap();
+        let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
+        let expected_abi = if opcode == OpCode::ConstBigInt {
+            ctx.i64_type()
+                .fn_type(&[ptr_ty.into(), ctx.i64_type().into()], false)
+        } else {
+            ctx.i32_type().fn_type(
+                &[ptr_ty.into(), ctx.i64_type().into(), ptr_ty.into()],
+                false,
+            )
+        };
+        assert_eq!(materializer.get_type(), expected_abi, "{runtime_name}");
+    }
+}
+
+#[test]
+fn repeated_attribute_name_literals_use_owned_string_materialization() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let func = TirFunction::new("literal_names".into(), vec![], TirType::Str);
+    let llvm_fn =
+        backend
+            .module
+            .add_function("literal_names", ctx.i64_type().fn_type(&[], false), None);
+    let entry = ctx.append_basic_block(llvm_fn, "entry");
+    backend.builder.position_at_end(entry);
+    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let mut results = Vec::new();
+    for _ in 0..2 {
+        results.push(lowering.with_owned_name("same_name", |this, name_bits| {
+            let import = this.ensure_runtime_i64_fn("molt_module_import", 1);
+            this.backend
+                .builder
+                .build_call(import, &[name_bits.into()], "name_consumer")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+        }));
+    }
+    let [first, second] = results.as_slice() else {
+        unreachable!()
+    };
+    assert_ne!(first, second);
+    let result = lowering.ensure_i64(*second);
+    backend.builder.build_return(Some(&result)).unwrap();
+    backend
+        .module
+        .verify()
+        .expect("name literal module verifies");
+    let ir = llvm_fn.print_to_string().to_string();
+    assert_eq!(ir.matches("@molt_string_from_bytes(").count(), 2, "{ir}");
+    assert_eq!(ir.matches("@molt_dec_ref_obj(").count(), 2, "{ir}");
+    assert_eq!(ir.matches("icmp eq i32").count(), 2, "{ir}");
+    assert!(!ir.contains("@molt_bytes_from_bytes("), "{ir}");
+}
+
+#[test]
+fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
+    fn block_text(block: BasicBlock<'_>) -> String {
+        let mut text = String::new();
+        let mut instruction = block.get_first_instruction();
+        while let Some(current) = instruction {
+            text.push_str(&current.print_to_string().to_string());
+            text.push('\n');
+            instruction = current.get_next_instruction();
+        }
+        text
+    }
+    for (opcode, key, runtime, operands, has_result) in [
+        (OpCode::LoadAttr, "name", "molt_get_attr_name", 1, true),
+        (OpCode::StoreAttr, "name", "molt_set_attr_name", 2, false),
+        (OpCode::DelAttr, "name", "molt_del_attr_name", 1, false),
+        (OpCode::Import, "module", "molt_module_import", 0, true),
+        (OpCode::Import, "s_value", "molt_module_import", 0, true),
+        (OpCode::Import, "_var", "molt_module_import", 0, true),
+        (OpCode::CallBuiltin, "name", "molt_call_builtin", 1, true),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func = TirFunction::new("checked_name".into(), vec![], TirType::DynBox);
+        let llvm_fn =
+            backend
+                .module
+                .add_function("checked_name", ctx.i64_type().fn_type(&[], false), None);
+        let entry = ctx.append_basic_block(llvm_fn, "entry");
+        backend.builder.position_at_end(entry);
+        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        for operand in [ValueId(0), ValueId(1)] {
+            lowering.lower_op(func.entry_block, &const_none_def(operand));
+        }
+        let result_id = ValueId(2);
+        lowering.lower_op(
+            func.entry_block,
+            &TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: (0..operands).map(ValueId).collect(),
+                results: if has_result { vec![result_id] } else { vec![] },
+                attrs: AttrDict::from([(key.into(), AttrValue::Str("same_name".into()))]),
+                source_span: None,
+            },
+        );
+        // The enclosing operation, not a private return, owns exception routing.
+        lowering.lower_op(
+            func.entry_block,
+            &TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+        );
+        let result = lowering.values[&if has_result { result_id } else { ValueId(0) }];
+        backend.builder.build_return(Some(&result)).unwrap();
+        backend
+            .module
+            .verify()
+            .expect("checked name CFG must verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        let source = block_text(entry);
+        let success = block_text(
+            llvm_fn
+                .get_basic_blocks()
+                .into_iter()
+                .find(|block| block.get_name().to_bytes() == b"owned_name_success0")
+                .unwrap(),
+        );
+        let merge = block_text(
+            llvm_fn
+                .get_basic_blocks()
+                .into_iter()
+                .find(|block| block.get_name().to_bytes() == b"owned_name_merge0")
+                .unwrap(),
+        );
+        assert!(source.contains("icmp eq i32 %sfb, 0"), "{ir}");
+        assert!(
+            source.contains(
+                "br i1 %owned_name_ok, label %owned_name_success0, label %owned_name_merge0"
+            ),
+            "{ir}"
+        );
+        assert!(!source.contains(&format!("@{runtime}(")), "{ir}");
+        assert!(!source.contains("@molt_dec_ref_obj("), "{ir}");
+        assert_eq!(success.matches(&format!("@{runtime}(")).count(), 1, "{ir}");
+        assert_eq!(
+            ir.matches("@molt_dec_ref_obj(i64 %str_bits)").count(),
+            1,
+            "{ir}"
+        );
+        assert!(
+            success.find(&format!("@{runtime}(")).unwrap()
+                < success.find("@molt_dec_ref_obj(").unwrap(),
+            "{ir}"
+        );
+        assert!(!success.contains("ret "), "{ir}");
+        assert!(
+            merge.contains(&format!("[ {}, %entry ]", nanbox::QNAN | nanbox::TAG_NONE)),
+            "{ir}"
+        );
+        assert!(merge.contains("@molt_exception_pending()"), "{ir}");
+        assert!(
+            !merge.contains("@molt_dec_ref_obj(") && !merge.contains("ptr_unbox"),
+            "{ir}"
+        );
+        if opcode == OpCode::CallBuiltin {
+            assert!(!source.contains("@molt_callargs_new("), "{ir}");
+            assert!(success.contains("@molt_callargs_new("), "{ir}");
+        }
+    }
+}
+
 /// Exercise actual opcode dispatch with an explicit physical operand carrier.
 /// The leaf returns its emitted bits solely for IR inspection. Supplied result
 /// facts test lane selection; they do not prove the range analysis itself.

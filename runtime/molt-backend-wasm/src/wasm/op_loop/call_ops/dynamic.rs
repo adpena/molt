@@ -106,7 +106,13 @@ pub(super) fn emit_dynamic_call_op(
                 // Return immediately so the pending RecursionError
                 // propagates to the caller instead of being silently
                 // swallowed as None (which caused TypeError downstream).
-                emit_pending_exception_return(func, const_cache);
+                emit_pending_exception_return(
+                    func,
+                    const_cache,
+                    call_ctx.frame,
+                    import_ids,
+                    reloc_enabled,
+                );
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::Else);
                 build_positional_callargs(
@@ -225,7 +231,13 @@ pub(super) fn emit_dynamic_call_op(
             // Return immediately so the pending RecursionError
             // propagates to the caller instead of being silently
             // swallowed as None (which caused TypeError downstream).
-            emit_pending_exception_return(func, const_cache);
+            emit_pending_exception_return(
+                func,
+                const_cache,
+                call_ctx.frame,
+                import_ids,
+                reloc_enabled,
+            );
             func.instruction(&Instruction::End);
 
             // slow path: function object does not match expected target

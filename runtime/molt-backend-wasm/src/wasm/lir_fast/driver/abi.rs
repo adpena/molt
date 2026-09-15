@@ -2,9 +2,9 @@ use super::super::lir_context::LirLowerCtx;
 #[cfg(any(test, feature = "test-util"))]
 use super::super::lir_context::lir_repr_to_val;
 use super::super::lir_control::LirReturnAbi;
-use molt_codegen_abi::INT_SHIFT as INT_SHIFT_BITS;
+use super::super::lir_scalar::emit_unbox_i64;
 use molt_tir::tir::lir::{LirFunction, LirRepr};
-use wasm_encoder::{Instruction, ValType};
+use wasm_encoder::ValType;
 
 #[derive(Clone, Copy)]
 pub(super) enum LirWasmAbi {
@@ -86,11 +86,7 @@ impl LirWasmAbi {
             LirWasmAbi::BoxedI64 => {
                 if let Some(entry) = ctx.func.blocks.get(&ctx.func.entry_block) {
                     for (idx, arg) in entry.args.iter().enumerate() {
-                        ctx.instructions.push(Instruction::LocalGet(idx as u32));
-                        ctx.instructions.push(Instruction::I64Const(INT_SHIFT_BITS));
-                        ctx.instructions.push(Instruction::I64Shl);
-                        ctx.instructions.push(Instruction::I64Const(INT_SHIFT_BITS));
-                        ctx.instructions.push(Instruction::I64ShrS);
+                        emit_unbox_i64(ctx, idx as u32);
                         ctx.emit_set(arg.id);
                     }
                 }

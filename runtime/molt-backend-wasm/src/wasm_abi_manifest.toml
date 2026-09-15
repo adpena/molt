@@ -54,6 +54,7 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i32"], results = ["i32"] },
   { params = [], results = ["i32"] },
+  { params = ["i64", "i64"], results = ["i32"] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -1222,6 +1223,10 @@ name = "int_from_i64"
 type = 2
 
 [[import]]
+name = "int_as_i64"
+type = 2
+
+[[import]]
 name = "str_concat"
 type = 3
 
@@ -1918,7 +1923,7 @@ type = 3
 
 [[import]]
 name = "list_builder_append"
-type = 6
+type = 49
 
 [[import]]
 name = "list_contains"
@@ -5901,6 +5906,10 @@ import_name = "dec_ref_obj"
 variant = "IntFromI64"
 import_name = "int_from_i64"
 
+[[lir_runtime_call]]
+variant = "IntAsI64"
+import_name = "int_as_i64"
+
 # Container-specialized runtime import selector. The compiler supplies the
 # proven operation plus storage/type fact; generic fallback is owned by callers
 # when no row is present.
@@ -6817,6 +6826,7 @@ essential_exports = [
   "molt_handle_resolve",
   "molt_header_size",
   "molt_index",
+  "molt_int_from_i64",
   "memory",
   "molt_memory",
   "molt_host_init",
@@ -7788,7 +7798,9 @@ description = "Get timezone name"
 [[const_op_policy]]
 kind = "const"
 inline_seed = "int"
+materializer_import = "int_from_i64"
 scalar_payload = "int"
+dispatch_runtime_seed = true
 raw_int_effect = "set_int"
 lir_fast = "lower"
 

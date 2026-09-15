@@ -358,6 +358,7 @@ pub(crate) fn bigint_bits(_py: &PyToken<'_>, value: BigInt) -> u64 {
     let total = mem::size_of::<MoltHeader>() + bigint_size;
     let ptr = alloc_object(_py, total, TYPE_ID_BIGINT);
     if ptr.is_null() {
+        crate::record_memory_error_without_allocation(_py);
         return MoltObject::none().bits();
     }
     unsafe {

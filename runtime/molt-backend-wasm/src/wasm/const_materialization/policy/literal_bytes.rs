@@ -5,10 +5,7 @@ use molt_tir::tir::ops::{AttrValue, TirOp};
 use std::sync::Arc;
 
 impl WasmConstOpPolicy {
-    pub(in crate::wasm::const_materialization::policy) fn required_simple_ir_literal_bytes(
-        self,
-        op: &OpIR,
-    ) -> Arc<[u8]> {
+    pub(in crate::wasm) fn required_simple_ir_literal_bytes(self, op: &OpIR) -> Arc<[u8]> {
         match self.literal_payload() {
             WasmConstLiteralPayload::None => {
                 panic!("const op {} has no literal payload", self.0.kind)

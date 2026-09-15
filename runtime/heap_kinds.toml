@@ -1,7 +1,9 @@
 schema_version = 1
+# Retired ABI slots are never valid heap kinds and must never be reused.
+retired_ids = [205, 231]
 
 # Canonical heap-kind and lifetime-policy authority. The object header stores only
-# `type_id`; fixed kinds therefore resolve by dense table lookup with no header
+# `type_id`; fixed kinds resolve by indexed lookup with invalid retired holes and no header
 # growth. `TYPE_ID_OBJECT` uses an immutable shape descriptor for subtype-specific
 # lifetime hooks (see object/heap_kinds.rs).
 
@@ -72,18 +74,6 @@ weakref = "deny"
 shape = "fixed"
 drop = "dict"
 metrics = "dict"
-
-[[kind]]
-name = "DICT_BUILDER"
-id = 205
-layout = "vec_bits"
-edges = "dynamic"
-cycle = "never"
-publication = "linear_unpublished"
-weakref = "deny"
-shape = "fixed"
-drop = "dict_builder"
-metrics = "none"
 
 [[kind]]
 name = "TUPLE"
@@ -361,18 +351,6 @@ cycle = "always"
 weakref = "allow"
 shape = "fixed"
 drop = "set"
-metrics = "none"
-
-[[kind]]
-name = "SET_BUILDER"
-id = 231
-layout = "vec_bits"
-edges = "dynamic"
-cycle = "never"
-publication = "linear_unpublished"
-weakref = "deny"
-shape = "fixed"
-drop = "set_builder"
 metrics = "none"
 
 [[kind]]

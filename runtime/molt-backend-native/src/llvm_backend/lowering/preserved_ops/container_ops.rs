@@ -104,38 +104,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             "list_new" => {
-                let list_new_fn = self.ensure_runtime_i64_fn("molt_list_builder_new", 1);
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        list_new_fn,
-                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
-                        "list_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let push_fn = self.ensure_runtime_void_fn("molt_list_builder_append", 2);
-                for &item_id in &op.operands {
-                    let item_bits = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(push_fn, &[builder.into(), item_bits.into()], "list_append")
-                        .unwrap();
-                }
-                let finish_fn = self.ensure_runtime_i64_fn("molt_list_builder_finish", 1);
-                let list = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "list_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, list);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_build_list(op);
                 true
             }
 
@@ -200,87 +169,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             "dict_new" => {
-                let dict_new_fn = self.ensure_runtime_i64_fn("molt_dict_builder_new", 1);
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        dict_new_fn,
-                        &[i64_ty
-                            .const_int((op.operands.len() / 2) as u64, false)
-                            .into()],
-                        "dict_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let set_fn = self.ensure_runtime_void_fn("molt_dict_builder_append", 3);
-                let mut idx = 0;
-                while idx + 1 < op.operands.len() {
-                    let key_bits = self.materialize_dynbox_operand(op.operands[idx]);
-                    let val_bits = self.materialize_dynbox_operand(op.operands[idx + 1]);
-                    self.backend
-                        .builder
-                        .build_call(
-                            set_fn,
-                            &[builder.into(), key_bits.into(), val_bits.into()],
-                            "dict_append",
-                        )
-                        .unwrap();
-                    idx += 2;
-                }
-                let finish_fn = self.ensure_runtime_i64_fn("molt_dict_builder_finish", 1);
-                let dict = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "dict_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, dict);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_build_dict(op);
                 true
             }
 
             "tuple_new" => {
-                let tuple_new_fn = self.ensure_runtime_i64_fn("molt_list_builder_new", 1);
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        tuple_new_fn,
-                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
-                        "tuple_builder",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let append_fn = self.ensure_runtime_void_fn("molt_list_builder_append", 2);
-                for &item_id in &op.operands {
-                    let item_bits = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(
-                            append_fn,
-                            &[builder.into(), item_bits.into()],
-                            "tuple_append",
-                        )
-                        .unwrap();
-                }
-                let finish_fn = self.ensure_runtime_i64_fn("molt_tuple_builder_finish", 1);
-                let tuple_bits = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "tuple_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, tuple_bits);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_build_tuple(op);
                 true
             }
 
@@ -305,38 +199,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             "set_new" => {
-                let set_new_fn = self.ensure_runtime_i64_fn("molt_set_builder_new", 1);
-                let builder = self
-                    .backend
-                    .builder
-                    .build_call(
-                        set_new_fn,
-                        &[i64_ty.const_int(op.operands.len() as u64, false).into()],
-                        "set_builder",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let append_fn = self.ensure_runtime_void_fn("molt_set_builder_append", 2);
-                for &item_id in &op.operands {
-                    let item_bits = self.materialize_dynbox_operand(item_id);
-                    self.backend
-                        .builder
-                        .build_call(append_fn, &[builder.into(), item_bits.into()], "set_append")
-                        .unwrap();
-                }
-                let finish_fn = self.ensure_runtime_i64_fn("molt_set_builder_finish", 1);
-                let set_bits = self
-                    .backend
-                    .builder
-                    .build_call(finish_fn, &[builder.into()], "set_finish")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, set_bits);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.emit_build_set(op);
                 true
             }
 

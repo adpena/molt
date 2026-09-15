@@ -1,20 +1,22 @@
 use crate::{
-    MoltHeader, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET,
-    TYPE_ID_TUPLE, alloc_object, dec_ref_bits, dict_len, dict_update_apply,
-    dict_update_set_in_place, exception_pending, maybe_ptr_from_bits, obj_from_bits,
-    object_type_id, raise_exception, set_table_capacity, usize_from_bits,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
+    dec_ref_bits, dict_len, dict_update_apply, dict_update_set_in_place, exception_pending,
+    maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception, usize_from_bits,
 };
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let Ok(capacity_hint) = usize::try_from(capacity_bits) else {
-            return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            return aggregate_allocation_failed(_py);
         };
         let ptr =
             crate::object::builders::alloc_dict_with_capacity_and_pairs(_py, capacity_hint, &[]);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            return aggregate_allocation_failed(_py);
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -106,119 +108,53 @@ pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
         if obj_from_bits(dict_bits).is_none() {
             return MoltObject::none().bits();
         }
-        let Some(_dict_ptr) = maybe_ptr_from_bits(dict_bits) else {
-            return MoltObject::none().bits();
-        };
         unsafe {
             let _ = dict_update_apply(_py, dict_bits, dict_update_set_in_place, obj_bits);
         }
         if exception_pending(_py) {
+            dec_ref_bits(_py, dict_bits);
             return MoltObject::none().bits();
         }
         dict_bits
     })
 }
 
+/// Constructor failures preserve an existing exception and never allocate a
+/// second exception while reporting exhaustion.
+fn aggregate_allocation_failed(py: &PyToken<'_>) -> u64 {
+    if !exception_pending(py) {
+        crate::record_memory_error_without_allocation(py);
+    }
+    MoltObject::none().bits()
+}
+
+fn set_like_new(py: &PyToken<'_>, capacity_bits: u64, type_id: u32) -> u64 {
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let Some(capacity) = usize_from_bits(capacity_bits) else {
+        return aggregate_allocation_failed(py);
+    };
+    let ptr = crate::object::builders::alloc_set_like_with_capacity_and_entries(
+        py,
+        capacity,
+        &[],
+        type_id,
+    );
+    if ptr.is_null() {
+        return aggregate_allocation_failed(py);
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let total = std::mem::size_of::<MoltHeader>()
-            + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<*mut Vec<usize>>()
-            + std::mem::size_of::<*mut Vec<u64>>();
-        let ptr = alloc_object(_py, total, TYPE_ID_SET);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let Some(order_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let table_cap = if capacity_hint > 0 {
-                set_table_capacity(capacity_hint)
-            } else {
-                0
-            };
-            let Some(table_ptr) =
-                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
-            else {
-                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let Some(hashes_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-            else {
-                drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
-                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            *(ptr as *mut *mut Vec<u64>) = order_ptr;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-                as *mut *mut Vec<u64>) = hashes_ptr;
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
+    crate::with_gil_entry_nopanic!(py, { set_like_new(py, capacity_bits, TYPE_ID_SET) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let total = std::mem::size_of::<MoltHeader>()
-            + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<*mut Vec<usize>>()
-            + std::mem::size_of::<*mut Vec<u64>>();
-        let ptr = alloc_object(_py, total, TYPE_ID_FROZENSET);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            let Some(capacity_hint) = usize_from_bits(capacity_bits) else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let Some(order_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let table_cap = if capacity_hint > 0 {
-                set_table_capacity(capacity_hint)
-            } else {
-                0
-            };
-            let Some(table_ptr) =
-                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
-            else {
-                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            let Some(hashes_ptr) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-            else {
-                drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
-                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            };
-            *(ptr as *mut *mut Vec<u64>) = order_ptr;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-                as *mut *mut Vec<u64>) = hashes_ptr;
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
+    crate::with_gil_entry_nopanic!(py, { set_like_new(py, capacity_bits, TYPE_ID_FROZENSET) })
 }
 
 #[cfg(test)]

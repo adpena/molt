@@ -306,6 +306,7 @@ mod int_carrier_abi;
 mod manifest;
 mod membership_iter;
 mod name_attrs;
+mod owned_materialization;
 mod peephole;
 mod refcount;
 mod runtime_service;

@@ -118,6 +118,7 @@ mod block_control;
 mod cleanup_roots;
 mod compile;
 mod list_index_fast_path;
+mod literal_ownership;
 mod loops;
 mod megafn_codegen_snapshot;
 mod native_callable_dispatch;

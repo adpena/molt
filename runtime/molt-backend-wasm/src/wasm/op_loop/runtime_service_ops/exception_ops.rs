@@ -55,6 +55,11 @@ pub(super) fn emit_exception_runtime_op(
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Raise],
                 );
                 func.instruction(&Instruction::Drop);
+                if context.raise_exits_function {
+                    context
+                        .frame
+                        .emit_const_anchor_releases(func, import_ids, reloc_enabled);
+                }
                 func.instruction(&Instruction::LocalGet(exc));
                 func.instruction(&Instruction::Throw(TAG_EXCEPTION_INDEX));
             } else {

@@ -31,6 +31,218 @@ def _run_node(script: str, tmp_path: Path) -> None:
     assert run.returncode == 0, run.stderr
 
 
+def test_host_list_builders_share_consuming_failure_transaction(tmp_path: Path) -> None:
+    for host in ("run_wasm.js", "browser_host.js", "browser_embed.js"):
+        source = (ROOT / "wasm" / host).read_text(encoding="utf-8")
+        assert "makeRuntimeIntList" in source
+        assert "withRuntimeOwnedValues" in source
+        assert "const boxInt =" not in source
+        assert "molt_list_builder_append(builder" not in source
+        assert ".map((value) => Number(value))" not in source
+        assert ".map((v) => Number(v))" not in source
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const {boxRuntimeInt, makeRuntimeIntList, withRuntimeOwnedValues} = require(lifecyclePath);
+const wide = [-(1n << 63n), -(1n << 46n) - 1n, -(1n << 46n),
+  (1n << 46n) - 1n, 1n << 46n, (1n << 63n) - 1n];
+function runtime(failure, cleanupFails = false) {
+  const live = new Map(), events = [];
+  let next = 1000n, pending = false, appendCount = 0, integerCount = 0;
+  const allocate = object => { const bits = next++; live.set(bits, {...object, refs: 1}); return bits; };
+  const release = bits => {
+    if (bits === 0n) return;
+    const value = live.get(bits);
+    assert.ok(value, 'owner released twice');
+    if (--value.refs === 0) {
+      live.delete(bits);
+      for (const item of value.items || []) release(item);
+    }
+  };
+  const instance = {exports: {
+    molt_int_from_i64(value) {
+      events.push(['integer', value]);
+      const bits = allocate({value});
+      if (failure === 'box2' && ++integerCount === 3) pending = true;
+      return bits;
+    },
+    molt_exception_pending_fast() { return pending ? 1n : 0n; },
+    molt_list_builder_new(capacity) {
+      assert.equal(live.get(capacity).value, 2n);
+      events.push(['new']);
+      if (failure === 'new') pending = true;
+      return allocate({items: [], builder: true});
+    },
+    molt_list_builder_append(builder, item) {
+      assert.ok(live.get(builder).builder);
+      events.push(['append', live.get(item).value]);
+      if (failure === 'append' && ++appendCount === 2) { pending = true; return 1; }
+      live.get(item).refs++;
+      live.get(builder).items.push(item);
+      return 0;
+    },
+    molt_list_builder_finish(builder) {
+      events.push(['finish']);
+      const value = live.get(builder);
+      live.delete(builder);
+      if (failure === 'finish') {
+        value.items.forEach(release);
+        pending = true;
+        return 0n;
+      }
+      return allocate({items: value.items});
+    },
+    molt_dec_ref_obj(bits) {
+      events.push(['drop', bits]);
+      const builder = live.get(bits)?.builder;
+      release(bits);
+      if (cleanupFails && builder) throw new Error('builder cleanup failed');
+    },
+  }};
+  return {instance, live, events};
+}
+for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
+  const {instance, live, events} = runtime(failure);
+  let result;
+  if (failure) {
+    assert.throws(() => makeRuntimeIntList(instance, [wide[0], wide[5]]),
+      /allocation failed|append failed|finish failed/);
+  } else {
+    result = makeRuntimeIntList(instance, [wide[0].toString(), wide[5]]);
+    assert.deepEqual(live.get(result).items.map(bits => live.get(bits).value), [wide[0], wide[5]]);
+    assert.ok(live.get(result).items.every(bits => live.get(bits).refs === 1));
+    instance.exports.molt_dec_ref_obj(result);
+  }
+  assert.equal(live.size, 0, String(failure));
+  if (failure && failure !== 'finish') assert.equal(events.some(([event]) => event === 'finish'), false);
+}
+{
+  const {instance, live} = runtime('append', true);
+  assert.throws(() => makeRuntimeIntList(instance, wide.slice(0, 2)), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(error.errors[0].message, /append failed/);
+    assert.match(error.errors[1].message, /builder cleanup failed/);
+    assert.equal(error.cause, error.errors[0]);
+    return true;
+  });
+  assert.equal(live.size, 0);
+}
+{
+  const {instance, live, events} = runtime();
+  for (const value of [...wide, ...wide.map(String), 42, '+42']) {
+    const bits = boxRuntimeInt(instance, value);
+    assert.equal(live.get(bits).value, BigInt(value));
+    instance.exports.molt_dec_ref_obj(bits);
+  }
+  for (const invalid of [Number.MAX_SAFE_INTEGER + 1, 1.5, NaN, Infinity, null, true,
+    {}, '', ' 42', '42 ', '42\n', '0x20', '1.0', '1e3', (1n << 63n), -(1n << 63n) - 1n]) {
+    const count = events.length;
+    assert.throws(() => boxRuntimeInt(instance, invalid), /host integer/);
+    assert.equal(events.length, count, 'invalid input reached runtime');
+    assert.throws(() => makeRuntimeIntList(instance, [7n, invalid]), /host integer/);
+    assert.equal(events.length, count, 'invalid list input allocated');
+  }
+  assert.throws(() => withRuntimeOwnedValues(instance, [wide[5], 'invalid'],
+    value => boxRuntimeInt(instance, value), () => assert.fail('called')), /host integer/);
+  assert.equal(live.size, 0);
+  const primary = new Error('invocation failed'), cleanup = new Error('cleanup failed');
+  const drop = instance.exports.molt_dec_ref_obj;
+  instance.exports.molt_dec_ref_obj = bits => { drop(bits); throw cleanup; };
+  assert.throws(() => withRuntimeOwnedValues(instance, wide.slice(0, 2),
+    value => boxRuntimeInt(instance, value), () => { throw primary; }), error => {
+      assert.deepEqual(error.errors, [primary, cleanup, cleanup]);
+      assert.equal(error.cause, primary);
+      return true;
+    });
+  assert.equal(live.size, 0);
+  assert.throws(() => withRuntimeOwnedValues(instance, [wide[0]],
+    value => boxRuntimeInt(instance, value), () => boxRuntimeInt(instance, wide[5]), true),
+    error => error instanceof AggregateError && error.errors.length === 2);
+  assert.equal(live.size, 0, 'unpublished result survived failed argument cleanup');
+}
+for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']) {
+  const {instance, events} = runtime();
+  delete instance.exports[missing];
+  assert.throws(() => boxRuntimeInt(instance, 1n), /missing ownership export/);
+  assert.throws(() => makeRuntimeIntList(instance, []), /missing ownership export/);
+  assert.equal(events.length, 0);
+}
+{
+  const {instance, events} = runtime();
+  instance.exports.molt_exception_pending_fast = () => 1n;
+  assert.throws(() => boxRuntimeInt(instance, 1n), /before integer allocation/);
+  assert.equal(events.length, 0);
+}
+""",
+        tmp_path,
+    )
+
+
+@pytest.mark.parametrize(
+    ("host", "binding", "next_binding"),
+    [
+        ("run_wasm.js", "makeHostArgObject", "runHostExportCalls"),
+        ("browser_host.js", "makeBrowserHostArgObject", "parseIPv4"),
+        ("browser_embed.js", "makeHostArg", "nativeCallableMap"),
+    ],
+)
+def test_host_integer_materializers_preserve_exact_inputs(
+    tmp_path: Path, host: str, binding: str, next_binding: str
+) -> None:
+    source = (ROOT / "wasm" / host).read_text(encoding="utf-8")
+    materializer = source[
+        source.index(f"const {binding} =") : source.index(f"const {next_binding} =")
+    ]
+    _run_node(
+        "const materializer = "
+        + json.dumps(materializer)
+        + ";\nconst binding = "
+        + json.dumps(binding)
+        + ";\nconst lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const {boxRuntimeInt} = require(lifecyclePath);
+const seen = [];
+const runtime = {exports: {
+  molt_int_from_i64(value) { seen.push(value); return 1000n; },
+  molt_exception_pending_fast() { return 0n; },
+  molt_dec_ref_obj() {},
+}};
+const context = {boxRuntimeInt, runtimeInstance: runtime,
+  makeListIntObject: values => values,
+  makeListIntObjectWithRuntime: (_runtime, values) => values,
+  makeRuntimeIntList: (_runtime, values) => values};
+vm.createContext(context);
+vm.runInContext(materializer + '\nthis.materialize = ' + binding + ';', context);
+const materialize = value => binding === 'makeHostArgObject'
+  ? context.materialize(value) : context.materialize(runtime, {}, value);
+for (const value of ['9223372036854775807', '-9223372036854775808', 1n << 46n, 7]) {
+  assert.equal(materialize({kind: 'int', value}), 1000n);
+  assert.equal(seen.at(-1), BigInt(value));
+}
+const values = ['9223372036854775807', -(1n << 63n), 7];
+assert.equal(materialize({kind: 'list_int', value: values}), values);
+for (const value of [Number.MAX_SAFE_INTEGER + 1, 1.5, '9223372036854775808', null]) {
+  const count = seen.length;
+  assert.throws(() => materialize({kind: 'int', value}), /host integer/);
+  assert.equal(seen.length, count);
+}
+if (binding !== 'makeHostArgObject') {
+  materialize((1n << 63n) - 1n);
+  assert.equal(seen.at(-1), (1n << 63n) - 1n);
+  assert.throws(() => materialize(Number.MAX_SAFE_INTEGER + 1), /host integer/);
+}
+""",
+        tmp_path,
+    )
+
+
 def test_node_runner_rejects_startup_error_before_host_exports(tmp_path: Path) -> None:
     source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
     start = source.index("const runMain = async () => {")
@@ -901,7 +1113,7 @@ def test_status_abi_is_validated_before_application_execution(
     source = (ROOT / f"wasm/{host}.js").read_text(encoding="utf-8")
     start = source.index("const runtimeLifetimes =")
     delimiter = (
-        "const withOwnedValue ="
+        "let activeReservedRuntimeCallables ="
         if host == "run_wasm"
         else "let browserVfsModulePromise"
     )
@@ -1371,7 +1583,7 @@ def test_browser_host_reusable_api_disposes_only_at_owner_end(tmp_path: Path) ->
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const {createRuntimeLifetime, createRuntimeDisposer, combinedError} = require(lifetimePath);
+const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError} = require(lifetimePath);
 const events = [];
 const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
 const instance = {exports: {
@@ -1381,10 +1593,11 @@ const instance = {exports: {
   molt_main() { events.push('main'); },
   molt_host_init() { events.push('host-init'); },
   sample() { events.push('export'); return 42n; },
+  molt_dec_ref_obj() {},
 }};
 const context = {
   instance, state: {runtimeInstance: instance, memory: {}}, runtimeImportAbi: {export_names: names},
-  createRuntimeLifetime, createRuntimeDisposer, combinedError, runtimeExceptionPending: () => false,
+  createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, combinedError, runtimeExceptionPending: () => false,
   pendingRuntimeExceptionMessage: () => null, memoryExport: {}, memory: {}, env: {}, linkedTable: {},
   makeBrowserHostArgObject: () => 0n, decRefMaybeWithRuntime() {},
   decodeOwnedExportResult: (_runtime, _memory, value) => value,
@@ -1408,6 +1621,70 @@ vm.runInContext(boundary + methods + owner, context);
     'enter', 'main', 'flush', 'leave', 'shutdown', 'db-close', 'socket-close', 'ws-close',
     'gpu-close', 'flush']);
 })().catch(error => { console.error(error); process.exitCode = 1; });
+""",
+        tmp_path,
+    )
+
+
+def test_generated_split_worker_metadata_uses_owned_integer_transaction(
+    tmp_path: Path,
+) -> None:
+    from molt.cli import _generate_split_worker_js
+    from molt.capability_manifest import CapabilityManifest
+
+    source = _generate_split_worker_js(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        shared_memory_initial_pages=8,
+        shared_table_initial=16,
+        shared_table_base=None,
+    )
+    start = source.index("      const makeCallBindFallback =")
+    end = source.index("      const runtimeFallback =", start)
+    _run_node(
+        "const fallbackSource = "
+        + json.dumps(source[start:end])
+        + ";\nconst lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const {boxRuntimeInt, withRuntimeOwnedValues} = require(lifecyclePath);
+for (const failure of [null, 'call', 'cleanup']) {
+  const events = [], primary = new Error('call failed'), cleanup = new Error('cleanup failed');
+  const runtimeInstance = {exports: {
+    molt_int_from_i64(value) { events.push(`box:${value}`); return value + 100n; },
+    molt_exception_pending_fast() { return 0n; },
+    molt_dec_ref_obj(value) {
+      events.push(`drop:${value}`);
+      if (failure === 'cleanup' && value === 100n) throw cleanup;
+    },
+  }};
+  const context = {runtimeInstance, boxRuntimeInt, withRuntimeOwnedValues,
+    callargsNew(arity, zero) {
+      assert.equal(arity, 102n); assert.equal(zero, 100n); return 500n;
+    },
+    callargsPushPos(builder, item) {
+      assert.equal(builder, 500n); events.push(`arg:${item}`);
+    },
+    callBindIc(zero, method, builder) {
+      assert.equal(zero, 100n); assert.equal(method, 700n); assert.equal(builder, 500n);
+      if (failure === 'call') throw primary;
+      return 900n;
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(fallbackSource + '\nthis.invoke = makeCallBindFallback(2);', context);
+  if (failure) {
+    assert.throws(() => context.invoke(700n, 11n, 12n), error =>
+      error === (failure === 'call' ? primary : cleanup));
+  } else {
+    assert.equal(context.invoke(700n, 11n, 12n), 900n);
+    runtimeInstance.exports.molt_dec_ref_obj(900n);
+  }
+  assert.deepEqual(events, ['box:2', 'box:0', 'arg:11', 'arg:12', 'drop:100', 'drop:102',
+    ...(failure === 'call' ? [] : ['drop:900'])]);
+}
 """,
         tmp_path,
     )

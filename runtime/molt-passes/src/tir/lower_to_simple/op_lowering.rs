@@ -328,8 +328,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
 
-        // Box/unbox — no-ops at SimpleIR level (type info discarded).
-        OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
+        // SimpleIR transports boxed values. BoxVal and UnboxVal both have
+        // independent result ownership in generated TIR facts; representation
+        // erasure must not turn either into a shared-root copy. Exact scalar
+        // carriers make this retain a no-op; heap carriers acquire their +1.
+        OpCode::BoxVal | OpCode::UnboxVal => Some(unary_op("binding_alias", op, out_var)),
+        OpCode::TypeGuard => {
             if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {
                     kind: "copy_var".to_string(),

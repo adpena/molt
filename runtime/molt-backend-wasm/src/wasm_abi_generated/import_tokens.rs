@@ -194,6 +194,7 @@ pub(crate) enum WasmRuntimeImport {
     AbsBuiltin,
     Add,
     IntFromI64,
+    IntAsI64,
     StrConcat,
     StrContains,
     BitAnd,

@@ -62,5 +62,7 @@ pub(super) fn emit_plain_function_body(
         func.instruction(&Instruction::End);
         control_stack.pop();
     }
-    op_emitter.frame.emit_implicit_return(func);
+    op_emitter
+        .frame
+        .emit_implicit_return(func, op_emitter.import_ids, op_emitter.reloc_enabled);
 }

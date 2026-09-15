@@ -525,11 +525,11 @@ pub extern "C" fn molt_sys_getsizeof(obj_bits: u64, default_bits: u64) -> u64 {
             let len = unsafe { crate::builtins::containers::tuple_len(ptr) } as i64;
             40 + len * 8 // CPython tuple: 40 + 8 per element
         }
-        TYPE_ID_DICT | TYPE_ID_DICT_BUILDER => {
+        TYPE_ID_DICT => {
             let len = unsafe { crate::builtins::containers::dict_len(ptr) } as i64;
             64 + len * 3 * 8 // CPython dict: ~64 + 3*8 per entry (hash, key, value)
         }
-        TYPE_ID_SET | TYPE_ID_SET_BUILDER | TYPE_ID_FROZENSET => {
+        TYPE_ID_SET | TYPE_ID_FROZENSET => {
             let len = unsafe { crate::builtins::containers::set_len(ptr) } as i64;
             200 + len * 8 // CPython set: ~200 + 8 per entry
         }

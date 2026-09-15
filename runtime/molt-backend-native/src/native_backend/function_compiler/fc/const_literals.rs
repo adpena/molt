@@ -101,6 +101,37 @@ impl HeapLiteralHoists {
     ) -> &BTreeMap<String, cranelift_codegen::ir::StackSlot> {
         &self.str_output_slots
     }
+
+    /// Prologue results are frame-owned anchors, independent of every IR
+    /// result loaded from them. All exits converge before releasing these.
+    pub(in crate::native_backend::function_compiler) fn release_anchors(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        local_dec_ref_obj: FuncRef,
+    ) {
+        for &slot in self
+            .const_str_slots
+            .values()
+            .chain(self.const_bytes_slots.values())
+            .chain(self.const_bigint_slots.values())
+        {
+            let value = builder.ins().stack_load(types::I64, slot, 0);
+            builder.ins().call(local_dec_ref_obj, &[value]);
+        }
+    }
+}
+
+/// A constant operation produces an owned IR value on every execution, even
+/// when its immutable payload shares a frame anchor with other operations.
+#[cfg(feature = "native-backend")]
+fn load_owned_literal(
+    builder: &mut FunctionBuilder<'_>,
+    slot: cranelift_codegen::ir::StackSlot,
+    local_inc_ref_obj: FuncRef,
+) -> Value {
+    let value = builder.ins().stack_load(types::I64, slot, 0);
+    emit_inc_ref_obj(builder, value, local_inc_ref_obj);
+    value
 }
 
 #[cfg(feature = "native-backend")]
@@ -120,7 +151,30 @@ fn declare_literal_data(
 
 #[cfg(feature = "native-backend")]
 fn new_literal_slot(builder: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::StackSlot {
-    builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+    let slot =
+        builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let none = builder.ins().iconst(types::I64, box_none());
+    builder.ins().stack_store(none, slot, 0);
+    slot
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy)]
+pub(in crate::native_backend::function_compiler) struct LiteralFailureExit {
+    pub block: Block,
+    pub returns_value: bool,
+}
+
+#[cfg(feature = "native-backend")]
+impl LiteralFailureExit {
+    fn branch_if_failed(self, builder: &mut FunctionBuilder<'_>, failed: Value) {
+        let success = builder.create_block();
+        let none = builder.ins().iconst(types::I64, box_none());
+        let args = if self.returns_value { &[none][..] } else { &[] };
+        brif_block(builder, failed, self.block, args, success, &[]);
+        switch_to_block_materialized(builder, success);
+        builder.seal_block(success);
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -134,7 +188,9 @@ fn hoist_outparam_literal(
     ref_name: &str,
     bytes: &[u8],
     runtime_func: &'static str,
-) -> cranelift_codegen::ir::StackSlot {
+    hoisted_slot: cranelift_codegen::ir::StackSlot,
+    failure_exit: LiteralFailureExit,
+) {
     let (ptr, len) = declare_literal_data(module, data_pool, next_data_id, builder, bytes);
     def_var_named(builder, vars, format!("{}_ptr", ref_name), ptr);
     def_var_named(builder, vars, format!("{}_len", ref_name), len);
@@ -146,15 +202,12 @@ fn hoist_outparam_literal(
         &[types::I64, types::I64, types::I64],
         &[types::I32],
     );
-    let tmp_slot = new_literal_slot(builder);
-    let tmp_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
+    let tmp_ptr = builder.ins().stack_addr(types::I64, hoisted_slot, 0);
     let local_callee = module.declare_func_in_func(callee, builder.func);
-    builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
-
-    let hoisted_slot = new_literal_slot(builder);
-    let val = builder.ins().stack_load(types::I64, tmp_slot, 0);
-    builder.ins().stack_store(val, hoisted_slot, 0);
-    hoisted_slot
+    let call = builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
+    let status = builder.inst_results(call)[0];
+    let failed = builder.ins().icmp_imm(IntCC::NotEqual, status, 0);
+    failure_exit.branch_if_failed(builder, failed);
 }
 
 #[cfg(feature = "native-backend")]
@@ -167,7 +220,9 @@ fn hoist_bigint_literal(
     vars: &BTreeMap<String, Variable>,
     ref_name: &str,
     bytes: &[u8],
-) -> cranelift_codegen::ir::StackSlot {
+    hoisted_slot: cranelift_codegen::ir::StackSlot,
+    failure_exit: LiteralFailureExit,
+) {
     let (ptr, len) = declare_literal_data(module, data_pool, next_data_id, builder, bytes);
     def_var_named(builder, vars, format!("{}_ptr", ref_name), ptr);
     def_var_named(builder, vars, format!("{}_len", ref_name), len);
@@ -183,9 +238,9 @@ fn hoist_bigint_literal(
     let call = builder.ins().call(local_callee, &[ptr, len]);
     let val = builder.inst_results(call)[0];
 
-    let hoisted_slot = new_literal_slot(builder);
     builder.ins().stack_store(val, hoisted_slot, 0);
-    hoisted_slot
+    let failed = builder.ins().icmp_imm(IntCC::Equal, val, box_none());
+    failure_exit.branch_if_failed(builder, failed);
 }
 
 #[cfg(feature = "native-backend")]
@@ -199,6 +254,7 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
+    failure_exit: LiteralFailureExit,
 ) -> HeapLiteralHoists {
     let mut const_str_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
     let mut const_bytes_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
@@ -269,8 +325,20 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
         }
     }
 
+    // Every slot must dominate every constructor failure edge, including
+    // anchors whose constructors will never execute after an earlier failure.
+    for (values, slots) in [
+        (&unique_strs, &mut const_str_slots),
+        (&unique_bytes, &mut const_bytes_slots),
+        (&unique_bigints, &mut const_bigint_slots),
+    ] {
+        for (bytes, _) in values {
+            slots.insert(bytes.clone(), new_literal_slot(builder));
+        }
+    }
+
     for (bytes, ref_name) in &unique_strs {
-        let hoisted_slot = hoist_outparam_literal(
+        hoist_outparam_literal(
             module,
             import_ids,
             data_pool,
@@ -280,12 +348,13 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             ref_name,
             bytes,
             "molt_string_from_bytes",
+            const_str_slots[bytes],
+            failure_exit,
         );
-        const_str_slots.insert(bytes.clone(), hoisted_slot);
     }
 
     for (bytes, ref_name) in &unique_bytes {
-        let hoisted_slot = hoist_outparam_literal(
+        hoist_outparam_literal(
             module,
             import_ids,
             data_pool,
@@ -295,12 +364,13 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             ref_name,
             bytes,
             "molt_bytes_from_bytes",
+            const_bytes_slots[bytes],
+            failure_exit,
         );
-        const_bytes_slots.insert(bytes.clone(), hoisted_slot);
     }
 
     for (bytes, ref_name) in &unique_bigints {
-        let hoisted_slot = hoist_bigint_literal(
+        hoist_bigint_literal(
             module,
             import_ids,
             data_pool,
@@ -309,8 +379,9 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             vars,
             ref_name,
             bytes,
+            const_bigint_slots[bytes],
+            failure_exit,
         );
-        const_bigint_slots.insert(bytes.clone(), hoisted_slot);
     }
 
     let mut str_output_slots = BTreeMap::new();
@@ -333,81 +404,20 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
     }
 }
 
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-fn emit_unhoisted_outparam_literal(
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
-    next_data_id: &mut u64,
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-    out_name: &str,
-    bytes: &[u8],
-    runtime_func: &'static str,
-) -> Value {
-    let (ptr, len) = declare_literal_data(module, data_pool, next_data_id, builder, bytes);
-    def_var_named(builder, vars, format!("{}_ptr", out_name), ptr);
-    def_var_named(builder, vars, format!("{}_len", out_name), len);
-
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        runtime_func,
-        &[types::I64, types::I64, types::I64],
-        &[types::I32],
-    );
-    let out_slot = new_literal_slot(builder);
-    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-    builder.ins().stack_load(types::I64, out_slot, 0)
-}
-
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-fn emit_unhoisted_bigint_literal(
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
-    next_data_id: &mut u64,
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-    out_name: &str,
-    bytes: &[u8],
-) -> Value {
-    let (ptr, len) = declare_literal_data(module, data_pool, next_data_id, builder, bytes);
-    def_var_named(builder, vars, format!("{}_ptr", out_name), ptr);
-    def_var_named(builder, vars, format!("{}_len", out_name), len);
-
-    let callee = SimpleBackend::import_func_id_split(
-        module,
-        import_ids,
-        "molt_bigint_from_str",
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    let call = builder.ins().call(local_callee, &[ptr, len]);
-    builder.inst_results(call)[0]
-}
-
 /// Cranelift codegen handlers for constant and literal materialization. This
-/// family owns the inline-int range, const_str payload fallback, heap-literal
-/// prologue hoists, and the `rc_skip_dec` adjustment for hoisted heap constants.
+/// family owns the inline-int range, const_str payload decoding, and heap-literal
+/// frame anchors. IR results own references independently of those anchors.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     op: &OpIR,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
-    next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     hoists: &HeapLiteralHoists,
-    rc_skip_dec: &mut std::collections::HashSet<String>,
+    local_inc_ref_obj: FuncRef,
 ) -> OpFlow {
     match op.kind.as_str() {
         "const" => {
@@ -431,22 +441,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             } else {
                 let s = val.to_string();
                 let bytes = s.as_bytes();
-                let boxed = if let Some(slot) = hoists.const_bigint_slots.get(bytes) {
-                    builder.ins().stack_load(types::I64, *slot, 0)
-                } else {
-                    emit_unhoisted_bigint_literal(
-                        module,
-                        import_ids,
-                        data_pool,
-                        next_data_id,
-                        builder,
-                        vars,
-                        out_name,
-                        bytes,
-                    )
-                };
+                let slot = hoists
+                    .const_bigint_slots
+                    .get(bytes)
+                    .expect("boxed integer literal must have a frame anchor");
+                let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
                 def_var_named(builder, vars, out_name, boxed);
-                rc_skip_dec.insert(out_name.clone());
             }
         }
         "const_bigint" => {
@@ -455,22 +455,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 return OpFlow::Continue;
             };
             let bytes = s.as_bytes();
-            let boxed = if let Some(slot) = hoists.const_bigint_slots.get(bytes) {
-                builder.ins().stack_load(types::I64, *slot, 0)
-            } else {
-                emit_unhoisted_bigint_literal(
-                    module,
-                    import_ids,
-                    data_pool,
-                    next_data_id,
-                    builder,
-                    vars,
-                    out_name,
-                    bytes,
-                )
-            };
+            let slot = hoists
+                .const_bigint_slots
+                .get(bytes)
+                .expect("bigint literal must have a frame anchor");
+            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
             def_var_named(builder, vars, out_name, boxed);
-            rc_skip_dec.insert(out_name.clone());
         }
         "const_bool" => {
             let val = op.value.unwrap_or(0);
@@ -531,52 +521,30 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             }
         }
         "const_str" => {
-            let bytes = require_const_str_payload(op).to_vec();
+            let bytes = require_const_str_payload(op);
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };
-            let boxed = if let Some(slot) = hoists.const_str_slots.get(&bytes) {
-                builder.ins().stack_load(types::I64, *slot, 0)
-            } else {
-                emit_unhoisted_outparam_literal(
-                    module,
-                    import_ids,
-                    data_pool,
-                    next_data_id,
-                    builder,
-                    vars,
-                    out_name,
-                    &bytes,
-                    "molt_string_from_bytes",
-                )
-            };
+            let slot = hoists
+                .const_str_slots
+                .get(bytes)
+                .expect("string literal must have a frame anchor");
+            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
 
             def_var_named(builder, vars, out_name, boxed);
-            rc_skip_dec.insert(out_name.clone());
         }
         "const_bytes" => {
             let bytes = op.bytes.as_ref().expect("Bytes not found");
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };
-            let boxed = if let Some(slot) = hoists.const_bytes_slots.get(bytes) {
-                builder.ins().stack_load(types::I64, *slot, 0)
-            } else {
-                emit_unhoisted_outparam_literal(
-                    module,
-                    import_ids,
-                    data_pool,
-                    next_data_id,
-                    builder,
-                    vars,
-                    out_name,
-                    bytes,
-                    "molt_bytes_from_bytes",
-                )
-            };
+            let slot = hoists
+                .const_bytes_slots
+                .get(bytes)
+                .expect("bytes literal must have a frame anchor");
+            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
 
             def_var_named(builder, vars, out_name, boxed);
-            rc_skip_dec.insert(out_name.clone());
         }
         kind => panic!("const literal handler received unsupported op kind `{kind}`"),
     }
