@@ -91,6 +91,25 @@ def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
         assert _builtin_func_abi_arity(spec) == manifest_arity
 
 
+@pytest.mark.parametrize("name", ["print", "len", "abs", "sorted", "sum"])
+def test_deferred_builtin_lookup_preserves_mutable_global_binding(name: str) -> None:
+    ir = compile_to_tir(
+        "def f(value):\n    for i in range(2):\n        value = value\n"
+        f"    return {name}(value)\n"
+    )
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    lookups = _module_attr_accesses(ops, "module_get_global", name)
+    assert lookups
+    assert any(
+        op["kind"] in {"call_indirect", "call_bind"} and op["args"][0] in lookups
+        for op in ops
+    )
+    assert not any(
+        op["kind"] == "builtin_func" and op.get("s_value") == BUILTIN_FUNC_SPECS[name].runtime
+        for op in ops
+    )
+
+
 def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
     ir = compile_to_tir(source)
     main_ops = next(

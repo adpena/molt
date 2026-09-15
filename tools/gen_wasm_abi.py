@@ -467,9 +467,9 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
+            "    RUNTIME_CALLABLE_IMPORTS, PYTHON_BUILTIN_CALLABLES, ReservedRuntimeCallableDispatch,\n",
             "    RuntimeCallableResult,\n",
-            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
+            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import, python_builtin_callable,\n",
             "};\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
@@ -1586,7 +1586,7 @@ def _render_rs_runtime_surface(data: dict) -> str:
 
 
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_header("//")]
+    lines: list[str] = [_runtime_callables_header("//")]
     poll_imports = sorted(
         (
             (entry["poll_table_slot"], entry["name"])
@@ -1763,6 +1763,41 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "        _ => None,\n",
             "    }\n",
             "}\n\n",
+        ]
+    )
+    # The runtime metadata and the compiler's late-bound lookup roots must be
+    # projections of the same Python-name/ABI authority. These are possible
+    # dependencies, never proof that a mutable global names a fixed callable.
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) struct PythonBuiltinCallableSpec {\n",
+            "    pub(crate) python_name: &'static str,\n",
+            "    pub(crate) runtime_name: &'static str,\n",
+            "    pub(crate) arity: usize,\n",
+            "}\n\n",
+            "pub(crate) const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[\n",
+        ]
+    )
+    for entry in sorted(
+        _python_builtin_global_callables(data), key=lambda entry: entry["python_name"]
+    ):
+        lines.extend(
+            [
+                "    PythonBuiltinCallableSpec {\n",
+                f'        python_name: "{entry["python_name"]}",\n',
+                f'        runtime_name: "{entry["runtime_name"]}",\n',
+                f"        arity: {entry['arity']},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "pub(crate) fn python_builtin_callable(name: &str) -> Option<&'static PythonBuiltinCallableSpec> {\n",
+            "    PYTHON_BUILTIN_CALLABLES.binary_search_by_key(&name, |spec| spec.python_name)\n",
+            "        .ok().map(|index| &PYTHON_BUILTIN_CALLABLES[index])\n",
+            "}\n",
         ]
     )
     return "".join(lines)

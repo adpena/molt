@@ -20,6 +20,7 @@ impl WasmBackend {
         ir: &SimpleIR,
     ) -> WasmRuntimeImportEmission {
         let runtime_surface = WasmRuntimeSurfacePlan::build(ir);
+        runtime_surface.validate_profile(self.options.wasm_profile);
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
             import_ids: &mut self.import_ids,

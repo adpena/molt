@@ -180,6 +180,26 @@ tree-shake out of browser artifacts. Generated runtime-owned table roots, such
 as the current poll-table slots, remain explicit table-layout roots until that
 table is itself reachability-sliced.
 
+Deferred global lookup is also a concrete callable use: `module_get_global`
+(including its direct-runtime call form) may fall through
+to a Python builtin without an explicit `builtin_func` producer. The WASM ABI
+generator projects those Python names, runtime symbols, and arities from the
+same `BUILTIN_FUNC_SPECS` source used by runtime builtin metadata. Known names
+retain only their possible builtin; computed names retain the supported Python
+builtin family. Import retention, compact wrappers, and app-resolver entries
+consume that one root set. This is dependency information, not fixed-callable
+provenance: lookup still observes live globals and the authoritative builtins
+dictionary, including rebinding and deletion. A native target-pointer success
+does not establish WASM resolver closure.
+
+Profile admission validates that same possible-use closure before import/table
+emission. Pure artifacts reject forbidden or unproven dynamic closures with a
+named import diagnostic; they do not publish excluded import sentinels. This
+conservative admission is not a claim that a Python binding named `open` must
+refer to the builtin: proving a narrower binding can reduce the required
+closure. SimpleIR name facts must account for every definition, since the wire
+format is not SSA.
+
 ## Package Compatibility Boundary
 
 This browser entrypoint is intentionally narrower than NumPy/SciPy/tinygrad
