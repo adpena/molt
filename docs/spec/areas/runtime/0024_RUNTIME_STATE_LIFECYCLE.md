@@ -1,7 +1,7 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-05-21
+Last Updated: 2026-09-14
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
@@ -88,6 +88,52 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   Rust/C TLS destructors; it calls `_exit(code)` after
   Python-level finalization. Full state reclamation remains the explicit
   embedding/C-API `molt_runtime_shutdown()` contract.
+
+### WASM host ownership
+
+- `molt_main` is reusable application startup, not a runtime lifetime owner.
+  Finite Node, Wasmtime and request-worker owners resolve the canonical
+  execution-enter, execution-leave and runtime-shutdown ABI before guest entry.
+- The finite owner begins when runtime instantiation succeeds, before fallible
+  application setup. Setup failure, entry failure and normal completion all
+  consume that same owner; setup must not bypass canonical runtime teardown.
+- Capture startup/callback failures and pending runtime exception diagnostics
+  before teardown. Release execution leases before calling shutdown, including
+  failure paths. A cleanup failure must not hide the original failure.
+- Runtime teardown owns `atexit` execution, live `sys.stdout`/`sys.stderr`
+  flushing and release/flush of pinned bootstrap streams. Hosts must not force
+  each print to flush or introduce a separate stream-finalization path.
+- Backing host services remain available through guest finalization. Host-only
+  cleanup then closes their resources, including on runtime-shutdown failure;
+  it must not dereference guest handles or recreate services. Host callbacks
+  queue responses for delivery under an execution lease, never enter the guest
+  independently, and cannot deliver after disposal. Preserve all cleanup errors
+  alongside the original application failure.
+- Reusable browser embeddings retain their runtime across `run` and exported
+  calls, then explicitly dispose it once at the owning application's end.
+  Disposed embeddings reject further guest calls; repeated disposal never reruns
+  teardown and rethrows any recorded disposal failure, including falsy JavaScript
+  thrown values. Full and minimal browser hosts share this disposal authority.
+  A listener-removal failure cannot skip later listeners or owned resources.
+- Successful execution admission requires shutdown to return raw i64 `1`.
+  Raw `0` is allowed only for an unused lifetime that never entered execution;
+  it must not conceal refused teardown after an active application ran.
+- WASI reactor initialization precedes execution admission when libc or host
+  memory binding requires it. It remains inside lifetime ownership: a bootstrap
+  failure still finalizes the runtime and closes host resources.
+- Wasmtime subprocess and database output readers remain concurrent with guest
+  stdin writes so duplex pipes can make progress. Their owner retains cancellation
+  and join custody, cancels the whole cohort before a bounded wait, and reports
+  incomplete cleanup. Host-only close uses held child handles, not rediscovered
+  PIDs, and does not wait for a WebSocket peer to finish a close handshake.
+- A Node DB shutdown deadline reports incomplete cleanup; it never proves child
+  closure or authorizes terminating the owning Worker. A late child `close`
+  still drains the Worker's response and parent ports and reports late errors.
+  Finite Node exit paths record an exit status and let owned resources and stdio
+  drain; forced process exit must not discard an incompletely closed child.
+- Shutdown is an essential linked export in the generated WASM ABI policy,
+  not an optional runner capability. Explicit WASI commands retain their own
+  `_start`/`proc_exit` semantics and do not acquire a Molt runtime lifetime.
 
 ## Implementation Status (2026-04-30)
 - `molt_runtime_init()` is wired into generated entrypoints; executable exits

@@ -568,18 +568,30 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
 
     assert "const buildRuntimeImports = (module, runtimeInstance) => {" in content
     assert "for (const entry of WebAssembly.Module.imports(module)) {" in content
-    assert (
-        'const runtimeImportResultKinds = {"function_set_builtin": "i64", "string_from_bytes": "i32"};'
-        in content
-    )
-    assert (
-        'const runtimeImportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i32", "i64", "i32"], "result": "i32"}};'
-        in content
-    )
-    assert (
-        'const runtimeImportExportNames = {"function_set_builtin": "molt_function_set_builtin", "string_from_bytes": "molt_string_from_bytes"};'
-        in content
-    )
+
+    def declaration(name: str):
+        match = re.search(rf"const {name} = (.*);", content)
+        assert match is not None
+        return json.loads(match[1])
+
+    result_kinds = declaration("runtimeImportResultKinds")
+    signatures = declaration("runtimeImportSignatures")
+    exports = declaration("runtimeImportExportNames")
+    assert result_kinds["function_set_builtin"] == "i64"
+    assert result_kinds["string_from_bytes"] == "i32"
+    assert signatures["function_set_builtin"] == {"params": ["i64"], "result": "i64"}
+    assert signatures["string_from_bytes"] == {
+        "params": ["i32", "i64", "i32"],
+        "result": "i32",
+    }
+    assert exports == {
+        "function_set_builtin": "molt_function_set_builtin",
+        "string_from_bytes": "molt_string_from_bytes",
+        "runtime_execution_enter": "molt_runtime_execution_enter",
+        "runtime_execution_leave": "molt_runtime_execution_leave",
+        "runtime_shutdown": "molt_runtime_shutdown",
+    }
+    assert result_kinds.keys() == signatures.keys() == exports.keys()
     assert (
         'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64"], "result": "i64"}};'
         in content
@@ -725,14 +737,8 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert "generatedRuntimeExportByImport" not in run_wasm
     assert run_wasm.count("const runtimeExportNameForImport =") == 1
     assert "const runtimeExportNameForImport = (importName) => {" in run_wasm
-    assert (
-        "const enterName = runtimeImportExportNames.runtime_execution_enter;"
-        in run_wasm
-    )
-    assert (
-        "const leaveName = runtimeImportExportNames.runtime_execution_leave;"
-        in run_wasm
-    )
+    assert "createRuntimeLifetime(runtimeInst, runtimeImportExportNames" in run_wasm
+    assert "runtimeLifetime(runtimeInst).execute(operation)" in run_wasm
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
     assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
@@ -831,8 +837,14 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         in browser_host
     )
     assert "browser host manifest missing abi.runtime_imports.names" in browser_host
-    assert "const enterName = exportNames.runtime_execution_enter;" in browser_host
-    assert "const leaveName = exportNames.runtime_execution_leave;" in browser_host
+    assert (
+        "createRuntimeLifetime(runtimeInstance, runtimeImportAbi?.export_names"
+        in browser_host
+    )
+    assert (
+        "runtimeLifetime(runtimeInstance, runtimeImportAbi).execute(operation)"
+        in browser_host
+    )
     assert "exports?.molt_runtime_execution_enter" not in browser_host
     assert "exports?.molt_runtime_execution_leave" not in browser_host
     assert "const runtimeImportAbi = options.runtimeImportAbi || {};" in browser_host
@@ -1262,6 +1274,7 @@ def test_browser_runtime_manifest_projects_generated_host_publication_roots() ->
         "len",
         "runtime_execution_enter",
         "runtime_execution_leave",
+        "runtime_shutdown",
     } <= names
     assert "molt_main" not in names
     assert "memory" not in names

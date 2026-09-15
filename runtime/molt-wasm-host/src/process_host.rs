@@ -1,5 +1,227 @@
 use super::*;
 
+/// One owned pipe handle; reader cancellation never depends on observing EOF.
+pub(super) struct HostPipeReader(std::fs::File);
+
+impl HostPipeReader {
+    #[cfg(unix)]
+    pub(super) fn new(reader: impl Into<std::os::fd::OwnedFd>) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let owned: std::os::fd::OwnedFd = reader.into();
+        let file = std::fs::File::from(owned);
+        let fd = file.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(file))
+    }
+
+    #[cfg(windows)]
+    pub(super) fn new(
+        reader: impl Into<std::os::windows::io::OwnedHandle>,
+    ) -> std::io::Result<Self> {
+        let owned: std::os::windows::io::OwnedHandle = reader.into();
+        Ok(Self(std::fs::File::from(owned)))
+    }
+}
+
+impl Read for HostPipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE;
+            use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+            // Anonymous child pipes are synchronous Windows handles. Peeking is
+            // nonblocking; this owner is the only reader, so available bytes
+            // cannot be consumed between the peek and the bounded read.
+            let mut available = 0;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    self.0.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                    return Ok(0);
+                }
+                return Err(err);
+            }
+            if available == 0 {
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            let len = buf.len().min(available as usize);
+            return self.0.read(&mut buf[..len]);
+        }
+        #[cfg(not(windows))]
+        self.0.read(buf)
+    }
+}
+
+/// The owner retains both cancellation and join custody. Reading remains
+/// concurrent with synchronous guest stdin writes, avoiding duplex pipe stalls.
+pub(super) struct HostReaderTask {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<thread::JoinHandle<Result<()>>>,
+}
+
+#[derive(Debug)]
+struct HostReaderCancelled;
+
+impl std::fmt::Display for HostReaderCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("host pipe reader cancelled by owner")
+    }
+}
+
+impl std::error::Error for HostReaderCancelled {}
+
+pub(super) fn is_reader_cancelled(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<HostReaderCancelled>())
+}
+
+struct CancellablePipeReader {
+    pipe: HostPipeReader,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Read for CancellablePipeReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    HostReaderCancelled,
+                ));
+            }
+            match self.pipe.read(buf) {
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+impl HostReaderTask {
+    pub(super) fn spawn(
+        name: &str,
+        pipe: HostPipeReader,
+        consume: impl FnOnce(Box<dyn Read + Send>) -> Result<()> + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = CancellablePipeReader {
+            pipe,
+            cancelled: Arc::clone(&cancelled),
+        };
+        let thread = thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || consume(Box::new(reader)))?;
+        Ok(Self {
+            cancelled,
+            thread: Some(thread),
+        })
+    }
+
+    pub(super) fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_finished(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    pub(super) fn close(&mut self, deadline: Instant) -> Result<()> {
+        self.cancel();
+        while let Some(thread) = self.thread.as_ref() {
+            if thread.is_finished() {
+                let thread = self.thread.take().expect("owned reader task");
+                return thread
+                    .join()
+                    .map_err(|_| wasmtime::Error::msg("host pipe reader panicked"))?;
+            }
+            if Instant::now() >= deadline {
+                bail!("host pipe reader did not stop before close deadline");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HostReaderTask {
+    fn drop(&mut self) {
+        // Managers own the shared wait budget. Drop may cancel/reap an already
+        // finished task, but cannot add another per-reader wait to that budget.
+        if let Err(err) = self.close(Instant::now()) {
+            eprintln!("host reader fallback cleanup failed: {err:#}");
+        }
+    }
+}
+
+/// Reap only this owned Child; never wait without a deadline or address a PID.
+pub(super) fn reap_owned_child(child: &mut Child, deadline: Instant) -> Result<()> {
+    loop {
+        if child
+            .try_wait()
+            .context("query owned child exit")?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "owned child {} is still running at host close deadline",
+                child.id()
+            );
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn stop_owned_child(child: &mut Child) -> Result<()> {
+    if child
+        .try_wait()
+        .context("query owned child before close")?
+        .is_none()
+    {
+        // The runtime already performed its semantic termination. The finite
+        // host is the final backing-resource owner, including failed teardown.
+        if let Err(err) = child.kill() {
+            if child
+                .try_wait()
+                .context("query child after kill failure")?
+                .is_none()
+            {
+                return Err(err).context("stop owned child during host close");
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn close_owned_child(child: &mut Child, deadline: Instant) -> Result<()> {
+    stop_owned_child(child)?;
+    reap_owned_child(child, deadline)
+}
+
 const PROCESS_POLL_BATCH: usize = 128;
 const PROCESS_STDIO_PIPE: i32 = 1;
 const PROCESS_STDIO_DEVNULL: i32 = 2;
@@ -14,13 +236,14 @@ pub(super) struct ProcessManager {
     poll_index: Vec<u64>,
     poll_positions: HashMap<u64, usize>,
     poll_cursor: usize,
-    events_tx: mpsc::Sender<ProcessEvent>,
-    events_rx: mpsc::Receiver<ProcessEvent>,
+    events_tx: std::sync::mpsc::Sender<ProcessEvent>,
+    events_rx: std::sync::mpsc::Receiver<ProcessEvent>,
 }
 
 struct ProcessEntry {
     child: Child,
     stdin: Option<ChildStdin>,
+    readers: Vec<HostReaderTask>,
     stdout_stream: Option<u64>,
     stderr_stream: Option<u64>,
     exit_code: Option<i32>,
@@ -31,25 +254,96 @@ enum ProcessEvent {
     Stderr(u64, Vec<u8>),
     StdoutClosed(u64),
     StderrClosed(u64),
-}
-
-enum ProcessStreamKind {
-    Stdout,
-    Stderr,
+    ReadError {
+        handle: u64,
+        stdout: bool,
+        error: std::io::Error,
+    },
 }
 
 impl ProcessManager {
     pub(super) fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
         Self {
             next_id: 1,
             processes: HashMap::new(),
             poll_index: Vec::new(),
             poll_positions: HashMap::new(),
             poll_cursor: 0,
-            events_tx: tx,
-            events_rx: rx,
+            events_tx,
+            events_rx,
         }
+    }
+
+    /// Runtime process_registry owns termination policy. This phase closes host
+    /// handles and reaps its children, without guest callbacks. A still-live
+    /// backing child is stopped on abort or incomplete runtime termination.
+    /// Failed custody is retained so the owner can retry or report it.
+    pub(super) fn close(&mut self) -> Result<()> {
+        self.poll_index.clear();
+        self.poll_positions.clear();
+        self.poll_cursor = 0;
+        let mut handles: Vec<_> = self.processes.keys().copied().collect();
+        handles.sort_unstable();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let mut result = Ok(());
+        for handle in &handles {
+            let entry = self
+                .processes
+                .get_mut(handle)
+                .expect("owned process handle");
+            entry.stdin.take();
+            for reader in &entry.readers {
+                reader.cancel();
+            }
+            entry.stdout_stream = None;
+            entry.stderr_stream = None;
+            // Stop the complete owned cohort before spending the shared reap
+            // budget, so one slow child cannot delay another child's stop.
+            result = preserve_application_and_cleanup_result(
+                result,
+                stop_owned_child(&mut entry.child)
+                    .with_context(|| format!("stop process {handle}")),
+            );
+        }
+        for handle in handles {
+            let entry = self
+                .processes
+                .get_mut(&handle)
+                .expect("owned process handle");
+            let mut closed = true;
+            for reader in &mut entry.readers {
+                let reader_result = reader
+                    .close(deadline)
+                    .with_context(|| format!("close process {handle} reader"));
+                if reader_result.is_err() {
+                    closed = false;
+                }
+                result = preserve_application_and_cleanup_result(result, reader_result);
+            }
+            let reaped = reap_owned_child(&mut entry.child, deadline)
+                .with_context(|| format!("reap process {handle}"));
+            if reaped.is_err() {
+                closed = false;
+            }
+            result = preserve_application_and_cleanup_result(result, reaped);
+            if closed {
+                self.processes.remove(&handle);
+            }
+        }
+        // Disconnect old event senders and drop the queued guest stream data;
+        // reader cancellation never needs a successful send to make progress.
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.events_tx = tx;
+        self.events_rx = rx;
+        result.context("host process cleanup")
+    }
+
+    fn read_events(&mut self) -> Vec<ProcessEvent> {
+        self.events_rx
+            .try_iter()
+            .take(PROCESS_POLL_BATCH * 2)
+            .collect()
     }
 
     fn alloc_handle(&mut self, pid: u32) -> u64 {
@@ -76,6 +370,62 @@ impl ProcessManager {
     fn poll_batch_handles(&mut self, max_batch: usize) -> Vec<u64> {
         indexed_next_batch(&self.poll_index, &mut self.poll_cursor, max_batch)
     }
+}
+
+impl Drop for ProcessManager {
+    fn drop(&mut self) {
+        if let Err(err) = self.close() {
+            // Normal owners must use explicit close to propagate this error.
+            // Unwinding still stops only this manager's held child handles.
+            eprintln!("process manager fallback cleanup failed: {err:#}");
+        }
+    }
+}
+
+fn spawn_process_reader(
+    pipe: HostPipeReader,
+    tx: std::sync::mpsc::Sender<ProcessEvent>,
+    handle: u64,
+    stdout: bool,
+) -> std::io::Result<HostReaderTask> {
+    HostReaderTask::spawn("molt-process-output", pipe, move |mut reader| {
+        let mut buf = [0; 8192];
+        let mut outcome = Ok(());
+        loop {
+            let event = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if stdout {
+                        ProcessEvent::Stdout(handle, buf[..n].to_vec())
+                    } else {
+                        ProcessEvent::Stderr(handle, buf[..n].to_vec())
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) if is_reader_cancelled(&err) => break,
+                Err(err) => {
+                    let _ = tx.send(ProcessEvent::ReadError {
+                        handle,
+                        stdout,
+                        error: std::io::Error::new(err.kind(), err.to_string()),
+                    });
+                    let stream = if stdout { "stdout" } else { "stderr" };
+                    outcome = Err(err).with_context(|| format!("process {handle} {stream} reader"));
+                    break;
+                }
+            };
+            if tx.send(event).is_err() {
+                return Ok(());
+            }
+        }
+        // EOF remains ordered after all data even when exit was already reaped.
+        let _ = tx.send(if stdout {
+            ProcessEvent::StdoutClosed(handle)
+        } else {
+            ProcessEvent::StderrClosed(handle)
+        });
+        outcome
+    })
 }
 
 fn decode_string_list(buf: &[u8]) -> Result<Vec<String>> {
@@ -200,42 +550,6 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
         let _ = fd;
         None
     }
-}
-
-fn spawn_process_reader<R: Read + Send + 'static>(
-    mut reader: R,
-    tx: mpsc::Sender<ProcessEvent>,
-    handle: u64,
-    kind: ProcessStreamKind,
-) {
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => {
-                    let _ = tx.send(match kind {
-                        ProcessStreamKind::Stdout => ProcessEvent::StdoutClosed(handle),
-                        ProcessStreamKind::Stderr => ProcessEvent::StderrClosed(handle),
-                    });
-                    break;
-                }
-                Ok(n) => {
-                    let data = buf[..n].to_vec();
-                    let _ = tx.send(match kind {
-                        ProcessStreamKind::Stdout => ProcessEvent::Stdout(handle, data),
-                        ProcessStreamKind::Stderr => ProcessEvent::Stderr(handle, data),
-                    });
-                }
-                Err(_) => {
-                    let _ = tx.send(match kind {
-                        ProcessStreamKind::Stdout => ProcessEvent::StdoutClosed(handle),
-                        ProcessStreamKind::Stderr => ProcessEvent::StderrClosed(handle),
-                    });
-                    break;
-                }
-            }
-        }
-    });
 }
 
 fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
@@ -426,16 +740,6 @@ pub(super) fn define_process_host(
                 }
             }
 
-            let mut child = match cmd.spawn() {
-                Ok(child) => child,
-                Err(err) => return -map_io_error(&err),
-            };
-            let pid = child.id();
-            let handle = {
-                let state = caller.data_mut();
-                state.process_manager.alloc_handle(pid)
-            };
-
             let exports = match runtime_exports(&mut caller) {
                 Ok(exports) => exports,
                 Err(_) => return -libc::EFAULT,
@@ -458,6 +762,14 @@ pub(super) fn define_process_host(
                 None
             };
 
+            // Resolve all guest setup before acquiring a child. Once spawned,
+            // register its owned handle before any further fallible operation.
+            let mut child = match cmd.spawn() {
+                Ok(child) => child,
+                Err(err) => return -map_io_error(&err),
+            };
+            let handle = caller.data_mut().process_manager.alloc_handle(child.id());
+
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let stdin = child.stdin.take();
@@ -468,6 +780,7 @@ pub(super) fn define_process_host(
                     ProcessEntry {
                         child,
                         stdin,
+                        readers: Vec::new(),
                         stdout_stream,
                         stderr_stream,
                         exit_code: None,
@@ -475,20 +788,41 @@ pub(super) fn define_process_host(
                 );
                 state.process_manager.poll_track(handle);
             }
-            if let Some(reader) = merged_stdout_reader.take() {
-                let tx = caller.data().process_manager.events_tx.clone();
-                spawn_process_reader(reader, tx, handle, ProcessStreamKind::Stdout);
-            } else if let Some(stdout) = stdout {
-                let tx = caller.data().process_manager.events_tx.clone();
-                spawn_process_reader(stdout, tx, handle, ProcessStreamKind::Stdout);
-            }
-            if let Some(stderr) = stderr {
-                let tx = caller.data().process_manager.events_tx.clone();
-                spawn_process_reader(stderr, tx, handle, ProcessStreamKind::Stderr);
+            let stdout = if let Some(reader) = merged_stdout_reader.take() {
+                HostPipeReader::new(reader).map(Some)
+            } else {
+                stdout.map(HostPipeReader::new).transpose()
+            };
+            let stdout = match stdout {
+                Ok(reader) => reader,
+                Err(err) => return -map_io_error(&err),
+            };
+            let stderr = match stderr.map(HostPipeReader::new).transpose() {
+                Ok(reader) => reader,
+                Err(err) => return -map_io_error(&err),
+            };
+            for (pipe, is_stdout) in [(stdout, true), (stderr, false)] {
+                if let Some(pipe) = pipe {
+                    let tx = caller.data().process_manager.events_tx.clone();
+                    let reader = match spawn_process_reader(pipe, tx, handle, is_stdout) {
+                        Ok(reader) => reader,
+                        Err(err) => return -map_io_error(&err),
+                    };
+                    caller
+                        .data_mut()
+                        .process_manager
+                        .processes
+                        .get_mut(&handle)
+                        .expect("spawned child registered before pipe setup")
+                        .readers
+                        .push(reader);
+                }
             }
 
             if out_handle_ptr != 0 {
-                let _ = write_u64(&mut caller, &memory, out_handle_ptr, handle);
+                if write_u64(&mut caller, &memory, out_handle_ptr, handle).is_err() {
+                    return -libc::EFAULT;
+                }
             }
             0
         },
@@ -692,12 +1026,19 @@ pub(super) fn define_process_host(
             Ok(exports) => exports,
             Err(_) => return -libc::EFAULT,
         };
-        let mut events = Vec::new();
-        while let Ok(event) = caller.data_mut().process_manager.events_rx.try_recv() {
-            events.push(event);
-        }
+        let events = caller.data_mut().process_manager.read_events();
+        let mut read_error = None;
         for event in events {
             match event {
+                ProcessEvent::ReadError {
+                    handle,
+                    stdout,
+                    error,
+                } => {
+                    let stream = if stdout { "stdout" } else { "stderr" };
+                    eprintln!("process {handle} {stream} reader failed: {error}");
+                    read_error.get_or_insert(map_io_error(&error));
+                }
                 ProcessEvent::Stdout(handle, data) => {
                     let stream_bits = caller
                         .data()
@@ -801,7 +1142,7 @@ pub(super) fn define_process_host(
                 );
             }
         }
-        0
+        read_error.map_or(0, |errno| -errno)
     });
 
     linker.define(&mut *store, "env", "molt_process_spawn_host", process_spawn)?;
@@ -823,4 +1164,97 @@ pub(super) fn define_process_host(
     linker.define(&mut *store, "env", "molt_process_stdio_host", process_stdio)?;
     linker.define(&mut *store, "env", "molt_process_host_poll", process_poll)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod host_resource_tests {
+    use super::*;
+
+    #[test]
+    fn host_pipe_reads_available_bytes_and_reports_eof() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        let mut reader = HostPipeReader::new(pipe).unwrap();
+        let mut buf = [0; 8];
+        assert_eq!(
+            reader.read(&mut buf).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        writer.write_all(b"ready").unwrap();
+        assert_eq!(reader.read(&mut buf).unwrap(), 5);
+        assert_eq!(&buf[..5], b"ready");
+        drop(writer);
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn owned_reader_cancels_even_when_pipe_writer_remains_open() {
+        let (pipe, _inherited_writer) = os_pipe::pipe().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut task = HostReaderTask::spawn(
+            "test-owned-reader",
+            HostPipeReader::new(pipe).unwrap(),
+            move |mut reader| {
+                let result = reader.read(&mut [0; 1]);
+                tx.send(result.unwrap_err().kind()).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(task.thread.is_none());
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            std::io::ErrorKind::ConnectionAborted
+        );
+        task.close(Instant::now()).unwrap();
+    }
+
+    #[test]
+    fn reader_panic_is_returned_by_explicit_close() {
+        let (pipe, _writer) = os_pipe::pipe().unwrap();
+        let mut task = HostReaderTask::spawn(
+            "test-reader-panic",
+            HostPipeReader::new(pipe).unwrap(),
+            |_| {
+                panic!("reader failure fixture");
+            },
+        )
+        .unwrap();
+        assert!(task.close(Instant::now() + Duration::from_secs(1)).is_err());
+        assert!(task.thread.is_none());
+    }
+
+    #[test]
+    fn terminal_reader_io_error_survives_without_event_poll() {
+        let (pipe, _writer) = os_pipe::pipe().unwrap();
+        let mut task = HostReaderTask::spawn(
+            "test-reader-error",
+            HostPipeReader::new(pipe).unwrap(),
+            |_| {
+                Err(
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, "reader fixture")
+                        .into(),
+                )
+            },
+        )
+        .unwrap();
+        let error = task
+            .close(Instant::now() + Duration::from_secs(1))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(task.thread.is_none());
+        task.close(Instant::now()).unwrap();
+    }
+
+    #[test]
+    fn empty_process_manager_close_is_idempotent() {
+        let mut manager = ProcessManager::new();
+        manager.close().unwrap();
+        manager.close().unwrap();
+        assert!(manager.processes.is_empty());
+        assert!(manager.read_events().is_empty());
+    }
 }

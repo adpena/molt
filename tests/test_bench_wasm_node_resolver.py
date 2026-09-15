@@ -456,6 +456,7 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         "  molt_exception_pending: () => 0n,\n"
         "  molt_runtime_execution_enter: () => { events.push('enter'); return 41n; },\n"
         "  molt_runtime_execution_leave: (token) => events.push(`leave:${token}`),\n"
+        "  molt_runtime_shutdown: () => 1n,\n"
         "} };\n"
         "try { mod.withRuntimeExecution(runtime, () => { events.push('body'); throw new Error('boom'); }); }\n"
         "catch (error) { if (error.message !== 'boom') throw error; }\n"

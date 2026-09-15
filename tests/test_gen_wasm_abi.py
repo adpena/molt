@@ -309,23 +309,44 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     rendered_rs_modules = gen.render_rs_modules(data)
-    assert not gen.LEGACY_OUT_RS.exists()
-    assert set(rendered_rs_modules) == set(gen.OUT_RS_FILES)
-    for name, rendered in rendered_rs_modules.items():
-        assert gen.OUT_RS_FILES[name].read_text(encoding="utf-8") == rendered
-    assert gen.OUT_RUNTIME_CALLABLES_RS.read_text(
-        encoding="utf-8"
-    ) == gen.render_runtime_callables_rs(data)
-    assert gen.OUT_PY.read_text(encoding="utf-8") == gen.render_py(data)
-    assert gen.OUT_JS_ABI.read_text(encoding="utf-8") == gen.render_js_abi(data)
-    assert gen.OUT_TABLE_LAYOUT_INC.read_text(
-        encoding="utf-8"
-    ) == gen.render_table_layout_inc(data)
+    # Use the generator's comparison and diagnostics: pytest's text diff can
+    # take minutes on these megabyte-sized, highly repetitive projections.
+    assert gen._check_rs_modules(rendered_rs_modules)
+    assert gen._check(
+        gen.OUT_RUNTIME_CALLABLES_RS, gen.render_runtime_callables_rs(data)
+    )
+    assert gen._check(gen.OUT_PY, gen.render_py(data))
+    assert gen._check(gen.OUT_JS_ABI, gen.render_js_abi(data))
+    assert gen._check(
+        gen.OUT_JS_CALLABLE_TABLE_ABI, gen.render_js_callable_table_abi(data)
+    )
+    assert gen._check(gen.OUT_TABLE_LAYOUT_INC, gen.render_table_layout_inc(data))
     for removed_path in gen.REMOVED_GENERATED_FILES:
-        assert not removed_path.exists()
-    assert gen.OUT_ALLOWED_IMPORTS.read_text(
-        encoding="utf-8"
-    ) == gen.render_allowed_imports(data)
+        assert gen._check_absent(removed_path)
+    assert gen._check(gen.OUT_ALLOWED_IMPORTS, gen.render_allowed_imports(data))
+
+
+@pytest.mark.parametrize("state", ["missing", "stale", "current-crlf"])
+def test_generated_projection_diagnostic_is_bounded(tmp_path, capsys, state) -> None:
+    gen = _load_gen_wasm_abi()
+    path = tmp_path / "large_generated.py"
+    expected = 'callable = ("i64", "i64")\n' * 60_000
+    if state == "stale":
+        path.write_text(expected + "drift = True\n", encoding="utf-8")
+    elif state == "current-crlf":
+        path.write_bytes(expected.replace("\n", "\r\n").encode("utf-8"))
+
+    assert gen._check(path, expected) is (state == "current-crlf")
+    diagnostic = capsys.readouterr().err
+    if state == "current-crlf":
+        assert diagnostic == ""
+    else:
+        assert str(path) in diagnostic
+        assert ("MISSING" if state == "missing" else "STALE") in diagnostic
+        assert len(diagnostic) < len(str(path)) + 160
+        assert "callable =" not in diagnostic
+        if state == "stale":
+            assert "tools/gen_wasm_abi.py" in diagnostic
 
 
 def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
@@ -1284,9 +1305,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         in rendered_native_rs
     )
     assert 'Some("molt_exception_last_pending")' in rendered_native_rs
-    assert OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS.read_text(encoding="utf-8") == (
-        rendered_native_rs
-    )
+    assert gen._check(OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS, rendered_native_rs)
 
     second_marked = copy.deepcopy(data)
     synthetic = copy.deepcopy(finally_observer)
@@ -1984,6 +2003,7 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         "molt_profile_dump",
         "molt_runtime_execution_enter",
         "molt_runtime_execution_leave",
+        "molt_runtime_shutdown",
         "molt_table",
         "__indirect_function_table",
     } <= set(policy["essential_exports"])

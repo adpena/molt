@@ -1,14 +1,22 @@
 import './callable_table_abi_generated.js';
 import './loader_bridge.js';
+import './runtime_lifecycle.js';
 import {
   assertBrowserTargetFeatureContract,
   parsedImportsRequireWebGpuDispatch,
   WEBGPU_DISPATCH_HOST_IMPORT,
 } from './browser_target_features.js';
 import { createBrowserGpuHost } from './browser_gpu_dispatch.js';
-import { nativeCallableBrowserSignature } from './native_callable_abi_generated.js';
+import {
+  NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+  NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+  NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
+  NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+  nativeCallableBrowserSignature,
+} from './native_callable_abi_generated.js';
 
 const ENOSYS = 38;
+const { createRuntimeLifetime, createRuntimeDisposer, combinedError } = globalThis.MoltRuntimeLifecycle;
 const EINVAL = 22;
 const ENOMEM = 12;
 const WASI_ERRNO_NOSYS = 52;
@@ -1088,7 +1096,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
       return callIsolateImportExport(fn, args);
     },
   };
-  return new Proxy(env, {
+  const imports = new Proxy(env, {
     get(target, name) {
       if (name in target) return target[name];
       if (typeof name === 'string' && browserAbi.callIndirectImports.has(name)) {
@@ -1105,6 +1113,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
       return undefined;
     },
   });
+  return { env: imports, disposeHost: gpuHost.dispose };
 };
 
 const resolveExportName = (exports, requested) => {
@@ -1216,114 +1225,140 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     },
     table,
   };
-  const env = buildMinimalEnv(state, manifest, browserAbi, {
+  const { env, disposeHost } = buildMinimalEnv(state, manifest, browserAbi, {
     ...options,
     appCallableTable,
     runtimeCallableTable,
   });
   const runtimeWasi = buildMinimalWasi(state, options.log || null);
   const appWasi = buildMinimalWasi(appHostState, options.log || null);
-  const runtimeModule = await WebAssembly.compile(runtimeBytes);
-  const runtimeImportObject = {
-    env,
-    wasi_snapshot_preview1: runtimeWasi,
-  };
-  installWasmTagImports(runtimeImportObject, runtimeImports);
-  const runtimeInstance = await WebAssembly.instantiate(runtimeModule, runtimeImportObject);
-  state.runtimeInstance = runtimeInstance;
-  if (manifest.wasm_table_base !== null && manifest.wasm_table_base !== undefined) {
-    const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
-    if (typeof setTableBase === 'function') {
-      setTableBase(BigInt(manifest.wasm_table_base));
+  let runtimeInstance = null;
+  let lifetime = null;
+  const dispose = createRuntimeDisposer(() => lifetime, [disposeHost]);
+  try {
+    const runtimeModule = await WebAssembly.compile(runtimeBytes);
+    const runtimeImportObject = {
+      env,
+      wasi_snapshot_preview1: runtimeWasi,
+    };
+    installWasmTagImports(runtimeImportObject, runtimeImports);
+    runtimeInstance = await WebAssembly.instantiate(runtimeModule, runtimeImportObject);
+    state.runtimeInstance = runtimeInstance;
+    lifetime = createRuntimeLifetime(runtimeInstance, manifest?.abi?.runtime_imports?.export_names, () => {
+      if (runtimeExceptionPending(runtimeInstance)) {
+        throw new Error(pendingRuntimeExceptionMessage(runtimeInstance, memory) ||
+          'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+      }
+    });
+    lifetime.admit();
+    if (manifest.wasm_table_base !== null && manifest.wasm_table_base !== undefined) {
+      const setTableBase = runtimeInstance.exports.molt_set_wasm_table_base;
+      if (typeof setTableBase === 'function') {
+        setTableBase(BigInt(manifest.wasm_table_base));
+      }
     }
+    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+    const appModule = await WebAssembly.compile(appBytes);
+    const moltNative = createMoltNativeCallableImports(appHostState, appImports, {
+      ...options,
+      manifest,
+      nativeCallableManifest: browserAbi.nativeCallables,
+      requireNativeCallableManifest: true,
+    });
+    const appImportObject = {
+      env,
+      molt_native: moltNative,
+      wasi_snapshot_preview1: appWasi,
+      molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, browserAbi, {
+        runtimeMemoryProvider: () => state.memory,
+        appMemoryProvider: () => appHostState.memory,
+      }),
+    };
+    installWasmTagImports(appImportObject, appImports);
+    const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
+    state.appInstance = appInstance;
+    appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
+    verifyCallableTableEntries(appCallableTable, table, 'app wasm');
+    return {
+      // Low-level inspection handles only. Execute guest code through execute;
+      // direct export calls bypass lifetime and disposed-state enforcement.
+      appInstance,
+      runtimeInstance,
+      memory,
+      table,
+      manifest,
+      execute: lifetime.execute,
+      dispose,
+    };
+  } catch (error) {
+    const errors = [error];
+    try { dispose(); } catch (cleanup) { errors.push(cleanup); }
+    throw combinedError(errors);
   }
-  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-  const appModule = await WebAssembly.compile(appBytes);
-  const moltNative = createMoltNativeCallableImports(appHostState, appImports, {
-    ...options,
-    manifest,
-    nativeCallableManifest: browserAbi.nativeCallables,
-    requireNativeCallableManifest: true,
-  });
-  const appImportObject = {
-    env,
-    molt_native: moltNative,
-    wasi_snapshot_preview1: appWasi,
-    molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, browserAbi, {
-      runtimeMemoryProvider: () => state.memory,
-      appMemoryProvider: () => appHostState.memory,
-    }),
-  };
-  installWasmTagImports(appImportObject, appImports);
-  const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
-  state.appInstance = appInstance;
-  appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
-  verifyCallableTableEntries(appCallableTable, table, 'app wasm');
-  return {
-    appInstance,
-    runtimeInstance,
-    memory,
-    table,
-    manifest,
-  };
 };
 
 export const loadMoltBrowserKernel = async (options = {}) => {
   const embed = await loadMoltBrowserEmbed(options);
-  const exportName = options.exportName || options.functionName || 'forward';
-  const resolvedExportName = resolveExportName(embed.appInstance.exports, exportName);
-  const resultType = options.resultType || options.outputType || 'float32';
-  let initialized = false;
-  const ensureInitialized = () => {
-    if (initialized) {
-      return;
-    }
-    const hostInit = embed.appInstance.exports.molt_host_init;
-    if (typeof hostInit !== 'function') {
-      throw new Error('molt_host_init export missing for host-export initialization');
-    }
-    if (runtimeExceptionPending(embed.runtimeInstance)) {
-      throw new Error(pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory) ||
-        'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
-    }
-    hostInit();
-    const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
-    if (pending) {
-      throw new Error(pending);
-    }
-    initialized = true;
-  };
-  const callBytes = (...args) => {
-    ensureInitialized();
-    const fn = embed.appInstance.exports[resolvedExportName];
-    const argBits = args.map((arg) => makeHostArg(embed.runtimeInstance, embed.memory, arg));
-    let resultBits = 0n;
-    try {
-      resultBits = fn(...argBits);
-    } finally {
-      for (const bits of argBits) {
-        decRefMaybe(embed.runtimeInstance, bits);
+  try {
+    const exportName = options.exportName || options.functionName || 'forward';
+    const resolvedExportName = resolveExportName(embed.appInstance.exports, exportName);
+    const resultType = options.resultType || options.outputType || 'float32';
+    let initialized = false;
+    const ensureInitialized = () => {
+      if (initialized) {
+        return;
       }
-    }
-    const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
-    if (pending) {
-      decRefMaybe(embed.runtimeInstance, resultBits);
-      throw new Error(pending);
-    }
-    try {
-      return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
-    } finally {
-      decRefMaybe(embed.runtimeInstance, resultBits);
-    }
-  };
-  const forward = (input, ...extraArgs) => {
-    const resultBytes = callBytes(bytesFromBufferSource(input), ...extraArgs);
-    return decodeMoltBrowserKernelBytes(resultBytes, resultType);
-  };
-  return {
-    ...embed,
-    exportName: resolvedExportName,
-    callBytes,
-    forward,
-  };
+      const hostInit = embed.appInstance.exports.molt_host_init;
+      if (typeof hostInit !== 'function') {
+        throw new Error('molt_host_init export missing for host-export initialization');
+      }
+      if (runtimeExceptionPending(embed.runtimeInstance)) {
+        throw new Error(pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory) ||
+          'MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before execution');
+      }
+      hostInit();
+      const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
+      if (pending) {
+        throw new Error(pending);
+      }
+      initialized = true;
+    };
+    const callBytes = (...args) => embed.execute(() => {
+      ensureInitialized();
+      const fn = embed.appInstance.exports[resolvedExportName];
+      const argBits = args.map((arg) => makeHostArg(embed.runtimeInstance, embed.memory, arg));
+      let resultBits = 0n;
+      try {
+        resultBits = fn(...argBits);
+      } finally {
+        for (const bits of argBits) {
+          decRefMaybe(embed.runtimeInstance, bits);
+        }
+      }
+      const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
+      if (pending) {
+        decRefMaybe(embed.runtimeInstance, resultBits);
+        throw new Error(pending);
+      }
+      try {
+        return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
+      } finally {
+        decRefMaybe(embed.runtimeInstance, resultBits);
+      }
+    });
+    const forward = (input, ...extraArgs) => {
+      const resultBytes = callBytes(bytesFromBufferSource(input), ...extraArgs);
+      return decodeMoltBrowserKernelBytes(resultBytes, resultType);
+    };
+    return {
+      ...embed,
+      exportName: resolvedExportName,
+      callBytes,
+      forward,
+    };
+  } catch (error) {
+    const errors = [error];
+    try { embed.dispose(); } catch (cleanup) { errors.push(cleanup); }
+    throw combinedError(errors);
+  }
 };

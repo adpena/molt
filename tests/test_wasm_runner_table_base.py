@@ -98,6 +98,7 @@ def _execution_wasm_from_wat(tmp_path: Path, name: str, wat: str) -> Path:
       (func (export "molt_runtime_execution_enter") (result i64)
         i64.const 1)
       (func (export "molt_runtime_execution_leave") (param i64))
+      (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
       (func (export "molt_exception_pending") (result i64) i64.const 0)
     """
     return _wasm_from_wat(

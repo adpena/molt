@@ -175,9 +175,11 @@ def _build_entry_main_ops(
     # (idempotent — returns immediately if already initialised).
     #
     # molt_runtime_shutdown is NOT called here.  For native targets the
-    # C stub's molt_finish() handles shutdown + _exit().  For WASM
-    # targets the JS host runner handles cleanup.  Previously this
-    # function emitted a molt_runtime_shutdown call which tore down the
+    # C stub's molt_finish() handles Python finalization + _exit(). WASM finite owners
+    # finalize after releasing execution leases and capturing pending errors;
+    # reusable embeddings finalize only when their owner disposes them. This
+    # same runtime teardown flushes buffered streams and runs atexit callbacks.
+    # Previously this function emitted a molt_runtime_shutdown call which tore down the
     # runtime while the C stub still needed it (e.g. to check for
     # pending exceptions), and the subsequent TLS/atexit destructor
     # phase would hang or crash on exit.

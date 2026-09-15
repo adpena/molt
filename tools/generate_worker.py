@@ -16,6 +16,23 @@ def generate_worker(
     wasm_filename: str = "worker_linked.wasm",
 ) -> None:
     template = TEMPLATE_PATH.read_text()
+    wasm_root = TEMPLATE_PATH.parent.parent / "wasm"
+    lifetime = (wasm_root / "runtime_lifecycle.js").read_text(encoding="utf-8")
+    abi = json.loads(
+        (wasm_root / "wasm_abi_generated.json").read_text(encoding="utf-8")
+    )
+    lifetime_exports = {
+        key: abi["runtime_export_by_import"][key]
+        for key in (
+            "runtime_execution_enter",
+            "runtime_execution_leave",
+            "runtime_shutdown",
+        )
+    }
+    template = template.replace("{{RUNTIME_LIFECYCLE}}", lifetime)
+    template = template.replace(
+        "{{RUNTIME_LIFETIME_EXPORTS}}", json.dumps(lifetime_exports)
+    )
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
         raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")
     template = template.replace("{{TMP_QUOTA_MB}}", str(int(tmp_quota_mb)))

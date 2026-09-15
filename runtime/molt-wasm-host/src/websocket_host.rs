@@ -8,6 +8,22 @@ impl WebSocketManager {
         }
     }
 
+    /// Final host-only close: never wait for a peer's WebSocket handshake.
+    pub(super) fn close(&mut self) -> Result<()> {
+        let mut errors = Vec::new();
+        let mut entries: Vec<_> = self.sockets.drain().collect();
+        entries.sort_unstable_by_key(|(handle, _)| *handle);
+        for (handle, entry) in entries {
+            if let Err(err) = entry.close() {
+                errors.push(format!("websocket {handle}: {err:#}"));
+            }
+        }
+        if !errors.is_empty() {
+            bail!("host websocket cleanup: {}", errors.join("; "));
+        }
+        Ok(())
+    }
+
     fn insert(&mut self, socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
@@ -36,10 +52,59 @@ pub(super) struct WebSocketManager {
     sockets: HashMap<u64, WebSocketEntry>,
 }
 
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn empty_websocket_manager_close_is_idempotent() {
+        let mut manager = WebSocketManager::new();
+        manager.close().unwrap();
+        manager.close().unwrap();
+        assert!(manager.sockets.is_empty());
+    }
+}
+
 struct WebSocketEntry {
     socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
     queue: VecDeque<Vec<u8>>,
     closed: bool,
+}
+
+impl WebSocketEntry {
+    fn close(mut self) -> Result<()> {
+        let mut errors = Vec::new();
+        if !self.closed {
+            match self.socket.close(None) {
+                Ok(())
+                | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                }
+                // No peer/network waiting is allowed in finite host cleanup.
+                // WouldBlock only means the courtesy close frame was queued.
+                Err(tungstenite::Error::Io(err))
+                    if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(err) => errors.push(format!("queue close frame: {err}")),
+            }
+        }
+        let transport = match self.socket.get_ref() {
+            MaybeTlsStream::Plain(stream) => Some(stream),
+            MaybeTlsStream::Rustls(stream) => Some(stream.get_ref()),
+            _ => None,
+        };
+        match transport {
+            Some(stream) => match stream.shutdown(std::net::Shutdown::Both) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotConnected => {}
+                Err(err) => errors.push(format!("shutdown transport: {err}")),
+            },
+            None => errors.push("unsupported websocket transport".to_string()),
+        }
+        self.queue.clear();
+        if !errors.is_empty() {
+            bail!("{}", errors.join("; "));
+        }
+        Ok(())
+    }
 }
 
 fn ws_get_mut(state: &mut HostState, handle: i64) -> Result<&mut WebSocketEntry, i32> {
@@ -59,7 +124,12 @@ fn ws_set_nonblocking(
         MaybeTlsStream::Rustls(stream) => {
             stream.get_ref().set_nonblocking(true)?;
         }
-        _ => {}
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "unsupported websocket transport",
+            ));
+        }
     }
     Ok(())
 }
@@ -387,12 +457,13 @@ pub(super) fn define_ws_host(
                 Some(entry) => entry,
                 None => return -libc::EBADF,
             };
-            if entry.closed {
-                return 0;
+            match entry.close() {
+                Ok(()) => 0,
+                Err(err) => {
+                    eprintln!("websocket close failed: {err:#}");
+                    -libc::EIO
+                }
             }
-            let mut socket = entry.socket;
-            let _ = socket.close(None);
-            0
         },
     );
     linker.define(&mut *store, "env", "molt_ws_connect_host", ws_connect)?;

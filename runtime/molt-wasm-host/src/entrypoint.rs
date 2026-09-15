@@ -31,6 +31,7 @@ pub(super) enum GuestEntrypoint<'a> {
     MoltApplication {
         application: &'a Instance,
         runtime: &'a Instance,
+        lifetime: &'a mut MoltRuntimeLifetime,
     },
     WasiCommand {
         command: &'a Instance,
@@ -99,7 +100,25 @@ pub(super) fn validate_guest_module_entrypoint(
                 &[ValType::I64],
                 &[ValType::I64],
             )?;
-            validate_exported_function_type(runtime, "molt_exception_pending", &[], &[ValType::I64])
+            validate_exported_function_type(
+                runtime,
+                "molt_exception_pending",
+                &[],
+                &[ValType::I64],
+            )?;
+            validate_exported_function_type(
+                runtime,
+                "molt_runtime_execution_enter",
+                &[],
+                &[ValType::I64],
+            )?;
+            validate_exported_function_type(
+                runtime,
+                "molt_runtime_execution_leave",
+                &[ValType::I64],
+                &[],
+            )?;
+            validate_exported_function_type(runtime, "molt_runtime_shutdown", &[], &[ValType::I64])
         }
         GuestModuleEntrypoint::WasiCommand { command } => {
             validate_exported_function_type(command, "_start", &[], &[])
@@ -164,7 +183,7 @@ pub(super) fn admit_application_runtime_status(
     Ok(())
 }
 
-fn call_molt_application_entrypoint(
+pub(super) fn call_molt_application_entrypoint(
     store: &mut Store<HostState>,
     application: &Instance,
     runtime: &Instance,
@@ -213,7 +232,112 @@ pub(super) fn call_guest_entrypoint(
         GuestEntrypoint::MoltApplication {
             application,
             runtime,
-        } => call_molt_application_entrypoint(store, application, runtime),
+            lifetime,
+        } => lifetime.execute(store, |store| {
+            call_molt_application_entrypoint(store, application, runtime)
+        }),
         GuestEntrypoint::WasiCommand { command } => call_wasi_command_entrypoint(store, command),
+    }
+}
+
+/// Finite host ownership begins at runtime instantiation, before fallible setup.
+/// Execution only borrows this owner; finalization consumes it exactly once.
+#[must_use = "finish the runtime lifetime before releasing its host resources"]
+pub(super) struct MoltRuntimeLifetime {
+    enter: wasmtime::TypedFunc<(), i64>,
+    leave: wasmtime::TypedFunc<i64, ()>,
+    shutdown: wasmtime::TypedFunc<(), i64>,
+    pending: wasmtime::TypedFunc<(), i64>,
+    entered: bool,
+}
+
+impl MoltRuntimeLifetime {
+    pub(super) fn admit(store: &mut Store<HostState>, runtime: &Instance) -> Result<Self> {
+        // Module-level admission precedes instantiation. Resolve all typed
+        // bindings together before any host-triggered runtime setup or entry.
+        Ok(Self {
+            enter: runtime
+                .get_typed_func::<(), i64>(&mut *store, "molt_runtime_execution_enter")
+                .context("missing or malformed runtime execution enter export")?,
+            leave: runtime
+                .get_typed_func::<i64, ()>(&mut *store, "molt_runtime_execution_leave")
+                .context("missing or malformed runtime execution leave export")?,
+            shutdown: runtime
+                .get_typed_func::<(), i64>(&mut *store, "molt_runtime_shutdown")
+                .context("missing or malformed runtime shutdown export")?,
+            pending: runtime
+                .get_typed_func::<(), i64>(&mut *store, "molt_exception_pending")
+                .context("missing or malformed runtime pending exception export")?,
+            entered: false,
+        })
+    }
+
+    pub(super) fn execute<T>(
+        &mut self,
+        store: &mut Store<HostState>,
+        operation: impl FnOnce(&mut Store<HostState>) -> Result<T>,
+    ) -> Result<T> {
+        let token = self
+            .enter
+            .call(&mut *store, ())
+            .context("enter runtime execution")?;
+        if token == 0 {
+            bail!("runtime returned an empty execution-boundary token");
+        }
+        self.entered = true;
+        let result = operation(store);
+        let released = self
+            .leave
+            .call(&mut *store, token)
+            .context("leave runtime execution");
+        preserve_application_and_cleanup_result(result, released)
+    }
+
+    pub(super) fn finish<T>(self, store: &mut Store<HostState>, result: Result<T>) -> Result<T> {
+        // Trapping guest calls and lease release may leave a Python exception
+        // pending. Capture it before shutdown clears runtime-owned objects.
+        // The pending-status ABI is a pure, non-initializing observation. Setup
+        // and a failed enter can publish exceptions before any lease exists.
+        let pending = read_runtime_exception_pending(
+            store,
+            &self.pending,
+            "before runtime shutdown",
+        )
+        .and_then(|pending| {
+            if pending {
+                bail!(
+                    "MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before runtime shutdown"
+                );
+            }
+            Ok(())
+        });
+        let result = preserve_application_and_cleanup_result(result, pending);
+        let finalized = self
+            .shutdown
+            .call(&mut *store, ())
+            .and_then(|status| {
+                if status == 1 || (status == 0 && !self.entered) {
+                    Ok(())
+                } else {
+                    bail!("runtime shutdown did not complete: status={status}")
+                }
+            })
+            .context("finalize Molt application runtime");
+        preserve_application_and_cleanup_result(result, finalized)
+    }
+}
+
+pub(super) fn preserve_application_and_cleanup_result<T>(
+    result: Result<T>,
+    cleanup: Result<()>,
+) -> Result<T> {
+    match (result, cleanup) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => {
+            // Retain the primary typed cause (including Wasmtime traps) while
+            // exposing the complete cleanup failure rather than masking either.
+            Err(primary.context(format!("cleanup also failed: {cleanup:#}")))
+        }
     }
 }

@@ -1,3 +1,4 @@
+use super::process_host::{HostPipeReader, HostReaderTask, close_owned_child, is_reader_cancelled};
 use super::*;
 
 fn db_cancel_track(state: &mut HostState, req_id: u64) {
@@ -28,18 +29,6 @@ fn write_frame(mut writer: impl Write, payload: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn read_frame(mut reader: impl Read) -> Result<Vec<u8>> {
-    let mut header = [0u8; 4];
-    reader.read_exact(&mut header)?;
-    let size = u32::from_le_bytes(header) as usize;
-    if size > MAX_DB_FRAME_SIZE {
-        bail!("worker frame too large: {size}");
-    }
-    let mut payload = vec![0u8; size];
-    reader.read_exact(&mut payload)?;
-    Ok(payload)
-}
-
 #[derive(Deserialize)]
 struct WorkerEnvelope {
     request_id: Option<u64>,
@@ -65,14 +54,14 @@ pub(super) struct PendingDbRequest {
     cancel_sent: bool,
 }
 
-enum WorkerMessage {
-    Response(WorkerResponse),
-    Error(wasmtime::Error),
-}
-
 enum WorkerError {
     Unavailable(wasmtime::Error),
     SendFailed(wasmtime::Error),
+}
+
+enum WorkerMessage {
+    Response(WorkerResponse),
+    Error(wasmtime::Error),
 }
 
 fn decode_worker_frame(frame: &[u8]) -> Result<WorkerResponse> {
@@ -96,6 +85,185 @@ fn decode_worker_frame(frame: &[u8]) -> Result<WorkerResponse> {
     })
 }
 
+fn read_frame(mut reader: impl Read) -> Result<Option<Vec<u8>>> {
+    let mut header = [0; 4];
+    loop {
+        match reader.read(&mut header[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    reader.read_exact(&mut header[1..])?;
+    let size = u32::from_le_bytes(header) as usize;
+    if size > MAX_DB_FRAME_SIZE {
+        bail!("worker frame too large: {size}");
+    }
+    let mut payload = vec![0; size];
+    reader.read_exact(&mut payload)?;
+    Ok(Some(payload))
+}
+
+fn spawn_db_reader(
+    pipe: HostPipeReader,
+) -> std::io::Result<(HostReaderTask, std::sync::mpsc::Receiver<WorkerMessage>)> {
+    let (tx, responses) = std::sync::mpsc::channel();
+    let task = HostReaderTask::spawn("molt-db-output", pipe, move |reader| {
+        let mut reader = std::io::BufReader::new(reader);
+        loop {
+            let response = read_frame(&mut reader)
+                .and_then(|frame| frame.map(|frame| decode_worker_frame(&frame)).transpose());
+            match response {
+                Ok(Some(response)) => {
+                    if tx.send(WorkerMessage::Response(response)).is_err() {
+                        return Ok(());
+                    }
+                }
+                Ok(None) => return Ok(()),
+                Err(err)
+                    if err
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(is_reader_cancelled) =>
+                {
+                    return Ok(());
+                }
+                Err(err) => {
+                    // Guest reporting owns a diagnostic copy. The reader task
+                    // retains the original typed terminal error for close.
+                    let _ = tx.send(WorkerMessage::Error(wasmtime::Error::msg(format!(
+                        "{err:#}"
+                    ))));
+                    return Err(err).context("database response reader");
+                }
+            }
+        }
+    })?;
+    Ok((task, responses))
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    struct FragmentedReader(std::io::Cursor<Vec<u8>>);
+
+    impl Read for FragmentedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let size = buffer.len().min(2);
+            self.0.read(&mut buffer[..size])
+        }
+    }
+
+    #[test]
+    fn worker_frame_survives_fragmented_header_and_payload() {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, b"first").unwrap();
+        write_frame(&mut bytes, b"second").unwrap();
+        let mut reader = FragmentedReader(std::io::Cursor::new(bytes));
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"first");
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"second");
+        assert!(read_frame(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn worker_rejects_oversized_frame_before_reading_payload() {
+        let bytes = ((MAX_DB_FRAME_SIZE + 1) as u32).to_le_bytes();
+        assert!(
+            read_frame(&bytes[..])
+                .unwrap_err()
+                .to_string()
+                .contains("frame too large")
+        );
+    }
+
+    #[test]
+    fn worker_rejects_truncated_header_and_payload() {
+        assert!(read_frame(&[1_u8, 0][..]).is_err());
+        assert!(read_frame(&[3_u8, 0, 0, 0, b'x'][..]).is_err());
+    }
+
+    #[test]
+    fn worker_rejects_invalid_response_envelope() {
+        assert!(decode_worker_frame(b"not json").is_err());
+        assert!(decode_worker_frame(br#"{"request_id":1,"payload_b64":"!invalid!"}"#).is_err());
+    }
+
+    fn finish_reader_input(task: &HostReaderTask) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !task.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "reader did not consume finite fixture"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn database_reader_retains_invalid_frame_error_without_guest_poll() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        write_frame(&mut writer, b"invalid json").unwrap();
+        drop(writer);
+        let (mut task, _unpolled_responses) =
+            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        let error = task.close(Instant::now()).unwrap_err();
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+    }
+
+    #[test]
+    fn database_reader_retains_truncation_without_guest_poll() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        writer.write_all(&[3, 0, 0, 0, b'x']).unwrap();
+        drop(writer);
+        let (mut task, _unpolled_responses) =
+            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        let error = task.close(Instant::now()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn database_reader_delivers_completed_frames_before_channel_eof() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        for request_id in [1, 2] {
+            let payload =
+                serde_json::to_vec(&serde_json::json!({"request_id":request_id,"status":"Ok"}))
+                    .unwrap();
+            write_frame(&mut writer, &payload).unwrap();
+        }
+        drop(writer);
+        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        task.close(Instant::now()).unwrap();
+        for expected in [1, 2] {
+            let WorkerMessage::Response(response) = responses.try_recv().unwrap() else {
+                panic!("completed frame replaced by failure");
+            };
+            assert_eq!(response.request_id, expected);
+        }
+        assert!(matches!(
+            responses.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn database_reader_owner_cancellation_is_not_a_terminal_failure() {
+        let (pipe, _writer) = os_pipe::pipe().unwrap();
+        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            responses.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+}
+
 fn map_worker_status(status: &str) -> &'static str {
     match status {
         "Ok" => "ok",
@@ -110,9 +278,11 @@ fn map_worker_status(status: &str) -> &'static str {
 
 pub(super) struct DbWorker {
     child: Child,
-    stdin: Arc<Mutex<ChildStdin>>,
-    responses: mpsc::Receiver<WorkerMessage>,
+    stdin: Option<ChildStdin>,
+    reader: Option<HostReaderTask>,
+    responses: std::sync::mpsc::Receiver<WorkerMessage>,
     next_id: u64,
+    closed: bool,
 }
 
 impl DbWorker {
@@ -125,35 +295,74 @@ impl DbWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         command.envs(env::vars());
-        let mut child = command.spawn().context("spawn molt-worker")?;
-        let stdin = child.stdin.take().context("missing worker stdin")?;
-        let stdout = child.stdout.take().context("missing worker stdout")?;
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let frame = match read_frame(&mut reader) {
-                    Ok(frame) => frame,
-                    Err(err) => {
-                        let _ = tx.send(WorkerMessage::Error(err));
-                        break;
-                    }
-                };
-                let response = match decode_worker_frame(&frame) {
-                    Ok(resp) => WorkerMessage::Response(resp),
-                    Err(err) => WorkerMessage::Error(err),
-                };
-                if tx.send(response).is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(Self {
-            child,
-            stdin: Arc::new(Mutex::new(stdin)),
-            responses: rx,
+        let (_, responses) = std::sync::mpsc::channel();
+        let mut worker = Self {
+            child: command.spawn().context("spawn molt-worker")?,
+            stdin: None,
+            reader: None,
+            responses,
             next_id: 1,
-        })
+            closed: false,
+        };
+        let setup = (|| -> Result<()> {
+            worker.stdin = Some(worker.child.stdin.take().context("missing worker stdin")?);
+            let stdout = worker
+                .child
+                .stdout
+                .take()
+                .context("missing worker stdout")?;
+            let pipe = HostPipeReader::new(stdout).context("configure worker output")?;
+            let (reader, responses) =
+                spawn_db_reader(pipe).context("start database output reader")?;
+            worker.reader = Some(reader);
+            worker.responses = responses;
+            Ok(())
+        })();
+        if let Err(err) = setup {
+            return match worker.close() {
+                Ok(()) => Err(err),
+                Err(cleanup) => {
+                    Err(err.context(format!("worker setup cleanup also failed: {cleanup:#}")))
+                }
+            };
+        }
+        Ok(worker)
+    }
+
+    pub(super) fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.stdin.take();
+        let deadline = Instant::now() + Duration::from_millis(250);
+        if let Some(reader) = &self.reader {
+            reader.cancel();
+        }
+        let mut result =
+            close_owned_child(&mut self.child, deadline).context("close database child");
+        if let Some(reader) = &mut self.reader {
+            result = preserve_application_and_cleanup_result(
+                result,
+                reader.close(deadline).context("close database reader"),
+            );
+        }
+        let (_, responses) = std::sync::mpsc::channel();
+        self.responses = responses;
+        result.context("close database worker")?;
+        self.reader.take();
+        self.closed = true;
+        Ok(())
+    }
+
+    fn poll_response(&mut self) -> Result<Option<WorkerResponse>> {
+        match self.responses.try_recv() {
+            Ok(WorkerMessage::Response(response)) => Ok(Some(response)),
+            Ok(WorkerMessage::Error(err)) => Err(err),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                bail!("database worker output disconnected")
+            }
+        }
     }
 
     fn send_request(&mut self, entry: &str, payload: &[u8], timeout_ms: u64) -> Result<u64> {
@@ -168,16 +377,24 @@ impl DbWorker {
             "payload_b64": payload_b64,
         });
         let bytes = serde_json::to_vec(&msg)?;
-        let mut stdin = self
+        let stdin = self
             .stdin
-            .lock()
-            .map_err(|_| wasmtime::Error::msg("stdin lock poisoned"))?;
-        write_frame(&mut *stdin, &bytes)?;
+            .as_mut()
+            .context("database worker input is closed")?;
+        write_frame(stdin, &bytes)?;
         Ok(request_id)
     }
 }
 
-fn send_worker_cancel(stdin: &Arc<Mutex<ChildStdin>>, target_id: u64) -> Result<()> {
+impl Drop for DbWorker {
+    fn drop(&mut self) {
+        if let Err(err) = self.close() {
+            eprintln!("database worker fallback cleanup failed: {err:#}");
+        }
+    }
+}
+
+fn send_worker_cancel(stdin: &mut ChildStdin, target_id: u64) -> Result<()> {
     let cancel_payload = serde_json::json!({ "request_id": target_id });
     let cancel_bytes = serde_json::to_vec(&cancel_payload)?;
     let payload_b64 = STANDARD.encode(cancel_bytes);
@@ -189,10 +406,7 @@ fn send_worker_cancel(stdin: &Arc<Mutex<ChildStdin>>, target_id: u64) -> Result<
         "payload_b64": payload_b64,
     });
     let bytes = serde_json::to_vec(&msg)?;
-    let mut guard = stdin
-        .lock()
-        .map_err(|_| wasmtime::Error::msg("stdin lock poisoned"))?;
-    write_frame(&mut *guard, &bytes)?;
+    write_frame(stdin, &bytes)?;
     Ok(())
 }
 
@@ -301,57 +515,34 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
     let mut drop_worker = false;
     {
         let state = caller.data_mut();
-        let worker_status = match state.db_worker.as_mut() {
-            Some(worker) => worker.child.try_wait(),
-            None => return 0,
-        };
-        match worker_status {
-            Ok(Some(_)) | Err(_) => {
-                let pending = drain_db_pending(state);
-                failures = Some((pending, "db host worker exited".to_string()));
-                drop_worker = true;
-            }
-            Ok(None) => {}
-        }
-        if failures.is_none() {
-            loop {
+        // Child exit can precede the reader draining its output. Retirement
+        // follows ordered channel EOF/error, never a racing try_wait result.
+        if state.db_worker.is_some() {
+            for _ in 0..128 {
                 let message = match state.db_worker.as_mut() {
-                    Some(worker) => worker.responses.try_recv(),
-                    None => Err(mpsc::TryRecvError::Disconnected),
+                    Some(worker) => worker.poll_response(),
+                    None => break,
                 };
                 match message {
-                    Ok(WorkerMessage::Response(resp)) => {
+                    Ok(Some(resp)) => {
                         if let Some(pending) = state.db_pending.remove(&resp.request_id) {
                             db_cancel_untrack(state, resp.request_id);
                             deliveries.push((pending, resp));
                         }
                     }
-                    Ok(WorkerMessage::Error(err)) => {
+                    Err(err) => {
                         let pending = drain_db_pending(state);
                         failures = Some((pending, format!("db host error: {err}")));
                         drop_worker = true;
                         break;
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        let pending = drain_db_pending(state);
-                        failures = Some((pending, "db host disconnected".to_string()));
-                        drop_worker = true;
-                        break;
-                    }
+                    Ok(None) => break,
                 }
             }
         }
     }
-    if drop_worker {
-        caller.data_mut().db_worker = None;
-    }
-
-    if let Some((pending, message)) = failures {
-        fail_pending_requests(&mut caller, &exports, &memory, pending, &message);
-        return 0;
-    }
-
+    // Successful responses preceding an error retain their delivery even when
+    // the same poll retires the failed worker and fails its remaining requests.
     for (pending, response) in deliveries {
         deliver_worker_response(
             &mut caller,
@@ -360,6 +551,30 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
             pending.stream_bits,
             response,
         );
+    }
+    if drop_worker {
+        if let Some(worker) = caller.data_mut().db_worker.as_mut()
+            && let Err(err) = worker.close()
+        {
+            let message = format!("database worker cleanup failed: {err:#}");
+            if let Some((pending, original)) = failures {
+                fail_pending_requests(
+                    &mut caller,
+                    &exports,
+                    &memory,
+                    pending,
+                    &format!("{original}; {message}"),
+                );
+            }
+            eprintln!("{message}");
+            return 7;
+        }
+        caller.data_mut().db_worker = None;
+    }
+
+    if let Some((pending, message)) = failures {
+        fail_pending_requests(&mut caller, &exports, &memory, pending, &message);
+        return 0;
     }
 
     let now = Instant::now();
@@ -409,14 +624,17 @@ fn handle_db_host_poll(mut caller: Caller<'_, HostState>) -> i32 {
             }
             if !cancel_ids.is_empty() {
                 let state = caller.data_mut();
-                let worker_stdin = state.db_worker.as_ref().map(|worker| worker.stdin.clone());
-                if let Some(worker_stdin) = worker_stdin {
-                    for req_id in cancel_ids {
+                for req_id in cancel_ids {
+                    if let Some(worker_stdin) = state
+                        .db_worker
+                        .as_mut()
+                        .and_then(|worker| worker.stdin.as_mut())
+                    {
                         let mut stop_polling_token = false;
                         if let Some(pending) = state.db_pending.get_mut(&req_id)
                             && pending.token_id != 0
                             && !pending.cancel_sent
-                            && send_worker_cancel(&worker_stdin, req_id).is_ok()
+                            && send_worker_cancel(worker_stdin, req_id).is_ok()
                         {
                             pending.cancel_sent = true;
                             stop_polling_token = true;
@@ -508,6 +726,16 @@ fn handle_db_host(
             }
         }
         if need_spawn {
+            if !state.db_pending.is_empty() {
+                break 'worker Err(WorkerError::Unavailable(wasmtime::Error::msg(
+                    "database worker exited with responses still pending; poll before replacing it",
+                )));
+            }
+            if let Some(worker) = state.db_worker.as_mut()
+                && let Err(err) = worker.close()
+            {
+                break 'worker Err(WorkerError::Unavailable(err));
+            }
             match DbWorker::new() {
                 Ok(worker) => state.db_worker = Some(worker),
                 Err(err) => break 'worker Err(WorkerError::Unavailable(err)),
