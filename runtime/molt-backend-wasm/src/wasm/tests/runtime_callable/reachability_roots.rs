@@ -1,12 +1,7 @@
 use super::*;
 use crate::wasm_abi_generated::{PYTHON_BUILTIN_CALLABLES, runtime_callable_import};
 
-fn deferred_lookup_wasm(
-    name: Option<&str>,
-    spelling: &str,
-    reloc_enabled: bool,
-    profile: WasmProfile,
-) -> Vec<u8> {
+fn deferred_lookup_function(function_name: &str, name: Option<&str>, spelling: &str) -> FunctionIR {
     let mut ops = Vec::new();
     let mut params = vec!["module"];
     if let Some(name) = name {
@@ -23,6 +18,20 @@ fn deferred_lookup_wasm(
         _ => panic!("unknown fixture lookup spelling {spelling}"),
     }
     ops.extend([lookup, wasm_test_op("ret", None, vec!["value"])]);
+    wasm_test_function(function_name, params, None, ops)
+}
+
+fn compile_lookup_functions(
+    mut functions: Vec<FunctionIR>,
+    reloc_enabled: bool,
+    profile: WasmProfile,
+) -> Vec<u8> {
+    functions.push(wasm_test_function(
+        "molt_main",
+        vec![],
+        None,
+        vec![wasm_test_op("ret_void", None, vec![])],
+    ));
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
         reloc_enabled,
@@ -30,46 +39,57 @@ fn deferred_lookup_wasm(
         ..WasmCompileOptions::default()
     })
     .compile(SimpleIR {
-        functions: vec![wasm_test_function("deferred_lookup", params, None, ops)],
+        functions,
         profile: None,
     })
+}
+
+fn deferred_lookup_wasm(
+    name: Option<&str>,
+    spelling: &str,
+    reloc_enabled: bool,
+    profile: WasmProfile,
+) -> Vec<u8> {
+    compile_lookup_functions(
+        vec![deferred_lookup_function("lookup", name, spelling)],
+        reloc_enabled,
+        profile,
+    )
 }
 
 #[test]
 fn deferred_global_lookup_roots_the_generated_builtin_family() {
     for spelling in ["module_get_global", "call"] {
         for reloc_enabled in [false, true] {
+            // All signatures in one module per transport/relocation cell. The
+            // planner unit test owns per-name minimality; avoid recompiling the
+            // entire import/table surface once per generated builtin.
+            let functions = PYTHON_BUILTIN_CALLABLES
+                .iter()
+                .enumerate()
+                .map(|(index, spec)| {
+                    deferred_lookup_function(
+                        &format!("lookup_{index}"),
+                        Some(spec.python_name),
+                        spelling,
+                    )
+                })
+                .collect();
+            let wasm = compile_lookup_functions(functions, reloc_enabled, WasmProfile::Auto);
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let imports = wasm_function_import_names(&wasm);
+            let data = wasm_data_segment_payloads(&wasm);
             for spec in PYTHON_BUILTIN_CALLABLES {
-                let wasm = deferred_lookup_wasm(
-                    Some(spec.python_name),
-                    spelling,
-                    reloc_enabled,
-                    WasmProfile::Auto,
-                );
-                wasmparser::Validator::new().validate_all(&wasm).unwrap();
-                let imports = wasm_function_import_names(&wasm);
                 let import = runtime_callable_import(spec.runtime_name).unwrap();
                 assert!(
                     imports.iter().any(|name| name == import.name()),
                     "{spelling}: {spec:?}"
                 );
-                let data = wasm_data_segment_payloads(&wasm);
                 assert!(
                     data.iter()
                         .any(|bytes| bytes == spec.runtime_name.as_bytes()),
                     "missing executable app resolver entry for {spelling}: {spec:?}"
                 );
-                // No unrelated family-wide roots for a known source name.
-                for other in PYTHON_BUILTIN_CALLABLES {
-                    if other.runtime_name != spec.runtime_name {
-                        assert!(
-                            !data
-                                .iter()
-                                .any(|bytes| bytes == other.runtime_name.as_bytes()),
-                            "unreached resolver entry leaked: {other:?}"
-                        );
-                    }
-                }
             }
         }
     }
