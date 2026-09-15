@@ -1,367 +1,596 @@
 use super::*;
+use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
 use crate::{dict_update_apply, dict_update_set_in_place};
 
-pub(super) unsafe fn bind_builtin_call(
+type BuiltinArgumentBinder =
+    unsafe fn(&PyToken<'_>, *mut u8, &PreparedCallArgs<'_, '_>) -> Option<Vec<u64>>;
+
+/// One selection owns both raw-call admission and specialized execution.
+/// Trampoline presence and Python signature metadata cannot bypass this plan.
+#[derive(Clone, Copy)]
+pub(super) enum BuiltinCallBinding {
+    Arguments(BuiltinArgumentBinder),
+    DictionaryUpdate,
+    OwnedExceptionInit,
+}
+
+impl BuiltinCallBinding {
+    pub(super) unsafe fn call(
+        self,
+        py: &PyToken<'_>,
+        func_bits: u64,
+        func_ptr: *mut u8,
+        args: &PreparedCallArgs<'_, '_>,
+    ) -> u64 {
+        unsafe {
+            match self {
+                Self::Arguments(bind) => match bind(py, func_ptr, args) {
+                    Some(bound) => call_function_obj_bound_vec(py, func_bits, &bound),
+                    None => MoltObject::none().bits(),
+                },
+                Self::DictionaryUpdate => bind_builtin_dict_update(py, args),
+                Self::OwnedExceptionInit => {
+                    let Some(bound) = bind_builtin_exception_init_owned(py, args) else {
+                        return MoltObject::none().bits();
+                    };
+                    crate::builtins::exceptions::molt_exception_init_owned(
+                        function_closure_bits(func_ptr),
+                        bound[0],
+                        bound[1],
+                        bound[2],
+                        bound[3],
+                    )
+                }
+            }
+        }
+    }
+}
+
+pub(super) unsafe fn builtin_call_binding(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+) -> Option<BuiltinCallBinding> {
+    unsafe {
+        let callable_bits = Some(MoltObject::from_ptr(func_ptr).bits());
+        // Identity projection must not register targets or acquire the native
+        // callable registry lock on every metadata/inline-cache query.
+        macro_rules! matches_builtin {
+            ($symbol:path) => {
+                callable_matches_runtime_symbol(
+                    callable_bits,
+                    crate::builtins::functions::runtime_fn_key(
+                        stringify!($symbol),
+                        $symbol as *const (),
+                    ),
+                )
+            };
+        }
+        let bind_kind =
+            obj_from_bits(function_binding_meta(py, func_ptr, b"__molt_bind_kind__")).as_int();
+        if bind_kind == Some(BIND_KIND_OPEN) || matches_builtin!(molt_open_builtin) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+                bind_builtin_open(py, args)
+            }));
+        }
+        if matches_builtin!(crate::builtins::exceptions::molt_exception_new_bound) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_exception_args(_py, args, true)
+            }));
+        }
+        if matches_builtin!(crate::builtins::exceptions::molt_exception_init_owned) {
+            return Some(BuiltinCallBinding::OwnedExceptionInit);
+        }
+        if matches_builtin!(crate::builtins::exceptions::molt_exception_init)
+            || matches_builtin!(crate::builtins::exceptions::molt_exceptiongroup_init)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_exception_args(_py, args, false)
+            }));
+        }
+        if matches_builtin!(molt_object_init_subclass) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+                bind_builtin_class_hook(py, args)
+            }));
+        }
+        if matches_builtin!(molt_object_init) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+                bind_builtin_object_constructor(py, args, ObjectConstructorCall::Init)
+            }));
+        }
+        if matches_builtin!(molt_object_new_bound) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+                bind_builtin_object_constructor(py, args, ObjectConstructorCall::New)
+            }));
+        }
+        if matches_builtin!(molt_int_new) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_int_new(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_int_to_bytes) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_int_bytes_codec(_py, args, "length", "byteorder")
+            }));
+        }
+        if matches_builtin!(molt_int_from_bytes) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_int_bytes_codec(_py, args, "bytes", "byteorder")
+            }));
+        }
+        if matches_builtin!(crate::object::ops_builtins::molt_print_builtin) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_print(_py, args)
+            }));
+        }
+        if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT) {
+            return Some(BuiltinCallBinding::Arguments(|_py, func_ptr, args| {
+                let fn_ptr = function_fn_ptr(func_ptr);
+                if matches!(
+                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
+                    Some("1")
+                ) {
+                    // `__molt_bind_kind__` is the dispatch authority; the raw
+                    // function pointer is only a diagnostic label.
+                    let kind = if fn_ptr == fn_addr!(molt_type_new) {
+                        "type.__new__"
+                    } else if fn_ptr == fn_addr!(molt_type_init) {
+                        "type.__init__"
+                    } else {
+                        "type.__new__/__init__"
+                    };
+                    let self_bits = args.pos.first().copied().unwrap_or(0);
+                    let mut meta_label = "<unknown>".to_string();
+                    let self_label = if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
+                        let self_type_id = object_type_id(self_ptr);
+                        if self_type_id == TYPE_ID_TYPE {
+                            let label =
+                                string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
+                                    .unwrap_or_else(|| "<type>".to_string());
+                            let meta_bits = object_class_bits(self_ptr);
+                            if meta_bits != 0
+                                && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
+                                && object_type_id(meta_ptr) == TYPE_ID_TYPE
+                            {
+                                meta_label =
+                                    string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
+                                        .unwrap_or_else(|| "<meta>".to_string());
+                            }
+                            label
+                        } else {
+                            format!("<type_id={self_type_id}>")
+                        }
+                    } else {
+                        type_name(_py, obj_from_bits(self_bits)).to_string()
+                    };
+                    eprintln!(
+                        "molt bind: {} self={} meta={} pos_len={} kw_len={}",
+                        kind,
+                        self_label,
+                        meta_label,
+                        args.pos.len(),
+                        args.kw_names.len(),
+                    );
+                    if matches!(
+                        std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
+                        Some("1")
+                    ) {
+                        eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
+                    }
+                }
+                return bind_builtin_type_new_init(_py, args);
+            }));
+        }
+        if matches_builtin!(dict_get_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_keywords(
+                    _py,
+                    args,
+                    &["key", "default"],
+                    Some(MoltObject::none().bits()),
+                    None,
+                )
+            }));
+        }
+        if matches_builtin!(dict_setdefault_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_keywords(
+                    _py,
+                    args,
+                    &["key", "default"],
+                    Some(MoltObject::none().bits()),
+                    None,
+                )
+            }));
+        }
+        if matches_builtin!(dict_fromkeys_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_keywords(
+                    _py,
+                    args,
+                    &["iterable", "value"],
+                    Some(MoltObject::none().bits()),
+                    None,
+                )
+            }));
+        }
+        if matches_builtin!(dict_update_method) {
+            return Some(BuiltinCallBinding::DictionaryUpdate);
+        }
+        if matches_builtin!(molt_dict_pop_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_keywords(
+                    _py,
+                    args,
+                    &["key", "default"],
+                    Some(missing_bits(_py)),
+                    None,
+                )
+            }));
+        }
+        if matches_builtin!(molt_list_sort) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_list_sort(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_list_pop) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_list_pop(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_bytearray_pop) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_list_pop(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_list_index_range) || matches_builtin!(molt_tuple_index_range) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_list_index_range(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_string_find_slice) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "find")
+            }));
+        }
+        if matches_builtin!(molt_string_rfind_slice) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "rfind")
+            }));
+        }
+        if matches_builtin!(molt_string_index_slice)
+            || matches_builtin!(molt_bytes_index_slice)
+            || matches_builtin!(molt_bytearray_index_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "index")
+            }));
+        }
+        if matches_builtin!(molt_string_rindex_slice)
+            || matches_builtin!(molt_bytes_rindex_slice)
+            || matches_builtin!(molt_bytearray_rindex_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "rindex")
+            }));
+        }
+        if matches_builtin!(molt_bytes_find_slice) || matches_builtin!(molt_bytearray_find_slice) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "find")
+            }));
+        }
+        if matches_builtin!(molt_bytes_rfind_slice) || matches_builtin!(molt_bytearray_rfind_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_find(_py, args, "rfind")
+            }));
+        }
+        if matches_builtin!(molt_string_split_max)
+            || matches_builtin!(molt_bytes_split_max)
+            || matches_builtin!(molt_bytearray_split_max)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_split(_py, args, "split")
+            }));
+        }
+        if matches_builtin!(molt_string_rsplit_max)
+            || matches_builtin!(molt_bytes_rsplit_max)
+            || matches_builtin!(molt_bytearray_rsplit_max)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_split(_py, args, "rsplit")
+            }));
+        }
+        if matches_builtin!(molt_string_count_slice)
+            || matches_builtin!(molt_bytes_count_slice)
+            || matches_builtin!(molt_bytearray_count_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_count(_py, args, "count")
+            }));
+        }
+        if matches_builtin!(molt_string_startswith_slice) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_prefix_check(_py, args, "startswith", "prefix")
+            }));
+        }
+        if matches_builtin!(molt_string_endswith_slice) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_prefix_check(_py, args, "endswith", "suffix")
+            }));
+        }
+        if matches_builtin!(molt_bytes_startswith_slice)
+            || matches_builtin!(molt_bytearray_startswith_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_prefix_check(_py, args, "startswith", "prefix")
+            }));
+        }
+        if matches_builtin!(molt_bytes_endswith_slice)
+            || matches_builtin!(molt_bytearray_endswith_slice)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_prefix_check(_py, args, "endswith", "suffix")
+            }));
+        }
+        if matches_builtin!(molt_bytes_hex)
+            || matches_builtin!(molt_bytearray_hex)
+            || matches_builtin!(molt_memoryview_hex)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_bytes_hex(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_string_format_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_string_format(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_string_splitlines)
+            || matches_builtin!(molt_bytes_splitlines)
+            || matches_builtin!(molt_bytearray_splitlines)
+        {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_splitlines(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_set_union_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "union", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_union_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "union", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_intersection_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "intersection", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_intersection_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "intersection", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_difference_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "difference", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_difference_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "difference", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_update_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "update", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_set_intersection_update_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "intersection_update", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_set_difference_update_multi) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_multi(_py, args, "difference_update", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_set_symmetric_difference) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "symmetric_difference", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_symmetric_difference) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(
+                    _py,
+                    args,
+                    "symmetric_difference",
+                    "frozenset",
+                    TYPE_ID_FROZENSET,
+                )
+            }));
+        }
+        if matches_builtin!(molt_set_symmetric_difference_update) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(
+                    _py,
+                    args,
+                    "symmetric_difference_update",
+                    "set",
+                    TYPE_ID_SET,
+                )
+            }));
+        }
+        if matches_builtin!(molt_set_isdisjoint) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "isdisjoint", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_isdisjoint) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "isdisjoint", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_issubset) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "issubset", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_issubset) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "issubset", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_issuperset) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "issuperset", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_issuperset) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_single(_py, args, "issuperset", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_copy_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_noargs(_py, args, "copy", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_frozenset_copy_method) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_noargs(_py, args, "copy", "frozenset", TYPE_ID_FROZENSET)
+            }));
+        }
+        if matches_builtin!(molt_set_clear) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_set_noargs(_py, args, "clear", "set", TYPE_ID_SET)
+            }));
+        }
+        if matches_builtin!(molt_string_encode) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_text_codec(_py, args, "encode")
+            }));
+        }
+        if matches_builtin!(molt_bytes_decode) || matches_builtin!(molt_bytearray_decode) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_text_codec(_py, args, "decode")
+            }));
+        }
+        if matches_builtin!(molt_memoryview_cast) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_memoryview_cast(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_file_reconfigure) {
+            return Some(BuiltinCallBinding::Arguments(|_py, _, args| {
+                bind_builtin_file_reconfigure(_py, args)
+            }));
+        }
+        if matches_builtin!(molt_bytes_maketrans) {
+            return Some(BuiltinCallBinding::Arguments(|py, _, args| {
+                if !args.kw_names.is_empty() {
+                    return raise_exception(
+                        py,
+                        "TypeError",
+                        "maketrans() takes no keyword arguments",
+                    );
+                }
+                if args.pos.len() != 2 {
+                    return raise_exception(
+                        py,
+                        "TypeError",
+                        &format!("maketrans expected 2 arguments, got {}", args.pos.len()),
+                    );
+                }
+                Some(args.pos.to_vec())
+            }));
+        }
+        None
+    }
+}
+
+unsafe fn bind_builtin_class_hook(
+    py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+) -> Option<Vec<u64>> {
+    let Some(&receiver) = args.pos.first() else {
+        return raise_exception(
+            py,
+            "TypeError",
+            "object.__init_subclass__ requires a class receiver",
+        );
+    };
+    if !obj_from_bits(receiver)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+    {
+        return raise_exception(
+            py,
+            "TypeError",
+            "object.__init_subclass__ requires a class receiver",
+        );
+    }
+    if args.pos.len() != 1 || !args.kw_names.is_empty() {
+        let name = class_name_for_error(receiver);
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!("{name}.__init_subclass__() takes no arguments"),
+        );
+    }
+    Some(vec![receiver])
+}
+
+unsafe fn bind_builtin_object_constructor(
+    py: &PyToken<'_>,
+    args: &PreparedCallArgs<'_, '_>,
+    call: ObjectConstructorCall,
+) -> Option<Vec<u64>> {
+    let name = match call {
+        ObjectConstructorCall::New => "object.__new__",
+        ObjectConstructorCall::Init => "object.__init__",
+    };
+    let Some(&receiver) = args.pos.first() else {
+        return raise_exception(py, "TypeError", &format!("{name} requires a receiver"));
+    };
+    let class = if matches!(call, ObjectConstructorCall::New) {
+        if !obj_from_bits(receiver)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        {
+            return raise_exception(py, "TypeError", "object.__new__ expects type");
+        }
+        receiver
+    } else {
+        type_of_bits(py, receiver)
+    };
+    if args.pos.len() > 1 || !args.kw_names.is_empty() {
+        let allowed = unsafe { object_constructor_extra_args_allowed(py, class, call) };
+        if exception_pending(py) {
+            return None;
+        }
+        if !allowed {
+            return raise_exception(
+                py,
+                "TypeError",
+                &format!("{name}() takes exactly one argument (the receiver)"),
+            );
+        }
+    }
+    Some(vec![receiver])
+}
+
+pub(super) unsafe fn bind_positional_builtin_call(
     _py: &PyToken<'_>,
     func_bits: u64,
     func_ptr: *mut u8,
     args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
     unsafe {
-        let fn_ptr = function_fn_ptr(func_ptr);
-        let bind_kind = function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_bind_kind,
-                b"__molt_bind_kind__",
-            ),
-        )
-        .and_then(|bits| obj_from_bits(bits).as_int());
-        let callable_bits = Some(MoltObject::from_ptr(func_ptr).bits());
-        if callable_matches_runtime_symbol(
-            callable_bits,
-            fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
-        ) {
-            return bind_builtin_exception_args(_py, args, true);
-        }
-        if callable_matches_runtime_symbol(
-            callable_bits,
-            fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
-        ) {
-            return bind_builtin_exception_init_owned(_py, args);
-        }
-        if callable_matches_runtime_symbol(
-            callable_bits,
-            fn_addr!(crate::builtins::exceptions::molt_exception_init),
-        ) || callable_matches_runtime_symbol(
-            callable_bits,
-            fn_addr!(crate::builtins::exceptions::molt_exceptiongroup_init),
-        ) {
-            return bind_builtin_exception_args(_py, args, false);
-        }
-        if callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init))
-            || callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_init_subclass))
-        {
-            let self_bits = args
-                .pos
-                .first()
-                .copied()
-                .unwrap_or_else(|| MoltObject::none().bits());
-            return Some(vec![self_bits]);
-        }
-        if callable_matches_runtime_symbol(callable_bits, fn_addr!(molt_object_new_bound)) {
-            let self_bits = args
-                .pos
-                .first()
-                .copied()
-                .unwrap_or_else(|| MoltObject::none().bits());
-            return Some(vec![self_bits]);
-        }
-        if fn_ptr == fn_addr!(molt_int_new) {
-            return bind_builtin_int_new(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_int_to_bytes) {
-            return bind_builtin_int_bytes_codec(_py, args, "length", "byteorder");
-        }
-        if fn_ptr == fn_addr!(molt_int_from_bytes) {
-            return bind_builtin_int_bytes_codec(_py, args, "bytes", "byteorder");
-        }
-        if fn_ptr == fn_addr!(molt_open_builtin) {
-            return bind_builtin_open(_py, args);
-        }
-        if fn_ptr == fn_addr!(crate::object::ops_builtins::molt_print_builtin) {
-            return bind_builtin_print(_py, args);
-        }
-        if bind_kind == Some(BIND_KIND_TYPE_NEW_INIT) {
-            if matches!(
-                std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
-                Some("1")
-            ) {
-                // `__molt_bind_kind__` is the dispatch authority; the raw
-                // function pointer is only a diagnostic label.
-                let kind = if fn_ptr == fn_addr!(molt_type_new) {
-                    "type.__new__"
-                } else if fn_ptr == fn_addr!(molt_type_init) {
-                    "type.__init__"
-                } else {
-                    "type.__new__/__init__"
-                };
-                let self_bits = args.pos.first().copied().unwrap_or(0);
-                let mut meta_label = "<unknown>".to_string();
-                let self_label = if let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() {
-                    let self_type_id = object_type_id(self_ptr);
-                    if self_type_id == TYPE_ID_TYPE {
-                        let label = string_obj_to_owned(obj_from_bits(class_name_bits(self_ptr)))
-                            .unwrap_or_else(|| "<type>".to_string());
-                        let meta_bits = object_class_bits(self_ptr);
-                        if meta_bits != 0
-                            && let Some(meta_ptr) = obj_from_bits(meta_bits).as_ptr()
-                            && object_type_id(meta_ptr) == TYPE_ID_TYPE
-                        {
-                            meta_label =
-                                string_obj_to_owned(obj_from_bits(class_name_bits(meta_ptr)))
-                                    .unwrap_or_else(|| "<meta>".to_string());
-                        }
-                        label
-                    } else {
-                        format!("<type_id={self_type_id}>")
-                    }
-                } else {
-                    type_name(_py, obj_from_bits(self_bits)).to_string()
-                };
-                eprintln!(
-                    "molt bind: {} self={} meta={} pos_len={} kw_len={}",
-                    kind,
-                    self_label,
-                    meta_label,
-                    args.pos.len(),
-                    args.kw_names.len(),
-                );
-                if matches!(
-                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
-                    Some("1")
-                ) {
-                    eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
-                }
-            }
-            return bind_builtin_type_new_init(_py, args);
-        }
-        if fn_ptr == fn_addr!(dict_get_method) {
-            return bind_builtin_keywords(
-                _py,
-                args,
-                &["key", "default"],
-                Some(MoltObject::none().bits()),
-                None,
-            );
-        }
-        if fn_ptr == fn_addr!(dict_setdefault_method) {
-            return bind_builtin_keywords(
-                _py,
-                args,
-                &["key", "default"],
-                Some(MoltObject::none().bits()),
-                None,
-            );
-        }
-        if fn_ptr == fn_addr!(dict_fromkeys_method) {
-            return bind_builtin_keywords(
-                _py,
-                args,
-                &["iterable", "value"],
-                Some(MoltObject::none().bits()),
-                None,
-            );
-        }
-        if fn_ptr == fn_addr!(dict_update_method) {
-            return bind_builtin_keywords(_py, args, &["other"], Some(missing_bits(_py)), None);
-        }
-        if fn_ptr == fn_addr!(molt_dict_pop_method) {
-            return bind_builtin_keywords(
-                _py,
-                args,
-                &["key", "default"],
-                Some(missing_bits(_py)),
-                None,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_list_sort) {
-            return bind_builtin_list_sort(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_list_pop) {
-            return bind_builtin_list_pop(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_bytearray_pop) {
-            return bind_builtin_list_pop(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_list_index_range) || fn_ptr == fn_addr!(molt_tuple_index_range) {
-            return bind_builtin_list_index_range(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_string_find_slice) {
-            return bind_builtin_string_find(_py, args, "find");
-        }
-        if fn_ptr == fn_addr!(molt_string_rfind_slice) {
-            return bind_builtin_string_find(_py, args, "rfind");
-        }
-        if fn_ptr == fn_addr!(molt_string_index_slice)
-            || fn_ptr == fn_addr!(molt_bytes_index_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_index_slice)
-        {
-            return bind_builtin_string_find(_py, args, "index");
-        }
-        if fn_ptr == fn_addr!(molt_string_rindex_slice)
-            || fn_ptr == fn_addr!(molt_bytes_rindex_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_rindex_slice)
-        {
-            return bind_builtin_string_find(_py, args, "rindex");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_find_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_find_slice)
-        {
-            return bind_builtin_string_find(_py, args, "find");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_rfind_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_rfind_slice)
-        {
-            return bind_builtin_string_find(_py, args, "rfind");
-        }
-        if fn_ptr == fn_addr!(molt_string_split_max)
-            || fn_ptr == fn_addr!(molt_bytes_split_max)
-            || fn_ptr == fn_addr!(molt_bytearray_split_max)
-        {
-            return bind_builtin_split(_py, args, "split");
-        }
-        if fn_ptr == fn_addr!(molt_string_rsplit_max)
-            || fn_ptr == fn_addr!(molt_bytes_rsplit_max)
-            || fn_ptr == fn_addr!(molt_bytearray_rsplit_max)
-        {
-            return bind_builtin_split(_py, args, "rsplit");
-        }
-        if fn_ptr == fn_addr!(molt_string_count_slice)
-            || fn_ptr == fn_addr!(molt_bytes_count_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_count_slice)
-        {
-            return bind_builtin_count(_py, args, "count");
-        }
-        if fn_ptr == fn_addr!(molt_string_startswith_slice) {
-            return bind_builtin_prefix_check(_py, args, "startswith", "prefix");
-        }
-        if fn_ptr == fn_addr!(molt_string_endswith_slice) {
-            return bind_builtin_prefix_check(_py, args, "endswith", "suffix");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_startswith_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_startswith_slice)
-        {
-            return bind_builtin_prefix_check(_py, args, "startswith", "prefix");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_endswith_slice)
-            || fn_ptr == fn_addr!(molt_bytearray_endswith_slice)
-        {
-            return bind_builtin_prefix_check(_py, args, "endswith", "suffix");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_hex)
-            || fn_ptr == fn_addr!(molt_bytearray_hex)
-            || fn_ptr == fn_addr!(molt_memoryview_hex)
-        {
-            return bind_builtin_bytes_hex(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_string_format_method) {
-            return bind_builtin_string_format(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_string_splitlines)
-            || fn_ptr == fn_addr!(molt_bytes_splitlines)
-            || fn_ptr == fn_addr!(molt_bytearray_splitlines)
-        {
-            return bind_builtin_splitlines(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_set_union_multi) {
-            return bind_builtin_set_multi(_py, args, "union", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_union_multi) {
-            return bind_builtin_set_multi(_py, args, "union", "frozenset", TYPE_ID_FROZENSET);
-        }
-        if fn_ptr == fn_addr!(molt_set_intersection_multi) {
-            return bind_builtin_set_multi(_py, args, "intersection", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_intersection_multi) {
-            return bind_builtin_set_multi(
-                _py,
-                args,
-                "intersection",
-                "frozenset",
-                TYPE_ID_FROZENSET,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_set_difference_multi) {
-            return bind_builtin_set_multi(_py, args, "difference", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_difference_multi) {
-            return bind_builtin_set_multi(_py, args, "difference", "frozenset", TYPE_ID_FROZENSET);
-        }
-        if fn_ptr == fn_addr!(molt_set_update_multi) {
-            return bind_builtin_set_multi(_py, args, "update", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_set_intersection_update_multi) {
-            return bind_builtin_set_multi(_py, args, "intersection_update", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_set_difference_update_multi) {
-            return bind_builtin_set_multi(_py, args, "difference_update", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_set_symmetric_difference) {
-            return bind_builtin_set_single(_py, args, "symmetric_difference", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_symmetric_difference) {
-            return bind_builtin_set_single(
-                _py,
-                args,
-                "symmetric_difference",
-                "frozenset",
-                TYPE_ID_FROZENSET,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_set_symmetric_difference_update) {
-            return bind_builtin_set_single(
-                _py,
-                args,
-                "symmetric_difference_update",
-                "set",
-                TYPE_ID_SET,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_set_isdisjoint) {
-            return bind_builtin_set_single(_py, args, "isdisjoint", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_isdisjoint) {
-            return bind_builtin_set_single(
-                _py,
-                args,
-                "isdisjoint",
-                "frozenset",
-                TYPE_ID_FROZENSET,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_set_issubset) {
-            return bind_builtin_set_single(_py, args, "issubset", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_issubset) {
-            return bind_builtin_set_single(_py, args, "issubset", "frozenset", TYPE_ID_FROZENSET);
-        }
-        if fn_ptr == fn_addr!(molt_set_issuperset) {
-            return bind_builtin_set_single(_py, args, "issuperset", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_issuperset) {
-            return bind_builtin_set_single(
-                _py,
-                args,
-                "issuperset",
-                "frozenset",
-                TYPE_ID_FROZENSET,
-            );
-        }
-        if fn_ptr == fn_addr!(molt_set_copy_method) {
-            return bind_builtin_set_noargs(_py, args, "copy", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_frozenset_copy_method) {
-            return bind_builtin_set_noargs(_py, args, "copy", "frozenset", TYPE_ID_FROZENSET);
-        }
-        if fn_ptr == fn_addr!(molt_set_clear) {
-            return bind_builtin_set_noargs(_py, args, "clear", "set", TYPE_ID_SET);
-        }
-        if fn_ptr == fn_addr!(molt_string_encode) {
-            return bind_builtin_text_codec(_py, args, "encode");
-        }
-        if fn_ptr == fn_addr!(molt_bytes_decode) || fn_ptr == fn_addr!(molt_bytearray_decode) {
-            return bind_builtin_text_codec(_py, args, "decode");
-        }
-        if fn_ptr == fn_addr!(molt_memoryview_cast) {
-            return bind_builtin_memoryview_cast(_py, args);
-        }
-        if fn_ptr == fn_addr!(molt_file_reconfigure) {
-            return bind_builtin_file_reconfigure(_py, args);
-        }
-
         if !args.kw_names.is_empty() {
             return raise_exception::<_>(
                 _py,
@@ -379,10 +608,6 @@ pub(super) unsafe fn bind_builtin_call(
             );
             return None;
         };
-        if fn_ptr == fn_addr!(molt_bytes_maketrans) && out.len() != 2 {
-            let msg = format!("maketrans expected 2 arguments, got {}", out.len());
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
         if out.len() > arity {
             return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
         }
@@ -434,7 +659,7 @@ pub(super) unsafe fn bind_builtin_call(
     }
 }
 
-pub(super) fn bind_builtin_exception_args(
+fn bind_builtin_exception_args(
     _py: &PyToken<'_>,
     args: &PreparedCallArgs<'_, '_>,
     allow_keywords: bool,
@@ -465,7 +690,7 @@ pub(super) fn bind_builtin_exception_args(
     Some(vec![head, tuple_bits])
 }
 
-pub(super) fn bind_builtin_exception_init_owned(
+fn bind_builtin_exception_init_owned(
     _py: &PyToken<'_>,
     args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {
@@ -538,10 +763,7 @@ unsafe fn bind_builtin_int_new(
     Some(vec![cls_bits, value_bits, base_bits])
 }
 
-pub(super) unsafe fn bind_builtin_dict_update(
-    _py: &PyToken<'_>,
-    args: &PreparedCallArgs<'_, '_>,
-) -> u64 {
+unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &PreparedCallArgs<'_, '_>) -> u64 {
     unsafe {
         if args.pos.is_empty() {
             return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
@@ -936,7 +1158,7 @@ unsafe fn bind_builtin_print(
     Some(vec![args_tuple, sep, end, file, flush])
 }
 
-pub(super) unsafe fn bind_builtin_open(
+unsafe fn bind_builtin_open(
     _py: &PyToken<'_>,
     args: &PreparedCallArgs<'_, '_>,
 ) -> Option<Vec<u64>> {

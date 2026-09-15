@@ -1760,13 +1760,7 @@ unsafe fn function_binding_meta(py: &PyToken<'_>, func_ptr: *mut u8, name: &[u8]
 
 unsafe fn function_binding_shape(py: &PyToken<'_>, func_ptr: *mut u8) -> FunctionBindingShape {
     unsafe {
-        let mut full_binder = callable_matches_runtime_symbol(
-            Some(MoltObject::from_ptr(func_ptr).bits()),
-            crate::builtins::functions::runtime_fn_key(
-                "molt_exception_init_owned",
-                crate::builtins::exceptions::molt_exception_init_owned as *const (),
-            ),
-        );
+        let mut full_binder = builtin_args::builtin_call_binding(py, func_ptr).is_some();
         for name in [
             b"__molt_bind_kind__".as_slice(),
             b"__molt_vararg__",
@@ -2171,7 +2165,6 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 return raise_exception::<_>(_py, "TypeError", "call expects function object");
             }
-            let fn_ptr = function_fn_ptr(func_ptr);
             if callable_matches_runtime_symbol(Some(func_bits), fn_addr!(molt_type_call)) {
                 let Some(self_bits) = self_bits else {
                     return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
@@ -2229,22 +2222,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 Err(err) => return err,
             };
             let args = &prepared;
-            if let Some(kind_bits) = bind_kind_bits
-                && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_OPEN)
-            {
-                if let Some(bound_args) = builtin_args::bind_builtin_open(_py, args) {
-                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                }
-                return MoltObject::none().bits();
-            }
-            if fn_ptr == fn_addr!(dict_update_method) {
-                return builtin_args::bind_builtin_dict_update(_py, args);
-            }
-            if fn_ptr == fn_addr!(molt_open_builtin) {
-                if let Some(bound_args) = builtin_args::bind_builtin_open(_py, args) {
-                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                }
-                return MoltObject::none().bits();
+            if let Some(binding) = builtin_args::builtin_call_binding(_py, func_ptr) {
+                return binding.call(_py, func_bits, func_ptr, args);
             }
 
             let arg_names_bits = function_attr_bits(
@@ -2270,25 +2249,8 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 crate::object::seq_access::pin_tuple(_py, arg_names_ptr)
                     .expect("type-checked argument-name tuple must be pinnable")
             } else {
-                if callable_matches_runtime_symbol(
-                    Some(func_bits),
-                    fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
-                ) {
-                    let Some(bound_args) =
-                        builtin_args::bind_builtin_exception_init_owned(_py, args)
-                    else {
-                        return MoltObject::none().bits();
-                    };
-                    return crate::builtins::exceptions::molt_exception_init_owned(
-                        function_closure_bits(func_ptr),
-                        bound_args[0],
-                        bound_args[1],
-                        bound_args[2],
-                        bound_args[3],
-                    );
-                }
                 if let Some(bound_args) =
-                    builtin_args::bind_builtin_call(_py, func_bits, func_ptr, args)
+                    builtin_args::bind_positional_builtin_call(_py, func_bits, func_ptr, args)
                 {
                     return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
                 }
@@ -3742,6 +3704,73 @@ mod tests {
                 "1 supplied + self == arity 2 -> direct"
             );
             crate::dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                // Cover ordinary arguments, direct dictionary mutation, and
+                // closure-owned exception init: all three execution strategies.
+                for (symbol, arity) in [
+                    (fn_addr!(crate::molt_object_init_subclass), 1),
+                    (fn_addr!(crate::molt_object_init), 1),
+                    (fn_addr!(crate::molt_object_new_bound), 1),
+                    (fn_addr!(crate::molt_int_new), 3),
+                    (fn_addr!(crate::dict_update_method), 2),
+                    (
+                        fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+                        4,
+                    ),
+                ] {
+                    let ptr =
+                        crate::builtins::functions::alloc_runtime_function_obj(py, symbol, arity);
+                    assert!(!ptr.is_null());
+                    let bits = MoltObject::from_ptr(ptr).bits();
+                    let original = crate::function_trampoline_ptr(ptr);
+                    for trampoline in [0, 1] {
+                        // A non-callable trampoline is deliberate: missing
+                        // receivers must be rejected before dispatch reaches it.
+                        crate::object::layout::function_set_trampoline_ptr(ptr, trampoline);
+                        assert!(super::builtin_args::builtin_call_binding(py, ptr).is_some());
+                        assert!(super::function_raw_positional_call_needs_binding(
+                            py, ptr, 0
+                        ));
+                        assert!(super::function_raw_positional_call_needs_binding(
+                            py,
+                            ptr,
+                            arity as usize
+                        ));
+                        assert!(method_ic_call_plan(py, bits).unwrap().needs_binder);
+                        assert!(
+                            !super::function_fixed_positional_call_needs_binding(
+                                py,
+                                ptr,
+                                arity as usize
+                            ),
+                            "already-bound exact ABI must not rebind"
+                        );
+                        let result = super::molt_call_bind(bits, super::molt_callargs_new(0, 0));
+                        assert!(
+                            crate::exception_pending(py),
+                            "missing receiver cannot be synthesized"
+                        );
+                        crate::molt_exception_clear();
+                        dec_ref_bits(py, result);
+                        let result = crate::call::function::call_function_obj_vec(py, bits, &[]);
+                        assert!(
+                            crate::exception_pending(py),
+                            "raw vector calls must use the same binder"
+                        );
+                        crate::molt_exception_clear();
+                        dec_ref_bits(py, result);
+                    }
+                    crate::object::layout::function_set_trampoline_ptr(ptr, original);
+                    dec_ref_bits(py, bits);
+                }
+            }
         });
     }
 

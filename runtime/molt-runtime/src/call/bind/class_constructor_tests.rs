@@ -280,6 +280,81 @@ extern "C" fn record_left_hook(_owner: u64) -> i64 {
     CALLBACKS.with(|state| state.borrow_mut().events.push("init:left".to_string()));
     MoltObject::none().bits() as i64
 }
+
+#[test]
+fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let builtins = builtin_classes(py);
+            let base = empty_type(py, b"HookBase", builtins.type_obj, &[]);
+            let child = empty_type(py, b"HookChild", builtins.type_obj, &[base]);
+            let instance =
+                crate::alloc_instance_for_class(py, obj_from_bits(child).as_ptr().unwrap());
+            let super_ptr = crate::object::builders::alloc_super_obj(py, child, child, child);
+            assert!(!super_ptr.is_null());
+            let super_bits = MoltObject::from_ptr(super_ptr).bits();
+            let key = crate::attr_name_bits_from_bytes(py, b"__init_subclass__").unwrap();
+            let descriptor =
+                crate::builtins::methods::object_method_bits(py, "__init_subclass__").unwrap();
+            assert_eq!(
+                object_type_id(obj_from_bits(descriptor).as_ptr().unwrap()),
+                crate::TYPE_ID_CLASSMETHOD
+            );
+            for (lookup, owner) in [
+                (builtins.object, builtins.object),
+                (base, base),
+                (child, child),
+                (instance, child),
+                (super_bits, child),
+            ] {
+                let hook = crate::molt_get_attr_name(lookup, key);
+                assert!(!exception_pending(py));
+                let hook_ptr = obj_from_bits(hook).as_ptr().unwrap();
+                assert_eq!(object_type_id(hook_ptr), TYPE_ID_BOUND_METHOD);
+                assert_eq!(bound_method_self_bits(hook_ptr), owner);
+                let function = bound_method_func_bits(hook_ptr);
+                assert!(callable_matches_runtime_symbol(
+                    Some(function),
+                    fn_addr!(molt_object_init_subclass)
+                ));
+                let builder = molt_callargs_new(0, 0);
+                let result = molt_call_bind(hook, builder);
+                assert!(obj_from_bits(result).is_none());
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, result);
+                for keyword in [false, true] {
+                    let builder = molt_callargs_new(1, 1);
+                    if keyword {
+                        molt_callargs_push_kw(builder, key, MoltObject::from_int(1).bits());
+                    } else {
+                        molt_callargs_push_pos(builder, MoltObject::from_int(1).bits());
+                    }
+                    let result = molt_call_bind(hook, builder);
+                    assert!(
+                        exception_pending(py),
+                        "class hook must reject extra arguments"
+                    );
+                    crate::molt_exception_clear();
+                    dec_ref_bits(py, result);
+                }
+                dec_ref_bits(py, hook);
+            }
+            assert!(dispatch_init_subclass_hooks(py, child, &[], &[]));
+            assert!(!dispatch_init_subclass_hooks(
+                py,
+                child,
+                &[key],
+                &[MoltObject::from_int(1).bits()]
+            ));
+            crate::molt_exception_clear();
+            for bits in [key, super_bits, instance, child, base] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
 extern "C" fn record_right_hook(_owner: u64) -> i64 {
     CALLBACKS.with(|state| state.borrow_mut().events.push("init:right".to_string()));
     MoltObject::none().bits() as i64

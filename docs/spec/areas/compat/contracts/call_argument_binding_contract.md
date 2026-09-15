@@ -2,7 +2,7 @@
 
 **Spec ID:** 0016
 **Status:** Draft
-**Last updated:** 2026-09-13
+**Last updated:** 2026-09-15
 **Audience:** compiler engineers, runtime engineers
 **Goal:** Add Python-compatible call argument binding (positional, keyword, varargs, varkw) while preserving Molt Tier 0 performance via specialization and allocation-free fast paths.
 
@@ -136,6 +136,35 @@ runtime class-call/binder machinery as dynamic calls.
 ---
 
 ## 5. Tiered Implementation Strategy
+
+### Shared builtin and class-hook authority
+
+`call/bind/builtin_args.rs::builtin_call_binding` selects specialized builtin
+argument handling. Raw vector calls, trampoline admission, method inline-cache
+plans, and the binder use that same selection. Trampoline availability is not
+evidence that Python arguments already match the runtime ABI. Already-bound
+execution uses the explicit bound-call lane and must not recursively rebind.
+
+Builtin `object.__init_subclass__` is a classmethod descriptor. Direct class,
+inherited class, instance, and class-mode `super` lookups all bind the lookup
+owner before dispatch. The constructor invokes that bound inherited hook once;
+cooperative hooks own continuation through the MRO. No binder invents a missing
+receiver or discards class-hook arguments. Default hooks reject leftover
+positional and keyword arguments.
+
+Direct `object.__new__` and `object.__init__` require their receiver. Extra
+arguments are admitted only by the shared constructor policy: default new with
+custom init, or default init with custom new, respectively. Ordinary allocation
+and direct builtin calls share the resolved MRO facts; overriding both methods
+does not authorize silently discarding arguments to either object builtin.
+
+Regressions include runtime descriptor-surface and raw/bound admission tests plus
+`tests/differential/basic/class_hook_binding.py`. These are contracts, not a
+claim that every version/OS/architecture/backend cell has been executed.
+`tests/differential/basic/class_hook_descriptor.py` separately preserves raw
+`object.__dict__` classmethod-descriptor visibility/callability cases as an
+unproven builtin-introspection frontier;
+bound-hook proofs must not be reported as closure of those raw-descriptor cases.
 
 ### 5.1 Tier 0: Specialized, allocation-free call paths
 
