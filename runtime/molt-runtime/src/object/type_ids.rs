@@ -78,5 +78,15 @@ mod tests {
         assert!(!is_valid_heap_type_id(0));
         assert!(!is_valid_heap_type_id(TYPE_ID_OBJECT - 1));
         assert!(!is_valid_heap_type_id(MAX_HEAP_TYPE_ID + 1));
+        for retired in [205, 231] {
+            assert!(!is_valid_heap_type_id(retired));
+            assert!(heap_kind_descriptor(retired).is_none());
+            assert!(heap_drop_policy(retired).is_none());
+        }
+        assert_eq!(TYPE_ID_TUPLE, 206);
+        assert_eq!(TYPE_ID_FROZENSET, 232);
+        for active in ALL_HEAP_TYPE_IDS {
+            assert_eq!(heap_kind_descriptor(active).unwrap().type_id, active);
+        }
     }
 }

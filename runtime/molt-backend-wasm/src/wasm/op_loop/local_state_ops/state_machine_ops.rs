@@ -76,6 +76,9 @@ pub(super) fn emit_state_machine_local_state_op(
             );
             func.instruction(&Instruction::Drop);
             func.instruction(&Instruction::I64Const(box_pending()));
+            context
+                .frame
+                .emit_const_anchor_releases(func, import_ids, reloc_enabled);
             func.instruction(&Instruction::Return);
             func.instruction(&Instruction::End);
         }

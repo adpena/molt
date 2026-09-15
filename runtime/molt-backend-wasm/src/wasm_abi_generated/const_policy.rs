@@ -71,10 +71,10 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
         kind: "const",
         inline_seed: WasmConstInlineSeed::Int,
-        materializer_import: None,
+        materializer_import: Some(WasmRuntimeImport::IntFromI64),
         literal_payload: WasmConstLiteralPayload::None,
         scalar_payload: WasmConstScalarPayload::Int,
-        dispatch_runtime_seed: false,
+        dispatch_runtime_seed: true,
         parse_scalar_literal: false,
         raw_int_effect: WasmConstRawIntEffect::SetInt,
         lir_fast: WasmConstLirFastPolicy::Lower,

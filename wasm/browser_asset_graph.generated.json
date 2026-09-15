@@ -56,7 +56,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "d12339f5e152381685f8d50ec1c1c3310b517ce8df9688109e23c824b9e522a7",
+      "sha256": "3dd8a93589948705d8cd245be573c3a2f69cb29d62554530cb9295a9e9ebf5a2",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -151,7 +151,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "e7c4615fc1c60f1503006faa0fc8b24f2ae414b3be02a7bd1bb6e01295c1722f",
+      "sha256": "1550c289649f4c165051d019c25383acabe35da33f88f4013fac23c960c339f4",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -253,7 +253,7 @@
           "target": "loader_bridge.js"
         },
         {
-          "column": 50,
+          "column": 109,
           "kind": "require",
           "line": 10,
           "request": "./runtime_lifecycle.js",
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "769587b55c9b99ca6e11e4f8071e90c8d89dfef158d4bf75e04b4e0bd70f8f3d",
+      "sha256": "9879fbdb211890396f1b9c1840c8ed63d34afab3191f5198fffb00d276b64622",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -374,7 +374,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "0c5124d2c3d0c6f466c8079693961ebe6b2482b5dfe5b47662435dc32b80c5f4",
+      "sha256": "178289a0521685eaf4e09495ae8d99322ba2ab95bca715515dae70e2ac463b72",
       "source_type": "script"
     },
     "target_feature_constants.generated.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "17ea24475faf02316c06c987b93d6573e29bb332126d1422e82e78610068e841",
+      "sha256": "0d8b2cae8a425854ab558000f6647e7259d7a2735ccdfd58d1b55000d14373d5",
       "source_type": "data"
     }
   },

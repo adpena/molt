@@ -59,15 +59,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_const_str(&mut self, op: &TirOp) {
-        self.emit_const_bytes_via_runtime(
-            op,
-            const_bytes_from_attrs(op),
-            "__const_str_",
-            "str_out",
-            "sfb",
-            "str_bits",
-            TirType::Str,
-        );
+        let (result, _) = self.emit_byte_literal(&const_bytes_from_attrs(op), TirType::Str);
+        self.values.insert(op.results[0], result);
+        self.value_types.insert(op.results[0], TirType::Str);
     }
 
     pub(super) fn emit_const_bigint(&mut self, op: &TirOp) {
@@ -109,52 +103,78 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_const_bytes(&mut self, op: &TirOp) {
-        self.emit_const_bytes_via_runtime(
-            op,
-            const_bytes_from_attrs(op),
-            "__const_bytes_",
-            "bytes_out",
-            "bfb",
-            "bytes_bits",
-            TirType::DynBox,
-        );
+        let (result, _) = self.emit_byte_literal(&const_bytes_from_attrs(op), TirType::Bytes);
+        self.values.insert(op.results[0], result);
+        self.value_types.insert(op.results[0], TirType::Bytes);
     }
 
-    fn emit_const_bytes_via_runtime(
+    /// Every materialization returns one owned reference, even for equal payloads.
+    /// String constants, attribute names, and bytes share the same outparam ABI;
+    /// the semantic literal type selects the fixed runtime constructor.
+    fn emit_byte_literal(
         &mut self,
-        op: &TirOp,
-        bytes: Vec<u8>,
-        global_prefix: &str,
-        out_name: &str,
-        call_name: &str,
-        load_name: &str,
-        result_ty: TirType,
-    ) {
-        let result_id = op.results[0];
+        bytes: &[u8],
+        literal_type: TirType,
+    ) -> (BasicValueEnum<'ctx>, inkwell::values::IntValue<'ctx>) {
+        let (runtime_name, global_prefix, out_name, call_name, load_name) = match literal_type {
+            TirType::Str => (
+                "molt_string_from_bytes",
+                "__const_str_",
+                "str_out",
+                "sfb",
+                "str_bits",
+            ),
+            TirType::Bytes => (
+                "molt_bytes_from_bytes",
+                "__const_bytes_",
+                "bytes_out",
+                "bfb",
+                "bytes_bits",
+            ),
+            _ => panic!("byte literal requires Str or Bytes, got {literal_type:?}"),
+        };
         let i64_ty = self.backend.context.i64_type();
 
-        let ptr_val = self.add_private_bytes_global(&bytes, global_prefix, "");
+        let ptr_val = self.add_private_bytes_global(bytes, global_prefix, "");
 
-        let sfb_fn = self.ensure_string_from_bytes_fn();
+        let materializer = declare_fixed_runtime_function(
+            self.backend.context,
+            &self.backend.module,
+            runtime_name,
+        )
+        .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        let expected_abi = self
+            .backend
+            .context
+            .i32_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
+        let materializer = require_llvm_function_type(runtime_name, materializer, expected_abi);
         let out_alloca = self.backend.builder.build_alloca(i64_ty, out_name).unwrap();
 
         let len_val = i64_ty.const_int(bytes.len() as u64, false);
-        self.backend
+        let status = self
+            .backend
             .builder
             .build_call(
-                sfb_fn,
+                materializer,
                 &[ptr_val.into(), len_val.into(), out_alloca.into()],
                 call_name,
             )
-            .unwrap();
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
 
-        let result = self
+        let value = self
             .backend
             .builder
             .build_load(i64_ty, out_alloca, load_name)
             .unwrap();
-        self.values.insert(result_id, result);
-        self.value_types.insert(result_id, result_ty);
+        (value, status)
     }
 
     pub(super) fn const_i64_operand(&self, operand_id: ValueId) -> i64 {
@@ -174,32 +194,75 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
     }
 
-    pub(super) fn intern_string_const(&mut self, s: &str) -> BasicValueEnum<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        let name_bytes = s.as_bytes();
-        let ptr = self.add_private_bytes_global(
-            name_bytes,
-            "__attr_str_",
-            &format!("_{}", sanitize_const_name(s)),
-        );
-        let len = i64_ty.const_int(name_bytes.len() as u64, false);
-        let out_alloca = self
+    /// A synthesized name is one temporary owner, borrowed by the dependent
+    /// runtime operation. On construction failure skip that operation entirely;
+    /// merge a boxed None with the pending exception intact so the enclosing
+    /// TIR operation's CheckException retains ownership of handler/cleanup flow.
+    pub(super) fn with_owned_name(
+        &mut self,
+        name: &str,
+        consume: impl FnOnce(&mut Self, inkwell::values::IntValue<'ctx>) -> BasicValueEnum<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let (name_bits, status) = self.emit_byte_literal(name.as_bytes(), TirType::Str);
+        let name_bits = name_bits.into_int_value();
+        let builder = &self.backend.builder;
+        let source = builder.get_insert_block().expect("name construction block");
+        let suffix = self.synthetic_block_counter;
+        self.synthetic_block_counter += 1;
+        let success = self
             .backend
-            .builder
-            .build_alloca(i64_ty, "intern_out")
-            .unwrap();
-        self.backend
-            .builder
-            .build_call(
-                self.ensure_string_from_bytes_fn(),
-                &[ptr.into(), len.into(), out_alloca.into()],
-                "intern_sfb",
+            .context
+            .append_basic_block(self.llvm_fn, &format!("owned_name_success{suffix}"));
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("owned_name_merge{suffix}"));
+        self.all_llvm_blocks.extend([success, merge]);
+        let ok = builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "owned_name_ok",
             )
             .unwrap();
+        builder
+            .build_conditional_branch(ok, success, merge)
+            .unwrap();
+        self.record_llvm_edge(source, success);
+        self.record_llvm_edge(source, merge);
+        self.backend.builder.position_at_end(success);
+        let result = consume(self, name_bits);
+        assert_eq!(
+            result.get_type(),
+            self.backend.context.i64_type().into(),
+            "name consumer must return boxed i64 bits"
+        );
+        let drop_name = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
         self.backend
             .builder
-            .build_load(i64_ty, out_alloca, "intern_bits")
-            .unwrap()
+            .build_call(drop_name, &[name_bits.into()], "owned_name_release")
+            .unwrap();
+        let consumed = self
+            .backend
+            .builder
+            .get_insert_block()
+            .expect("name consumer block");
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        self.record_llvm_edge(consumed, merge);
+        self.backend.builder.position_at_end(merge);
+        let i64_ty = self.backend.context.i64_type();
+        let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(i64_ty, "owned_name_result")
+            .unwrap();
+        phi.add_incoming(&[(&none, source), (&result, consumed)]);
+        phi.as_basic_value()
     }
 
     pub(super) fn raw_string_const_ptr_and_len(
@@ -259,23 +322,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         global.set_constant(true);
         global.set_unnamed_addr(true);
         global.as_pointer_value()
-    }
-
-    fn ensure_string_from_bytes_fn(&self) -> FunctionValue<'ctx> {
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let i32_ty = self.backend.context.i32_type();
-        let i64_ty = self.backend.context.i64_type();
-        let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false);
-        let func = declare_fixed_runtime_function(
-            self.backend.context,
-            &self.backend.module,
-            "molt_string_from_bytes",
-        )
-        .unwrap_or_else(|| panic!("molt_string_from_bytes must be a fixed LLVM runtime import"));
-        require_llvm_function_type("molt_string_from_bytes", func, fn_ty)
     }
 }
 

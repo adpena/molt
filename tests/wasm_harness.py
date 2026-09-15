@@ -9326,22 +9326,33 @@ BASE_IMPORTS = """\
   },
   list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
   list_builder_append: (builder, val) => {
+    if (exceptionPending() !== 0n) return 1;
     const obj = getObj(builder);
     if (obj && obj.type === 'list_builder') {
       obj.items.push(val);
+      return 0;
     }
+    return 1;
   },
   list_builder_finish: (builder) => {
     const obj = getObj(builder);
     if (obj && obj.type === 'list_builder') {
-      return listFromArray(obj.items);
+      const items = obj.items;
+      obj.items = [];
+      obj.type = 'consumed_builder';
+      if (exceptionPending() !== 0n) return boxNone();
+      return listFromArray(items);
     }
     return boxNone();
   },
   tuple_builder_finish: (builder) => {
     const obj = getObj(builder);
     if (obj && obj.type === 'list_builder') {
-      return tupleFromArray(obj.items);
+      const items = obj.items;
+      obj.items = [];
+      obj.type = 'consumed_builder';
+      if (exceptionPending() !== 0n) return boxNone();
+      return tupleFromArray(items);
     }
     return boxNone();
   },

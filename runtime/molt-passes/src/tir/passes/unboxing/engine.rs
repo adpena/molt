@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
+use crate::tir::ops::AttrValue;
 use crate::tir::ops::OpCode;
+use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::super::PassStats;
@@ -17,6 +19,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     let block_ids: Vec<u32> = func.blocks.keys().map(|b| b.0).collect();
     let use_map = build_use_map(func, &block_ids);
+    let ranges = crate::representation_facts::value_range_for(func);
+    let nonallocating = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
+    let types = crate::tir::type_refine::extract_type_map(func);
 
     let mut replacements: HashMap<ValueId, ValueId> = HashMap::new();
     let mut ops_to_remove: HashSet<(u32, usize)> = HashSet::new();
@@ -33,6 +38,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
             let pre_box_value = op.operands[0];
             let boxed_value = op.results[0];
+            // BoxVal may allocate even when unused or immediately unboxed.
+            // Carrier-nonheap is insufficient: a full-width raw i64 can mint
+            // a heap BigInt and a visible MemoryError at this exact operation.
+            if !nonallocating.contains(&pre_box_value) {
+                continue;
+            }
+            let Some(source_type) = types.get(&pre_box_value) else {
+                continue;
+            };
 
             let uses = match use_map.get(&boxed_value) {
                 Some(u) => u,
@@ -43,7 +57,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 }
             };
 
-            let Some(unbox_ops) = all_uses_are_unboxes(func, uses) else {
+            let Some(unbox_ops) = all_uses_are_unboxes(func, uses, source_type, &types) else {
                 continue;
             };
             if unbox_ops.is_empty() {
@@ -94,7 +108,12 @@ fn build_use_map(func: &TirFunction, block_ids: &[u32]) -> HashMap<ValueId, Vec<
     use_map
 }
 
-fn all_uses_are_unboxes(func: &TirFunction, uses: &[(u32, usize)]) -> Option<Vec<(u32, usize)>> {
+fn all_uses_are_unboxes(
+    func: &TirFunction,
+    uses: &[(u32, usize)],
+    source_type: &TirType,
+    types: &HashMap<ValueId, TirType>,
+) -> Option<Vec<(u32, usize)>> {
     let mut unbox_ops = Vec::new();
     for &(use_bid, use_op_idx) in uses {
         if use_op_idx == usize::MAX {
@@ -107,6 +126,21 @@ fn all_uses_are_unboxes(func: &TirFunction, uses: &[(u32, usize)]) -> Option<Vec
         }
         if use_op.operands.len() != 1 || use_op.results.len() != 1 {
             return None;
+        }
+        if types.get(&use_op.results[0]) != Some(source_type) {
+            return None;
+        }
+        if let Some(target) = use_op.attrs.get("type") {
+            let matches = match (target, source_type) {
+                (AttrValue::Str(name), TirType::I64) => name == "i64",
+                (AttrValue::Str(name), TirType::F64) => name == "f64",
+                (AttrValue::Str(name), TirType::Bool) => name == "bool",
+                (AttrValue::Str(name), TirType::None) => name == "none",
+                _ => false,
+            };
+            if !matches {
+                return None;
+            }
         }
         unbox_ops.push((use_bid, use_op_idx));
     }

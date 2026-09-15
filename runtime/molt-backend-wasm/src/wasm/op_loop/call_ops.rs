@@ -1,6 +1,7 @@
 use super::super::module_abi::WasmCallableCallSiteAbi;
 use super::super::module_abi::WasmNativeCallableImports;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::function_frame::WasmFunctionFrame;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
 use crate::wasm_values::ConstantCache;
@@ -37,6 +38,7 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) func_index: u32,
     pub(super) func_import_count: u32,
     pub(super) table_relocations: &'m mut WasmTableRelocations,
+    pub(super) frame: &'a WasmFunctionFrame,
     pub(super) tail_call_enabled: bool,
     pub(super) tail_call_eligible: bool,
     pub(super) tail_call_count: &'a Cell<usize>,

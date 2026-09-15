@@ -1,8 +1,6 @@
-use super::native_callable::{
-    native_callable_wasm_temp_dir, real_execution_tool, run_execution_command,
-};
 use super::support::*;
 use crate::ir::ExecutionContextPolicy;
+use crate::wasm::test_execution::{real_execution_tool, run_execution_command, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -273,7 +271,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             std::iter::once(stub).chain(chunks).collect::<Vec<_>>(),
         ));
     }
-    let (temp, _remove_temp) = native_callable_wasm_temp_dir();
+    let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     let mut memory_pages = 0;
     let mut table_entries = 0;

@@ -16,15 +16,11 @@ import {
 } from './native_callable_abi_generated.js';
 
 const ENOSYS = 38;
-const { createRuntimeLifetime, createRuntimeDisposer, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const EINVAL = 22;
 const ENOMEM = 12;
 const WASI_ERRNO_NOSYS = 52;
 const WASI_ERRNO_INVAL = 28;
-const QNAN = 0x7ff8000000000000n;
-const TAG_INT = 0x0001000000000000n;
-const TAG_MASK = 0x0007000000000000n;
-const INT_MASK = (1n << 47n) - 1n;
 const TYPE_TAG_BYTES = 6;
 const NATIVE_CALLABLE_IMPORT_MODULE = 'molt_native';
 const UTF8_DECODER = new TextDecoder('utf-8');
@@ -303,23 +299,6 @@ const fetchJson = async (url) => {
 
 const resolveUrl = (path, baseUrl) => new URL(path, baseUrl).href;
 
-const boxInt = (value) => {
-  let v = BigInt(value);
-  if (v < 0n) {
-    v = (1n << 47n) + v;
-  }
-  return QNAN | TAG_INT | (v & INT_MASK);
-};
-
-const isIntBits = (bits) => (bits & (QNAN | TAG_MASK)) === (QNAN | TAG_INT);
-const unboxInt = (bits) => {
-  let value = bits & INT_MASK;
-  if ((value & (1n << 46n)) !== 0n) {
-    value -= 1n << 47n;
-  }
-  return Number(value);
-};
-
 const writeBytesToMemory = (memory, ptr, bytes) => {
   if (!memory) return false;
   const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr >>> 0);
@@ -537,11 +516,17 @@ const readBytesObject = (runtime, memory, bits) => {
 };
 
 const makeHostArg = (runtime, memory, value) => {
+  if (value && typeof value === 'object' && value.kind === 'int') {
+    return boxRuntimeInt(runtime, value.value);
+  }
+  if (value && typeof value === 'object' && value.kind === 'list_int') {
+    return makeRuntimeIntList(runtime, value.value);
+  }
   if (typeof value === 'number' && Number.isInteger(value)) {
-    return boxInt(value);
+    return boxRuntimeInt(runtime, value);
   }
   if (typeof value === 'bigint') {
-    return boxInt(value);
+    return boxRuntimeInt(runtime, value);
   }
   if (value instanceof Uint8Array || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
     return makeBytesObject(runtime, memory, bytesFromBufferSource(value));
@@ -771,11 +756,14 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, o
       throw new Error(`runtime missing fallback exports for ${entryName}`);
     }
     return (methodBits, ...argBits) => {
-      const builderBits = callargsNew(boxInt(fallback.call_arity), boxInt(0));
-      for (const argBitsValue of argBits) {
-        callargsPushPos(builderBits, argBitsValue);
-      }
-      return callBindIc(boxInt(0), methodBits, builderBits);
+      return withRuntimeOwnedValues(runtimeInstance, [fallback.call_arity, 0],
+        value => boxRuntimeInt(runtimeInstance, value), ([arityBits, zeroBits]) => {
+          const builderBits = callargsNew(arityBits, zeroBits);
+          for (const argBitsValue of argBits) {
+            callargsPushPos(builderBits, argBitsValue);
+          }
+          return callBindIc(zeroBits, methodBits, builderBits);
+        }, true);
     };
   };
   const resolveFallback = (entryName) => {
@@ -1326,25 +1314,13 @@ export const loadMoltBrowserKernel = async (options = {}) => {
     const callBytes = (...args) => embed.execute(() => {
       ensureInitialized();
       const fn = embed.appInstance.exports[resolvedExportName];
-      const argBits = args.map((arg) => makeHostArg(embed.runtimeInstance, embed.memory, arg));
-      let resultBits = 0n;
-      try {
-        resultBits = fn(...argBits);
-      } finally {
-        for (const bits of argBits) {
-          decRefMaybe(embed.runtimeInstance, bits);
-        }
-      }
-      const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
-      if (pending) {
-        decRefMaybe(embed.runtimeInstance, resultBits);
-        throw new Error(pending);
-      }
-      try {
-        return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
-      } finally {
-        decRefMaybe(embed.runtimeInstance, resultBits);
-      }
+      return withRuntimeOwnedValues(embed.runtimeInstance, args,
+        arg => makeHostArg(embed.runtimeInstance, embed.memory, arg), argBits =>
+          withRuntimeOwnedValues(embed.runtimeInstance, [argBits], ownedArgs => fn(...ownedArgs), ([resultBits]) => {
+            const pending = pendingRuntimeExceptionMessage(embed.runtimeInstance, embed.memory);
+            if (pending) throw new Error(pending);
+            return readBytesObject(embed.runtimeInstance, embed.memory, resultBits);
+          }));
     });
     const forward = (input, ...extraArgs) => {
       const resultBytes = callBytes(bytesFromBufferSource(input), ...extraArgs);

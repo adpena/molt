@@ -116,6 +116,7 @@ pub(crate) enum LirRuntimeCall {
     IncRefObj,
     DecRefObj,
     IntFromI64,
+    IntAsI64,
 }
 
 impl LirRuntimeCall {
@@ -230,6 +231,7 @@ impl LirRuntimeCall {
         Self::IncRefObj,
         Self::DecRefObj,
         Self::IntFromI64,
+        Self::IntAsI64,
     ];
 
     pub(crate) const fn import(self) -> WasmRuntimeImport {
@@ -343,6 +345,7 @@ impl LirRuntimeCall {
             Self::IncRefObj => WasmRuntimeImport::IncRefObj,
             Self::DecRefObj => WasmRuntimeImport::DecRefObj,
             Self::IntFromI64 => WasmRuntimeImport::IntFromI64,
+            Self::IntAsI64 => WasmRuntimeImport::IntAsI64,
         }
     }
 

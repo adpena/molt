@@ -16,6 +16,15 @@ def _gen():
     return importlib.import_module("tools.gen_heap_kinds")
 
 
+def _rust_function(source: str, name: str) -> str:
+    """Select one top-level function, not a region ending at its old neighbor."""
+    signature = f"fn {name}("
+    assert source.count(signature) == 1, f"expected one owning function {name}"
+    body = source.split(signature, 1)[1]
+    assert "\n}" in body, f"missing top-level closing brace for {name}"
+    return body.split("\n}", 1)[0]
+
+
 def test_generated_outputs_are_byte_exact() -> None:
     gen = _gen()
     rendered = gen.render_all(gen.load_table())
@@ -25,14 +34,17 @@ def test_generated_outputs_are_byte_exact() -> None:
         )
 
 
-def test_inventory_is_sparse_object_plus_dense_builtin_domain() -> None:
+def test_inventory_preserves_active_ids_and_retires_holes() -> None:
     kinds = _gen().load_table()
     assert [(row["name"], row["id"]) for row in kinds if row["id"] < 200] == [
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == list(range(200, 257))
-    assert kinds[-1]["name"] == "WEAKREF"
+    assert dense == [value for value in range(200, 258) if value not in (205, 231)]
+    by_name = {row["name"]: row for row in kinds}
+    assert by_name["WEAKREF"]["id"] == 256
+    assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
+    assert kinds[-1]["name"] == "NATIVE_DESCRIPTOR"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
@@ -52,7 +64,7 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
         row["name"]
         for row in green_ref_holders
         if row["publication"] == "linear_unpublished"
-    } == {"LIST_BUILDER", "DICT_BUILDER", "SET_BUILDER", "CALLARGS"}
+    } == {"LIST_BUILDER", "CALLARGS"}
     by_name = {row["name"]: row for row in kinds}
     assert by_name["RANGE"]["acyclic_slots"] == {
         "start": "int",
@@ -60,6 +72,24 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
         "step": "int",
     }
     assert by_name["CODE"]["acyclic_slots"] == dict(_gen().ACYCLIC_SLOT_SCHEMAS["CODE"])
+
+
+def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -> None:
+    gen = _gen()
+    source = gen.TABLE.read_text(encoding="utf-8")
+    table = tmp_path / "heap_kinds.toml"
+    table.write_text(source.replace("id = 206", "id = 205", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="never be reused"):
+        gen.load_table(table)
+    table.write_text(source.replace("retired_ids = [205, 231]", "retired_ids = []"), encoding="utf-8")
+    with pytest.raises(ValueError, match="allocated ABI domain"):
+        gen.load_table(table)
+    rendered = gen.render_all(gen.load_table())
+    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 2
+    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 231]
+    for output in rendered.values():
+        assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
+        assert "DictBuilder" not in output and "SetBuilder" not in output
 
 
 def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
@@ -80,10 +110,30 @@ def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
         "GENERIC_ALIAS",
         "ASYNC_GENERATOR",
     }
-    assert by_name["OBJECT"]["weakref"] == "class"
-    assert by_name["FOREIGN"]["weakref"] == "class"
-    for denied in ("LIST", "DICT", "EXCEPTION", "PROPERTY", "SUPER", "UNION"):
+    assert {name for name, row in by_name.items() if row["weakref"] == "class"} == {
+        "OBJECT",
+        "FOREIGN",
+        "CLASSMETHOD",
+        "STATICMETHOD",
+        "PROPERTY",
+    }
+    for descriptor in ("CLASSMETHOD", "STATICMETHOD", "PROPERTY"):
+        assert by_name[descriptor]["layout"] == "object"
+        assert by_name[descriptor]["shape"] == "class"
+    for denied in ("LIST", "DICT", "EXCEPTION", "SUPER", "UNION", "NATIVE_DESCRIPTOR"):
         assert by_name[denied]["weakref"] == "deny"
+    # Class-governed is not an unconditional allow: builtin descriptors remain
+    # denied, while user subclasses consult the runtime class-slot authority.
+    weakref = (ROOT / "runtime/molt-runtime/src/object/weakref.rs").read_text(
+        encoding="utf-8"
+    )
+    supports = _rust_function(weakref, "object_supports_weakrefs")
+    assert "heap_weakref_policy(type_id)" in supports
+    assert ".unwrap_or(crate::object::HeapWeakrefPolicy::Deny)" in supports
+    assert "!crate::is_builtin_class_bits(_py, class_bits)" in supports
+    assert "class_slots_info(_py, class_ptr)" in supports
+    assert ".is_none_or(|info| info.allows_weakref)" in supports
+    assert supports.rstrip().endswith("policy == crate::object::HeapWeakrefPolicy::Allow")
 
 
 def test_cycle_policy_models_cpython_dynamic_container_tracking() -> None:
@@ -186,14 +236,20 @@ def test_gc_reentrancy_is_runtime_owned_and_free_thread_fails_before_snapshot() 
     assert "snapshot_tracked_registry" not in free_thread
 
 
-def test_dynamic_tracking_requires_explicit_projection(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("kind", "projection"),
+    [("DICT", "dict_dynamic"), ("TUPLE", "tuple_dynamic"), ("FOREIGN", "foreign_dynamic")],
+)
+def test_dynamic_tracking_requires_explicit_projection(
+    tmp_path: Path, kind: str, projection: str
+) -> None:
     gen = _gen()
     source = gen.TABLE.read_text(encoding="utf-8").replace(
-        'track = "dict_dynamic"\n', "", 1
+        f'track = "{projection}"\n', "", 1
     )
     table = tmp_path / "heap_kinds.toml"
     table.write_text(source, encoding="utf-8")
-    with pytest.raises(ValueError, match="dynamic heap kind DICT"):
+    with pytest.raises(ValueError, match=f"dynamic heap kind {kind}"):
         gen.load_table(table)
 
 
@@ -253,7 +309,8 @@ def test_no_manual_heap_policy_or_shape_authority_survives() -> None:
     for path in (runtime / "molt-runtime/src").rglob("*.rs"):
         if path.name == "heap_kinds_generated.rs":
             continue
-        if "heap_kind_descriptor(" in path.read_text(encoding="utf-8"):
+        production = path.read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests {", 1)[0]
+        if "heap_kind_descriptor(" in production:
             descriptor_consumers.append(path.relative_to(ROOT).as_posix())
     assert descriptor_consumers == [], (
         "cold audit descriptor leaked back into runtime dispatch: "
@@ -300,15 +357,37 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
     assert "generator_exception_stack_take" in generator_clear
     assert "generator_context_stack_take" in generator_clear
     assert "GEN_CONTROL_SIZE..payload_size" in generator_clear
-    delete_garbage = gc.split("pub(crate) unsafe fn collect_generation", 1)[1].split(
-        "pub(crate) unsafe fn collect_cycles", 1
+    delete_garbage = _rust_function(gc, "collect_generation")
+    clear_node = _rust_function(gc, "clear_node")
+    runtime_clear = clear_node.split("GcNode::Runtime(ptr) =>", 1)[1].split(
+        "GcNode::Native(address) =>", 1
     )[0]
+    assert "clear_cycle_edges_with_sink(py, ptr.0, detached)" in runtime_clear
+    assert "native_gc_node_clear(address)" in clear_node
+    assert "release_all" not in clear_node
+    assert "DetachedEdgeSink::try_with_capacities" not in clear_node
     assert "DetachedEdgeSink::try_with_capacities" in delete_garbage
-    assert "clear_cycle_edges_with_sink" in delete_garbage
+    assert (
+        "clear_node(py, scratch.candidates[candidate_index].node, &mut detached)"
+        in delete_garbage
+    )
+    assert (
+        "detached.try_ensure_capacities(required_edges, required_resources)"
+        in delete_garbage
+    )
     assert "detached.release_all(py)" in delete_garbage
-    clear_pos = delete_garbage.rfind("clear_cycle_edges_with_sink")
-    release_pos = delete_garbage.rfind("detached.release_all(py)")
-    assert clear_pos < release_pos, "release must follow the whole detach phase"
+    reserve_pos = delete_garbage.index("DetachedEdgeSink::try_with_capacities")
+    revalidate_pos = delete_garbage.index("detached.try_ensure_capacities")
+    clear_pos = delete_garbage.index("clear_node(")
+    release_pos = delete_garbage.index("detached.release_all(py)")
+    assert reserve_pos < revalidate_pos < clear_pos < release_pos
+    detach_loop = delete_garbage[
+        delete_garbage.rfind("for &candidate_index", 0, clear_pos) : release_pos
+    ]
+    assert "&scratch.final_unreachable" in detach_loop
+    assert detach_loop.rstrip().endswith("}"), (
+        "release must follow the whole detach phase"
+    )
 
 
 def test_gc_clear_handlers_are_detach_only_until_sink_release() -> None:
@@ -393,14 +472,42 @@ def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     assert by_name["FOREIGN"]["external_gc"] == "cpython_bridge"
     for name in ("NATIVE_HANDLE", "FOREIGN"):
         assert by_name[name]["edges"] == "none"
-        assert by_name[name]["cycle"] == "never"
+    assert by_name["NATIVE_HANDLE"]["cycle"] == "never"
+    assert by_name["NATIVE_HANDLE"]["track"] == "never"
+    assert by_name["FOREIGN"]["cycle"] == "dynamic"
+    assert by_name["FOREIGN"]["track"] == "foreign_dynamic"
     foreign = (ROOT / "runtime/molt-runtime/src/object/foreign.rs").read_text(
         encoding="utf-8"
     )
     bridge = (ROOT / "runtime/molt-cpython-abi/src/bridge.rs").read_text(
         encoding="utf-8"
     )
-    assert "molt_foreign_object_is_gc_capable(c_ptr)" in foreign
+    foreign_new = _rust_function(foreign, "foreign_new")
+    assert "molt_foreign_object_is_gc_capable(c_ptr)" in foreign_new
+    assert "&& !super::gc::native_gc_is_enrolled(c_ptr)" in foreign_new
+    assert foreign_new.index("native_gc_is_enrolled") < foreign_new.index(
+        "alloc_object_zeroed_unpublished_with_aux"
+    )
+    assert foreign_new.index("*(ptr as *mut usize) = c_ptr") < foreign_new.index(
+        "gc_publish_initialized"
+    )
+    lifecycle = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
+    projection = _rust_function(lifecycle, "projected_track_state")
+    foreign_projection = projection.split("HeapTrackProjection::ForeignDynamic =>", 1)[
+        1
+    ].split("HeapTrackProjection::DictDynamic", 1)[0]
+    assert "molt_foreign_object_is_gc_capable(address)" in foreign_projection
+    assert "&& super::gc::native_gc_is_enrolled(address)" in foreign_projection
+    # No Molt payload edges does not mean no cross-runtime custody edge. The
+    # shared collector traverses the enrolled C identity through its own ABI.
+    gc = (ROOT / "runtime/molt-runtime/src/object/gc.rs").read_text(encoding="utf-8")
+    traverse = _rust_function(gc, "traverse_node")
+    assert "super::TYPE_ID_FOREIGN" in traverse
+    assert "if native_gc_is_enrolled(address)" in traverse
+    assert "visit(GcNode::Native(address))" in traverse
+    assert "molt_cpython_abi::native_gc_node_visit(" in traverse
     assert "tp_is_gc" in bridge and "Py_TPFLAGS_HAVE_GC" in bridge
     native = (ROOT / "runtime/molt-runtime/src/object/native_handle.rs").read_text(
         encoding="utf-8"
@@ -520,12 +627,27 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
         "initialize_flags_gc_unpublished(header, 0)"
     ) < unpublished_allocator.index("gc_track_if_cyclic")
     assert "gc_mark_unpublished" not in allocator
-    assert "initialize_flags_gc_unpublished" in arena
+    arena_alloc = _rust_function(arena, "molt_arena_alloc_object")
+    assert "crate::object::alloc_scoped_boxed_object(_py, size_bits" in arena_alloc
+    assert "initialize_flags_gc_unpublished" not in arena_alloc
+    scoped_allocator = _rust_function(allocator, "alloc_scoped_boxed_object")
+    assert (
+        "boxed_object_total_size(py, payload_bits).and_then(object_allocation_plan)"
+        in scoped_allocator
+    )
+    assert "HEADER_FLAG_SCOPED | HEADER_FLAG_RAW_ALLOC" in scoped_allocator
+    assert scoped_allocator.index(
+        "initialize_flags_gc_unpublished"
+    ) < scoped_allocator.index("gc::gc_track_if_cyclic")
+    assert "gc_publish_initialized" not in scoped_allocator
+    assert "gc_mark_unpublished" not in scoped_allocator
     assert "gc_mark_unpublished" not in arena
     assert cranelift.count('"molt_object_publish_initialized"') >= 2
     assert 'get_function("molt_object_publish_initialized")' in llvm
     assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
-    assert '"alloc" | "stack_alloc" | "alloc_class"' in wasm
+    assert '"alloc" | "alloc_class" => {}' in wasm
+    assert '"stack_alloc" => panic!(' in wasm
+    assert "crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED" in wasm
     assert 'runtime_name = "molt_object_publish_initialized"' in wasm_manifest
     # Rust and Luau allocate their own fully initialized value/table
     # representations; they never observe the native unpublished pointer ABI.

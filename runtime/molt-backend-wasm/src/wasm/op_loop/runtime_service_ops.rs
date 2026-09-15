@@ -2,6 +2,7 @@ use super::super::module_abi::WasmCallableCallSiteAbi;
 use super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_runtime_call};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm::function_frame::WasmFunctionFrame;
 use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
@@ -17,8 +18,10 @@ pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) const_cache: &'a ConstantCache,
+    pub(super) frame: &'a WasmFunctionFrame,
     pub(super) reloc_enabled: bool,
     pub(super) native_eh_enabled: bool,
+    pub(super) raise_exits_function: bool,
     pub(super) func_index: u32,
     pub(super) func_import_count: u32,
     pub(super) table_relocations: &'a mut WasmTableRelocations,

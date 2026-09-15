@@ -14,8 +14,8 @@ unsafe extern "C" {
     fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bits: u64) -> u64;
     fn molt_module_del_global(module_bits: u64, name_bits: u64) -> u64;
     fn molt_list_builder_new(capacity_bits: u64) -> u64;
-    fn molt_list_builder_append(builder_bits: u64, val: u64);
-    fn molt_list_builder_finish_owned(builder_bits: u64) -> u64;
+    fn molt_list_builder_append(builder_bits: u64, val: u64) -> i32;
+    fn molt_list_builder_finish(builder_bits: u64) -> u64;
     fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64;
     fn molt_iter(iter_bits: u64) -> u64;
     fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64;
@@ -274,14 +274,14 @@ fn module_del_global_releases_owned_list_builder_literal_element() {
     assert_ne!(elem1_bits, none());
     let elem0_before = refcount(elem0_bits);
 
-    molt_runtime::molt_inc_ref_obj(elem0_bits);
     let builder_bits = unsafe { molt_list_builder_new(MoltObject::from_int(2).bits()) };
     assert_ne!(builder_bits, none());
     unsafe {
-        molt_list_builder_append(builder_bits, elem0_bits);
-        molt_list_builder_append(builder_bits, elem1_bits);
+        assert_eq!(molt_list_builder_append(builder_bits, elem0_bits), 0);
+        assert_eq!(molt_list_builder_append(builder_bits, elem1_bits), 0);
     }
-    let list_bits = unsafe { molt_list_builder_finish_owned(builder_bits) };
+    molt_runtime::molt_dec_ref_obj(elem1_bits);
+    let list_bits = unsafe { molt_list_builder_finish(builder_bits) };
     assert_ne!(list_bits, none());
     assert_eq!(refcount(elem0_bits), elem0_before + 1);
 
@@ -315,13 +315,12 @@ fn string_join_singleton_list_mints_fresh_owned_string() {
     assert_ne!(sep_bits, none());
     assert_ne!(elem_bits, none());
 
-    molt_runtime::molt_inc_ref_obj(elem_bits);
     let builder_bits = unsafe { molt_list_builder_new(MoltObject::from_int(1).bits()) };
     assert_ne!(builder_bits, none());
     unsafe {
-        molt_list_builder_append(builder_bits, elem_bits);
+        assert_eq!(molt_list_builder_append(builder_bits, elem_bits), 0);
     }
-    let list_bits = unsafe { molt_list_builder_finish_owned(builder_bits) };
+    let list_bits = unsafe { molt_list_builder_finish(builder_bits) };
     assert_ne!(list_bits, none());
 
     let joined_bits = unsafe { molt_string_join(sep_bits, list_bits) };

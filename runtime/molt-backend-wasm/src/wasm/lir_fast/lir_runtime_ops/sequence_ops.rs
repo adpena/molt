@@ -42,6 +42,12 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unpack_sequence(ctx: &mut LirLowerCtx,
         return;
     }
 
+    // A fallible physical box must precede the scratch-buffer acquisition.
+    // Otherwise its exception branch would strand the buffer.
+    emit_get_boxed_for_repr(ctx, sequence);
+    let boxed_sequence = ctx.alloc_scratch_local(ValType::I64);
+    ctx.instructions.push(Instruction::LocalSet(boxed_sequence));
+
     // Initialize all SSA result carriers before the fallible allocation so a
     // raised MemoryError never exposes uninitialized values to later cleanup.
     for result in &op.result_values {
@@ -64,7 +70,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unpack_sequence(ctx: &mut LirLowerCtx,
     // helper here: it could overwrite the original allocator exception.
     ctx.instructions.push(Instruction::Else);
 
-    emit_get_boxed_for_repr(ctx, sequence);
+    ctx.instructions.push(Instruction::LocalGet(boxed_sequence));
     ctx.instructions
         .push(Instruction::I64Const(expected as i64));
     ctx.instructions.push(Instruction::LocalGet(scratch));

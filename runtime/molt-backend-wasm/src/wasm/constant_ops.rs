@@ -1,6 +1,4 @@
-mod seeded_runtime;
-#[cfg(test)]
-mod tests;
+mod anchors;
 
 use super::const_materialization::WasmConstOpPolicy;
 use super::context::CompileFuncContext;
@@ -12,7 +10,9 @@ use crate::wasm_values::ConstantCache;
 use std::collections::BTreeMap;
 use wasm_encoder::Function;
 
-pub(super) use seeded_runtime::emit_seeded_runtime_const_op;
+pub(in crate::wasm) use anchors::{
+    emit_const_anchor_materialization, emit_const_anchor_result, emit_release_const_anchors,
+};
 
 pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) backend: &'a mut WasmBackend,
@@ -22,6 +22,7 @@ pub(super) struct ConstantOpContext<'a, 'ctx> {
     pub(super) const_cache: &'a ConstantCache,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,
+    pub(super) anchor_local: Option<u32>,
 }
 
 impl WasmConstOpPolicy {
@@ -62,9 +63,12 @@ impl WasmConstOpPolicy {
             const_cache,
             func_index,
             reloc_enabled,
+            anchor_local,
         } = context;
 
-        if !self.emit_inline_seed(func, op, locals, const_cache) {
+        if let Some(anchor_local) = anchor_local {
+            emit_const_anchor_result(func, op, locals, anchor_local, import_ids, reloc_enabled);
+        } else if !self.emit_inline_seed(func, op, locals, const_cache) {
             self.emit_materialized(
                 backend,
                 func,
@@ -76,7 +80,11 @@ impl WasmConstOpPolicy {
                 ctx.const_str_scratch_segment,
             );
         }
-        self.apply_raw_int_effect(op, locals, known_raw_ints);
+        if anchor_local.is_some() {
+            self.clear_raw_int_output(op, locals, known_raw_ints);
+        } else {
+            self.apply_raw_int_effect(op, locals, known_raw_ints);
+        }
     }
 }
 

@@ -16,6 +16,7 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     ConstNoneBits,
     ConstQnanTagMask,
     ConstQnanTagPtr,
+    ConstLiteralAnchor,
 }
 
 impl WasmFrameAnonymousLocal {
@@ -25,7 +26,7 @@ impl WasmFrameAnonymousLocal {
 }
 
 impl WasmFrameLocals {
-    pub(super) fn allocate_anonymous(
+    pub(in crate::wasm) fn allocate_anonymous(
         &mut self,
         kind: WasmFrameAnonymousLocal,
         local_types: &mut Vec<ValType>,

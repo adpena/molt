@@ -63,11 +63,12 @@ The following table specifies the ownership state of the **result** of each majo
 | `Yield`, `YieldFrom` | None (sends value out) | Borrows arg — but see §1.3 |
 | `Raise` | None | Borrowed (exception system takes ownership) |
 | `CheckException`, `ExceptionPending` | Inline bool, no RC | Borrowed |
-| `ConstInt`, `ConstFloat`, `ConstBool`, `ConstNone` | Inline (no heap) | N/A |
+| `ConstInt` | Raw/inline when represented without a heap; owned when materialized as an out-of-inline-range integer | N/A |
+| `ConstFloat`, `ConstBool`, `ConstNone` | Inline (no heap) | N/A |
 | `ConstStr`, `ConstBytes`, `ConstBigInt` | Owned (materialized at entry; see §1.4) | N/A |
 | `Copy` | Borrowed alias (same bits, no new ref) | Borrowed |
 | `BoxVal` | Owned (allocs if needed) | Borrowed |
-| `UnboxVal` | Inline (strips the box, no new ref) | Consumed (the unboxed value takes over the ref — treated as Owned by the consumer) |
+| `UnboxVal` | Raw scalar (no heap obligation), or independently owned heap result | Borrowed; never implicitly consumes the operand |
 | `TypeGuard` | Borrowed alias | Borrowed |
 | `IncRef` | None | Owned-now (op increments the ref; result remains a borrowed alias but is now safe to hold across a barrier) |
 | `DecRef` | None | Releases ownership |
@@ -87,9 +88,75 @@ Frame teardown (`AllocTask` frame with gen.close()) must dec-ref all live frame 
 
 ### 1.4 Constant String/Bytes/BigInt Materialization
 
-`ConstStr`, `ConstBytes`, `ConstBigInt` ops materialize a new heap object on each call to the generated function. They produce owned references (rc=1 at birth). If the constant is used once and dropped, that is one alloc + one dec-ref = zero net leak. If the function caches the materialized constant across calls (the natural optimization), the cached slot must be accounted for.
+Every dynamic `ConstStr`, `ConstBytes`, `ConstBigInt`, or boxed out-of-inline-range integer constant produces one owned result. Allocation reuse does not change this obligation. The runtime's bounded data-segment caches own separate ordinary references; lookup returns a retained result and eviction releases only the cache's reference. Literal caching does not make arbitrary payloads immortal.
 
-The correct long-term treatment is to intern constants as immortal (the existing `HEADER_FLAG_IMMORTAL` mechanism) at module init. For the initial implementation, treat `ConstStr`/`ConstBytes`/`ConstBigInt` results as Owned and let the drop pass insert dec-refs as for any other value; the SROA/SCCP passes will hoist/CSE repeated uses to one live copy. A follow-up pass (not in scope here) converts hot constants to immortal module-level statics.
+Native lowering materializes one frame-owned anchor per unique kind/payload at entry. Each executed literal operation retains an independent result from that anchor, including repeated producers and loop iterations. TIR drops (or native tracking when TIR has not inserted drops) release those results normally; literal names have no cleanup exemption. Module-name fast paths may borrow an anchor directly while the invocation is live. The shared return block releases each unique anchor once on normal, exceptional, and suspension exits. Recursion-guard failures must join that block rather than returning through a private epilogue. An escaped or returned result owns its own reference and survives anchor teardown.
+
+Each backend must preserve the same constructor/anchor/result distinction. Strings and bytes use distinct constructors and result kinds. Deduplication, scalar replacement, and future constant-pool optimizations must preserve this ownership contract rather than relying on immortality to hide unbalanced releases.
+
+Generic WASM lowering follows the same finite frame-anchor protocol on plain,
+jumpful, and stateful bodies. Every dynamic literal site retains its result;
+all return, suspension, tail-call, and throw exits release the anchors. Full-i64
+integers outside the inline window are materialized without truncation, and
+equivalent integer/bigint payloads share one anchor.
+
+WASM LIR also owns physical boxes introduced at borrowed runtime-argument
+boundaries. Operation scopes initialize scratch owners on every dynamic entry,
+materialize only executed branches, reuse one box for repeated uses of the same
+SSA value, and release temporaries after the consumer. Allocation failure skips
+dependent work and merges defined failure results before the existing IR
+exception edge; it does not return through a private function epilogue. Explicit
+boxing and returns transfer their newly materialized owner, while selected
+boolean results retain the chosen value. Refcount operations on raw scalars are
+no-ops and never allocate.
+
+`BoxVal` and `UnboxVal` are not transparent ownership aliases. Boxing an already
+boxed heap value retains an independent result; boxing a raw full-width integer
+transfers its fresh materialization. Unboxing is a typed representation
+extraction, not a Python conversion: scalar results have no heap obligation,
+whereas heap results retain their own reference. Integer extraction preserves
+all 64 bits, using the inline payload path or the existing runtime extractor
+for heap integers. The boxed WASM entry ABI shares that extractor; a raw-i64
+carrier does not imply an inline-47 input. Boolean and float extraction use their
+actual raw carriers. SimpleIR transports boxed values, so both operations project
+to `binding_alias` with independent drop obligations. Scalar type annotations
+alone do not exempt projected results from those obligations.
+Removing a box/unbox pair requires an instance-level proof that boxing cannot
+allocate or throw; an integer annotation alone does not prove the inline range.
+
+Sequence builders have one ownership protocol: append borrows its input,
+reserves capacity, then retains a successfully stored element. Its i32 status
+is zero on success and nonzero with a pending exception on failure. The builder
+owns every stored element, including on partial-construction teardown. The
+single list/tuple finish consumes the builder on either outcome and transfers
+its element owners to the completed container on success. Callers must stop at
+the first failed append, release the partial builder, and preserve the enclosing
+exception route. There is no separate borrowed-storage/owned-storage finish
+API. Dictionary/set construction owns the real aggregate directly; the old
+scratch-builder APIs and heap kinds are removed, with their numeric IDs retired
+without renumbering survivors. Construction and conversion preserve their
+aggregate owner until commit, and release it on any mutation or iteration
+failure; a returned failure sentinel must not overwrite that owner.
+Node, browser, and generated host adapters share integer admission and ownership
+transactions in `wasm/runtime_lifecycle.js`. Host integers must be exact signed
+i64 inputs; the runtime alone chooses inline or heap encoding. Arguments are
+acquired progressively and released in reverse order, including partial
+conversion failure. List elements and capacity boxes remain temporary borrowed
+inputs. Cleanup failures retain the original error as their cause rather than
+replacing it, and failed cleanup releases an otherwise unpublished return owner.
+
+Fallible construction is part of that contract: every valid outparam has a defined `None` result on failure and a pending exception. Native initializes all anchor slots and frame-entry custody before its first constructor, then routes any failed constructor to the shared return without executing the function body. Partial initialization releases only successfully constructed anchors; untouched `None` slots are safe no-ops. No cleanup path may read an unwritten outparam or publish a failed construction as a successful literal.
+
+The generated opcode authority classifies heap literals as `pure_may_throw`:
+their immutable values do not mutate user-visible state, but construction can
+raise. Frontend emission supplies the current exception edge; DCE cannot erase
+an unused fallible constructor. GVN may number equal successful values without
+deleting either materialization or its exception edge. Check elision requires
+a proven-clean fallthrough across non-throwing operations, not merely one
+non-throwing immediate predecessor; joins, unknown operations and polling remain
+barriers. Backend-synthesized names have temporary ownership: guard construction,
+skip the dependent call on failure, release once after borrowing on success,
+and preserve the enclosing operation's exception/cleanup routing.
 
 ### 1.5 Runtime Call Convention Table
 
@@ -874,7 +941,7 @@ The per-iteration flow: each `Add` creates a new owned BigInt, the previous one 
 
 **Risk**: `ConstBigInt` materializes a BigInt heap object on each function call. If the function is called in a loop and the constant is dead after each call, each call leaks one BigInt.
 
-**Treatment**: `ConstBigInt` results are classified Owned (§1.4) and the drop pass inserts a DecRef at their last use. This is correct but suboptimal — the ideal is to hoist the constant to an immortal module-level static. The suboptimal-but-correct path is acceptable for Phase 3; the immortal-constant optimization is a follow-up.
+**Treatment**: `ConstBigInt` results are classified Owned (§1.4) and the drop pass inserts a DecRef at their last use. Cache and frame anchors have separate finite owners; every executed result receives its own reference. Hoisting never exempts a result from normal drops or makes a payload immortal.
 
 ### R6: Scoped storage mistaken for immortal ownership
 
@@ -907,15 +974,15 @@ tests and generator synchronization guard this boundary.
 
 ### 10.1 Reference Cycle Collection
 
-CPython has a cycle garbage collector that handles reference cycles (`a.next = a`). Molt's design is RC-only: values in reference cycles will not be freed by the drop-insertion substrate. This is a known limitation.
+The drop-insertion pass releases ordinary owners; it does not itself reclaim
+self-sustaining cycles. The runtime cycle collector lives in
+`runtime/molt-runtime/src/object/gc.rs`, sharing the generated heap-kind edge and
+publication policies with terminal RC release. Changes to container ownership
+must preserve that shared traversal contract; Molt is not an RC-only runtime.
 
-**Explicit stance**: Reference cycles are out of scope for this substrate. The common Python patterns that create cycles (closures over `self`, linked lists, graphs) will leak in molt until a cycle-GC substrate is added. This must be documented in the runtime user guide.
+### 10.2 Constant-Pool Optimization
 
-**Follow-up pointer**: Design document for the cycle collector is future work (design 21). The drop-insertion substrate is a prerequisite.
-
-### 10.2 Immortal Constant Optimization
-
-`ConstStr`/`ConstBytes`/`ConstBigInt` results are treated as Owned and dropped at last use. The optimization of promoting them to immortal module-level statics (eliminating one alloc+drop pair per call) is deferred to a follow-up.
+`ConstStr`/`ConstBytes`/`ConstBigInt` results remain Owned and dropped at last use. Future constant-pool or borrowed-result optimizations require explicit lifetime/escape proof and finite pool teardown; immortality is not a substitute for that proof.
 
 ### 10.3 Perceus Reuse-Token Emission
 

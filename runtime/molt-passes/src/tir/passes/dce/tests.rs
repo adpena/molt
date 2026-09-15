@@ -35,6 +35,23 @@ fn unused_constant_removed() {
     assert!(func.blocks[&func.entry_block].ops.is_empty());
 }
 
+#[test]
+fn unused_heap_literal_materialization_preserves_allocation_failure() {
+    for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
+        let mut func = TirFunction::new("heap_literal".into(), vec![], TirType::None);
+        let value = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(opcode, vec![], vec![value]));
+        entry.terminator = Terminator::Return { values: vec![] };
+        let stats = run(&mut func);
+        assert_eq!(
+            stats.ops_removed, 0,
+            "{opcode:?} may report allocation failure"
+        );
+        assert_eq!(func.blocks[&func.entry_block].ops[0].opcode, opcode);
+    }
+}
+
 // -----------------------------------------------------------------------
 // Test 2: unused arithmetic op is removed
 // -----------------------------------------------------------------------

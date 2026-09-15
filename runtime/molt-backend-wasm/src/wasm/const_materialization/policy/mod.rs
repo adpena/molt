@@ -58,8 +58,17 @@ impl WasmConstOpPolicy {
         !matches!(self.literal_payload(), WasmConstLiteralPayload::None)
     }
 
-    pub(in crate::wasm) fn needs_dispatch_runtime_seed(self) -> bool {
+    pub(in crate::wasm) fn needs_runtime_anchor(self) -> bool {
         self.0.dispatch_runtime_seed
+    }
+
+    pub(in crate::wasm) fn materialization_can_fail(self) -> bool {
+        matches!(
+            self.literal_payload(),
+            WasmConstLiteralPayload::String
+                | WasmConstLiteralPayload::BigintDecimal
+                | WasmConstLiteralPayload::Bytes
+        ) || matches!(self.inline_seed(), WasmConstInlineSeed::Int)
     }
 
     pub(in crate::wasm) fn required_tir_scalar_value(self, op: &TirOp) -> WasmConstScalarValue {

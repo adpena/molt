@@ -10,6 +10,126 @@
       { cause: errors[0] });
   };
 
+  const requireExports = (instance, names) => {
+    const exports = instance?.exports;
+    for (const name of names) {
+      if (typeof exports?.[name] !== 'function') {
+        throw new Error(`runtime missing ownership export ${name}`);
+      }
+    }
+    return exports;
+  };
+
+  // Exact signed-i64 admission precedes the WASM boundary: Number -> BigInt
+  // cannot recover precision already lost by JavaScript, and WASM wraps i64.
+  const exactHostInt = (value) => {
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value)) throw new RangeError('host integer Number must be a safe integer');
+      value = BigInt(value);
+    } else if (typeof value === 'string' && value.trim() === value && /^[+-]?[0-9]+$/.test(value)) {
+      value = BigInt(value);
+    } else if (typeof value !== 'bigint') {
+      throw new TypeError('host integer requires a safe Number, BigInt, or decimal integer string');
+    }
+    if (value < -(1n << 63n) || value >= (1n << 63n)) {
+      throw new RangeError('host integer is outside signed i64');
+    }
+    return value;
+  };
+
+  // The runtime alone owns NaN-box layout and heap-integer allocation. The
+  // returned value is owned, even when the runtime chooses an inline encoding.
+  const boxRuntimeInt = (instance, value) => {
+    const integer = exactHostInt(value);
+    const exports = requireExports(instance,
+      ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']);
+    if (Number(exports.molt_exception_pending_fast()) !== 0) {
+      throw new Error('pending runtime exception before integer allocation');
+    }
+    const result = exports.molt_int_from_i64(integer);
+    try {
+      if (Number(exports.molt_exception_pending_fast()) !== 0) {
+        throw new Error('integer allocation failed');
+      }
+    } catch (error) {
+      const errors = [error];
+      try { exports.molt_dec_ref_obj(result); } catch (cleanup) { errors.push(cleanup); }
+      throw combinedError(errors);
+    }
+    return result;
+  };
+
+  // Materialize progressively so a later conversion failure cannot orphan
+  // earlier arguments. Normally consume decodes/releases its result. ABI
+  // adapters returning a new owner mark resultIsOwned so failed argument
+  // cleanup also releases that otherwise-unreachable result.
+  const withRuntimeOwnedValues = (instance, values, materialize, consume, resultIsOwned = false) => {
+    const exports = requireExports(instance, ['molt_dec_ref_obj']);
+    const owned = [];
+    const errors = [];
+    let result;
+    let completed = false;
+    try {
+      for (const value of values) owned.push(materialize(value));
+      result = consume(owned);
+      completed = true;
+    } catch (error) { errors.push(error); }
+    for (let i = owned.length - 1; i >= 0; i--) {
+      try { exports.molt_dec_ref_obj(owned[i]); } catch (error) { errors.push(error); }
+    }
+    if (completed && resultIsOwned && errors.length) {
+      try { exports.molt_dec_ref_obj(result); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw combinedError(errors);
+    return result;
+  };
+
+  // Borrowed append / consuming finish, shared by every host adapter. Both
+  // temporary integer owners and failed unpublished aggregates are released.
+  const makeRuntimeIntList = (instance, values) => {
+    if (!Array.isArray(values)) throw new TypeError('integer list requires an array');
+    const exports = requireExports(instance, ['molt_list_builder_new', 'molt_list_builder_append',
+      'molt_list_builder_finish', 'molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']);
+    const integers = Array.from(values, exactHostInt);
+    let builder;
+    let created = false;
+    let consumed = false;
+    let result;
+    let finished = false;
+    const errors = [];
+    try {
+      withRuntimeOwnedValues(instance, [integers.length], value => boxRuntimeInt(instance, value), ([capacity]) => {
+        builder = exports.molt_list_builder_new(capacity);
+        created = true;
+        if (Number(exports.molt_exception_pending_fast()) !== 0) {
+          throw new Error('list builder allocation failed');
+        }
+      });
+      for (const value of integers) {
+        withRuntimeOwnedValues(instance, [value], item => boxRuntimeInt(instance, item), ([item]) => {
+          if (Number(exports.molt_list_builder_append(builder, item)) !== 0 ||
+              Number(exports.molt_exception_pending_fast()) !== 0) {
+            throw new Error('list builder append failed');
+          }
+        });
+      }
+      consumed = true;
+      result = exports.molt_list_builder_finish(builder);
+      finished = true;
+      if (Number(exports.molt_exception_pending_fast()) !== 0) {
+        throw new Error('list builder finish failed');
+      }
+    } catch (error) { errors.push(error); }
+    if (created && !consumed) {
+      try { exports.molt_dec_ref_obj(builder); } catch (error) { errors.push(error); }
+    }
+    if (finished && errors.length) {
+      try { exports.molt_dec_ref_obj(result); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw combinedError(errors);
+    return result;
+  };
+
   // A reusable browser owner finalizes its runtime before closing any backing
   // services. Keep this state machine shared by the full and minimal embeds.
   const createRuntimeDisposer = (getLifetime, cleanupActions) => {
@@ -164,5 +284,6 @@
     };
     return { execute, initialize, dispose, assertLive, admit: resolve };
   };
-  return { createRuntimeLifetime, createRuntimeDisposer, combinedError };
+  return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt,
+    withRuntimeOwnedValues, makeRuntimeIntList, combinedError };
 });

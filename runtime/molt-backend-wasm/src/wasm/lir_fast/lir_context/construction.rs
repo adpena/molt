@@ -24,6 +24,7 @@ impl<'a> LirLowerCtx<'a> {
             instructions: WasmBodyOps::default(),
             rpo,
             block_index,
+            operation_owners: None,
         }
     }
 }

@@ -53,6 +53,7 @@ WASM_STATIC_TYPES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"), ("i64",)),
     (("i64", "i32"), ("i32",)),
     ((), ("i32",)),
+    (("i64", "i64"), ("i32",)),
 )
 
 WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
@@ -82,7 +83,7 @@ WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {
     "molt_importlib_import_transaction": "unpack_args",
 }
 
-WASM_STATIC_TYPE_COUNT: int = 49
+WASM_STATIC_TYPE_COUNT: int = 50
 
 WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({
     "molt_dict_getitem_borrowed",
@@ -301,6 +302,7 @@ WASM_IMPORT_REGISTRY: tuple[str, ...] = (
     "abs_builtin",
     "add",
     "int_from_i64",
+    "int_as_i64",
     "str_concat",
     "str_contains",
     "bit_and",
@@ -6006,6 +6008,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("abs_builtin", ("i64",), ("i64",)),
     ("add", ("i64", "i64"), ("i64",)),
     ("int_from_i64", ("i64",), ("i64",)),
+    ("int_as_i64", ("i64",), ("i64",)),
     ("str_concat", ("i64", "i64"), ("i64",)),
     ("str_contains", ("i64", "i64"), ("i64",)),
     ("bit_and", ("i64", "i64"), ("i64",)),
@@ -6164,7 +6167,7 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
     ("len_tuple", ("i64",), ("i64",)),
     ("list_append", ("i64", "i64"), ("i64",)),
     ("list_getitem_borrowed", ("i64", "i64"), ("i64",)),
-    ("list_builder_append", ("i64", "i64"), ()),
+    ("list_builder_append", ("i64", "i64"), ("i32",)),
     ("list_contains", ("i64", "i64"), ("i64",)),
     ("list_builder_finish", ("i64",), ("i64",)),
     ("list_builder_new", ("i64",), ("i64",)),
@@ -11746,6 +11749,7 @@ WASM_RUNTIME_IMPORT_EXPORT_NAMES: tuple[tuple[str, str], ...] = (
     ("abs_builtin", "molt_abs_builtin"),
     ("add", "molt_add"),
     ("int_from_i64", "molt_int_from_i64"),
+    ("int_as_i64", "molt_int_as_i64"),
     ("str_concat", "molt_str_concat"),
     ("str_contains", "molt_str_contains"),
     ("bit_and", "molt_bit_and"),
@@ -14635,7 +14639,7 @@ WASM_CALL_INDIRECT_IMPORTS: tuple[str, ...] = (
 )
 
 WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, bool, str, str], ...] = (
-    ("const", "int", None, "none", "int", False, False, "set_int", "lower"),
+    ("const", "int", "int_from_i64", "none", "int", True, False, "set_int", "lower"),
     ("const_bool", "bool", None, "none", "bool", False, False, "clear", "lower"),
     ("const_float", "float", None, "none", "float", False, False, "clear", "lower"),
     ("const_none", "none_value", None, "none", "none", False, False, "clear", "lower"),
@@ -14777,6 +14781,7 @@ WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
         "molt_handle_resolve",
         "molt_header_size",
         "molt_index",
+        "molt_int_from_i64",
         "memory",
         "molt_memory",
         "molt_host_init",
@@ -21068,6 +21073,7 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES: dict[str, tuple[str, str]] = {
     "inspect_isgeneratorfunction": ("env", "function"),
     "inspect_ismodule": ("env", "function"),
     "inspect_signature_data": ("env", "function"),
+    "int_as_i64": ("env", "function"),
     "int_from_i64": ("env", "function"),
     "int_from_obj": ("env", "function"),
     "int_from_str_of_obj": ("env", "function"),
@@ -25521,6 +25527,7 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: dict[tuple[str, str], dict[st
     ("env", "inspect_isgeneratorfunction"): {"params": ['i64'], "result": 'i64'},
     ("env", "inspect_ismodule"): {"params": ['i64'], "result": 'i64'},
     ("env", "inspect_signature_data"): {"params": ['i64'], "result": 'i64'},
+    ("env", "int_as_i64"): {"params": ['i64'], "result": 'i64'},
     ("env", "int_from_i64"): {"params": ['i64'], "result": 'i64'},
     ("env", "int_from_obj"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "int_from_str_of_obj"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
@@ -25630,7 +25637,7 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: dict[tuple[str, str], dict[st
     ("env", "linecache_detect_encoding"): {"params": ['i64', 'i64'], "result": 'i64'},
     ("env", "linecache_loader_get_source"): {"params": ['i64', 'i64'], "result": 'i64'},
     ("env", "list_append"): {"params": ['i64', 'i64'], "result": 'i64'},
-    ("env", "list_builder_append"): {"params": ['i64', 'i64'], "result": 'nil'},
+    ("env", "list_builder_append"): {"params": ['i64', 'i64'], "result": 'i32'},
     ("env", "list_builder_finish"): {"params": ['i64'], "result": 'i64'},
     ("env", "list_builder_new"): {"params": ['i64'], "result": 'i64'},
     ("env", "list_clear"): {"params": ['i64'], "result": 'i64'},

@@ -142,4 +142,9 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
         self.frame.scalar_plan()
     }
+
+    pub(super) fn emit_const_anchor_releases(&self, func: &mut wasm_encoder::Function) {
+        self.frame
+            .emit_const_anchor_releases(func, self.import_ids, self.reloc_enabled);
+    }
 }

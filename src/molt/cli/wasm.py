@@ -357,7 +357,7 @@ const {
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
-const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, boxRuntimeInt, withRuntimeOwnedValues, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = callableTableFromModule(appModule, "app wasm");
 
 class ProcExit { constructor(code) { this.code = code; } }
@@ -432,9 +432,7 @@ export default {
     const ENOTDIR = 20;
     const ESPIPE = 29;
     const QNAN = 0x7ff8000000000000n;
-    const TAG_INT = 0x0001000000000000n;
     const TAG_NONE = 0x0003000000000000n;
-    const INT_MASK = (1n << 47n) - 1n;
     const NONE_BITS = QNAN | TAG_NONE;
     const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
     const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
@@ -926,14 +924,6 @@ export default {
       path_remove_directory: wasiUnsupported,
     };
 
-    const boxInt = (value) => {
-      let v = BigInt(value);
-      if (v < 0n) {
-        v = (1n << 47n) + v;
-      }
-      return QNAN | TAG_INT | (v & INT_MASK);
-    };
-
     const normalizeI64Result = (value) =>
       value === undefined || value === null
         ? NONE_BITS
@@ -1121,11 +1111,14 @@ export default {
           return null;
         }
         return (methodBits, ...argBits) => {
-          const builderBits = callargsNew(boxInt(arity), boxInt(0));
-          for (const argBitsValue of argBits) {
-            callargsPushPos(builderBits, argBitsValue);
-          }
-          return callBindIc(boxInt(0), methodBits, builderBits);
+          return withRuntimeOwnedValues(runtimeInstance, [arity, 0],
+            value => boxRuntimeInt(runtimeInstance, value), ([arityBits, zeroBits]) => {
+              const builderBits = callargsNew(arityBits, zeroBits);
+              for (const argBitsValue of argBits) {
+                callargsPushPos(builderBits, argBitsValue);
+              }
+              return callBindIc(zeroBits, methodBits, builderBits);
+            }, true);
         };
       };
       const runtimeFallback = (importName) => {

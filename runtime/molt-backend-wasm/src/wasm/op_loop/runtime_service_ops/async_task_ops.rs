@@ -93,6 +93,9 @@ pub(super) fn emit_async_task_runtime_op(
             } else {
                 func.instruction(&Instruction::LocalGet(pair));
             }
+            context
+                .frame
+                .emit_const_anchor_releases(func, import_ids, reloc_enabled);
             func.instruction(&Instruction::Return);
         }
         _ => return false,

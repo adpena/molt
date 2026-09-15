@@ -2,6 +2,7 @@ mod cfg;
 mod construction;
 mod facts;
 mod locals;
+mod ownership;
 mod repr;
 mod runtime_ops;
 
@@ -10,6 +11,7 @@ use molt_tir::tir::blocks::BlockId;
 use molt_tir::tir::lir::{LirFunction, LirRepr};
 use molt_tir::tir::types::TirType;
 use molt_tir::tir::values::ValueId;
+use ownership::LirOperationOwners;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::ValType;
 
@@ -29,4 +31,5 @@ pub(super) struct LirLowerCtx<'a> {
     pub(super) instructions: WasmBodyOps,
     pub(super) rpo: Vec<BlockId>,
     pub(super) block_index: HashMap<BlockId, usize>,
+    operation_owners: Option<LirOperationOwners>,
 }

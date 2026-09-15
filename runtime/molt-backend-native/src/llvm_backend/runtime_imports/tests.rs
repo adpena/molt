@@ -134,6 +134,68 @@ fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
 }
 
 #[test]
+fn field_accessor_runtime_import_family_has_one_conservative_abi() {
+    for (name, param_count) in [
+        ("molt_object_field_get", 2),
+        ("molt_object_field_get_ptr", 2),
+        ("molt_object_field_init", 3),
+        ("molt_object_field_init_ptr", 3),
+        ("molt_object_field_set", 3),
+        ("molt_object_field_set_ptr", 3),
+    ] {
+        assert!(
+            is_runtime_import_abi(name, param_count, RuntimeReturnAbi::I64),
+            "{name}"
+        );
+        assert!(
+            !is_runtime_import_abi(name, param_count + 1, RuntimeReturnAbi::I64),
+            "{name}"
+        );
+        assert!(
+            !is_runtime_import_abi(name, param_count, RuntimeReturnAbi::Void),
+            "{name}"
+        );
+        assert_eq!(
+            CONSERVATIVE_RUNTIME_IMPORTS
+                .iter()
+                .filter(|sig| sig.name == name)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn fused_async_work_observers_have_callback_safe_runtime_declarations() {
+    let ctx = Context::create();
+    let module = ctx.create_module("test_fused_async_work_observers");
+    declare_runtime_functions(&ctx, &module);
+    for name in [
+        "molt_async_work_poll_and_exception_pending",
+        "molt_async_work_poll_and_exception_last_pending",
+    ] {
+        let function = module.get_function(name).expect(name);
+        assert_eq!(function.count_params(), 0);
+        assert_eq!(
+            function.get_type().get_return_type(),
+            Some(ctx.i64_type().into())
+        );
+        assert!(has_fn_attr(function, "nounwind"));
+        for attr in ["willreturn", "memory", "readonly", "readnone"] {
+            let kind = Attribute::get_named_enum_kind_id(attr);
+            if kind != 0 {
+                assert!(
+                    function
+                        .get_enum_attribute(AttributeLoc::Function, kind)
+                        .is_none(),
+                    "{name} executes arbitrary pending callbacks and must not promise {attr}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn custom_fixed_runtime_import_signatures_are_typed() {
     let ctx = Context::create();
     let module = ctx.create_module("test_custom_fixed_runtime_imports");
@@ -376,16 +438,12 @@ fn dynamic_call_runtime_functions_are_declared_without_willreturn() {
 }
 
 fn parse_literal_ensure_runtime_calls(source: &str) -> Vec<(String, usize, RuntimeReturnAbi)> {
-    let production = source
-        .split("#[cfg(all(test, feature = \"llvm\"))]")
-        .next()
-        .unwrap_or(source);
     let mut calls = Vec::new();
     for (needle, return_abi) in [
         ("ensure_runtime_i64_fn(\"", RuntimeReturnAbi::I64),
         ("ensure_runtime_void_fn(\"", RuntimeReturnAbi::Void),
     ] {
-        let mut rest = production;
+        let mut rest = source;
         while let Some(start) = rest.find(needle) {
             rest = &rest[start + needle.len()..];
             let Some(end_name) = rest.find('"') else {
@@ -419,10 +477,41 @@ fn lowering_literal_runtime_imports_are_declared_or_classified() {
     let ctx = Context::create();
     let module = ctx.create_module("test_lowering_literal_runtime_imports");
     declare_runtime_functions(&ctx, &module);
-    let source = include_str!("../lowering.rs");
+    // The former monolith now delegates to nested modules. Walk the production
+    // source tree so newly split modules cannot silently escape this ABI audit.
+    fn append_sources(path: &std::path::Path, source: &mut String) {
+        if path.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .expect("LLVM lowering sources must be readable")
+                .map(|entry| entry.expect("lowering source entry").path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                if entry.file_name().is_some_and(|name| name == "tests") {
+                    continue;
+                }
+                append_sources(&entry, source);
+            }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            source.push_str(&std::fs::read_to_string(path).expect("lowering source must be UTF-8"));
+            source.push('\n');
+        }
+    }
+    let mut source = include_str!("../lowering.rs").to_string();
+    append_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm_backend/lowering"),
+        &mut source,
+    );
 
     let mut missing = Vec::new();
-    for (name, param_count, return_abi) in parse_literal_ensure_runtime_calls(source) {
+    let calls = parse_literal_ensure_runtime_calls(&source);
+    assert!(
+        calls
+            .iter()
+            .any(|(name, _, _)| name == "molt_object_field_get_ptr"),
+        "the audit must cover split lowering modules"
+    );
+    for (name, param_count, return_abi) in calls {
         if let Some(func) = module.get_function(&name) {
             assert_eq!(
                 func.count_params() as usize,

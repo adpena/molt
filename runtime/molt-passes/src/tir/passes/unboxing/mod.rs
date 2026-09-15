@@ -1,7 +1,8 @@
 //! Unboxing pass: eliminates redundant Box/Unbox pairs.
 //!
 //! When a value is boxed (`BoxVal`) and all consumers unbox it back to the same
-//! type (`UnboxVal`), both operations are unnecessary. The original unboxed
+//! type (`UnboxVal`), both operations are unnecessary only if shared boxed
+//! representation facts prove materialization cannot allocate. The original unboxed
 //! value can be used directly.
 
 mod engine;

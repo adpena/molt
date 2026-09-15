@@ -2,7 +2,8 @@ use super::super::lir_context::LirLowerCtx;
 use super::super::runtime_calls::LirRuntimeCall;
 use crate::wasm_values::push_f64_to_i64_canonical;
 use molt_codegen_abi::{
-    INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64, box_none_bits,
+    INLINE_INT_BIAS, INLINE_INT_LIMIT, INT_MASK, INT_SHIFT, QNAN_TAG_BOOL_I64, QNAN_TAG_INT_I64,
+    QNAN_TAG_MASK_I64, box_none_bits,
 };
 use molt_tir::tir::lir::LirRepr;
 use molt_tir::tir::values::ValueId;
@@ -13,7 +14,22 @@ use wasm_encoder::{BlockType, Instruction, ValType};
 /// full-i64 `RawI64FullDeopt` values.
 pub(in crate::wasm::lir_fast) fn emit_get_boxed_for_repr(ctx: &mut LirLowerCtx, v: ValueId) {
     match ctx.repr_of(v) {
-        LirRepr::I64 => emit_box_i64_overflow_safe(ctx, v),
+        LirRepr::I64 => {
+            let local = ctx.boxed_operand_local(v);
+            ctx.instructions.push(Instruction::LocalGet(local));
+            ctx.instructions
+                .push(Instruction::I64Const(box_none_bits()));
+            ctx.instructions.push(Instruction::I64Eq);
+            ctx.instructions.push(Instruction::If(BlockType::Empty));
+            emit_box_i64_overflow_safe(ctx, v);
+            ctx.instructions.push(Instruction::LocalTee(local));
+            ctx.instructions
+                .push(Instruction::I64Const(box_none_bits()));
+            ctx.instructions.push(Instruction::I64Eq);
+            ctx.branch_to_operation_cleanup_if();
+            ctx.instructions.push(Instruction::End);
+            ctx.instructions.push(Instruction::LocalGet(local));
+        }
         LirRepr::Bool1 => {
             ctx.emit_get(v);
             ctx.instructions.push(Instruction::I64ExtendI32U);
@@ -52,16 +68,34 @@ pub(super) fn emit_box_i64_overflow_safe(ctx: &mut LirLowerCtx, src: ValueId) {
     ctx.instructions.push(Instruction::I64LtU);
     ctx.instructions
         .push(Instruction::If(BlockType::Result(ValType::I64)));
-    ctx.emit_get(src);
-    ctx.instructions
-        .push(Instruction::I64Const(INT_MASK as i64));
-    ctx.instructions.push(Instruction::I64And);
-    ctx.instructions
-        .push(Instruction::I64Const(QNAN_TAG_INT_I64));
-    ctx.instructions.push(Instruction::I64Or);
+    emit_box_inline_i64(ctx, src);
     ctx.instructions.push(Instruction::Else);
     ctx.emit_get(src);
     ctx.emit_runtime_call(LirRuntimeCall::IntFromI64);
+    ctx.instructions.push(Instruction::End);
+}
+
+/// Typed extraction shared by explicit UnboxVal and the boxed function ABI.
+/// The caller proves an integer representable in i64, not necessarily inline.
+/// Keep the inline path local; only heap integers call the runtime extractor.
+pub(in crate::wasm::lir_fast) fn emit_unbox_i64(ctx: &mut LirLowerCtx, local: u32) {
+    ctx.instructions.push(Instruction::LocalGet(local));
+    ctx.instructions
+        .push(Instruction::I64Const(QNAN_TAG_MASK_I64));
+    ctx.instructions.push(Instruction::I64And);
+    ctx.instructions
+        .push(Instruction::I64Const(QNAN_TAG_INT_I64));
+    ctx.instructions.push(Instruction::I64Eq);
+    ctx.instructions
+        .push(Instruction::If(BlockType::Result(ValType::I64)));
+    ctx.instructions.push(Instruction::LocalGet(local));
+    ctx.instructions.push(Instruction::I64Const(INT_SHIFT));
+    ctx.instructions.push(Instruction::I64Shl);
+    ctx.instructions.push(Instruction::I64Const(INT_SHIFT));
+    ctx.instructions.push(Instruction::I64ShrS);
+    ctx.instructions.push(Instruction::Else);
+    ctx.instructions.push(Instruction::LocalGet(local));
+    ctx.emit_runtime_call(LirRuntimeCall::IntAsI64);
     ctx.instructions.push(Instruction::End);
 }
 
@@ -71,20 +105,11 @@ pub(in crate::wasm::lir_fast) fn emit_box_none(ctx: &mut LirLowerCtx) {
 }
 
 pub(in crate::wasm::lir_fast) fn emit_return_boxed_i64(ctx: &mut LirLowerCtx, value: ValueId) {
-    match ctx.repr_of(value) {
-        LirRepr::I64 => emit_box_i64_overflow_safe(ctx, value),
-        LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_get(value),
-        LirRepr::Bool1 => {
-            ctx.emit_get(value);
-            ctx.instructions.push(Instruction::I64ExtendI32U);
-            ctx.instructions
-                .push(Instruction::I64Const(QNAN_TAG_BOOL_I64));
-            ctx.instructions.push(Instruction::I64Or);
-        }
-        LirRepr::F64 => {
-            ctx.emit_get(value);
-            let scratch = ctx.alloc_scratch_local(ValType::I64);
-            push_f64_to_i64_canonical(|instruction| ctx.instructions.push(instruction), scratch);
-        }
+    if ctx.repr_of(value) == LirRepr::I64 {
+        // Unlike a borrowed call argument, a return transfers the freshly
+        // materialized owner to the caller (or None with pending MemoryError).
+        emit_box_i64_overflow_safe(ctx, value);
+    } else {
+        emit_get_boxed_for_repr(ctx, value);
     }
 }

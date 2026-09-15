@@ -3,12 +3,12 @@
 //! The frontend liberally emits `CHECK_EXCEPTION` after every statement
 //! within a try block (and within functions that have a function-level
 //! exception label). Many of these checks are redundant because the
-//! intervening ops cannot raise: pure arithmetic, constants, variable
+//! intervening ops cannot raise: proven pure arithmetic, immediate constants, variable
 //! load/store, comparisons on known types, etc.
 //!
 //! This pass runs a small forward dataflow analysis and removes any
 //! `CheckException` op that follows only non-raising ops since the
-//! previous observed/cleared exception state, including across normal
+//! previous targeted check/cleared exception state, including across normal
 //! CFG edges. Exception-handler targets stay conservatively seeded as
 //! pending-possible, so handler entry semantics are preserved while
 //! normal fallthrough blocks do not pay an unconditional first-poll tax.
@@ -25,6 +25,8 @@
 //! classifier delegates to the same op-aware TIR effects oracle that DCE
 //! uses, then tightens it with local TIR facts for operations whose only
 //! remaining exceptional case has been statically excluded.
+//! Untargeted observers do not clear pending state; polling observers can set
+//! it. Result-bearing checks remain because their SSA values are observable.
 
 pub(crate) mod classify;
 mod engine;

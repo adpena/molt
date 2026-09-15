@@ -768,6 +768,11 @@ SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[str, int] = {
 # [[opcode]] oracle at generation) or a documented frontend-specific kind.
 RAISING_KIND_NAMES: frozenset[str] = frozenset(
     {
+        "BOX",
+        "BOX_FROM_RAW_INT",
+        "CONST_STR",
+        "CONST_BYTES",
+        "CONST_BIGINT",
         "DIV",
         "FLOORDIV",
         "MOD",
@@ -861,9 +866,7 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
         "CONST",
         "CONST_NONE",
         "CONST_BOOL",
-        "CONST_STR",
         "CONST_FLOAT",
-        "CONST_BYTES",
         "IS",
         "IS_NOT",
         "COPY",

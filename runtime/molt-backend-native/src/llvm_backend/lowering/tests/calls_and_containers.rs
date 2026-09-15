@@ -1,6 +1,77 @@
 use super::*;
 
 #[test]
+fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
+    for (opcode, preserved, dict) in [
+        (OpCode::BuildDict, None, true),
+        (OpCode::BuildSet, None, false),
+        (OpCode::Copy, Some("dict_new"), true),
+        (OpCode::Copy, Some("set_new"), false),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("hash_literal_transaction".into(), vec![], TirType::DynBox);
+        let raw = func.fresh_value();
+        let result = func.fresh_value();
+        let mut attrs = AttrDict::new();
+        if let Some(kind) = preserved {
+            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, i64::MAX));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: if dict { vec![raw, raw] } else { vec![raw] },
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().expect("owned hash aggregate CFG");
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(
+            ir.contains(if dict {
+                "@molt_dict_new(i64 1)"
+            } else {
+                "@molt_set_new(i64 9221401712017801217)"
+            }),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(if dict {
+                "call i64 @molt_dict_set"
+            } else {
+                "call i64 @molt_set_add"
+            }),
+            "{ir}"
+        );
+        assert!(
+            ir.contains("aggregate_abort")
+                && ir.matches("call void @molt_dec_ref_obj").count() >= if dict { 5 } else { 3 },
+            "{ir}"
+        );
+        assert!(ir.contains("aggregate_result = phi i64"), "{ir}");
+        let mutation = ir.find("aggregate_insert").unwrap();
+        assert!(
+            ir[..mutation].contains("@molt_exception_pending()"),
+            "boxing failure must precede mutation: {ir}"
+        );
+        assert!(
+            ir[mutation..].contains("@molt_exception_pending()"),
+            "mutation failure must precede commit: {ir}"
+        );
+        assert!(
+            !ir.contains("_builder_"),
+            "dict/set have no scratch builder ABI: {ir}"
+        );
+    }
+}
+
+#[test]
 fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
@@ -147,18 +218,15 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         !ir.contains("molt_list_builder_append(i64 %list, i64 2)"),
         "{ir}"
     );
+    assert!(!ir.contains("molt_set_add(i64 %aggregate, i64 2)"), "{ir}");
     assert!(
-        !ir.contains("molt_set_builder_append(i64 %set_builder, i64 2)"),
-        "{ir}"
-    );
-    assert!(
-        !ir.contains("molt_dict_builder_append(i64 %dict_builder, i64 %str_bits, i64 2)"),
+        !ir.contains("molt_dict_set(i64 %aggregate, i64 %str_bits, i64 2)"),
         "{ir}"
     );
 }
 
 #[test]
-fn lower_preserved_container_builders_use_void_append_abi() {
+fn lower_preserved_container_builders_use_declared_append_abis() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
@@ -212,9 +280,88 @@ fn lower_preserved_container_builders_use_void_append_abi() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().expect("module should verify");
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("call void @molt_list_builder_append"), "{ir}");
-    assert!(ir.contains("call void @molt_dict_builder_append"), "{ir}");
-    assert!(ir.contains("call void @molt_set_builder_append"), "{ir}");
+    assert!(ir.contains("call i32 @molt_list_builder_append"), "{ir}");
+    assert!(ir.contains("sequence_item_admitted"), "{ir}");
+    assert!(ir.contains("sequence_builder_abort"), "{ir}");
+    assert!(ir.contains("sequence_builder_result = phi i64"), "{ir}");
+    assert!(ir.contains("call i64 @molt_dict_set"), "{ir}");
+    assert!(ir.contains("call i64 @molt_set_add"), "{ir}");
+    assert!(
+        ir.contains("aggregate_abort") && ir.contains("call void @molt_dec_ref_obj"),
+        "{ir}"
+    );
+    assert!(ir.contains("@molt_exception_pending()"), "{ir}");
+}
+
+#[test]
+fn list_and_tuple_builders_share_owned_failure_cfg_for_typed_and_preserved_ops() {
+    for (opcode, preserved, finish) in [
+        (OpCode::BuildList, None, "molt_list_builder_finish"),
+        (OpCode::BuildTuple, None, "molt_tuple_builder_finish"),
+        (OpCode::Copy, Some("list_new"), "molt_list_builder_finish"),
+        (OpCode::Copy, Some("tuple_new"), "molt_tuple_builder_finish"),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("sequence_ownership".into(), vec![], TirType::DynBox);
+        let raw = func.fresh_value();
+        let text = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, i64::MAX));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![text],
+            attrs: AttrDict::from([("s_value".into(), AttrValue::Str("borrowed".into()))]),
+            source_span: None,
+        });
+        let mut attrs = AttrDict::new();
+        if let Some(kind) = preserved {
+            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![raw, text],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .expect("sequence builder CFG must verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call i32 @molt_list_builder_append").count(),
+            2,
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @molt_dec_ref_obj").count(),
+            2,
+            "only the fresh raw-I64 box and partial builder are released, never the borrowed text: {ir}"
+        );
+        assert!(ir.contains("sequence_builder_created"), "{ir}");
+        assert!(ir.contains("sequence_item_admitted"), "{ir}");
+        assert!(ir.contains("sequence_builder_result = phi i64"), "{ir}");
+        assert_eq!(
+            ir.matches(&format!("call i64 @{finish}")).count(),
+            1,
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches("ret i64").count(),
+            1,
+            "abort must not introduce a private return: {ir}"
+        );
+    }
 }
 
 #[test]

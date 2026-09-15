@@ -2,8 +2,16 @@ use super::*;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_build_list(&mut self, op: &TirOp) {
+        self.emit_sequence_builder(op, "molt_list_builder_finish");
+    }
+
+    /// Every stored element is owned by the builder. Runtime append borrows,
+    /// retains on admission, and reports failure without consuming its input.
+    /// Abort releases the partial builder and merges None so the enclosing TIR
+    /// exception edge, not a private return, still owns handler/SSA cleanup.
+    fn emit_sequence_builder(&mut self, op: &TirOp, finish_symbol: &str) {
         let i64_ty = self.backend.context.i64_type();
-        let n = op.operands.len() as u64;
+        let n = molt_codegen_abi::box_int_bits(op.operands.len() as i64) as u64;
         let list_new_fn = self
             .backend
             .module
@@ -16,23 +24,88 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
+        let suffix = self.synthetic_block_counter;
+        self.synthetic_block_counter += 1;
+        let abort = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("sequence_builder_abort{suffix}"));
+        let ready = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("sequence_builder_ready{suffix}"));
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("sequence_builder_merge{suffix}"));
+        self.all_llvm_blocks.extend([abort, ready, merge]);
+        let source = self.backend.builder.get_insert_block().unwrap();
+        let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+        let created = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                builder.into_int_value(),
+                none,
+                "sequence_builder_created",
+            )
+            .unwrap();
+        self.backend
+            .builder
+            .build_conditional_branch(created, ready, abort)
+            .unwrap();
+        self.record_llvm_edge(source, ready);
+        self.record_llvm_edge(source, abort);
+        self.backend.builder.position_at_end(ready);
+        let drop_ref = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
         let push_fn = self
             .backend
             .module
             .get_function("molt_list_builder_append")
             .unwrap();
-        for &item_id in &op.operands {
+        for (index, &item_id) in op.operands.iter().enumerate() {
+            let owns_box = matches!(self.value_types.get(&item_id), Some(TirType::I64));
             let item_i64 = self.materialize_dynbox_operand(item_id);
-            self.backend
+            let status = self
+                .backend
                 .builder
                 .build_call(push_fn, &[builder.into(), item_i64.into()], "list_push")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic()
+                .into_int_value();
+            if owns_box {
+                self.backend
+                    .builder
+                    .build_call(drop_ref, &[item_i64.into()], "sequence_item_release")
+                    .unwrap();
+            }
+            let next = self.backend.context.append_basic_block(
+                self.llvm_fn,
+                &format!("sequence_builder_next{suffix}_{index}"),
+            );
+            self.all_llvm_blocks.push(next);
+            let source = self.backend.builder.get_insert_block().unwrap();
+            let admitted = self
+                .backend
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    status,
+                    self.backend.context.i32_type().const_zero(),
+                    "sequence_item_admitted",
+                )
                 .unwrap();
+            self.backend
+                .builder
+                .build_conditional_branch(admitted, next, abort)
+                .unwrap();
+            self.record_llvm_edge(source, next);
+            self.record_llvm_edge(source, abort);
+            self.backend.builder.position_at_end(next);
         }
-        let finish_fn = self
-            .backend
-            .module
-            .get_function("molt_list_builder_finish")
-            .unwrap();
+        let finish_fn = self.backend.module.get_function(finish_symbol).unwrap();
         let list = self
             .backend
             .builder
@@ -40,164 +113,244 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
+        let finished = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        self.record_llvm_edge(finished, merge);
+        self.backend.builder.position_at_end(abort);
+        self.backend
+            .builder
+            .build_call(drop_ref, &[builder.into()], "sequence_builder_release")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        self.record_llvm_edge(abort, merge);
+        self.backend.builder.position_at_end(merge);
+        let result = self
+            .backend
+            .builder
+            .build_phi(i64_ty, "sequence_builder_result")
+            .unwrap();
+        result.add_incoming(&[(&list, finished), (&none, abort)]);
         if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, list);
+            self.values.insert(result_id, result.as_basic_value());
             self.value_types.insert(result_id, TirType::DynBox);
         }
     }
 
     pub(super) fn emit_build_dict(&mut self, op: &TirOp) {
-        let i64_ty = self.backend.context.i64_type();
-        let n_pairs = (op.operands.len() / 2) as u64;
-        let dict_new_fn = self
-            .backend
-            .module
-            .get_function("molt_dict_builder_new")
-            .unwrap();
-        let builder = self
-            .backend
-            .builder
-            .build_call(
-                dict_new_fn,
-                &[i64_ty.const_int(n_pairs, false).into()],
-                "dict_builder",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        let dict_set_fn = self
-            .backend
-            .module
-            .get_function("molt_dict_builder_append")
-            .unwrap();
-        let mut i = 0;
-        while i + 1 < op.operands.len() {
-            let k_i64 = self.materialize_dynbox_operand(op.operands[i]);
-            let v_i64 = self.materialize_dynbox_operand(op.operands[i + 1]);
-            self.backend
-                .builder
-                .build_call(
-                    dict_set_fn,
-                    &[builder.into(), k_i64.into(), v_i64.into()],
-                    "dict_append",
-                )
-                .unwrap();
-            i += 2;
-        }
-        let finish_fn = self
-            .backend
-            .module
-            .get_function("molt_dict_builder_finish")
-            .unwrap();
-        let dict = self
-            .backend
-            .builder
-            .build_call(finish_fn, &[builder.into()], "dict_finish")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, dict);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        assert_eq!(
+            op.operands.len() % 2,
+            0,
+            "dict literal needs complete pairs"
+        );
+        self.emit_owned_hash_aggregate(op, true);
     }
 
     pub(super) fn emit_build_tuple(&mut self, op: &TirOp) {
-        let i64_ty = self.backend.context.i64_type();
-        let n = op.operands.len() as u64;
-        let tuple_builder_new = self
-            .backend
-            .module
-            .get_function("molt_list_builder_new")
-            .unwrap();
-        let builder = self
-            .backend
-            .builder
-            .build_call(
-                tuple_builder_new,
-                &[i64_ty.const_int(n, false).into()],
-                "tuple_builder",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        let push_fn = self
-            .backend
-            .module
-            .get_function("molt_list_builder_append")
-            .unwrap();
-        for &item_id in &op.operands {
-            let item_i64 = self.materialize_dynbox_operand(item_id);
-            self.backend
-                .builder
-                .build_call(push_fn, &[builder.into(), item_i64.into()], "tup_push")
-                .unwrap();
-        }
-        let finish_fn = self
-            .backend
-            .module
-            .get_function("molt_tuple_builder_finish")
-            .unwrap();
-        let tup = self
-            .backend
-            .builder
-            .build_call(finish_fn, &[builder.into()], "tuple_finish")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, tup);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.emit_sequence_builder(op, "molt_tuple_builder_finish");
     }
 
     pub(super) fn emit_build_set(&mut self, op: &TirOp) {
+        self.emit_owned_hash_aggregate(op, false);
+    }
+
+    /// Direct construction owns the actual dict/set from allocation to commit.
+    /// Mutators borrow every operand; fresh scalar boxes are transaction-local
+    /// owners. No scratch heap kind, borrowed-edge builder or finish lane exists.
+    fn emit_owned_hash_aggregate(&mut self, op: &TirOp, dict: bool) {
         let i64_ty = self.backend.context.i64_type();
-        let n = op.operands.len() as u64;
-        let set_new_fn = self
-            .backend
-            .module
-            .get_function("molt_set_builder_new")
-            .unwrap();
-        let builder = self
+        let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+        let width = if dict { 2 } else { 1 };
+        let temp_slots: Vec<_> = (0..width)
+            .map(|_| self.build_entry_i64_alloca("aggregate_temporary_owner"))
+            .collect();
+        for slot in &temp_slots {
+            self.backend.builder.build_store(*slot, none).unwrap();
+        }
+        let capacity = (op.operands.len() / width) as u64;
+        // The established runtime ABI is raw for dict, boxed for set.
+        let capacity = if dict {
+            capacity
+        } else {
+            molt_codegen_abi::box_int_bits(capacity as i64) as u64
+        };
+        let new_fn = self.ensure_runtime_i64_fn(
+            if dict {
+                "molt_dict_new"
+            } else {
+                "molt_set_new"
+            },
+            1,
+        );
+        let aggregate = self
             .backend
             .builder
             .build_call(
-                set_new_fn,
-                &[i64_ty.const_int(n, false).into()],
-                "set_builder",
+                new_fn,
+                &[i64_ty.const_int(capacity, false).into()],
+                "aggregate",
             )
             .unwrap()
             .try_as_basic_value()
-            .unwrap_basic();
-        let push_fn = self
+            .unwrap_basic()
+            .into_int_value();
+        let suffix = self.synthetic_block_counter;
+        self.synthetic_block_counter += 1;
+        let abort = self
             .backend
-            .module
-            .get_function("molt_set_builder_append")
-            .unwrap();
-        for &item_id in &op.operands {
-            let item_i64 = self.materialize_dynbox_operand(item_id);
-            self.backend
-                .builder
-                .build_call(push_fn, &[builder.into(), item_i64.into()], "set_append")
-                .unwrap();
-        }
-        let finish_fn = self
+            .context
+            .append_basic_block(self.llvm_fn, &format!("aggregate_abort{suffix}"));
+        let ready = self
             .backend
-            .module
-            .get_function("molt_set_builder_finish")
-            .unwrap();
-        let set = self
+            .context
+            .append_basic_block(self.llvm_fn, &format!("aggregate_ready{suffix}"));
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, &format!("aggregate_merge{suffix}"));
+        self.all_llvm_blocks.extend([abort, ready, merge]);
+        let created = self
             .backend
             .builder
-            .build_call(finish_fn, &[builder.into()], "set_finish")
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                aggregate,
+                none,
+                "aggregate_created",
+            )
+            .unwrap();
+        let source = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_conditional_branch(created, ready, abort)
+            .unwrap();
+        self.record_llvm_edge(source, ready);
+        self.record_llvm_edge(source, abort);
+        self.backend.builder.position_at_end(ready);
+        let mutate = self.ensure_runtime_i64_fn(
+            if dict {
+                "molt_dict_set"
+            } else {
+                "molt_set_add"
+            },
+            width + 1,
+        );
+        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        for (index, operands) in op.operands.chunks(width).enumerate() {
+            let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                vec![aggregate.into()];
+            for (position, &operand) in operands.iter().enumerate() {
+                let bits = self.materialize_dynbox_operand(operand);
+                if matches!(self.value_types.get(&operand), Some(TirType::I64)) {
+                    self.backend
+                        .builder
+                        .build_store(temp_slots[position], bits)
+                        .unwrap();
+                }
+                args.push(bits.into());
+                self.aggregate_continue_unless_pending(
+                    abort,
+                    &format!("aggregate_operand{suffix}_{index}_{position}"),
+                );
+            }
+            // Keep the original owner: set_add returns None even on success,
+            // and dict_set can return the dict while recording a pending error.
+            self.backend
+                .builder
+                .build_call(mutate, &args, "aggregate_insert")
+                .unwrap();
+            for slot in &temp_slots {
+                let bits = self
+                    .backend
+                    .builder
+                    .build_load(i64_ty, *slot, "aggregate_temp")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_call(release, &[bits.into()], "aggregate_temp_release")
+                    .unwrap();
+                self.backend.builder.build_store(*slot, none).unwrap();
+            }
+            self.aggregate_continue_unless_pending(
+                abort,
+                &format!("aggregate_next{suffix}_{index}"),
+            );
+        }
+        let committed = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        self.record_llvm_edge(committed, merge);
+        self.backend.builder.position_at_end(abort);
+        for slot in &temp_slots {
+            let bits = self
+                .backend
+                .builder
+                .build_load(i64_ty, *slot, "aggregate_abort_temp")
+                .unwrap();
+            self.backend
+                .builder
+                .build_call(release, &[bits.into()], "aggregate_abort_temp_release")
+                .unwrap();
+        }
+        self.backend
+            .builder
+            .build_call(release, &[aggregate.into()], "aggregate_abort_release")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        self.record_llvm_edge(abort, merge);
+        self.backend.builder.position_at_end(merge);
+        let result = self
+            .backend
+            .builder
+            .build_phi(i64_ty, "aggregate_result")
+            .unwrap();
+        result.add_incoming(&[(&aggregate, committed), (&none, abort)]);
+        if let Some(&id) = op.results.first() {
+            self.values.insert(id, result.as_basic_value());
+            self.value_types.insert(id, TirType::DynBox);
+        }
+    }
+
+    fn aggregate_continue_unless_pending(&mut self, abort: BasicBlock<'ctx>, name: &str) {
+        let pending_fn = self.ensure_runtime_i64_fn("molt_exception_pending", 0);
+        let pending = self
+            .backend
+            .builder
+            .build_call(pending_fn, &[], "aggregate_pending")
             .unwrap()
             .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, set);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+            .unwrap_basic()
+            .into_int_value();
+        let ready = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                pending,
+                self.backend.context.i64_type().const_zero(),
+                "aggregate_no_exception",
+            )
+            .unwrap();
+        let next = self.backend.context.append_basic_block(self.llvm_fn, name);
+        self.all_llvm_blocks.push(next);
+        let source = self.backend.builder.get_insert_block().unwrap();
+        self.backend
+            .builder
+            .build_conditional_branch(ready, next, abort)
+            .unwrap();
+        self.record_llvm_edge(source, next);
+        self.record_llvm_edge(source, abort);
+        self.backend.builder.position_at_end(next);
     }
 
     pub(super) fn emit_build_slice(&mut self, op: &TirOp) {
