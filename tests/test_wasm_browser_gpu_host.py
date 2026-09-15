@@ -155,7 +155,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -322,7 +322,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -459,7 +459,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -597,7 +597,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -736,7 +736,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -845,7 +845,7 @@ const host = await loadMoltWasm({{
   preferLinked: false,
   env: {{ MOLT_GPU_BACKEND: 'webgpu' }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -984,7 +984,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -1125,7 +1125,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -1303,7 +1303,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",
@@ -1492,7 +1492,7 @@ const host = await loadMoltWasm({{
     }},
   }},
 }});
-host.run();
+try {{ host.run(); }} finally {{ host.dispose(); }}
 console.log(JSON.stringify(fakeState));
 """.lstrip(),
             encoding="utf-8",

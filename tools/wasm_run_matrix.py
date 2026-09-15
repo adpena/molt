@@ -730,8 +730,10 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
       window.__moltMatrixOutput = '';
       window.__moltMatrixDone = false;
       (async () => {
+        let host;
+        const errors = [];
         try {
-          const host = await loadMoltWasm({
+          host = await loadMoltWasm({
             wasmUrl: './CASE.wasm',
             linkedUrl: './CASE.wasm',
             runtimeUrl: './molt_runtime.wasm',
@@ -741,12 +743,17 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
             },
           });
           await host.run();
-          window.__moltMatrixDone = true;
         } catch (err) {
-          log(`[error] ${err.message}`);
-          window.__moltMatrixOutput += `[error] ${err.message}\n`;
-          window.__moltMatrixDone = true;
+          errors.push(err);
+        } finally {
+          try { host?.dispose(); } catch (error) { errors.push(error); }
         }
+        if (errors.length) {
+          const error = globalThis.MoltRuntimeLifecycle.combinedError(errors);
+          log(`[error] ${String(error)}`);
+          window.__moltMatrixOutput += `[error] ${String(error)}\n`;
+        }
+        window.__moltMatrixDone = true;
       })();
     </script>
   </body>

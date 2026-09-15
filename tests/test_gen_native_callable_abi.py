@@ -56,6 +56,7 @@ def test_python_and_rust_projections_cover_every_registry_row() -> None:
             "result": abi.browser_result,
         }
         assert f'pub const {abi.constant}: &str = "{abi.token}";' in rust
+        assert f'export const {abi.constant} = "{abi.token}";' in javascript
         assert f'"{abi.token}":' in javascript
         assert f'"params":{list(abi.browser_params)!r}'.replace("'", '"') in javascript
         assert f'"result":"{abi.browser_result}"' in javascript

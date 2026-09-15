@@ -1,10 +1,9 @@
 use super::{
-    ExecutionRequest, GuestEntrypoint, GuestModuleEntrypoint, GuestTermination, HostState,
-    LoadedGuestKind, LoadedGuestOptions, ParsedHostArgs, ProcessManager, ResolvedExecution,
-    SocketManager, WebSocketManager, build_engine, call_guest_entrypoint,
-    define_isolate_host_imports, execute_loaded_guest, parse_host_args, resolve_execution,
-    resolve_execution_modules, select_manifest_path, validate_execution_imports,
-    validate_guest_module_entrypoint,
+    ExecutionRequest, GuestModuleEntrypoint, GuestTermination, HostState, LoadedGuestKind,
+    LoadedGuestOptions, ParsedHostArgs, ProcessManager, ResolvedExecution, SocketManager,
+    WebSocketManager, build_engine, define_isolate_host_imports, execute_loaded_guest,
+    parse_host_args, resolve_execution, resolve_execution_modules, select_manifest_path,
+    validate_execution_imports, validate_guest_module_entrypoint,
 };
 use molt_wasm_host::sha256_hex;
 use std::collections::HashMap;
@@ -43,13 +42,7 @@ fn call_test_app_startup(
     application: &wasmtime::Instance,
     runtime: &wasmtime::Instance,
 ) -> wasmtime::Result<GuestTermination> {
-    call_guest_entrypoint(
-        store,
-        GuestEntrypoint::MoltApplication {
-            application,
-            runtime,
-        },
-    )
+    super::entrypoint::call_molt_application_entrypoint(store, application, runtime)
 }
 
 fn execute_test_guest(
@@ -923,6 +916,9 @@ fn loaded_guest_primitive_executes_linked_application_contract() {
           (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
           (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
           (func (export "molt_exception_pending") (result i64) i64.const 0)
+          (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
+          (func (export "molt_runtime_execution_leave") (param i64))
+          (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
           (func (export "molt_main") (result i64) i64.const 0))
     "#,
     )
@@ -949,6 +945,9 @@ fn loaded_guest_primitive_executes_split_application_contract() {
         r#"
         (module
           (func (export "molt_anchor"))
+          (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
+          (func (export "molt_runtime_execution_leave") (param i64))
+          (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
           (func (export "molt_exception_pending") (result i64) i64.const 0))
     "#,
     )
@@ -996,6 +995,9 @@ fn execute_split_import_fixture(
             r#"(module
                 {runtime_fields}
                 {core_start}
+                (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
+                (func (export "molt_runtime_execution_leave") (param i64))
+                (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#
         ),
     )

@@ -751,6 +751,9 @@ mod indirect_dispatch_tests {
                         (func (export "molt_main") (result i64) i64.const 0)
                         (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                         (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+                        (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+                        (func (export "molt_runtime_execution_leave") (param i64))
+                        (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                         (func (export "molt_exception_pending") (result i64) i64.const 0))"#
                     ),
                 )
@@ -762,6 +765,9 @@ mod indirect_dispatch_tests {
                     (import "env" "molt_call_indirect0" (func (param i64) (result i64)))
                     (func $initialize unreachable) (start $initialize)
                     (func (export "molt_run"))
+                    (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+                    (func (export "molt_runtime_execution_leave") (param i64))
+                    (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                     (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
                     )
                     .unwrap()
@@ -894,6 +900,9 @@ mod indirect_dispatch_tests {
                     i64.const 0)
                 (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
                 (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+                (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+                (func (export "molt_runtime_execution_leave") (param i64))
+                (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                 (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();
@@ -923,6 +932,9 @@ mod indirect_dispatch_tests {
             (import "env" "molt_call_indirect1" (func $call (param i64 i64) (result i64)))
             (func (export "molt_run") (result i64)
                 i64.const 37 i64.const 5 call $call)
+            (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+            (func (export "molt_runtime_execution_leave") (param i64))
+            (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
             (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
         )
         .unwrap();

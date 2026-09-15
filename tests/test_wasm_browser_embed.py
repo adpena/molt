@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from molt._wasm_abi_generated import WASM_RESERVED_RUNTIME_CALLABLES
+from molt._wasm_abi_generated import (
+    WASM_IMPORT_SIGNATURE_BY_NAME,
+    WASM_RESERVED_RUNTIME_CALLABLES,
+    WASM_RUNTIME_EXPORT_BY_IMPORT,
+)
 from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 from molt.dx import session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
@@ -121,7 +125,43 @@ def _minimal_wasm_module() -> bytes:
     return attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
 
 
+_LIFETIME_IMPORTS = (
+    "exception_pending",
+    "runtime_execution_enter",
+    "runtime_execution_leave",
+    "runtime_shutdown",
+)
+
+
+def _runtime_lifetime_wasm() -> bytes:
+    types = []
+    exports = []
+    bodies = []
+    for index, name in enumerate(_LIFETIME_IMPORTS):
+        params, results = WASM_IMPORT_SIGNATURE_BY_NAME[name]
+        assert all(value == "i64" for value in (*params, *results))
+        types.append(_wasm_func_type([0x7E] * len(params), [0x7E] * len(results)))
+        exports.append(_wasm_export(WASM_RUNTIME_EXPORT_BY_IMPORT[name], 0, index))
+        value = (
+            _wasm_i64_const(0 if name == "exception_pending" else 1) if results else b""
+        )
+        body = _wasm_u32(0) + value + b"\x0b"
+        bodies.append(_wasm_u32(len(body)) + body)
+    return attested_empty_callable_table(
+        b"\x00asm\x01\x00\x00\x00"
+        + _wasm_section(1, _wasm_vec(types))
+        + _wasm_section(3, _wasm_vec([_wasm_u32(i) for i in range(len(types))]))
+        + _wasm_section(7, _wasm_vec(exports))
+        + _wasm_section(10, _wasm_vec(bodies))
+    )
+
+
 def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, object]:
+    from molt.cli.wasm import (
+        _runtime_import_export_names_from_manifest,
+        _runtime_import_result_kinds_from_manifest,
+        _runtime_import_signatures_from_manifest,
+    )
     from molt.wasm_artifact import (
         parse_wasm_callable_table_attestation,
         wasm_callable_table_manifest_summary,
@@ -146,10 +186,16 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
             },
             "runtime_imports": {
                 "module": "molt_runtime",
-                "names": [],
-                "signatures": {},
-                "result_kinds": {},
-                "export_names": {},
+                "names": list(_LIFETIME_IMPORTS),
+                "signatures": _runtime_import_signatures_from_manifest(
+                    _LIFETIME_IMPORTS
+                ),
+                "result_kinds": _runtime_import_result_kinds_from_manifest(
+                    _LIFETIME_IMPORTS
+                ),
+                "export_names": _runtime_import_export_names_from_manifest(
+                    _LIFETIME_IMPORTS
+                ),
                 "runtime_export_signatures": {},
             },
             "callable_table": {
@@ -429,7 +475,7 @@ def test_browser_embed_routes_webgpu_import_through_shared_dispatch_host(
     package_dir = tmp_path / "webgpu_embed"
     package_dir.mkdir()
     app_wasm, layout = _build_webgpu_dispatch_app_wasm()
-    runtime_wasm = _minimal_wasm_module()
+    runtime_wasm = _runtime_lifetime_wasm()
     (package_dir / "app.wasm").write_bytes(app_wasm)
     (package_dir / "molt_runtime.wasm").write_bytes(runtime_wasm)
     manifest = _webgpu_embed_manifest(app_wasm, runtime_wasm)
@@ -474,17 +520,21 @@ const embed = await loadMoltBrowserEmbed({{
     }},
   }},
 }});
-const rc = embed.appInstance.exports.run_gpu();
-const view = new DataView(embed.memory.buffer);
-console.log(JSON.stringify({{
-  rc,
-  errLen: view.getUint32(layout.out_err_len_ptr, true),
-  output: [
-    view.getFloat32(layout.output_ptr, true),
-    view.getFloat32(layout.output_ptr + 4, true),
-  ],
-  dispatches,
-}}));
+try {{
+  const rc = embed.execute(() => embed.appInstance.exports.run_gpu());
+  const view = new DataView(embed.memory.buffer);
+  console.log(JSON.stringify({{
+    rc,
+    errLen: view.getUint32(layout.out_err_len_ptr, true),
+    output: [
+      view.getFloat32(layout.output_ptr, true),
+      view.getFloat32(layout.output_ptr + 4, true),
+    ],
+    dispatches,
+  }}));
+}} finally {{
+  embed.dispose();
+}}
 """.lstrip(),
             encoding="utf-8",
         )
@@ -523,7 +573,7 @@ def test_browser_embed_rejects_webgpu_target_feature_manifest_drift(
     package_dir = tmp_path / "webgpu_embed_bad_manifest"
     package_dir.mkdir()
     app_wasm, _layout = _build_webgpu_dispatch_app_wasm()
-    runtime_wasm = _minimal_wasm_module()
+    runtime_wasm = _runtime_lifetime_wasm()
     (package_dir / "app.wasm").write_bytes(app_wasm)
     (package_dir / "molt_runtime.wasm").write_bytes(runtime_wasm)
     manifest = _webgpu_embed_manifest(app_wasm, runtime_wasm)
@@ -1203,13 +1253,17 @@ const kernel = await loadMoltBrowserKernel({{
   exportName: 'forward',
   resultType: 'float32',
 }});
-const input = new Float32Array([1.25, -2.5, 0, 4.75]);
-const output = await kernel.forward(input);
-console.log(JSON.stringify({{
-  ctor: output.constructor.name,
-  exportName: kernel.exportName,
-  values: Array.from(output),
-}}));
+try {{
+  const input = new Float32Array([1.25, -2.5, 0, 4.75]);
+  const output = await kernel.forward(input);
+  console.log(JSON.stringify({{
+    ctor: output.constructor.name,
+    exportName: kernel.exportName,
+    values: Array.from(output),
+  }}));
+}} finally {{
+  kernel.dispose();
+}}
 """.lstrip(),
             encoding="utf-8",
         )

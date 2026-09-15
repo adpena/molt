@@ -200,6 +200,15 @@
       // ─── State ───────────────────────────────────────────────────────────
       let pyodide = null;
       let moltHost = null;
+      // One reusable runtime spans all timed runs, not one lifetime per iteration.
+      const disposeMolt = () => {
+        const previous = moltHost;
+        moltHost = null;
+        previous?.dispose();
+      };
+      window.addEventListener('pagehide', () => {
+        try { disposeMolt(); } catch (error) { console.error(error); }
+      });
 
       // ─── Pyodide init ────────────────────────────────────────────────────
       (async () => {
@@ -224,6 +233,7 @@
         setStatus('molt-status', 'Loading...', 'loading');
         document.getElementById('load-molt').disabled = true;
         try {
+          disposeMolt();
           moltHost = await loadMoltWasm({
             wasmUrl,
             linkedUrl: wasmUrl,

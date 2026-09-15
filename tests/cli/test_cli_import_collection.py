@@ -1367,7 +1367,9 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     if target_minor > sys.version_info.minor:
         assert policy is None and policy_error is not None
         assert collected_targets == []
-        assert f"requires a Python 3.{target_minor}+ frontend" in capsys.readouterr().err
+        assert (
+            f"requires a Python 3.{target_minor}+ frontend" in capsys.readouterr().err
+        )
         return
     assert collected_targets and set(collected_targets) == {selected_target}
     assert policy_error is None
@@ -21132,6 +21134,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         signatures = {
             "molt_runtime_execution_enter": {"params": [], "result": "i64"},
             "molt_runtime_execution_leave": {"params": ["i64"], "result": None},
+            "molt_runtime_shutdown": {"params": [], "result": "i64"},
             "molt_isolate_import": {"params": ["i64"], "result": "i64"},
             "molt_not_an_abi_export": {"params": [], "result": None},
         }
@@ -21186,10 +21189,12 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     assert linked_manifest["abi"]["runtime_imports"]["names"] == [
         "runtime_execution_enter",
         "runtime_execution_leave",
+        "runtime_shutdown",
     ]
     assert linked_manifest["abi"]["runtime_imports"]["export_names"] == {
         "runtime_execution_enter": "molt_runtime_execution_enter",
         "runtime_execution_leave": "molt_runtime_execution_leave",
+        "runtime_shutdown": "molt_runtime_shutdown",
     }
     assert linked_manifest["abi"]["linked_self_imports"] == ["molt_isolate_import"]
     assert linked_manifest["modules"]["linked"] == {

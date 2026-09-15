@@ -14,11 +14,15 @@ const kernel = await loadMoltBrowserKernel({
   resultType: 'float32',
 });
 
-const input = new Float32Array([1.25, -2.5, 0, 4.75]);
-const output = await kernel.forward(input);
+try {
+  const input = new Float32Array([1.25, -2.5, 0, 4.75]);
+  const output = await kernel.forward(input);
 
-console.log(JSON.stringify({
-  ctor: output.constructor.name,
-  exportName: kernel.exportName,
-  values: Array.from(output),
-}));
+  console.log(JSON.stringify({
+    ctor: output.constructor.name,
+    exportName: kernel.exportName,
+    values: Array.from(output),
+  }));
+} finally {
+  kernel.dispose();
+}

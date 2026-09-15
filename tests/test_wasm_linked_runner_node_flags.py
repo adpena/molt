@@ -15,6 +15,7 @@ from molt.cli.wasm_host import (
     molt_wasm_host_exe_name,
     resolve_molt_wasm_host_binary,
 )
+from molt.wasm_artifact import wasm_runtime_manifest_path
 
 
 def _require_node_binary() -> str:
@@ -115,18 +116,15 @@ def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
 ) -> None:
     host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
-    target_host = (
-        tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
-    )
+    target_host = tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
     target_host.parent.mkdir(parents=True)
     target_host.write_bytes(b"target")
 
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_host.parent.parent))
 
-    assert (
-        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast")
-        == str(host_bin)
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") == str(
+        host_bin
     )
 
 
@@ -141,9 +139,8 @@ def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(host_bin.parent.parent))
 
-    assert (
-        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast")
-        == str(host_bin)
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") == str(
+        host_bin
     )
 
 
@@ -156,10 +153,9 @@ def test_resolve_molt_wasm_host_binary_uses_requested_profile(
     host_bin.parent.mkdir(parents=True)
     host_bin.write_bytes(b"host")
 
-    assert (
-        resolve_molt_wasm_host_binary(tmp_path, cargo_profile="release-output")
-        == str(host_bin)
-    )
+    assert resolve_molt_wasm_host_binary(
+        tmp_path, cargo_profile="release-output"
+    ) == str(host_bin)
     assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
 
 
@@ -485,7 +481,24 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
     result = wasm_runner.run_wasm_linked(root, output_wasm)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("42")
+    assert result.stdout == "42\n"
+    # Exercise both finite lifetime owners against the same built artifact;
+    # flushing in one host must not hide missing teardown in the other.
+    node = wasm_runner._run_wasm_test_process(
+        [
+            _require_node_binary(),
+            "wasm/run_wasm.js",
+            str(wasm_runtime_manifest_path(output_wasm)),
+        ],
+        cwd=root,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert node.returncode == 0, node.stderr
+    assert node.stdout == result.stdout
 
 
 @pytest.mark.slow
@@ -498,7 +511,7 @@ def test_run_wasm_linked_bench_sum_has_no_table_signature_trap(
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
     result = wasm_runner.run_wasm_linked(root, output_wasm)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().endswith("49999995000000")
+    assert result.stdout == "49999995000000\n"
     assert "null function or function signature mismatch" not in result.stderr
 
 

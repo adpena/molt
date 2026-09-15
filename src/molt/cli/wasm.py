@@ -278,7 +278,16 @@ def _generate_split_worker_js(
     CDN independently of the app module.  Both modules share linear memory
     through WASI imports.
     """
-    runtime_import_names = tuple(runtime_import_names or ())
+    runtime_import_names = tuple(
+        dict.fromkeys(
+            (
+                *(runtime_import_names or ()),
+                "runtime_execution_enter",
+                "runtime_execution_leave",
+                "runtime_shutdown",
+            )
+        )
+    )
     runtime_import_result_kinds = _runtime_import_result_kinds_from_manifest(
         runtime_import_names,
         runtime_export_signatures=runtime_export_signatures,
@@ -337,6 +346,7 @@ def _generate_split_worker_js(
 import "./molt_vfs_browser.js";
 import "./callable_table_abi_generated.js";
 import "./loader_bridge.js";
+import "./runtime_lifecycle.js";
 import runtimeModule from "./molt_runtime.wasm";
 import appModule from "./app.wasm";
 
@@ -347,6 +357,7 @@ const {
   verifyCallableTableEntries,
 } = globalThis.MoltWasmLoaderBridge;
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
+const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
 const appCallableTable = callableTableFromModule(appModule, "app wasm");
 
 class ProcExit { constructor(code) { this.code = code; } }
@@ -1327,7 +1338,8 @@ export default {
     const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
 
     let rtInstance = null;
-    let pendingError = null;
+    let lifetime = null;
+    const errors = [];
     let procExit = null;
     try {
       const bundleBytes = await assetBytes("bundle.tar");
@@ -1341,6 +1353,12 @@ export default {
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
+      lifetime = createRuntimeLifetime(rtInstance, runtimeImportExportNames, () => {
+        if (runtimeExceptionPending(rtInstance)) {
+          throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
+        }
+      });
+      lifetime.admit();
       if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
         rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
       }
@@ -1357,30 +1375,26 @@ export default {
         molt_runtime: buildRuntimeImports(appModule, rtInstance),
       };
       appInstance = await WebAssembly.instantiate(appModule, appImports);
-      // 3. Initialize and run
-      if (rtInstance.exports._initialize) rtInstance.exports._initialize();
+      // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
+      //    application code under the canonical execution lease.
       verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
-      if (runtimeExceptionPending(rtInstance)) {
-        throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before startup");
-      }
-      if (appInstance.exports.molt_main) appInstance.exports.molt_main();
-      else if (appInstance.exports._start) appInstance.exports._start();
-      else throw new Error("missing application startup export");
-      if (runtimeExceptionPending(rtInstance)) {
-        throw new Error("MOLT_APP_BOOTSTRAP_FAILED: application returned with a pending runtime exception");
-      }
+      lifetime.initialize(() => {
+        if (rtInstance.exports._initialize) rtInstance.exports._initialize();
+      });
+      lifetime.execute(() => {
+        if (typeof appInstance.exports.molt_main !== "function") {
+          throw new Error("missing application startup export");
+        }
+        appInstance.exports.molt_main();
+      });
     } catch (err) {
       if (err instanceof ProcExit) procExit = err;
-      else pendingError = err;
+      else errors.push(err);
     } finally {
-      if (rtInstance && rtInstance.exports.molt_runtime_shutdown) {
-        try {
-          rtInstance.exports.molt_runtime_shutdown();
-        } catch (shutdownErr) {
-          if (!pendingError) pendingError = shutdownErr;
-        }
+      if (lifetime) {
+        try { lifetime.dispose(); } catch (error) { errors.push(error); }
       }
-      vfs.clear();
+      try { vfs.clear(); } catch (error) { errors.push(error); }
     }
 
     const stdoutTail = stdoutDecoder.decode();
@@ -1388,7 +1402,10 @@ export default {
     const stderrTail = stderrDecoder.decode();
     if (stderrTail) stderrChunks.push(stderrTail);
 
-    if (pendingError) throw pendingError;
+    if (errors.length) {
+      if (procExit && procExit.code !== 0) errors.unshift(procExit);
+      throw combinedError(errors);
+    }
 
     const output = stdoutChunks.join("");
     const trimmed = output.trimStart();

@@ -48,8 +48,10 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
     ? Math.max(1, Number(timeoutRaw))
     : 15000;
   let worker = null;
+  const closedWorkers = new WeakSet();
   let nextId = 1;
   const pending = new Map();
+  let disposed = false;
 
   const failPending = (message) => {
     for (const entry of pending.values()) {
@@ -60,7 +62,18 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
     pending.clear();
   };
 
+  const closeWorker = (target) => {
+    if (!target) return;
+    if (worker === target) worker = null;
+    if (closedWorkers.has(target)) return;
+    closedWorkers.add(target);
+    if (typeof target.terminate === 'function') target.terminate();
+  };
+
   const ensureWorker = () => {
+    if (disposed) {
+      throw new Error('browser webgpu dispatcher has been disposed');
+    }
     if (worker) {
       return worker;
     }
@@ -72,10 +85,11 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
         'browser webgpu dispatcher requires a worker-like host with SharedArrayBuffer and Atomics.wait'
       );
     }
-    worker = new Worker(new URL('./browser_gpu_worker.js', import.meta.url), {
+    const activeWorker = new Worker(new URL('./browser_gpu_worker.js', import.meta.url), {
       type: 'module',
     });
-    worker.addEventListener('message', (event) => {
+    worker = activeWorker;
+    activeWorker.addEventListener('message', (event) => {
       const payload = event && event.data ? event.data : null;
       if (!payload || typeof payload.id !== 'number') {
         return;
@@ -98,13 +112,13 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
       Atomics.store(entry.waiter, 0, 1);
       Atomics.notify(entry.waiter, 0, 1);
     });
-    worker.addEventListener('error', (event) => {
+    activeWorker.addEventListener('error', (event) => {
       const detail =
         event && event.message ? `browser webgpu worker error: ${event.message}` : 'browser webgpu worker failed';
-      failPending(detail);
-      worker = null;
+      if (worker === activeWorker) failPending(detail);
+      closeWorker(activeWorker);
     });
-    return worker;
+    return activeWorker;
   };
 
   return {
@@ -148,11 +162,19 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
         binding.bytes.set(output.bytes.subarray(0, binding.bytes.length));
       }
     },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      failPending('browser webgpu dispatcher has been disposed');
+      const activeWorker = worker;
+      closeWorker(activeWorker);
+    },
   };
 };
 
 export const createBrowserGpuHost = (state, options) => {
   const opts = options && typeof options === 'object' ? options : {};
+  const ownsDispatcher = !opts.gpuKernelDispatcher;
   const dispatcher = (() => {
     if (opts.gpuKernelDispatcher && typeof opts.gpuKernelDispatcher.dispatchKernel === 'function') {
       return opts.gpuKernelDispatcher;
@@ -279,5 +301,8 @@ export const createBrowserGpuHost = (state, options) => {
     }
   };
 
-  return { gpuWebGpuDispatchHost };
+  const dispose = () => {
+    if (ownsDispatcher && typeof dispatcher.dispose === 'function') dispatcher.dispose();
+  };
+  return { gpuWebGpuDispatchHost, dispose };
 };
