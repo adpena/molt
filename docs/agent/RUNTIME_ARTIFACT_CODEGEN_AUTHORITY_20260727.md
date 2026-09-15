@@ -69,6 +69,14 @@ resource custody, target and profile policy. Capture and execution consume the
 same command and environment. A failed wrapper is not retried under a different
 unattested toolchain.
 
+Runtime flag projection captures the ordered logical roots and their text forms
+once per identity operation. Native, standalone WASM ABI, and shared/relocatable
+runtime members use this same projection; export-only tokens perform no filesystem
+resolution. Absolute operands still resolve and must stay within an admitted root,
+response arguments retain the captured Cargo plan's custody, and command-specific
+source-first precedence is explicit. The next operation captures roots afresh;
+there is no process-wide path cache or relaxed path admission.
+
 Cargo `[env]` values retain their config-relative source origins, ambient/force
 precedence, and Windows case-insensitive key semantics. Selected tools, wrappers,
 Rust sysroots, codegen backends, extern files, and library search directories have
