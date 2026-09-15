@@ -186,13 +186,26 @@ For **linear** values that are passed to a function with a borrowed parameter, t
 
 ### 4.3. NaN-Box Aware Optimization
 
-Since inline values (int, float, bool, None) never need RC, the analysis can skip them entirely. The type inference system already available in TIR provides type hints per variable. When a variable is known to be `int`, `float`, `bool`, or `None` at the TIR level, no RC operations are needed regardless of borrow/own classification.
+RC elision requires a proven inline representation, not a nominal Python type.
+Inline integers, floats, booleans and None have no heap owner, but a Python
+`int` may be a heap-backed bigint. The analysis must consume the shared TIR
+representation and ownership facts before suppressing reference operations.
 
 This interacts with the existing `fast_int` / `fast_float` flags on `OpIR` -- values with these flags set can skip all RC emission.
 
 ### 4.4. Immortal Object Awareness
 
-Constants (string literals, frozen modules, class objects) are immortal (`HEADER_FLAG_IMMORTAL`). The runtime already skips RC for immortals, but the backend still emits the *call* to `molt_inc_ref_obj` / `molt_dec_ref_obj`. A static analysis can identify variables that are provably immortal (loaded from constants, module globals that are class objects) and suppress RC calls entirely at compile time.
+Immortal lifetime belongs to the canonical pool described in
+[Runtime State Lifecycle and Shutdown](0024_RUNTIME_STATE_LIFECYCLE.md#canonical-objects-and-ordinary-owned-references).
+Do not infer immortality from a constant opcode, frozen module, class object,
+or module-global origin. Literal string/bytes/bigint caches are bounded ordinary
+reference owners; constructor results retain independent ownership and may
+outlive cache eviction. Canonical interned values are a distinct lifetime class.
+
+Static RC elision requires an explicit fact proving canonical lifetime across
+the use. Without it, preserve ordinary retain/release behavior; the runtime
+handles immortal values through its refcount and flag authority. Ordinary
+containers and caches never gain permission to retire a canonical allocation.
 
 ---
 
