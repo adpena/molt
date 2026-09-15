@@ -104,7 +104,9 @@ impl LiteralFixture {
             Self::Bytes => b"literal ownership bytes",
             Self::BigInt => b"1234567890123456789012345678901234567890",
         };
-        let len = MoltObject::from_int(bytes.len() as i64).bits();
+        // These data-segment constructors take an unboxed byte count, not a
+        // tagged Python integer. All three fixtures share that ABI contract.
+        let len = bytes.len() as u64;
         let mut bits = 0;
         unsafe {
             match self {
