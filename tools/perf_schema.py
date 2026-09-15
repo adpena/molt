@@ -8,12 +8,22 @@ and tests can import without importing the full runner.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-SCHEMA_VERSION = 3
+from compat.comparison import (
+    COMPARISON_LAW_VERSION,
+    ComparisonMode,
+    ExitLaw,
+    Outputs,
+    Verdict,
+    compare_outputs,
+)
+
+SCHEMA_VERSION = 4
 RED_THRESHOLD = 1.00
 UNSTABLE_CV = 0.20
 
@@ -214,6 +224,208 @@ REQUIRED_CELL_FIELDS = frozenset(
     }
 )
 
+REQUIRED_OUTPUT_PARITY_FIELDS = frozenset(
+    {
+        "checked",
+        "ok",
+        "reference_runtime",
+        "comparison_law_version",
+        "mode",
+        "stderr_mode",
+        "exit_law",
+        "reason",
+        "detail",
+        "stdout_match",
+        "stderr_match",
+        "exit_match",
+        "reference_returncode",
+        "molt_returncode",
+        "reference_stdout_sha256",
+        "molt_stdout_sha256",
+        "reference_stderr_sha256",
+        "molt_stderr_sha256",
+        "reference_stable",
+        "molt_stable",
+        "reference_observation_count",
+        "molt_observation_count",
+        "mismatch_observation",
+        "mismatch_observation_sha256",
+    }
+)
+
+OUTPUT_PARITY_COMPARISON_LAW_VERSION = COMPARISON_LAW_VERSION
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+OutputObservation = tuple[str, str | None, str | None, int | None]
+
+
+def _observation_hash(stdout: str, stderr: str, returncode: int) -> str:
+    payload = json.dumps(
+        [stdout, stderr, returncode], ensure_ascii=False, separators=(",", ":")
+    )
+    return _sha256_text(payload)
+
+
+def output_parity_evidence(
+    *,
+    reference_observations: Sequence[OutputObservation],
+    molt_observations: Sequence[OutputObservation],
+) -> dict[str, object]:
+    """Build a stable, hash-only receipt via the shared parity law."""
+
+    base: dict[str, object] = {
+        "checked": False,
+        "ok": None,
+        "reference_runtime": "cpython",
+        "comparison_law_version": COMPARISON_LAW_VERSION,
+        "mode": ComparisonMode.EXACT.value,
+        "stderr_mode": "exact",
+        "exit_law": ExitLaw.EXACT.value,
+        "reason": "comparison_unavailable",
+        "detail": "cold-run observable output was not fully captured",
+        "stdout_match": None,
+        "stderr_match": None,
+        "exit_match": None,
+        "reference_returncode": None,
+        "molt_returncode": None,
+        "reference_stdout_sha256": None,
+        "molt_stdout_sha256": None,
+        "reference_stderr_sha256": None,
+        "molt_stderr_sha256": None,
+        "reference_stable": None,
+        "molt_stable": None,
+        "reference_observation_count": len(reference_observations),
+        "molt_observation_count": len(molt_observations),
+        "mismatch_observation": None,
+        "mismatch_observation_sha256": None,
+    }
+    observations = [*reference_observations, *molt_observations]
+    incomplete = next(
+        (
+            observation
+            for observation in observations
+            if any(value is None for value in observation[1:])
+        ),
+        None,
+    )
+    if not reference_observations or not molt_observations or incomplete is not None:
+        if incomplete is not None:
+            base["detail"] = (
+                f"observable output was not fully captured for {incomplete[0]}"
+            )
+            base["mismatch_observation"] = incomplete[0]
+        return base
+
+    reference = reference_observations[0]
+    candidate = molt_observations[0]
+    reference_outputs = Outputs(
+        cast(str, reference[1]), cast(str, reference[2]), cast(int, reference[3])
+    )
+    candidate_outputs = Outputs(
+        cast(str, candidate[1]), cast(str, candidate[2]), cast(int, candidate[3])
+    )
+    verdict = compare_outputs(
+        reference_outputs,
+        candidate_outputs,
+        mode=ComparisonMode.EXACT,
+        stderr_mode="exact",
+        exit_law=ExitLaw.EXACT,
+    )
+
+    def first_instability(
+        samples: Sequence[OutputObservation],
+    ) -> tuple[OutputObservation, Verdict] | None:
+        expected = Outputs(
+            cast(str, samples[0][1]),
+            cast(str, samples[0][2]),
+            cast(int, samples[0][3]),
+        )
+        for sample in samples[1:]:
+            sample_verdict = compare_outputs(
+                expected,
+                Outputs(
+                    cast(str, sample[1]),
+                    cast(str, sample[2]),
+                    cast(int, sample[3]),
+                ),
+                mode=ComparisonMode.EXACT,
+                stderr_mode="exact",
+                exit_law=ExitLaw.EXACT,
+            )
+            if not sample_verdict.equal:
+                return sample, sample_verdict
+        return None
+
+    reference_instability = first_instability(reference_observations)
+    molt_instability = first_instability(molt_observations)
+    reference_stable = reference_instability is None
+    molt_stable = molt_instability is None
+    ok = reference_stable and molt_stable and verdict.equal
+    mismatch_observation: str | None = None
+    mismatch_observation_sha256: str | None = None
+    if reference_instability is not None:
+        sample, unstable_verdict = reference_instability
+        reason = "reference_unstable"
+        detail = f"{sample[0]} differs from {reference[0]}: {unstable_verdict.detail}"
+        mismatch_observation = sample[0]
+        mismatch_observation_sha256 = _observation_hash(
+            cast(str, sample[1]), cast(str, sample[2]), cast(int, sample[3])
+        )
+    elif molt_instability is not None:
+        sample, unstable_verdict = molt_instability
+        reason = "molt_unstable"
+        detail = f"{sample[0]} differs from {candidate[0]}: {unstable_verdict.detail}"
+        mismatch_observation = sample[0]
+        mismatch_observation_sha256 = _observation_hash(
+            cast(str, sample[1]), cast(str, sample[2]), cast(int, sample[3])
+        )
+    elif verdict.equal:
+        reason = "match"
+        detail = ""
+    elif not verdict.stdout_ok:
+        reason = "stdout_mismatch"
+        detail = verdict.detail
+    elif not verdict.stderr_ok:
+        reason = "stderr_mismatch"
+        detail = verdict.detail
+    elif not verdict.exit_ok:
+        reason = "exit_mismatch"
+        detail = verdict.detail
+    else:  # defensive: Verdict.equal is the conjunction of these axes.
+        reason = "comparison_mismatch"
+        detail = verdict.detail
+    if not ok and mismatch_observation is None:
+        mismatch_observation = candidate[0]
+        mismatch_observation_sha256 = _observation_hash(
+            cast(str, candidate[1]),
+            cast(str, candidate[2]),
+            cast(int, candidate[3]),
+        )
+    return {
+        **base,
+        "checked": True,
+        "ok": ok,
+        "reason": reason,
+        "detail": detail,
+        "stdout_match": verdict.stdout_ok,
+        "stderr_match": verdict.stderr_ok,
+        "exit_match": verdict.exit_ok,
+        "reference_returncode": reference[3],
+        "molt_returncode": candidate[3],
+        "reference_stdout_sha256": _sha256_text(cast(str, reference[1])),
+        "molt_stdout_sha256": _sha256_text(cast(str, candidate[1])),
+        "reference_stderr_sha256": _sha256_text(cast(str, reference[2])),
+        "molt_stderr_sha256": _sha256_text(cast(str, candidate[2])),
+        "reference_stable": reference_stable,
+        "molt_stable": molt_stable,
+        "mismatch_observation": mismatch_observation,
+        "mismatch_observation_sha256": mismatch_observation_sha256,
+    }
+
 _ALL_VERDICTS = frozenset(
     {
         VERDICT_GREEN,
@@ -294,6 +506,7 @@ class PerfCell:
     pypy_ratio: float | None
     codon_ratio: float | None
     codon_equivalent: bool | None
+    output_parity: dict[str, Any] | None
     log_artifact: str | None
     fact_class: str | None
     suspected_missing_fact: str | None
@@ -333,6 +546,7 @@ class PerfCell:
             pypy_ratio=_optional_float(payload.get("pypy_ratio")),
             codon_ratio=_optional_float(payload.get("codon_ratio")),
             codon_equivalent=_optional_bool(payload.get("codon_equivalent")),
+            output_parity=_optional_dict(payload.get("output_parity")),
             log_artifact=_optional_str(payload.get("log_artifact")),
             fact_class=_optional_str(payload.get("fact_class")),
             suspected_missing_fact=_optional_str(payload.get("suspected_missing_fact")),
@@ -383,6 +597,180 @@ def flatten_cells(doc: Mapping[str, Any]) -> list[Mapping[str, Any]]:
                     if isinstance(cell, Mapping):
                         out.append(cell)
     return out
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
+def output_parity_evidence_problems(
+    value: object,
+    *,
+    require_checked: bool = False,
+    require_pass: bool = False,
+) -> list[str]:
+    """Validate hash-only evidence produced by the shared comparison law.
+
+    This validates the durable receipt shape; observable equivalence itself is
+    decided only by ``tools.compat.comparison.compare_outputs``.
+    """
+
+    if value is None:
+        return ["is missing"] if require_checked or require_pass else []
+    if not isinstance(value, Mapping):
+        return ["must be an object or null"]
+    missing = REQUIRED_OUTPUT_PARITY_FIELDS - set(value)
+    if missing:
+        return [f"missing fields: {sorted(missing)}"]
+
+    problems: list[str] = []
+    checked = value.get("checked")
+    ok = value.get("ok")
+    if not isinstance(checked, bool):
+        problems.append(f"checked must be bool, got {checked!r}")
+    if ok is not None and not isinstance(ok, bool):
+        problems.append(f"ok must be bool or null, got {ok!r}")
+    if value.get("reference_runtime") != "cpython":
+        problems.append("reference_runtime must be 'cpython'")
+    if value.get("comparison_law_version") != OUTPUT_PARITY_COMPARISON_LAW_VERSION:
+        problems.append(
+            "comparison_law_version must name the canonical comparison law"
+        )
+    for field, expected in (
+        ("mode", "exact"),
+        ("stderr_mode", "exact"),
+        ("exit_law", "exact"),
+    ):
+        if value.get(field) != expected:
+            problems.append(f"{field} must be {expected!r}")
+    reason = value.get("reason")
+    if not isinstance(reason, str) or not reason:
+        problems.append("reason must be a non-empty string")
+    if not isinstance(value.get("detail"), str):
+        problems.append("detail must be a string")
+
+    axis_fields = ("stdout_match", "stderr_match", "exit_match")
+    stability_fields = ("reference_stable", "molt_stable")
+    hash_fields = (
+        "reference_stdout_sha256",
+        "molt_stdout_sha256",
+        "reference_stderr_sha256",
+        "molt_stderr_sha256",
+    )
+    rc_fields = ("reference_returncode", "molt_returncode")
+    for field in ("reference_observation_count", "molt_observation_count"):
+        count = value.get(field)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            problems.append(f"{field} must be a non-negative int")
+    if checked is True:
+        reference_count = value.get("reference_observation_count")
+        molt_count = value.get("molt_observation_count")
+        for field, count in (
+            ("reference_observation_count", reference_count),
+            ("molt_observation_count", molt_count),
+        ):
+            if isinstance(count, int) and not isinstance(count, bool) and count == 0:
+                problems.append(f"{field} must be at least 1 when checked=true")
+        if (
+            isinstance(reference_count, int)
+            and not isinstance(reference_count, bool)
+            and isinstance(molt_count, int)
+            and not isinstance(molt_count, bool)
+            and reference_count != molt_count
+        ):
+            problems.append(
+                "reference and molt observation counts must match when checked=true"
+            )
+        for field in axis_fields:
+            if not isinstance(value.get(field), bool):
+                problems.append(f"{field} must be bool when checked=true")
+        for field in stability_fields:
+            if not isinstance(value.get(field), bool):
+                problems.append(f"{field} must be bool when checked=true")
+        for field in hash_fields:
+            if not _is_sha256(value.get(field)):
+                problems.append(f"{field} must be a lowercase SHA-256 digest")
+        for field in rc_fields:
+            field_value = value.get(field)
+            if not isinstance(field_value, int) or isinstance(field_value, bool):
+                problems.append(f"{field} must be int when checked=true")
+        for channel in ("stdout", "stderr"):
+            reference_hash = value.get(f"reference_{channel}_sha256")
+            molt_hash = value.get(f"molt_{channel}_sha256")
+            if (
+                value.get(f"{channel}_match") is True
+                and _is_sha256(reference_hash)
+                and _is_sha256(molt_hash)
+                and reference_hash != molt_hash
+            ):
+                problems.append(
+                    f"{channel}_match=true contradicts unequal representative {channel} hashes"
+                )
+        reference_returncode = value.get("reference_returncode")
+        molt_returncode = value.get("molt_returncode")
+        if (
+            value.get("exit_match") is True
+            and isinstance(reference_returncode, int)
+            and not isinstance(reference_returncode, bool)
+            and isinstance(molt_returncode, int)
+            and not isinstance(molt_returncode, bool)
+            and reference_returncode != molt_returncode
+        ):
+            problems.append(
+                "exit_match=true contradicts unequal representative return codes"
+            )
+        axes = [value.get(field) for field in (*axis_fields, *stability_fields)]
+        if all(isinstance(axis, bool) for axis in axes):
+            expected_ok = all(axes)
+            if ok is not expected_ok:
+                problems.append(
+                    f"ok must equal comparison axes plus stability ({expected_ok})"
+                )
+        mismatch_observation = value.get("mismatch_observation")
+        mismatch_hash = value.get("mismatch_observation_sha256")
+        if ok is True:
+            if mismatch_observation is not None or mismatch_hash is not None:
+                problems.append("matching evidence must not name a mismatch observation")
+        else:
+            if not isinstance(mismatch_observation, str) or not mismatch_observation:
+                problems.append("failed evidence must name a mismatch observation")
+            if not _is_sha256(mismatch_hash):
+                problems.append(
+                    "failed evidence must hash the mismatch observation"
+                )
+    elif checked is False:
+        if ok is not None:
+            problems.append("ok must be null when checked=false")
+        for field in (*axis_fields, *stability_fields, *hash_fields, *rc_fields):
+            if value.get(field) is not None:
+                problems.append(f"{field} must be null when checked=false")
+        mismatch_observation = value.get("mismatch_observation")
+        if mismatch_observation is not None and (
+            not isinstance(mismatch_observation, str) or not mismatch_observation
+        ):
+            problems.append("mismatch_observation must be non-empty or null")
+        if value.get("mismatch_observation_sha256") is not None:
+            problems.append(
+                "mismatch_observation_sha256 must be null when checked=false"
+            )
+
+    if require_checked and checked is not True:
+        problems.append("must be checked for a measured runnable verdict")
+    if require_pass and ok is not True:
+        problems.append("must pass for a measured runnable verdict")
+    return problems
+
+
+def output_parity_passes(value: object) -> bool:
+    return not output_parity_evidence_problems(
+        value,
+        require_checked=True,
+        require_pass=True,
+    )
 
 
 def validate_cell(cell: Mapping[str, Any]) -> list[str]:
@@ -460,8 +848,33 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
             f"cell {cell.get('benchmark')} has fact_class without suspected_missing_fact"
         )
     verdict = str(cell.get("verdict"))
+    parity_required = verdict in _MEASURED_RUN_VERDICTS
+    parity_problems = output_parity_evidence_problems(
+        cell.get("output_parity"),
+        require_checked=parity_required,
+        require_pass=parity_required,
+    )
+    problems.extend(
+        f"cell {cell.get('benchmark')} output_parity {problem}"
+        for problem in parity_problems
+    )
     if verdict in _MOLT_FAILURE_VERDICTS:
         problems.extend(_validate_molt_failure_cell(cell, verdict))
+    if (
+        verdict == VERDICT_RUN_ERROR
+        and cell.get("molt_failure_status") == "output_mismatch"
+    ):
+        parity = cell.get("output_parity")
+        if not isinstance(parity, Mapping):
+            problems.append(
+                f"cell {cell.get('benchmark')} is output_mismatch without "
+                "structured output_parity evidence"
+            )
+        elif parity.get("ok") is True:
+            problems.append(
+                f"cell {cell.get('benchmark')} is output_mismatch with "
+                "output_parity.ok=true"
+            )
     if verdict in _MEASURED_RUN_VERDICTS:
         problems.extend(_validate_measured_run_cell(cell, verdict))
     if classification == CLASS_RED_STABLE:
@@ -476,6 +889,11 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
     missing = REQUIRED_TOP_LEVEL_KEYS - set(doc)
     if missing:
         problems.append(f"missing top-level keys: {sorted(missing)}")
+    if doc.get("schema_version") != SCHEMA_VERSION:
+        problems.append(
+            f"schema_version must be {SCHEMA_VERSION}, got "
+            f"{doc.get('schema_version')!r}"
+        )
     pmiss = REQUIRED_PROVENANCE_FIELDS - set(_mapping(doc.get("provenance")))
     if pmiss:
         problems.append(f"provenance missing fields: {sorted(pmiss)}")

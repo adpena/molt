@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import importlib.util
 import sys
 from pathlib import Path
@@ -43,6 +44,41 @@ def test_benchmark_runner_tables_use_canonical_suite() -> None:
     assert tuple(bench.WS_BENCHMARKS) == bench_suites.WS_BENCHMARKS
     assert tuple(bench_wasm.WS_BENCHMARKS) == bench_suites.WS_BENCHMARKS
     assert tuple(bench.DYNAMIC_BUILTIN_SLICES) == bench_suites.DYNAMIC_BUILTIN_SLICES
+
+
+def test_every_benchmark_file_has_exactly_one_primary_owner_or_exclusion() -> None:
+    allowed_exclusion_kinds = {
+        "self_timed",
+        "profile_epoch",
+        "diagnostic",
+        "external_harness",
+    }
+    primary_suites = {
+        "core": bench_suites.BENCHMARKS,
+        "websocket": bench_suites.WS_BENCHMARKS,
+        "dynamic_builtin": bench_suites.DYNAMIC_BUILTIN_SLICES,
+    }
+    primary_paths = [path for suite in primary_suites.values() for path in suite]
+    counts = Counter(primary_paths)
+    assert all(count == 1 for count in counts.values())
+    for suite in primary_suites.values():
+        assert len(suite) == len(set(suite))
+
+    discovered = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "tests" / "benchmarks").glob("bench_*.py")
+    }
+    runnable = set(primary_paths)
+    excluded = set(bench_suites.EXCLUDED_BENCHMARKS)
+    assert runnable.isdisjoint(excluded)
+    assert discovered == runnable | excluded
+
+    # Smoke is deliberately an alias/subset, not another ownership class.
+    assert set(bench_suites.SMOKE_BENCHMARKS) <= set(bench_suites.BENCHMARKS)
+    for path, exclusion in bench_suites.EXCLUDED_BENCHMARKS.items():
+        assert (ROOT / path).is_file()
+        assert exclusion.kind in allowed_exclusion_kinds
+        assert exclusion.reason.strip()
 
 
 def test_molt_benchmark_args_are_canonicalized_for_all_call_shapes() -> None:

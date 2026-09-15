@@ -7,7 +7,9 @@ helpers normalize direct script paths and basenames at call sites.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_fib.py",
@@ -32,10 +34,13 @@ BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_range_iter.py",
     "tests/benchmarks/bench_try_except.py",
     "tests/benchmarks/bench_generator_iter.py",
+    "tests/benchmarks/bench_generator_chain.py",
     "tests/benchmarks/bench_async_await.py",
     "tests/benchmarks/bench_channel_throughput.py",
     "tests/benchmarks/bench_ptr_registry.py",
     "tests/benchmarks/bench_deeply_nested_loop.py",
+    "tests/benchmarks/bench_loop_invariant_shift.py",
+    "tests/benchmarks/bench_masked_shift_accumulator.py",
     "tests/benchmarks/bench_csv_parse.py",
     "tests/benchmarks/bench_csv_parse_wide.py",
     "tests/benchmarks/bench_matrix_math.py",
@@ -82,6 +87,54 @@ DYNAMIC_BUILTIN_SLICES: tuple[str, ...] = (
     "tests/benchmarks/bench_builtin_import_slice.py",
     "tests/benchmarks/bench_builtin_delattr_slice.py",
 )
+
+BenchmarkExclusionKind = Literal[
+    "self_timed",
+    "profile_epoch",
+    "diagnostic",
+    "external_harness",
+]
+
+
+@dataclass(frozen=True)
+class BenchmarkExclusion:
+    kind: BenchmarkExclusionKind
+    reason: str
+
+
+# Every tests/benchmarks/bench_*.py file must be owned by one primary runnable
+# suite above or by this typed exclusion table. SMOKE_BENCHMARKS is a selection
+# alias over BENCHMARKS, not a second ownership class.
+EXCLUDED_BENCHMARKS: dict[str, BenchmarkExclusion] = {
+    "tests/benchmarks/bench_exception_check.py": BenchmarkExclusion(
+        "self_timed",
+        "prints in-process timings, so exact output parity and outer wall time are invalid",
+    ),
+    "tests/benchmarks/bench_exception_typed_fields.py": BenchmarkExclusion(
+        "profile_epoch",
+        "allocation removal is proved by runtime profile epochs, not wall time alone",
+    ),
+    "tests/benchmarks/bench_generator.py": BenchmarkExclusion(
+        "external_harness",
+        "drives a sibling Vertigo checkout and prebuilt Molt binary instead of one script",
+    ),
+    "tests/benchmarks/bench_heap_canonical_cache.py": BenchmarkExclusion(
+        "profile_epoch",
+        "zero-allocation cache hits require runtime profile-epoch evidence",
+    ),
+    "tests/benchmarks/bench_method_default_binding.py": BenchmarkExclusion(
+        "diagnostic",
+        "its documented loop-only signal is swamped by outer process startup timing",
+    ),
+    "tests/benchmarks/bench_object_class_lifecycle.py": BenchmarkExclusion(
+        "profile_epoch",
+        "allocation and lifetime claims require the benchmark's two profile epochs",
+    ),
+    "tests/benchmarks/bench_weakref_native.py": BenchmarkExclusion(
+        "profile_epoch",
+        "cache/call/hash allocation claims require guarded profile-epoch counters",
+    ),
+}
 
 MOLT_ARGS_BY_BENCH: dict[str, list[str]] = {
     "tests/benchmarks/bench_sum_list_hints.py": ["--type-hints", "trust"],

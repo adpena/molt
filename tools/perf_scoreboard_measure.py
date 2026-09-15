@@ -17,7 +17,7 @@ import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
-from perf_schema import RED_THRESHOLD  # noqa: E402
+from perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
 from perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
     PROFILE_BUILD_FLAG,
@@ -45,6 +45,11 @@ def _perfscore_build_env(spec: BackendSpec) -> dict[str, str]:
     conformance env (PYTHONPATH, codec, conformance dirs).
     """
     base = os.environ.copy()
+    # Scoreboard parity compares user-observable stderr. Profiler epochs emit
+    # Molt-only diagnostics, so canonical timing runs explicitly disable ambient
+    # profiler/leak modes instead of normalizing those diagnostics away later.
+    base["MOLT_PROFILE"] = "0"
+    base["MOLT_ASSERT_NO_LEAK"] = "0"
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     base["CARGO_TARGET_DIR"] = str(
         cargo_target_dir_for_artifact_root(REPO_ROOT, PERFSCORE_SESSION_ID)
@@ -185,7 +190,7 @@ def measure_cell(
         rss_mb=rss_mb,
         timeout_s=timeout_s,
         label=f"molt-cold:{benchmark}",
-        capture_stdout=True,
+        capture_output=True,
     )
     cold_cpy = _safe_run_json(
         [*cpython_cmd, str(script_path), *run_args],
@@ -193,54 +198,107 @@ def measure_cell(
         rss_mb=rss_mb,
         timeout_s=timeout_s,
         label=f"cpython-cold:{benchmark}",
-        capture_stdout=True,
+        capture_output=True,
     )
+    molt_output_observations = [
+        ("molt:cold", cold_molt.stdout, cold_molt.stderr, cold_molt.exit_code)
+    ]
+    cpy_output_observations = [
+        ("cpython:cold", cold_cpy.stdout, cold_cpy.stderr, cold_cpy.exit_code)
+    ]
 
     # --- WARM samples — N independent PASSES (council --repeat N) -----------
     # Each pass is a full warmup+samples block for molt AND CPython, yielding one
     # warm_speedup point estimate. The CANONICAL cell stats come from the pass
     # with the most molt samples (pass 1 in the common case); ALL passes feed the
-    # confidence interval. A verdict is STABLE only if that CI clears 1.00.
+    # confidence interval. Warmup subprocesses already execute the benchmark, so
+    # their exact outputs also feed parity; otherwise a nondeterministic warmup
+    # result could disappear from affirmative evidence. A verdict is STABLE only
+    # if the CI clears 1.00.
     n_passes = max(1, repeat)
     per_pass_speedups: list[float] = []
     pass_results: list[tuple[PhaseStats, PhaseStats]] = []
     for pass_idx in range(n_passes):
-        for _ in range(warmup):
+        molt_warmups = [
             _safe_run_json(
                 [str(binary.path), *run_args],
                 env=molt_run_env,
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
-                label=f"molt-warmup:{benchmark}",
+                label=f"molt-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
+                capture_output=True,
             )
+            for sample_idx in range(warmup)
+        ]
+        molt_output_observations.extend(
+            (
+                f"molt:warmup:p{pass_idx}:s{sample_idx}",
+                run.stdout,
+                run.stderr,
+                run.exit_code,
+            )
+            for sample_idx, run in enumerate(molt_warmups)
+        )
         molt_runs = [
             _safe_run_json(
                 [str(binary.path), *run_args],
                 env=molt_run_env,
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
-                label=f"molt-warm:{benchmark}:p{pass_idx}",
+                label=f"molt-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
+                capture_output=True,
             )
-            for _ in range(samples)
+            for sample_idx in range(samples)
         ]
-        for _ in range(warmup):
+        molt_output_observations.extend(
+            (
+                f"molt:warm:p{pass_idx}:s{sample_idx}",
+                run.stdout,
+                run.stderr,
+                run.exit_code,
+            )
+            for sample_idx, run in enumerate(molt_runs)
+        )
+        cpy_warmups = [
             _safe_run_json(
                 [*cpython_cmd, str(script_path), *run_args],
                 env=_cpython_run_env(),
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
-                label=f"cpython-warmup:{benchmark}",
+                label=f"cpython-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
+                capture_output=True,
             )
+            for sample_idx in range(warmup)
+        ]
+        cpy_output_observations.extend(
+            (
+                f"cpython:warmup:p{pass_idx}:s{sample_idx}",
+                run.stdout,
+                run.stderr,
+                run.exit_code,
+            )
+            for sample_idx, run in enumerate(cpy_warmups)
+        )
         cpy_runs = [
             _safe_run_json(
                 [*cpython_cmd, str(script_path), *run_args],
                 env=_cpython_run_env(),
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
-                label=f"cpython-warm:{benchmark}:p{pass_idx}",
+                label=f"cpython-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
+                capture_output=True,
             )
-            for _ in range(samples)
+            for sample_idx in range(samples)
         ]
+        cpy_output_observations.extend(
+            (
+                f"cpython:warm:p{pass_idx}:s{sample_idx}",
+                run.stdout,
+                run.stderr,
+                run.exit_code,
+            )
+            for sample_idx, run in enumerate(cpy_runs)
+        )
         m_stats = PhaseStats.from_runs(molt_runs)
         c_stats = PhaseStats.from_runs(cpy_runs)
         pass_results.append((m_stats, c_stats))
@@ -320,15 +378,35 @@ def measure_cell(
     # pyperf discipline, never a per-test special case.
     cell.stable = _robust_cell_stable(molt_stats, cpy_stats)
 
-    # One-time output parity (informational; not the gate).
-    if cold_molt.stdout is not None and cold_cpy.stdout is not None:
-        cell.output_parity = cold_molt.stdout.strip() == cold_cpy.stdout.strip()
+    # Exact comparison plus per-runtime stability across the cold observation,
+    # every existing warmup, and every timed warm sample. No extra benchmark
+    # process is added.
+    cell.output_parity = output_parity_evidence(
+        reference_observations=cpy_output_observations,
+        molt_observations=molt_output_observations,
+    )
 
     if not cell.molt_ok:
         _record_molt_run_failure(cell, cold_molt, fallback_status="runtime_failed")
         cell.note = f"molt run unmeasurable (status={cold_molt.status})"
     elif not cell.cpython_ok:
         cell.note = f"cpython run unmeasurable (status={cold_cpy.status})"
+    elif cell.output_parity.get("ok") is not True:
+        reason = str(cell.output_parity.get("reason") or "comparison_unavailable")
+        detail = str(cell.output_parity.get("detail") or reason)
+        _record_molt_failure(
+            cell,
+            bench.MoltFailure(
+                phase="run",
+                status="output_mismatch",
+                returncode=cold_molt.exit_code,
+                timed_out=False,
+                elapsed_s=cold_molt.elapsed_s,
+                detail=reason,
+                message=detail,
+            ),
+        )
+        log_lines.append(f"OUTPUT PARITY FAILED: {reason}: {detail}")
     elif cell.stable and not cpy_stats.stable and molt_stats.stable:
         # Transparency: the cell is trusted despite CPython-side jitter because
         # molt is stable AND the verdict is robust to CPython's spread.
