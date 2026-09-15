@@ -53,6 +53,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     input_files = {path.resolve() for path in manifest.generator_input_files()}
     assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
+    assert (ROOT / "src/molt/frontend/_types.py").resolve() in input_files
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
     )
@@ -906,6 +907,19 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_target_ptr" in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info" in rendered_runtime_rs
+    assert "pub(crate) fn python_builtin_callable(name: &str)" in rendered_rs
+    builtin_entries = sorted(
+        gen._python_builtin_global_callables(data), key=lambda entry: entry["python_name"]
+    )
+    offsets = []
+    for entry in builtin_entries:
+        marker = f'python_name: "{entry["python_name"]}",'
+        offsets.append(rendered_rs.index(marker))
+        assert (
+            marker + f'\n        runtime_name: "{entry["runtime_name"]}",'
+            + f'\n        arity: {entry["arity"]},'
+        ) in rendered_rs
+    assert offsets == sorted(offsets), "binary-search projection must be name-sorted"
     assert '        "len" => Some(PythonBuiltinFunctionInfo {' in rendered_runtime_rs
     assert "            index: 2," in rendered_runtime_rs
     assert '            runtime_name: "molt_len",' in rendered_runtime_rs

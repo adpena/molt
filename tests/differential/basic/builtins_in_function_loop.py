@@ -41,17 +41,39 @@ def builtins_str(x):
     return str(x)
 
 
-print(sum_range(10))
-print(sum_range(0))
-print(sum_range(1))
-print(prod_range(6))
-print(range_to_list(4))
-print(range_index(5))
-print(range_len(7))
-print(builtins_len([1, 2, 3, 4]))
-print(builtins_str(123))
+def print_in_function():
+    # This must work without a top-level print rooting its runtime callable.
+    total = sum_range(10)
+    print(total, len([1, 2, 3]), abs(-4), sep=":")
+
+
 # range at module scope (control: already worked)
 ms = 0
 for i in range(5):
     ms = ms + i
-print(ms)
+
+
+def run_checks():
+    global print
+    print_in_function()
+    print(sum_range(10))
+    print(sum_range(0))
+    print(sum_range(1))
+    print(prod_range(6))
+    print(range_to_list(4))
+    print(range_index(5))
+    print(range_len(7))
+    print(builtins_len([1, 2, 3, 4]))
+    print(builtins_str(123))
+    print(ms)
+    saved_print = print
+    print = None
+    try:
+        print_in_function()
+    except TypeError:
+        saved_print("shadowed builtin")
+    del print
+    print_in_function()
+
+
+run_checks()
