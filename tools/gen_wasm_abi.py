@@ -44,6 +44,7 @@ from wasm_abi_gen.paths import (
     OUT_JS_CALLABLE_TABLE_ABI,
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
+    OUT_PYTHON_BUILTIN_CALLABLES_RS,
     OUT_RS_DIR,
     OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
@@ -63,6 +64,7 @@ RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
     "rendered_native_exception_observer_abi_rs",
     "rendered_runtime_callables_rs",
+    "rendered_python_builtin_callables_rs",
     "rendered_wasm_facts_callable_table_rs",
     "rendered_py",
     "rendered_js_abi",
@@ -467,9 +469,9 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, PYTHON_BUILTIN_CALLABLES, ReservedRuntimeCallableDispatch,\n",
+            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
             "    RuntimeCallableResult,\n",
-            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import, python_builtin_callable,\n",
+            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
@@ -1765,18 +1767,23 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "}\n\n",
         ]
     )
+    return "".join(lines)
+
+
+def render_python_builtin_callables_rs(data: dict) -> str:
+    lines = [_runtime_callables_header("//")]
     # The runtime metadata and the compiler's late-bound lookup roots must be
     # projections of the same Python-name/ABI authority. These are possible
     # dependencies, never proof that a mutable global names a fixed callable.
     lines.extend(
         [
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct PythonBuiltinCallableSpec {\n",
-            "    pub(crate) python_name: &'static str,\n",
-            "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) arity: usize,\n",
+            "pub struct PythonBuiltinCallableSpec {\n",
+            "    pub python_name: &'static str,\n",
+            "    pub runtime_name: &'static str,\n",
+            "    pub arity: usize,\n",
             "}\n\n",
-            "pub(crate) const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[\n",
+            "pub const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[\n",
         ]
     )
     for entry in sorted(
@@ -1794,7 +1801,7 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     lines.extend(
         [
             "];\n\n",
-            "pub(crate) fn python_builtin_callable(name: &str) -> Option<&'static PythonBuiltinCallableSpec> {\n",
+            "pub fn python_builtin_callable(name: &str) -> Option<&'static PythonBuiltinCallableSpec> {\n",
             "    PYTHON_BUILTIN_CALLABLES.binary_search_by_key(&name, |spec| spec.python_name)\n",
             "        .ok().map(|index| &PYTHON_BUILTIN_CALLABLES[index])\n",
             "}\n",
@@ -1874,19 +1881,21 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
 
     callable_imports = {
         entry["runtime_name"]: entry
-        for entry in data["import"]
+        for entry in [*data["import"], *_shared_runtime_callables(data)]
         if "runtime_name" in entry and "callable_arity" in entry
     }
     entries: list[dict] = []
     for python_name, spec in BUILTIN_FUNC_SPECS.items():
-        if python_name.startswith("_") or python_name.startswith("molt_"):
+        if (
+            python_name.startswith("_") and python_name != "__import__"
+        ) or python_name.startswith("molt_"):
             continue
         arity = _builtin_func_abi_arity(spec)
         import_entry = callable_imports.get(spec.runtime)
         if import_entry is None:
             raise ValueError(
                 f"builtin function {python_name!r} runtime {spec.runtime!r} "
-                "is not backed by the WASM ABI callable import authority"
+                "is not backed by the WASM ABI callable authority"
             )
         manifest_arity = import_entry["callable_arity"]
         if manifest_arity != arity:
@@ -1900,7 +1909,6 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 "python_name": python_name,
                 "runtime_name": spec.runtime,
                 "arity": arity,
-                "symbol_path": f"crate::{spec.runtime}",
                 "posonly_params": list(spec.params),
                 "pos_or_kw_params": list(spec.pos_or_kw_params),
                 "kwonly_params": list(spec.kwonly_params),
@@ -1939,6 +1947,8 @@ def _rust_optional_i64(value: int | None) -> str:
 
 
 def _rust_builtin_default_value(expr: ast.expr) -> str:
+    if isinstance(expr, ast.Tuple) and not expr.elts:
+        return "GeneratedBuiltinDefaultValue::EmptyTuple"
     if isinstance(expr, ast.Name) and expr.id == "__molt_missing__":
         return "GeneratedBuiltinDefaultValue::Missing"
     if isinstance(expr, ast.Constant):
@@ -2035,6 +2045,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum GeneratedBuiltinDefaultValue {\n",
             "    Missing,\n",
+            "    EmptyTuple,\n",
             "    None,\n",
             "    Bool(bool),\n",
             "    Int(i64),\n",
@@ -2229,23 +2240,23 @@ def render_runtime_callables_rs(data: dict) -> str:
             "        _ => None,\n",
             "    }\n",
             "}\n\n",
-            '#[cfg(not(target_arch = "wasm32"))]\n',
-            "#[inline]\n",
+            "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
-            "pub(crate) fn python_builtin_function_target_ptr(\n",
-            "    runtime_name: &str,\n",
-            ") -> Option<*const ()> {\n",
-            "    match runtime_name {\n",
+            "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {\n",
+            "    let target = match symbol {\n",
         ]
     )
-    for entry in python_builtin_callables:
+    for runtime_name in sorted(
+        {entry["runtime_name"] for entry in python_builtin_callables}
+    ):
         lines.append(
-            f'        "{entry["runtime_name"]}" => Some({entry["symbol_path"]} as *const ()),\n'
+            f'        "{runtime_name}" => crate::{runtime_name} as *const (),\n'
         )
     lines.extend(
         [
-            "        _ => None,\n",
-            "    }\n",
+            "        _ => return None,\n",
+            "    };\n",
+            "    Some(crate::provenance::abi::expose_function_address(target))\n",
             "}\n\n",
             "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
@@ -2529,6 +2540,13 @@ def main(argv: list[str]) -> int:
         rendered_runtime_callables_rs = timed(
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
+        rendered_python_builtin_callables_rs = timed(
+            "render_python_builtin_callables_rs",
+            lambda: _rustfmt(
+                "python_builtin_callables_generated.rs",
+                render_python_builtin_callables_rs(data),
+            ),
+        )
         rendered_wasm_facts_callable_table_rs = timed(
             "render_wasm_facts_callable_table_rs",
             lambda: _rustfmt(
@@ -2554,6 +2572,7 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs
             ),
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
+            "rendered_python_builtin_callables_rs": rendered_python_builtin_callables_rs,
             "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
             "rendered_py": rendered_py,
             "rendered_js_abi": rendered_js_abi,
@@ -2568,6 +2587,9 @@ def main(argv: list[str]) -> int:
         bundle["rendered_native_exception_observer_abi_rs"]
     )
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
+    rendered_python_builtin_callables_rs = str(
+        bundle["rendered_python_builtin_callables_rs"]
+    )
     rendered_wasm_facts_callable_table_rs = str(
         bundle["rendered_wasm_facts_callable_table_rs"]
     )
@@ -2585,6 +2607,9 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs,
             )
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+            and _check(
+                OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
+            )
             and _check(
                 OUT_WASM_FACTS_CALLABLE_TABLE_RS,
                 rendered_wasm_facts_callable_table_rs,
@@ -2610,6 +2635,9 @@ def main(argv: list[str]) -> int:
         rendered_native_exception_observer_abi_rs,
     )
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+    _write_if_changed(
+        OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
+    )
     _write_if_changed(
         OUT_WASM_FACTS_CALLABLE_TABLE_RS,
         rendered_wasm_facts_callable_table_rs,

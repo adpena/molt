@@ -19,13 +19,12 @@ impl WasmBackend {
         &mut self,
         ir: &SimpleIR,
     ) -> WasmRuntimeImportEmission {
-        let runtime_surface = WasmRuntimeSurfacePlan::build(ir);
-        runtime_surface.validate_profile(self.options.wasm_profile);
+        let runtime_surface = WasmRuntimeSurfacePlan::build(ir, self.options.wasm_profile);
         let mut registrar = RuntimeImportRegistrar {
             imports: &mut self.imports,
             import_ids: &mut self.import_ids,
             import_idx: 0,
-            is_pure: self.options.wasm_profile == WasmProfile::Pure,
+            profile: self.options.wasm_profile,
         };
 
         // Register the full profile-allowed surface upfront. Import-surface
@@ -57,7 +56,7 @@ struct RuntimeImportRegistrar<'a> {
     imports: &'a mut ImportSection,
     import_ids: &'a mut TrackedImportIds,
     import_idx: u32,
-    is_pure: bool,
+    profile: WasmProfile,
 }
 
 impl RuntimeImportRegistrar<'_> {
@@ -67,7 +66,7 @@ impl RuntimeImportRegistrar<'_> {
 
     fn add_import(&mut self, import: WasmRuntimeImport) {
         let name = import.name();
-        if self.is_skipped_import(import) {
+        if !self.profile.allows_runtime_import(import) {
             self.import_ids.insert(import, u32::MAX);
             return;
         }
@@ -78,10 +77,5 @@ impl RuntimeImportRegistrar<'_> {
         );
         self.import_ids.insert(import, self.import_idx);
         self.import_idx += 1;
-    }
-
-    fn is_skipped_import(&self, import: WasmRuntimeImport) -> bool {
-        let name = import.name();
-        self.is_pure && crate::wasm_abi_generated::pure_profile_skips_import(name)
     }
 }

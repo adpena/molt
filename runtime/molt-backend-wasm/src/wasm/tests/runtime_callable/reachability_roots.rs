@@ -1,5 +1,6 @@
 use super::*;
-use crate::wasm_abi_generated::{PYTHON_BUILTIN_CALLABLES, runtime_callable_import};
+use crate::wasm_abi_generated::runtime_callable_import;
+use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
 
 fn deferred_lookup_function(function_name: &str, name: Option<&str>, spelling: &str) -> FunctionIR {
     let mut ops = Vec::new();
@@ -151,6 +152,62 @@ fn supported_deferred_builtin_lookup_is_valid_in_pure_profile() {
             .iter()
             .any(|bytes| bytes == b"molt_print_builtin")
     );
+}
+
+#[test]
+fn resolver_candidates_are_admitted_by_profile_without_requiring_capabilities() {
+    for profile in [WasmProfile::Auto, WasmProfile::Pure] {
+        for reloc_enabled in [false, true] {
+            let mut name = wasm_test_op("const_str", Some("name"), vec![]);
+            name.s_value = Some("molt_open_builtin".into());
+            let data = wasm_test_function(
+                "intrinsic_name_as_data",
+                vec![],
+                None,
+                vec![name.clone(), wasm_test_op("ret", None, vec!["name"])],
+            );
+            // A real optional intrinsic, using the runtime's explicit alias.
+            name.s_value = Some("_molt_time_time".into());
+            let mut optional = wasm_test_op("call", Some("value"), vec!["name", "namespace"]);
+            optional.s_value = Some("molt_load_intrinsic_runtime".into());
+            let lookup = wasm_test_function(
+                "optional_intrinsic_lookup",
+                vec!["namespace"],
+                None,
+                vec![name, optional, wasm_test_op("ret", None, vec!["value"])],
+            );
+            let wasm = compile_lookup_functions(vec![data, lookup], reloc_enabled, profile);
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let imports = wasm_function_import_names(&wasm);
+            assert!(imports.iter().any(|name| name == "load_intrinsic_runtime"));
+            assert_eq!(
+                imports.iter().any(|name| name == "open_builtin"),
+                profile != WasmProfile::Pure,
+                "resolver candidates must not add providers excluded by {profile:?}",
+            );
+            assert_eq!(
+                imports.iter().any(|name| name == "time_time"),
+                profile != WasmProfile::Pure,
+                "optional alias candidates must use the same profile admission",
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'")]
+fn required_builtin_materialization_is_not_weakened_by_candidate_admission() {
+    let mut builtin = wasm_test_op("builtin_func", Some("value"), vec![]);
+    builtin.s_value = Some("molt_open_builtin".into());
+    builtin.value =
+        Some(crate::wasm_abi::runtime_callable_arity("molt_open_builtin").unwrap() as i64);
+    let function = wasm_test_function(
+        "required_open",
+        vec![],
+        None,
+        vec![builtin, wasm_test_op("ret", None, vec!["value"])],
+    );
+    compile_lookup_functions(vec![function], false, WasmProfile::Pure);
 }
 
 #[test]

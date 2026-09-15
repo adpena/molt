@@ -87,22 +87,21 @@ pub(crate) fn try_app_resolve_runtime_callable(symbol: &str) -> Option<u64> {
     if fn_ptr == 0 { None } else { Some(fn_ptr) }
 }
 
-/// Resolve `symbol` to an intrinsic function pointer.
+/// Resolve a runtime callable through the installed app authority.
 ///
 /// When the per-app resolver is registered, delegate to it. Otherwise return
 /// `None` in production builds so the full generated resolver stays
-/// dead-strippable. Unit tests resolve through `resolve_symbol` because they do
-/// not emit a per-app resolver and are never final dead-stripped artifacts.
+/// dead-strippable. Without an app resolver, unit tests use generated intrinsic
+/// and builtin fixtures; neither address-taking fixture is a production root.
 pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
-    if let Some(fn_ptr) = try_app_resolve_runtime_callable(symbol) {
-        return Some(fn_ptr);
+    if APP_CALLABLE_RESOLVER_ADDRESS.load(Ordering::Acquire) != 0 {
+        // An installed resolver's miss is authoritative, including in tests.
+        return try_app_resolve_runtime_callable(symbol);
     }
     #[cfg(test)]
     {
-        // Unit tests validate the generated intrinsic registry directly. They
-        // do not emit a per-app resolver and are not final dead-stripped
-        // production artifacts, so `resolve_symbol` may remain reachable here.
         resolve_symbol(symbol)
+            .or_else(|| crate::builtins::functions::resolve_test_python_builtin_symbol(symbol))
     }
     #[cfg(not(test))]
     {
@@ -546,10 +545,6 @@ pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
     })
 }
 
-/// Python builtin name -> intrinsic name mapping for builtins that have
-/// non-standard intrinsic names (e.g. `globals` -> `molt_globals_builtin`).
-static PYTHON_BUILTIN_ALIASES: &[(&str, &str)] = &[("globals", "molt_globals_builtin")];
-
 fn find_spec_by_name(name: &str) -> Option<&'static crate::intrinsics::generated::IntrinsicSpec> {
     INTRINSICS.iter().find(|spec| spec.name == name)
 }
@@ -561,39 +556,14 @@ fn find_spec(name: &str) -> Option<&'static crate::intrinsics::generated::Intrin
         return Some(spec);
     }
     // Try alias: `_molt_foo` -> `molt_foo`.
-    if let Some(rest) = name.strip_prefix("_molt_") {
-        let primary = {
-            let mut s = String::with_capacity(5 + rest.len());
-            s.push_str("molt_");
-            s.push_str(rest);
-            s
-        };
-        if let Some(spec) = find_spec_by_name(&primary) {
-            return Some(spec);
-        }
+    if let Some(primary) = name
+        .strip_prefix('_')
+        .filter(|name| name.starts_with("molt_"))
+    {
+        return find_spec_by_name(primary);
     }
-    // Try generic Python builtin spellings first as `molt_<name>` and then
-    // `molt_<name>_builtin`. This keeps compiler-generated builtin calls off
-    // the fragile builtins-module bootstrap path when a direct runtime
-    // intrinsic exists.
-    if !name.starts_with("molt_") {
-        let prefixed = format!("molt_{name}");
-        if let Some(spec) = find_spec_by_name(&prefixed) {
-            return Some(spec);
-        }
-        let builtin = format!("molt_{name}_builtin");
-        if let Some(spec) = find_spec_by_name(&builtin) {
-            return Some(spec);
-        }
-    }
-    // Try Python builtin aliases (e.g. `globals` -> `molt_globals_builtin`).
-    for &(py_name, intrinsic_name) in PYTHON_BUILTIN_ALIASES {
-        if name == py_name
-            && let Some(spec) = find_spec_by_name(intrinsic_name)
-        {
-            return Some(spec);
-        }
-    }
+    // Python builtin spellings belong to python_builtin_function_info, not the
+    // intrinsic namespace. Some valid ABI-backed builtins have no IntrinsicSpec.
     None
 }
 
@@ -1157,6 +1127,52 @@ mod tests {
     }
 
     #[test]
+    fn builtin_spellings_and_intrinsic_names_have_distinct_metadata_authorities() {
+        for (python_name, runtime_name) in [
+            ("len", "molt_len"),
+            ("globals", "molt_globals_builtin"),
+            ("locals", "molt_locals_builtin"),
+            ("vars", "molt_vars_builtin"),
+            ("__import__", "molt_importlib_import_transaction"),
+        ] {
+            let info = crate::builtins::functions::python_builtin_function_info(python_name)
+                .unwrap_or_else(|| panic!("missing generated builtin mapping for {python_name}"));
+            assert_eq!(info.runtime_name, runtime_name);
+            assert!(find_spec(python_name).is_none());
+            // Intrinsic membership is independent of builtin membership.
+            if let Some(spec) = find_spec(runtime_name) {
+                let alias = format!("_molt_{}", &runtime_name[5..]);
+                assert!(core::ptr::eq(
+                    spec,
+                    find_spec(&alias).expect("canonical alias")
+                ));
+            }
+        }
+
+        assert!(
+            find_spec("getframe").is_none(),
+            "an unlisted Python spelling must not prefix-guess molt_getframe"
+        );
+        assert_eq!(
+            find_spec("_molt_getframe").map(|spec| spec.name),
+            Some("molt_getframe"),
+            "explicit _molt_ intrinsic aliases remain supported"
+        );
+
+        let import_info = crate::builtins::functions::python_builtin_function_info("__import__")
+            .expect("generated __import__ callable metadata");
+        assert_eq!(import_info.arity, 5);
+        assert_eq!(
+            import_info.pos_or_kw_params,
+            &["name", "globals", "locals", "fromlist", "level"]
+        );
+        assert_eq!(
+            format!("{:?}", import_info.defaults),
+            "[None, None, EmptyTuple, Int(0)]"
+        );
+    }
+
+    #[test]
     fn borrowed_c_api_intrinsics_cannot_be_materialized_as_python_callables() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -1604,6 +1620,13 @@ mod tests {
             None,
             "registered resolver returning 0 must surface as None"
         );
+        for symbol in ["molt_len", "molt_vars_builtin", "molt_globals_builtin"] {
+            assert_eq!(
+                try_app_resolve_symbol(symbol),
+                None,
+                "installed resolver misses must not fall back to test fixtures: {symbol}"
+            );
+        }
 
         // Clean up for other tests sharing the process-global statics.
         test_app_resolver_address().store(0, Ordering::SeqCst);

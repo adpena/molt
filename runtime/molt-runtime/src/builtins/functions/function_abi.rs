@@ -434,7 +434,7 @@ fn alloc_python_builtin_function_bits(
     _py: &crate::PyToken<'_>,
     info: wasm_callables::PythonBuiltinFunctionInfo,
 ) -> Option<u64> {
-    let fn_ptr = python_builtin_function_target(info.runtime_name)?;
+    let fn_ptr = crate::intrinsics::registry::try_app_resolve_symbol(info.runtime_name)?;
     let ptr = alloc_runtime_function_obj(_py, fn_ptr, info.arity);
     if ptr.is_null() {
         return None;
@@ -452,18 +452,6 @@ fn alloc_python_builtin_function_bits(
         return None;
     }
     Some(bits)
-}
-
-fn python_builtin_function_target(runtime_name: &str) -> Option<u64> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::intrinsics::registry::try_app_resolve_runtime_callable(runtime_name)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let raw_ptr = wasm_callables::python_builtin_function_target_ptr(runtime_name)?;
-        Some(runtime_fn_addr(runtime_name, raw_ptr))
-    }
 }
 
 fn init_python_builtin_function_metadata(
@@ -612,6 +600,9 @@ fn generated_default_value_bits(
 ) -> Option<u64> {
     match value {
         wasm_callables::GeneratedBuiltinDefaultValue::Missing => Some(missing_bits(_py)),
+        wasm_callables::GeneratedBuiltinDefaultValue::EmptyTuple => {
+            alloc_static_str_tuple_bits(_py, std::iter::empty(), owned)
+        }
         wasm_callables::GeneratedBuiltinDefaultValue::None => Some(MoltObject::none().bits()),
         wasm_callables::GeneratedBuiltinDefaultValue::Bool(value) => {
             Some(MoltObject::from_bool(value).bits())

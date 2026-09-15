@@ -61,7 +61,11 @@ pub use opcode_payload::*;
 pub use tokenize::*;
 
 pub(crate) use function_abi::python_builtin_functions_clear_runtime_state;
-pub(crate) use wasm_callables_generated::runtime_callable_symbol_is_non_callable;
+#[cfg(test)]
+pub(crate) use wasm_callables_generated::resolve_test_python_builtin_symbol;
+pub(crate) use wasm_callables_generated::{
+    python_builtin_function_info, runtime_callable_symbol_is_non_callable,
+};
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_callables_generated::{

@@ -29,6 +29,9 @@ OUT_RS_FILES = {
 OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )
+OUT_PYTHON_BUILTIN_CALLABLES_RS = (
+    ROOT / "runtime/molt-ir/src/python_builtin_callables_generated.rs"
+)
 OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS = (
     ROOT / "runtime/molt-backend-native/src/exception_observer_abi.rs"
 )
