@@ -235,6 +235,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_exception_last",
             crate::molt_exception_last as *const (),
         )),
+        "molt_exception_last_pending" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_exception_last_pending",
+            crate::molt_exception_last_pending as *const (),
+        )),
         "molt_exception_pending" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_exception_pending",
             crate::molt_exception_pending as *const (),
