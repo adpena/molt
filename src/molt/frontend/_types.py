@@ -602,7 +602,6 @@ BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
 
 _MOLT_MISSING = ast.Name(id="__molt_missing__", ctx=ast.Load())
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
-_MOLT_GLOBALS_BUILTIN = "__molt_globals_builtin__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
 _MOLT_MODULE_CHUNK_PREFIX = "molt_module_chunk"
 MOLT_BIND_KIND_OPEN = 1
@@ -1625,7 +1624,6 @@ __all__ = [
     "BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS",
     "_MOLT_MISSING",
     "_MOLT_CLOSURE_PARAM",
-    "_MOLT_GLOBALS_BUILTIN",
     "_MOLT_MODULE_CHUNK_PARAM",
     "_MOLT_MODULE_CHUNK_PREFIX",
     "MOLT_BIND_KIND_OPEN",

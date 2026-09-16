@@ -20,7 +20,6 @@ from molt.compiler_analysis.python_imports import (
     module_spec_parent,
 )
 from molt.frontend._types import (
-    _MOLT_GLOBALS_BUILTIN,
     _MOLT_MODULE_CHUNK_PARAM,
     _MOLT_MODULE_CHUNK_PREFIX,
     FuncInfo,
@@ -371,10 +370,6 @@ class ModuleLifecycleMixin(_MixinBase):
         # object, not Python call frames. Their LINE ops update the active module
         # frame and must not mint an unbound synthetic code-slot identity.
         if func_name.startswith(f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"):
-            return False
-        if func_name == _MOLT_GLOBALS_BUILTIN or func_name.endswith(
-            f"__{_MOLT_GLOBALS_BUILTIN}"
-        ):
             return False
         if name is not None and func_name not in self.funcs_map:
             return False

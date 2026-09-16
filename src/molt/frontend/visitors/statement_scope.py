@@ -331,7 +331,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_global_mutations = set()
         self.module_globals_dict_escaped = self._module_globals_dict_escapes(node)
         self.module_chunk_globals = set()
-        self._ensure_globals_builtin()
         if not self.future_annotations and not self.eager_annotations:
             items, id_map = self._collect_module_annotation_items(node)
             if items:

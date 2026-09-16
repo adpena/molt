@@ -144,8 +144,7 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    globals_builtin_emitted: Any
-    globals_builtin_val: MoltValue | None
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
+    imported_module_provenance: dict[str, frozenset[str]]
