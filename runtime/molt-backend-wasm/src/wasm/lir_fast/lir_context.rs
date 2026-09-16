@@ -30,6 +30,7 @@ pub(super) struct LirLowerCtx<'a> {
     pub(super) next_local: u32,
     pub(super) instructions: WasmBodyOps,
     pub(super) rpo: Vec<BlockId>,
-    pub(super) block_index: HashMap<BlockId, usize>,
+    /// Validated reachable topology, consumed by shared TIR graph analysis.
+    pub(super) cfg: molt_tir::tir::function::TirFunction,
     operation_owners: Option<LirOperationOwners>,
 }

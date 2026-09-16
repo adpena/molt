@@ -1,5 +1,7 @@
 use super::support::*;
-use crate::wasm::test_execution::{real_execution_tool, run_execution_command, wasm_test_temp_dir};
+use crate::wasm::test_execution::{
+    real_execution_tool, run_execution_command, run_node_test_script, wasm_test_temp_dir,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -225,7 +227,6 @@ fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
     let app_path = temp.join("native_callable_app.o.wasm");
     let provider_path = temp.join("native_callable_provider.o.wasm");
     let linked_path = temp.join("native_callable_linked.wasm");
-    let script_path = temp.join("verify_native_callable.cjs");
     fs::write(&app_path, app_object).expect("write relocatable native callable app");
     fs::write(&provider_path, provider_object).expect("write relocatable native callable provider");
     run_execution_command(
@@ -244,11 +245,11 @@ fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
     wasmparser::Validator::new()
         .validate_all(&linked)
         .expect("final-linked native callable WASM must validate");
-    fs::write(
-        &script_path,
-        format!(
+    run_node_test_script(
+        &node,
+        &format!(
             r#"const fs = require('fs');
-const bytes = fs.readFileSync(process.argv[2]);
+const bytes = fs.readFileSync(process.argv[1]);
 const env = {{
   memory: new WebAssembly.Memory({{initial: 256}}),
   __indirect_function_table: new WebAssembly.Table({{initial: 8192, element: 'anyfunc'}}),
@@ -260,17 +261,13 @@ for (const entry of WebAssembly.Module.imports(wasmModule)) {{
   imports[entry.module] ??= {{}};
   imports[entry.module][entry.name] = () => 0n;
 }}
-WebAssembly.instantiate(wasmModule, imports).then((instance) => {{
-  const actual = instance.exports.molt_main();
-  const expected = BigInt('{SENTINEL}');
-  if (actual !== expected) throw new Error(`direct-symbol ABI returned ${{actual}}, expected ${{expected}}`);
-}}).catch((error) => {{ console.error(error); process.exit(1); }});
+const instance = new WebAssembly.Instance(wasmModule, imports);
+const actual = instance.exports.molt_main();
+const expected = BigInt('{SENTINEL}');
+if (actual !== expected) throw new Error(`direct-symbol ABI returned ${{actual}}, expected ${{expected}}`);
 "#
         ),
-    )
-    .expect("write Node native callable verifier");
-    run_execution_command(
-        Command::new(&node).arg(&script_path).arg(&linked_path),
+        &[&linked_path],
         "execute final-linked native callable WASM in Node",
     );
 }

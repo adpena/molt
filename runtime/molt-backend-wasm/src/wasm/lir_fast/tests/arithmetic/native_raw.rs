@@ -38,13 +38,13 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
     };
 
     let annotated = lower_tir_to_wasm(&func).test_view();
-    assert!(
-        !annotated
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::I32And)),
-        "annotation-only operands cannot authorize raw boolean selection"
-    );
+    assert_eq!(annotated.param_types, vec![ValType::I64; 2]);
+    for call in ["is_truthy", "inc_ref_obj", "exception_pending"] {
+        assert!(
+            annotated.runtime_calls.contains(&call),
+            "annotation-only operands need boxed truth testing and selected ownership: missing {call}"
+        );
+    }
     let left = func.fresh_value();
     let right = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
