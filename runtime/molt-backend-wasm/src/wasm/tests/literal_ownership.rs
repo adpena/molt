@@ -20,11 +20,11 @@ fn call_count(operators: &[String], function_index: u32) -> usize {
         .count()
 }
 
-fn assert_every_return_releases_anchor(
+pub(super) fn assert_every_return_releases_anchor(
     operators: &[String],
     dec_ref_index: u32,
     expected_minimum_returns: usize,
-) {
+) -> usize {
     let release = format!("Call {{ function_index: {dec_ref_index} }}");
     let return_positions: Vec<usize> = operators
         .iter()
@@ -35,13 +35,14 @@ fn assert_every_return_releases_anchor(
         return_positions.len() >= expected_minimum_returns,
         "expected at least {expected_minimum_returns} return paths; operators={operators:?}"
     );
-    for return_index in return_positions {
+    for &return_index in &return_positions {
         assert_eq!(
             operators.get(return_index.wrapping_sub(1)),
             Some(&release),
             "every anchored function return must release its unique anchor immediately before returning; operators={operators:?}"
         );
     }
+    return_positions.len()
 }
 
 #[test]

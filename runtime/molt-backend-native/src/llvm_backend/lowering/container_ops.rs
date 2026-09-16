@@ -173,12 +173,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.backend.builder.build_store(*slot, none).unwrap();
         }
         let capacity = (op.operands.len() / width) as u64;
-        // The established runtime ABI is raw for dict, boxed for set.
-        let capacity = if dict {
-            capacity
-        } else {
-            molt_codegen_abi::box_int_bits(capacity as i64) as u64
-        };
+        // Hash-aggregate constructors share one raw usize-capacity ABI.
         let new_fn = self.ensure_runtime_i64_fn(
             if dict {
                 "molt_dict_new"

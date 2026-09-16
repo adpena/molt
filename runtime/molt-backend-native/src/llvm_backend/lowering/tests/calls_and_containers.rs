@@ -37,7 +37,7 @@ fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
             ir.contains(if dict {
                 "@molt_dict_new(i64 1)"
             } else {
-                "@molt_set_new(i64 9221401712017801217)"
+                "@molt_set_new(i64 1)"
             }),
             "{ir}"
         );

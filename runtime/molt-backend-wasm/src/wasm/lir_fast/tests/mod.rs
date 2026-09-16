@@ -299,8 +299,10 @@ fn has_native_binary_instruction(instructions: &[Instruction<'static>], opcode: 
 
 mod alloc_object;
 mod arithmetic;
+mod cfg_execution;
 mod const_materialization;
 mod control_flow;
+mod execution_support;
 mod index_subscript;
 mod int_carrier_abi;
 mod manifest;
