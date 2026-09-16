@@ -120,6 +120,38 @@ def test_molt_target_python_must_match_cpython_oracle(
         module._resolve_molt_target_python("python", "3.13")
 
 
+@pytest.mark.parametrize("retry_isolated", [None, "0", "1"])
+@pytest.mark.parametrize("stderr", ["build timeout after 1200s", "execution timed out"])
+def test_timeout_preserves_original_failure_without_cold_rebuild(
+    monkeypatch: pytest.MonkeyPatch, retry_isolated: str | None, stderr: str
+) -> None:
+    module = _load_diff_module()
+    if retry_isolated is None:
+        monkeypatch.delenv("MOLT_DIFF_RETRY_ISOLATED", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_DIFF_RETRY_ISOLATED", retry_isolated)
+    calls: list[dict[str, object]] = []
+    failure = (None, stderr, 124)
+
+    def timed_out(*args: object, **kwargs: object) -> tuple[None, str, int]:
+        calls.append(kwargs)
+        return failure
+
+    def forbidden_isolation(*args: object, **kwargs: object) -> None:
+        pytest.fail("a timeout is not evidence of cache corruption")
+
+    monkeypatch.setattr(module, "run_molt", timed_out)
+    monkeypatch.setattr(module, "_isolated_retry_env", forbidden_isolation)
+    context = module.compat_backends.BackendExecutionContext(
+        target_python=module.TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={"MOLT_CAPABILITY_TIER": "none"},
+    )
+    assert module._run_native_backend("case.py", context) == failure
+    assert calls == [{"execution_context": context}]
+
+
 @pytest.mark.parametrize(
     "stderr",
     [
