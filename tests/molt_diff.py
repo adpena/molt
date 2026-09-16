@@ -3710,11 +3710,12 @@ def _run_native_backend(
 ) -> tuple[str | None, str, int]:
     """Run the NATIVE backend with the full dyld/daemon/OOM retry pipeline.
 
-    This is the historical single-backend path, unchanged in behavior; it is the
-    native adapter's implementation and is kept native-specific because the
+    This is the native adapter's implementation and is kept native-specific because the
     daemon custody, dyld-quarantine, and isolated-retry machinery are all
     native-shaped. Returns RAW (un-normalized) (stdout, stderr, rc); the caller
-    normalizes once for every backend.
+    normalizes once for every backend. A timeout is not evidence of damaged cache
+    state: preserve its original result instead of allocating a colder target
+    and hiding the critical-path failure behind another full build.
     """
     molt_out, molt_err, molt_ret = run_molt(
         file_path,
@@ -3849,25 +3850,6 @@ def _run_native_backend(
                 "[WARN] Persistent backend daemon/cache failure detected; "
                 "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
             )
-    if (
-        molt_out is None
-        and _is_timeout_error(molt_err)
-        and _diff_retry_isolated_default()
-    ):
-        print(
-            "[RETRY] "
-            f"{file_path} build timeout; retrying with isolated target/build-state."
-        )
-        with _isolated_retry_env() as isolated_env:
-            retry_out, retry_err, retry_ret = run_molt(
-                file_path,
-                context.build_profile,
-                daemon_enabled=False,
-                no_cache=True,
-                extra_env=isolated_env,
-                execution_context=context,
-            )
-        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
     return molt_out, molt_err, molt_ret
 
 
