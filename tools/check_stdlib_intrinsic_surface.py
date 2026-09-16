@@ -10,9 +10,12 @@ public surface breaks: a real build fails CLOSED at module import with
 NOT catch this class -- they inject FAKE intrinsics, so import always succeeds in
 the probe regardless of whether the real runtime still registers the symbol.
 
-This gate is the missing authority: it asserts that every intrinsic NAME required
-by a shipped stdlib module is registered in the runtime intrinsic manifest
-(`runtime/molt-runtime/src/intrinsics/generated.rs`, the generated authority).
+This gate checks that every literal intrinsic request in a shipped stdlib module
+is present in the generated runtime registry. The canonical declarations live in
+`runtime/molt-runtime/src/intrinsics/manifest.pyi`; `tools/gen_intrinsics.py`
+projects them into `generated.rs` and the compiler's Python symbol map.
+Request discovery uses the same AST policy as the stdlib audit, including loader
+aliases, keyword names and lazy requests; comments and strings are not requests.
 Static, cargo-free, fail-closed. Wire as a tier-1 `--check` alongside
 `check_table_drift.py` in `tools/ci_gate.py`.
 
@@ -28,12 +31,17 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt.stdlib_intrinsic_policy import intrinsic_names_from_source  # noqa: E402
+
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 GENERATED_RS = (
     REPO_ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
 )
 
-_REQUIRE_RE = re.compile(r'_require(?:_callable)?_intrinsic\(\s*"([^"]+)"')
 _REGISTERED_RE = re.compile(r'name:\s*"([^"]+)"')
 
 
@@ -45,11 +53,9 @@ def registered_intrinsics() -> set[str]:
 def required_intrinsics() -> dict[str, list[str]]:
     required: dict[str, list[str]] = {}
     for py in sorted(STDLIB_ROOT.rglob("*.py")):
-        text = py.read_text(encoding="utf-8", errors="replace")
-        for match in _REQUIRE_RE.finditer(text):
-            required.setdefault(match.group(1), []).append(
-                str(py.relative_to(REPO_ROOT)).replace("\\", "/")
-            )
+        text = py.read_text(encoding="utf-8")
+        for name in sorted(intrinsic_names_from_source(text)):
+            required.setdefault(name, []).append(py.relative_to(REPO_ROOT).as_posix())
     return required
 
 
@@ -79,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{n_registered} registered in generated.rs"
     )
     if not missing:
-        print("OK: every stdlib _require_intrinsic resolves to a registered intrinsic.")
+        print("OK: every literal stdlib intrinsic request has a registered intrinsic.")
         return 0
 
     print(

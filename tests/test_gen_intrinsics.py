@@ -34,6 +34,22 @@ def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
     assert symbols["molt_async_sleep"] == "molt_async_sleep"
 
 
+def test_all_stdlib_literal_intrinsic_requests_are_manifested() -> None:
+    from molt.stdlib_intrinsic_policy import intrinsic_names_from_source
+
+    module = _load_gen_intrinsics_module()
+    _raw, entries = module._load_manifest()
+    declared = {entry.name for entry in entries}
+    stdlib = ROOT / "src" / "molt" / "stdlib"
+    missing = {
+        path.relative_to(stdlib).as_posix(): sorted(required - declared)
+        for path in sorted(stdlib.rglob("*.py"))
+        if (required := intrinsic_names_from_source(path.read_text(encoding="utf-8")))
+        - declared
+    }
+    assert missing == {}, f"stdlib intrinsic requests lack canonical declarations: {missing}"
+
+
 def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     module = _load_gen_intrinsics_module()
     _raw, entries = module._load_manifest()

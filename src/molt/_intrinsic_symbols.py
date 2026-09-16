@@ -1206,6 +1206,7 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_cpython_abi_pyinit_module_to_bits": "molt_cpython_abi_pyinit_module_to_bits",
     "molt_exception_active": "molt_exception_active",
     "molt_exception_last": "molt_exception_last",
+    "molt_exception_last_pending": "molt_exception_last_pending",
     "molt_exception_pending": "molt_exception_pending",
     "molt_async_work_poll_and_exception_pending": "molt_async_work_poll_and_exception_pending",
     "molt_async_work_poll_and_exception_last_pending": "molt_async_work_poll_and_exception_last_pending",
