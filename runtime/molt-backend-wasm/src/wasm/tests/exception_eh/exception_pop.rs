@@ -73,7 +73,7 @@ fn generic_wasm_del_boundary_lowers_through_shared_dec_ref_authority() {
 fn compile_local_alias_body(
     params: Vec<&str>,
     ops: Vec<OpIR>,
-) -> (Vec<u32>, BTreeMap<String, u32>) {
+) -> (Vec<u32>, Vec<String>, BTreeMap<String, u32>) {
     let ir = SimpleIR {
         functions: vec![wasm_test_function("molt_main", params, None, ops)],
         profile: None,
@@ -86,6 +86,7 @@ fn compile_local_alias_body(
     .compile(ir);
     (
         wasm_direct_call_indices_for_export(&wasm, "molt_main"),
+        wasm_operator_debug_for_export(&wasm, "molt_main"),
         wasm_function_import_indices(&wasm),
     )
 }
@@ -100,7 +101,7 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
     owned.s_value = Some("owned".to_string());
     let mut store = wasm_test_op("store_var", None, vec!["owned"]);
     store.var = Some("slot".to_string());
-    let (drop_calls, drop_imports) = compile_local_alias_body(
+    let (drop_calls, drop_operators, drop_imports) = compile_local_alias_body(
         vec![],
         vec![
             owned,
@@ -124,13 +125,18 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         .iter()
         .filter(|call_index| **call_index == dec_index)
         .count();
+    let return_count = super::super::literal_ownership::assert_every_return_releases_anchor(
+        &drop_operators,
+        dec_index,
+        2,
+    );
     assert_eq!(
         (inc_count, dec_count),
-        (1, 2),
-        "the literal site mints one result owner from its function anchor; store_var/load_var alias that owner without another retain, DelBoundary releases it once, and function teardown releases the distinct anchor once: calls={drop_calls:?} imports={drop_imports:?}"
+        (1, return_count + 1),
+        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and every mutually exclusive return path releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
     );
 
-    let (binding_calls, binding_imports) = compile_local_alias_body(
+    let (binding_calls, _, binding_imports) = compile_local_alias_body(
         vec!["slot"],
         vec![
             wasm_test_op("binding_alias", Some("owned"), vec!["slot"]),

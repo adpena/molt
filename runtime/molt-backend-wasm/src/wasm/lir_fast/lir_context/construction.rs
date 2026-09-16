@@ -1,7 +1,8 @@
 use super::LirLowerCtx;
-use super::cfg::compute_lir_rpo;
+use super::cfg::validated_topology;
 use super::facts::compute_lir_flat_list_int_values;
 use crate::wasm::body::WasmBodyOps;
+use molt_tir::tir::dominators::{CfgEdgePolicy, reverse_postorder_with};
 use molt_tir::tir::lir::LirFunction;
 use std::collections::HashMap;
 
@@ -10,8 +11,12 @@ impl<'a> LirLowerCtx<'a> {
         func: &'a LirFunction,
         local_base: u32,
     ) -> Self {
-        let rpo = compute_lir_rpo(func);
-        let block_index = rpo.iter().enumerate().map(|(i, &bid)| (bid, i)).collect();
+        let cfg = validated_topology(func);
+        let rpo = if cfg.blocks.len() == 1 {
+            vec![cfg.entry_block]
+        } else {
+            reverse_postorder_with(&cfg, CfgEdgePolicy::TerminatorOnly)
+        };
         let flat_list_int_values = compute_lir_flat_list_int_values(func);
         Self {
             func,
@@ -23,7 +28,7 @@ impl<'a> LirLowerCtx<'a> {
             next_local: local_base,
             instructions: WasmBodyOps::default(),
             rpo,
-            block_index,
+            cfg,
             operation_owners: None,
         }
     }

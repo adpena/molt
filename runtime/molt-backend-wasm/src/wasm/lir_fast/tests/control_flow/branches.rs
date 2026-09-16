@@ -64,15 +64,14 @@ fn conditional_branch() {
 
     let output = lower_tir_to_wasm(&func).test_view();
 
-    // Should contain br_if for the conditional branch.
-    let has_br_if = output
-        .instructions
-        .iter()
-        .any(|i| matches!(i, Instruction::BrIf(_)));
+    // An annotation is not Bool1 physical proof. Direct-LIR Bool1 and
+    // selected-edge semantics are executed in cfg_execution.
     assert!(
-        has_br_if,
-        "expected br_if instruction for conditional branch"
+        !output.bails_to_generic_path,
+        "annotation-only conditional branch must stay in the LIR fast lane"
     );
+    assert_eq!(output.param_types, vec![ValType::I64]);
+    assert!(output.runtime_calls.contains(&"is_truthy"));
 }
 
 #[test]
@@ -188,13 +187,8 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
         "boxed conditional branch must dispatch non-bool objects through is_truthy; got {:?}",
         output.runtime_calls
     );
-    assert!(
-        output
-            .instructions
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::BrIf(_))),
-        "conditional branch must still emit br_if"
-    );
+    // Actual branch destinations and selected payloads are execution-tested
+    // in cfg_execution, independent of the chosen WASM selection opcode.
 }
 
 #[test]

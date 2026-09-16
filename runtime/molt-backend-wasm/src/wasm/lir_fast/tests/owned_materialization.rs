@@ -1,17 +1,10 @@
+use super::execution_support::executable_module;
 use super::*;
 use crate::tir::blocks::BlockId;
 use crate::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
-use crate::wasm::WasmBackend;
-use crate::wasm::body::WasmBody;
-use crate::wasm::test_execution::{real_execution_tool, run_execution_command, wasm_test_temp_dir};
-use crate::wasm_abi::emit_static_type_section;
-use crate::wasm_data::DataSegmentRef;
+use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
-use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
-use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Module, TypeSection,
-};
+use std::{fs, path::PathBuf};
 
 fn value(id: u32, repr: LirRepr) -> LirValue {
     LirValue {
@@ -59,58 +52,6 @@ fn fixture(opcode: OpCode, args: &[LirRepr], operands: &[u32], result: LirRepr) 
         entry_block: BlockId(0),
         label_id_map: HashMap::new(),
     }
-}
-
-fn executable_module(body: &WasmBody) -> Vec<u8> {
-    let mut types = TypeSection::new();
-    emit_static_type_section(&mut types);
-    let function_type = types.len();
-    types
-        .ty()
-        .function(body.param_types.clone(), body.result_types.clone());
-    let mut imports = ImportSection::new();
-    let mut import_indices = BTreeMap::new();
-    for import in body.runtime_imports() {
-        let index = import_indices.len() as u32;
-        if let std::collections::btree_map::Entry::Vacant(entry) = import_indices.entry(import) {
-            entry.insert(index);
-            imports.import(
-                "molt_runtime",
-                import.name(),
-                EntityType::Function(import.type_idx()),
-            );
-        }
-    }
-    let mut functions = FunctionSection::new();
-    functions.function(function_type);
-    let mut exports = ExportSection::new();
-    exports.export("run", ExportKind::Func, import_indices.len() as u32);
-    let mut function = Function::new(body.locals.iter().map(|&ty| (1, ty)));
-    body.emit_into(
-        "owned_materialization",
-        &mut WasmBackend::new(),
-        0,
-        false,
-        DataSegmentRef {
-            offset: 0,
-            index: 0,
-        },
-        |import| import_indices[&import],
-        &mut function,
-    );
-    let mut code = CodeSection::new();
-    code.function(&function);
-    let mut module = Module::new();
-    module.section(&types);
-    module.section(&imports);
-    module.section(&functions);
-    module.section(&exports);
-    module.section(&code);
-    let bytes = module.finish();
-    wasmparser::Validator::new()
-        .validate_all(&bytes)
-        .expect("valid owned-materialization CFG and stack");
-    bytes
 }
 
 /// Execute the same operation scope twice in one frame. Fresh function locals
@@ -244,7 +185,7 @@ const hooks = {
   dict_set(dict, key, value) {
     return append(dict, [key, value]) ? none : dict;
   },
-  set_new(capacity) { assert.equal(capacity, BigInt(config.boxed_two)); return newContainer(); },
+  set_new(capacity) { assert.equal(capacity, BigInt(config.raw_two)); return newContainer(); },
   set_add(set, value) { append(set, [value]); return none; },
   list_builder_new(capacity) { assert.equal(capacity, BigInt(config.boxed_two)); return newContainer(); },
   list_builder_append(builder, value) { return append(builder, [value]); },
@@ -256,7 +197,11 @@ const hooks = {
 };
 const loaded = {};
 for (const [name, file] of Object.entries(config.modules)) {
-  loaded[name] = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {molt_runtime: hooks}).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {molt_runtime: hooks}).exports.run;
+  loaded[name] = (...args) => {
+    console.error('WASM case ' + name + '(' + args.map(String).join(', ') + ')');
+    return run(...args);
+  };
 }
 for (const failure of [0, 1, 2]) {
   reset(failure); assert.equal(loaded.add(wide, wide + 1n), none);
@@ -478,13 +423,16 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
             "none": box_none_bits().to_string(),
             "yes": molt_codegen_abi::box_bool_bits(1).to_string(),
             "int_tag": QNAN_TAG_INT_I64.to_string(),
+            "raw_two": "2",
             "boxed_two": box_int_bits(2).to_string(),
         }))
         .unwrap(),
     )
     .unwrap();
-    run_execution_command(
-        Command::new(node).arg("-e").arg(EXECUTE).arg(config),
+    run_node_test_script(
+        &node,
+        EXECUTE,
+        &[&config],
         "execute LIR materialization ownership and failure cases",
     );
 }

@@ -110,6 +110,16 @@ boxing and returns transfer their newly materialized owner, while selected
 boolean results retain the chosen value. Refcount operations on raw scalars are
 no-ops and never allocate.
 
+LIR block-argument transfers execute only on the selected edge and are parallel
+copies: all source carriers are read before any destination is written. They
+neither box nor alter reference counts. WASM control labels identify forward
+destinations and natural-loop headers, using the shared TIR graph analysis;
+block numbering and reverse-postorder offsets do not define branch depths.
+This preserves loop-carried owners, entry initialization, and operation-scope
+cleanup across conditional, switch, backedge, and nested-loop transfers.
+Malformed edge payloads and irreducible multi-entry cycles are diagnosed before
+emission rather than silently dispatched through a second control-flow lane.
+
 `BoxVal` and `UnboxVal` are not transparent ownership aliases. Boxing an already
 boxed heap value retains an independent result; boxing a raw full-width integer
 transfers its fresh materialization. Unboxing is a typed representation
@@ -137,13 +147,17 @@ scratch-builder APIs and heap kinds are removed, with their numeric IDs retired
 without renumbering survivors. Construction and conversion preserve their
 aggregate owner until commit, and release it on any mutation or iteration
 failure; a returned failure sentinel must not overwrite that owner.
+Dictionary, set, and frozenset constructors share a raw `u64`/`usize` capacity
+ABI; the count is never a boxed `MoltObject`. Sequence-builder capacity remains
+boxed under its separate ABI.
 Node, browser, and generated host adapters share integer admission and ownership
 transactions in `wasm/runtime_lifecycle.js`. Host integers must be exact signed
 i64 inputs; the runtime alone chooses inline or heap encoding. Arguments are
 acquired progressively and released in reverse order, including partial
-conversion failure. List elements and capacity boxes remain temporary borrowed
-inputs. Cleanup failures retain the original error as their cause rather than
-replacing it, and failed cleanup releases an otherwise unpublished return owner.
+conversion failure. List elements and sequence-builder capacity boxes remain
+temporary borrowed inputs. Cleanup failures retain the original error as their
+cause rather than replacing it, and failed cleanup releases an otherwise
+unpublished return owner.
 
 Fallible construction is part of that contract: every valid outparam has a defined `None` result on failure and a pending exception. Native initializes all anchor slots and frame-entry custody before its first constructor, then routes any failed constructor to the shared return without executing the function body. Partial initialization releases only successfully constructed anchors; untouched `None` slots are safe no-ops. No cleanup path may read an unwritten outparam or publish a failed construction as a successful literal.
 

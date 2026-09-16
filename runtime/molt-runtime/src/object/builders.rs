@@ -2176,7 +2176,7 @@ mod sequence_builder_tests {
                 let aggregate = if dict {
                     molt_dict_new(2)
                 } else {
-                    molt_set_new(MoltObject::from_int(2).bits())
+                    molt_set_new(2)
                 };
                 assert!(!obj_from_bits(aggregate).is_none());
                 if dict {
@@ -2248,8 +2248,8 @@ mod sequence_builder_tests {
         crate::with_gil_entry_nopanic!(py, {
             for (constructor, capacity) in [
                 (molt_dict_new as extern "C" fn(u64) -> u64, 1),
-                (molt_set_new, MoltObject::from_int(1).bits()),
-                (molt_frozenset_new, MoltObject::from_int(1).bits()),
+                (molt_set_new, 1),
+                (molt_frozenset_new, 1),
             ] {
                 let budget = deny_allocations();
                 assert!(obj_from_bits(constructor(capacity)).is_none());

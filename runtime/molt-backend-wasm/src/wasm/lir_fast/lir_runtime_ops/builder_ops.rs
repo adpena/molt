@@ -116,9 +116,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &
     emit_lir_runtime_call_with_args(
         ctx,
         LirRuntimeCall::SetNew,
-        &[LirRuntimeArg::I64Const(box_int_bits(
-            op.tir_op.operands.len() as i64,
-        ))],
+        &[LirRuntimeArg::I64Const(op.tir_op.operands.len() as i64)],
     );
     ctx.instructions.push(Instruction::LocalSet(owner));
     ctx.guard_operation_exception();

@@ -1,10 +1,9 @@
 use super::support::*;
 use crate::ir::ExecutionContextPolicy;
-use crate::wasm::test_execution::{real_execution_tool, run_execution_command, wasm_test_temp_dir};
+use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 // Execute real dispatch conditions: a value-oblivious CFG walker invents
 // impossible state-dispatch paths before entry. Runtime imports are explicit
@@ -354,11 +353,10 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         .unwrap(),
     )
     .expect("write named split frame execution cases");
-    run_execution_command(
-        Command::new(node)
-            .arg("-e")
-            .arg(EXECUTE_FRAME_CASES)
-            .arg(&config_path),
+    run_node_test_script(
+        &node,
+        EXECUTE_FRAME_CASES,
+        &[&config_path],
         &format!(
             "execute emitted frame ownership cases from {}",
             config_path.display()

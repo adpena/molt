@@ -1,57 +1,48 @@
+mod control_plan;
+
 use super::super::lir_context::LirLowerCtx;
-use super::super::lir_control::{
-    LirReturnAbi, emit_lir_terminator, emit_lir_terminator_multiblock,
-};
+use super::super::lir_control::{LirControlLabel, LirReturnAbi, emit_lir_terminator};
 use super::super::lir_ops::emit_lir_block_ops;
-use molt_tir::tir::blocks::BlockId;
-use std::collections::HashMap;
+use control_plan::{ControlPlan, Scope};
 use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn emit_lir_function_body(ctx: &mut LirLowerCtx, return_abi: LirReturnAbi) {
-    let rpo = ctx.rpo.clone();
-    let num_blocks = rpo.len();
-    if num_blocks <= 1 {
-        if let Some(block) = ctx.func.blocks.get(&ctx.func.entry_block) {
-            emit_lir_block_ops(ctx, block);
-            emit_lir_terminator(ctx, &block.terminator, return_abi);
-        }
-        return;
-    }
-
-    let back_edge_targets = compute_back_edge_targets(ctx, &rpo);
-    for (i, &bid) in rpo.iter().enumerate() {
-        if i < num_blocks - 1 {
-            if back_edge_targets.contains_key(&bid) {
-                ctx.instructions.push(Instruction::Loop(BlockType::Empty));
-            } else {
-                ctx.instructions.push(Instruction::Block(BlockType::Empty));
-            }
-        }
-    }
-
-    for (i, &bid) in rpo.iter().enumerate() {
-        if let Some(block) = ctx.func.blocks.get(&bid) {
-            emit_lir_block_ops(ctx, block);
-            emit_lir_terminator_multiblock(ctx, &block.terminator, num_blocks, return_abi);
-        }
-        if i < num_blocks - 1 {
+    let plan = ControlPlan::new(&ctx.cfg, &ctx.rpo);
+    let mut scopes: Vec<Scope> = Vec::new();
+    let mut labels = Vec::new();
+    let mut next_scope = 0;
+    for position in 0..=plan.order.len() {
+        while scopes.last().is_some_and(|scope| scope.end == position) {
+            scopes.pop();
+            labels.pop();
             ctx.instructions.push(Instruction::End);
         }
-    }
-}
-
-fn compute_back_edge_targets(ctx: &LirLowerCtx, rpo: &[BlockId]) -> HashMap<BlockId, bool> {
-    let mut targets = HashMap::new();
-    for (src_idx, &bid) in rpo.iter().enumerate() {
-        if let Some(block) = ctx.func.blocks.get(&bid) {
-            for succ in block.terminator.successors() {
-                if let Some(&tgt_idx) = ctx.block_index.get(&succ)
-                    && tgt_idx <= src_idx
-                {
-                    targets.insert(succ, true);
-                }
+        while plan
+            .scopes
+            .get(next_scope)
+            .is_some_and(|scope| scope.start == position)
+        {
+            let scope = plan.scopes[next_scope];
+            if let Some(parent) = scopes.last() {
+                assert!(scope.end <= parent.end, "crossing WASM control scopes");
             }
+            ctx.instructions.push(match scope.label {
+                LirControlLabel::LoopContinue(_) => Instruction::Loop(BlockType::Empty),
+                LirControlLabel::ForwardExit(_) => Instruction::Block(BlockType::Empty),
+                LirControlLabel::Selection => unreachable!(),
+            });
+            scopes.push(scope);
+            labels.push(scope.label);
+            next_scope += 1;
+        }
+        if let Some(id) = plan.order.get(position) {
+            let block = &ctx.func.blocks[id];
+            emit_lir_block_ops(ctx, block);
+            emit_lir_terminator(ctx, &block.terminator, return_abi, &mut labels);
         }
     }
-    targets
+    assert!(scopes.is_empty() && labels.is_empty());
+    // Every CFG terminator transfers control. Even a nonreturning single-block
+    // loop must type-check for a value-returning function without fake results.
+    ctx.instructions.push(Instruction::Unreachable);
 }

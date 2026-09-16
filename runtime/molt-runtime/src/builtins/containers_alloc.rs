@@ -160,15 +160,52 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::set_len;
 
     #[test]
-    fn dict_capacity_overflow_fails_closed_as_memory_error() {
+    fn hash_aggregate_constructors_accept_raw_capacity_counts() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let bits = molt_dict_new(u64::MAX);
-            assert!(obj_from_bits(bits).is_none());
-            assert!(exception_pending(_py));
-            let _ = crate::molt_exception_clear();
+            for (constructor, expected_type) in [
+                (molt_dict_new as extern "C" fn(u64) -> u64, TYPE_ID_DICT),
+                (molt_set_new, TYPE_ID_SET),
+                (molt_frozenset_new, TYPE_ID_FROZENSET),
+            ] {
+                for capacity in [0, 1, 2] {
+                    let bits = constructor(capacity);
+                    assert!(!exception_pending(_py), "capacity={capacity}");
+                    let ptr = obj_from_bits(bits)
+                        .as_ptr()
+                        .expect("raw capacity must construct an aggregate");
+                    unsafe {
+                        assert_eq!(object_type_id(ptr), expected_type);
+                        let len = if expected_type == TYPE_ID_DICT {
+                            dict_len(ptr)
+                        } else {
+                            set_len(ptr)
+                        };
+                        assert_eq!(len, 0, "capacity={capacity}");
+                    }
+                    dec_ref_bits(_py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn hash_aggregate_capacity_overflow_fails_closed_as_memory_error() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            for constructor in [
+                molt_dict_new as extern "C" fn(u64) -> u64,
+                molt_set_new,
+                molt_frozenset_new,
+            ] {
+                let bits = constructor(u64::MAX);
+                assert!(obj_from_bits(bits).is_none());
+                assert!(exception_pending(_py));
+                let _ = crate::molt_exception_clear();
+            }
         });
     }
 }
