@@ -88,3 +88,86 @@ fn peephole_applied_in_const_return() {
         }
     }
 }
+
+#[test]
+fn floating_arithmetic_preserves_zero_signs_and_quiets_signaling_nans() {
+    use super::execution_support::executable_module;
+    use crate::wasm::body::WasmBody;
+    use crate::wasm::test_execution::{
+        real_execution_tool, run_node_test_script, wasm_test_temp_dir,
+    };
+    use std::{fs, path::PathBuf};
+
+    let mut modules = Vec::new();
+    for (name, constant, arithmetic) in [
+        ("add_positive_zero", 0.0_f64, Instruction::F64Add),
+        ("add_negative_zero", -0.0_f64, Instruction::F64Add),
+        ("multiply_one", 1.0_f64, Instruction::F64Mul),
+    ] {
+        // Enter and leave through integer bits so the host cannot quiet the
+        // signaling NaN before the actual emitted arithmetic executes.
+        let input = vec![
+            Instruction::LocalGet(0),
+            Instruction::F64ReinterpretI64,
+            Instruction::F64Const(constant.into()),
+            arithmetic,
+            Instruction::I64ReinterpretF64,
+            Instruction::End,
+        ];
+        let ops = peephole_set_get_to_tee(WasmBodyOps::from_instructions(input)).into_vec();
+        assert_eq!(
+            ops.len(),
+            6,
+            "{name}: unproved float identity removed arithmetic"
+        );
+        let body = WasmBody {
+            param_types: vec![ValType::I64],
+            result_types: vec![ValType::I64],
+            locals: vec![],
+            ops,
+        };
+        modules.push((name, executable_module(&body)));
+    }
+    let Some(node) = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "floating-point peephole execution",
+    ) else {
+        return;
+    };
+    let (directory, _cleanup) = wasm_test_temp_dir();
+    let mut paths = serde_json::Map::new();
+    for (name, bytes) in modules {
+        let path = directory.join(format!("{name}.wasm"));
+        fs::write(&path, bytes).expect("write floating-point executable");
+        paths.insert(name.into(), serde_json::json!(path));
+    }
+    let config = directory.join("float-cases.json");
+    fs::write(&config, serde_json::to_vec(&paths).unwrap()).expect("write float cases");
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const paths = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const negativeZero = -(1n << 63n);
+for (const [name, path] of Object.entries(paths)) {
+  const run = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(path))).exports.run;
+  assert.equal(run(0n), 0n, name + ' positive zero');
+  assert.equal(run(negativeZero), name === 'add_positive_zero' ? 0n : negativeZero,
+               name + ' negative zero');
+  for (const bits of [0x4000000000000000n, 0xc000000000000000n,
+                     0x7ff0000000000000n, 0xfff0000000000000n]) {
+    assert.equal(BigInt.asUintN(64, run(BigInt.asIntN(64, bits))), bits, name + ' finite/infinite');
+  }
+  for (const bits of [0x7ff0000000000001n, 0xfff0000000000001n,
+                     0x7ff8000000000042n, 0xfff8000000000042n]) {
+    const actual = BigInt.asUintN(64, run(BigInt.asIntN(64, bits)));
+    assert.equal(actual & 0x7ff8000000000000n, 0x7ff8000000000000n,
+                 name + ' arithmetic must produce a quiet NaN');
+  }
+}
+"#,
+        &[&config],
+        "execute floating identities at their raw-bit peephole boundary",
+    );
+}
