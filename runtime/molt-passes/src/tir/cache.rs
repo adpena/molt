@@ -78,6 +78,10 @@ pub struct CompilationCache {
     namespace_epoch: Option<File>,
     namespace_epoch_error: Option<String>,
     observed_epoch_word: u64,
+    /// Complete persistent inventory for the observed epoch, not merely the
+    /// advisory index loaded by a reader. Foreign commits and uncertain local
+    /// mutations revoke this certificate before any capacity decision.
+    inventory_complete: bool,
     #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
     namespace_epoch_map: Option<memmap2::MmapMut>,
     #[cfg(test)]
@@ -174,6 +178,9 @@ static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub struct CompilationCacheTelemetry {
+    pub namespace_reconciliations: u64,
+    pub index_loads: u64,
+    pub recency_projections: u64,
     pub memory_hits: u64,
     pub disk_hits: u64,
     pub misses: u64,
@@ -373,6 +380,7 @@ impl CompilationCache {
             namespace_epoch,
             namespace_epoch_error,
             observed_epoch_word: encode_namespace_epoch_word(0),
+            inventory_complete: false,
             #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
             namespace_epoch_map: None,
             #[cfg(test)]
@@ -397,11 +405,7 @@ impl CompilationCache {
             if let Err(error) = cache.map_namespace_epoch() {
                 eprintln!("MOLT_CACHE: {error}; using allocation-free positioned epoch reads");
             }
-            cache.reconcile_namespace_epoch_locked()?;
-            cache.load_index_locked();
-            let transition = cache.begin_namespace_mutation_locked()?;
-            cache.reconcile_persistent_artifacts();
-            cache.enforce_cache_limits();
+            let transition = cache.prepare_namespace_mutation_locked()?;
             cache.finish_namespace_mutation_locked(transition)
         });
         match startup {
@@ -567,11 +571,10 @@ impl CompilationCache {
                     // The entire local view predates that transaction. Drop it
                     // without mutating the durable namespace while its epoch is
                     // quiescent; callers that intend to write perform their own
-                    // odd-epoch reconciliation transaction. The advisory index
-                    // is safe to reload read-only, and canonical artifacts absent
-                    // from it are still discovered by `get_locked` on demand.
+                    // odd-epoch reconciliation transaction. Reads discover
+                    // canonical artifacts on demand; mutation admission alone
+                    // reloads the advisory index and certifies full inventory.
                     self.discard_local_namespace_view();
-                    self.load_index_locked();
                 }
                 live
             }
@@ -597,7 +600,6 @@ impl CompilationCache {
                 // not reach every reader. Invalidate all pre-transaction leases
                 // before publishing the completed generation.
                 self.discard_local_namespace_view();
-                self.load_index_locked();
                 self.write_namespace_epoch_locked(durable)?;
                 durable
             }
@@ -625,6 +627,10 @@ impl CompilationCache {
             }
         };
         self.observed_epoch_word = encode_namespace_epoch_word(epoch);
+        // A successful live/durable reconciliation supersedes transient open
+        // or retirement errors. A new quarantine failure in this transaction
+        // can still set the error and deliberately leave its epoch odd.
+        self.namespace_epoch_error = None;
         Ok(epoch)
     }
 
@@ -640,6 +646,7 @@ impl CompilationCache {
     }
 
     fn discard_local_namespace_view(&mut self) {
+        self.inventory_complete = false;
         self.index.clear();
         self.metadata_lru.clear();
         self.persistent_bytes = 0;
@@ -727,11 +734,48 @@ impl CompilationCache {
         Ok(transition)
     }
 
+    /// Admit every mutation against one complete inventory. A reader may have
+    /// observed a foreign even epoch without discovering its unsaved artifacts;
+    /// only reconciliation inside this odd-epoch transaction certifies totals.
+    fn prepare_namespace_mutation_locked(&mut self) -> Result<u64, String> {
+        if let Err(error) = self.reconcile_namespace_epoch_locked() {
+            self.inventory_complete = false;
+            return Err(error);
+        }
+        let complete = self.inventory_complete;
+        self.inventory_complete = false;
+        let transition = self.begin_namespace_mutation_locked()?;
+        if !complete {
+            self.load_index_locked();
+            self.reconcile_persistent_artifacts()?;
+        }
+        self.inventory_complete = true;
+        let failures = self.telemetry.limit_enforcement_failures;
+        self.enforce_cache_limits();
+        if self.telemetry.limit_enforcement_failures != failures {
+            self.inventory_complete = false;
+            return Err("cache mutation could not enforce persistent limits".to_string());
+        }
+        Ok(transition)
+    }
+
     fn finish_namespace_mutation_locked(&mut self, transition: u64) -> Result<u64, String> {
         debug_assert_eq!(transition & 1, 1);
-        self.sync_namespace_directories_locked()?;
-        let complete = next_namespace_epoch(transition)?;
-        self.write_namespace_epoch_locked(complete)?;
+        if let Err(error) = self.sync_namespace_directories_locked() {
+            self.inventory_complete = false;
+            return Err(error);
+        }
+        let complete = match next_namespace_epoch(transition) {
+            Ok(complete) => complete,
+            Err(error) => {
+                self.inventory_complete = false;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.write_namespace_epoch_locked(complete) {
+            self.inventory_complete = false;
+            return Err(error);
+        }
         self.observed_epoch_word = encode_namespace_epoch_word(complete);
         Ok(complete)
     }
@@ -872,7 +916,7 @@ impl CompilationCache {
         match poison_state {
             Ok(Some(_)) => {
                 let path = self.artifact_path(content_hash)?;
-                let persistent_bytes = persistent_entry_bytes(&path, &poison_path);
+                let persistent_bytes = self.read_persistent_entry_bytes(&path, &poison_path)?;
                 self.upsert_metadata_entry(content_hash, now, persistent_bytes, true);
                 self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                 return None;
@@ -890,7 +934,7 @@ impl CompilationCache {
             Err(error) => {
                 self.telemetry.corruptions = self.telemetry.corruptions.saturating_add(1);
                 let path = self.artifact_path(content_hash)?;
-                let persistent_bytes = persistent_entry_bytes(&path, &poison_path);
+                let persistent_bytes = self.read_persistent_entry_bytes(&path, &poison_path)?;
                 self.upsert_metadata_entry(content_hash, now, persistent_bytes, true);
                 eprintln!(
                     "MOLT_CACHE: refusing cache key {content_hash} with invalid poison sidecar: {error}"
@@ -910,7 +954,8 @@ impl CompilationCache {
             Ok(Some(envelope)) => {
                 match read_poison_sidecar(content_hash, &poison_path, self.max_persistent_bytes) {
                     Ok(Some(_)) => {
-                        let persistent_bytes = persistent_entry_bytes(&path, &poison_path);
+                        let persistent_bytes =
+                            self.read_persistent_entry_bytes(&path, &poison_path)?;
                         self.upsert_metadata_entry(content_hash, now, persistent_bytes, true);
                         self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                         return None;
@@ -918,7 +963,8 @@ impl CompilationCache {
                     Ok(None) => {}
                     Err(error) => {
                         self.telemetry.corruptions = self.telemetry.corruptions.saturating_add(1);
-                        let persistent_bytes = persistent_entry_bytes(&path, &poison_path);
+                        let persistent_bytes =
+                            self.read_persistent_entry_bytes(&path, &poison_path)?;
                         self.upsert_metadata_entry(content_hash, now, persistent_bytes, true);
                         eprintln!(
                             "MOLT_CACHE: refusing cache key {content_hash} after bounded read with invalid poison sidecar: {error}"
@@ -940,6 +986,7 @@ impl CompilationCache {
                         eprintln!(
                             "MOLT_CACHE: quarantining corrupt artifact {content_hash}: {error}"
                         );
+                        self.inventory_complete = false;
                         self.remove_entry(content_hash, false);
                         self.telemetry.misses = self.telemetry.misses.saturating_add(1);
                         None
@@ -957,8 +1004,25 @@ impl CompilationCache {
                     "MOLT_CACHE: cannot read cache artifact {}: {error}",
                     path.display()
                 );
+                self.inventory_complete = false;
                 self.remove_entry(content_hash, false);
                 self.telemetry.misses = self.telemetry.misses.saturating_add(1);
+                None
+            }
+        }
+    }
+
+    fn read_persistent_entry_bytes(
+        &mut self,
+        artifact_path: &std::path::Path,
+        poison_path: &std::path::Path,
+    ) -> Option<u64> {
+        match persistent_entry_bytes(artifact_path, poison_path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                self.inventory_complete = false;
+                self.telemetry.misses = self.telemetry.misses.saturating_add(1);
+                eprintln!("MOLT_CACHE: {error}");
                 None
             }
         }
@@ -975,14 +1039,22 @@ impl CompilationCache {
         artifact: &[u8],
     ) -> Result<(), CompilationCacheWriteError> {
         match self.with_namespace_lock(true, |cache| {
-            cache
-                .reconcile_namespace_epoch_locked()
-                .map_err(CompilationCacheWriteError::Unavailable)?;
             let transition = cache
-                .begin_namespace_mutation_locked()
+                .prepare_namespace_mutation_locked()
                 .map_err(CompilationCacheWriteError::Unavailable)?;
-            cache.load_index_locked();
-            let result = cache.put_locked(content_hash, artifact);
+            let failures = cache.telemetry.limit_enforcement_failures;
+            let result = cache.put_locked(content_hash, artifact).and_then(|()| {
+                if cache.telemetry.limit_enforcement_failures != failures {
+                    Err(CompilationCacheWriteError::Unavailable(
+                        "cache insertion could not enforce persistent limits".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
+            if result.is_err() {
+                cache.inventory_complete = false;
+            }
             if cache.namespace_epoch_error.is_some() {
                 return result;
             }
@@ -1014,8 +1086,6 @@ impl CompilationCache {
                 "persistent compilation cache is disabled by a zero entry limit".to_string(),
             ));
         }
-        self.reconcile_persistent_artifacts();
-        self.enforce_cache_limits();
         let funcs_dir = self.cache_dir.join("functions");
         std::fs::create_dir_all(&funcs_dir).map_err(|error| {
             CompilationCacheWriteError::Unavailable(format!(
@@ -1034,7 +1104,8 @@ impl CompilationCache {
                 self.upsert_metadata_entry(
                     content_hash,
                     unix_now(),
-                    persistent_entry_bytes(&artifact_path, &poison_path),
+                    persistent_entry_bytes(&artifact_path, &poison_path)
+                        .map_err(CompilationCacheWriteError::Unavailable)?,
                     true,
                 );
                 self.enforce_cache_limits();
@@ -1236,21 +1307,21 @@ impl CompilationCache {
     /// advisory, but falsely reporting a persisted index is not.
     pub fn save_index(&mut self) -> Result<(), String> {
         self.with_namespace_lock(true, |cache| {
-            cache.reconcile_namespace_epoch_locked()?;
-            let transition = cache.begin_namespace_mutation_locked()?;
+            let transition = cache.prepare_namespace_mutation_locked()?;
             let result = cache.save_index_locked();
+            if result.is_err() {
+                cache.inventory_complete = false;
+            }
             cache.finish_namespace_mutation_locked(transition)?;
             result
         })?
     }
 
     fn save_index_locked(&mut self) -> Result<(), String> {
-        // Merge the latest persisted recency while the namespace lock is held.
-        // A process may never overwrite another process's newer touches with
-        // its stale local snapshot.
+        // Mutation admission already merged foreign recency and inventoried
+        // unsaved artifacts. Project local touches only at this persistence
+        // boundary, not on every insertion into an unconstrained namespace.
         self.project_resident_metadata_recency();
-        self.load_index_locked();
-        self.reconcile_persistent_artifacts();
         self.enforce_cache_limits();
         std::fs::create_dir_all(&self.cache_dir).map_err(|error| {
             format!(
@@ -1308,6 +1379,7 @@ impl CompilationCache {
     /// missing/wrong version header rejects the whole old-format index. Invalid
     /// hashes, timestamps, and extra columns are skipped fail-closed.
     fn load_index_locked(&mut self) {
+        self.telemetry.index_loads = self.telemetry.index_loads.saturating_add(1);
         let index_path = self.cache_dir.join("index.txt");
         let Ok(file) = std::fs::File::open(&index_path) else {
             return;
@@ -1513,6 +1585,7 @@ impl CompilationCache {
                         "MOLT_CACHE: failed to enforce cache bound for {}: {error}",
                         candidate.display()
                     );
+                    self.inventory_complete = false;
                     return false;
                 }
             }
@@ -1566,7 +1639,7 @@ impl CompilationCache {
         if required_bytes > self.max_persistent_bytes || self.max_entries == 0 {
             return false;
         }
-        self.project_resident_metadata_recency();
+        let mut projected_recency = false;
         loop {
             let current = self
                 .index
@@ -1581,6 +1654,10 @@ impl CompilationCache {
             if projected_bytes <= self.max_persistent_bytes && projected_entries <= self.max_entries
             {
                 return true;
+            }
+            if !projected_recency {
+                self.project_resident_metadata_recency();
+                projected_recency = true;
             }
             let Some((_, victim)) = self
                 .metadata_lru
@@ -1611,6 +1688,7 @@ impl CompilationCache {
         if self.memory_lru.is_empty() {
             return;
         }
+        self.telemetry.recency_projections = self.telemetry.recency_projections.saturating_add(1);
         let mut resident_order = self
             .memory_lru
             .iter()
@@ -1636,7 +1714,11 @@ impl CompilationCache {
         }
     }
 
-    fn reconcile_persistent_artifacts(&mut self) {
+    fn reconcile_persistent_artifacts(&mut self) -> Result<(), String> {
+        self.inventory_complete = false;
+        let failures = self.telemetry.limit_enforcement_failures;
+        self.telemetry.namespace_reconciliations =
+            self.telemetry.namespace_reconciliations.saturating_add(1);
         let functions_dir = self.cache_dir.join("functions");
         let mut resident_entries = self
             .index
@@ -1660,26 +1742,42 @@ impl CompilationCache {
         // their durable modification time as the only available recency fact.
         let mut selected_lru = BTreeSet::<(u64, Arc<str>)>::new();
         let mut selected_recency = HashMap::<Arc<str>, u64>::new();
-        if let Ok(entries) = std::fs::read_dir(&functions_dir) {
-            for entry in entries.flatten() {
+        let entries = match std::fs::read_dir(&functions_dir) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!(
+                    "cannot inventory {}: {error}",
+                    functions_dir.display()
+                ));
+            }
+        };
+        if let Some(entries) = entries {
+            for entry in entries {
+                let entry = entry.map_err(|error| {
+                    format!("cannot enumerate {}: {error}", functions_dir.display())
+                })?;
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else {
-                    continue;
+                    return Err(format!(
+                        "non-canonical cache artifact name: {}",
+                        entry.path().display()
+                    ));
                 };
                 if name.starts_with('.') && name.contains(".tmp.") {
-                    if let Err(error) = std::fs::remove_file(entry.path()) {
-                        eprintln!(
-                            "MOLT_CACHE: failed to retire stale temporary file {}: {error}",
-                            entry.path().display()
-                        );
-                    }
+                    retire_cache_file(&entry.path())?;
                     continue;
                 }
                 let content_hash = name
                     .strip_suffix(".bin")
                     .or_else(|| name.strip_suffix(".poison"));
                 let Some(content_hash) = content_hash else {
-                    let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
+                    let bytes = entry
+                        .metadata()
+                        .map_err(|error| {
+                            format!("cannot stat {}: {error}", entry.path().display())
+                        })?
+                        .len();
                     match std::fs::remove_file(entry.path()) {
                         Ok(()) => {
                             self.telemetry.untracked_files_retired =
@@ -1687,23 +1785,27 @@ impl CompilationCache {
                             self.telemetry.untracked_bytes_retired =
                                 self.telemetry.untracked_bytes_retired.saturating_add(bytes);
                         }
-                        Err(_) => {
+                        Err(error) => {
                             self.telemetry.limit_enforcement_failures =
                                 self.telemetry.limit_enforcement_failures.saturating_add(1);
+                            return Err(format!(
+                                "cannot retire {}: {error}",
+                                entry.path().display()
+                            ));
                         }
                     }
                     continue;
                 };
                 if !is_canonical_cache_hash(content_hash) {
-                    let _ = std::fs::remove_file(entry.path());
+                    retire_cache_file(&entry.path())?;
                     continue;
                 }
                 let content_hash: Arc<str> = Arc::from(content_hash);
                 let modified = entry
                     .metadata()
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .and_then(|metadata| metadata.modified())
+                    .map_err(|error| format!("cannot stat {}: {error}", entry.path().display()))?
+                    .duration_since(UNIX_EPOCH)
                     .map_or(0, |duration| {
                         duration.as_nanos().min(u128::from(u64::MAX)) as u64
                     });
@@ -1730,8 +1832,7 @@ impl CompilationCache {
                 {
                     selected_recency.remove(victim.as_ref());
                     for suffix in ["bin", "poison"] {
-                        let _ =
-                            std::fs::remove_file(functions_dir.join(format!("{victim}.{suffix}")));
+                        retire_cache_file(&functions_dir.join(format!("{victim}.{suffix}")))?;
                     }
                 }
             }
@@ -1749,8 +1850,21 @@ impl CompilationCache {
             let Some(poison_path) = self.poison_path(&content_hash) else {
                 continue;
             };
-            if poison_path.is_file()
-                && let Err(error) = persist_poison_sidecar(
+            let poisoned = match std::fs::metadata(&poison_path) {
+                Ok(metadata) if metadata.is_file() => true,
+                Ok(_) => {
+                    return Err(format!(
+                        "cache poison is not a file: {}",
+                        poison_path.display()
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    return Err(format!("cannot stat {}: {error}", poison_path.display()));
+                }
+            };
+            if poisoned {
+                persist_poison_sidecar(
                     &functions_dir,
                     &path,
                     &poison_path,
@@ -1758,19 +1872,15 @@ impl CompilationCache {
                     &[],
                     &[],
                     self.max_persistent_bytes,
-                )
-            {
-                eprintln!(
-                    "MOLT_CACHE: poison intent remains fail-closed for {content_hash} but could not be finalized: {error}"
-                );
+                )?;
             }
             if matches!(
                 read_poison_sidecar(&content_hash, &poison_path, self.max_persistent_bytes,),
                 Ok(Some(_))
             ) {
-                let _ = std::fs::remove_file(&path);
+                retire_cache_file(&path)?;
             }
-            let persistent_bytes = persistent_entry_bytes(&path, &poison_path);
+            let persistent_bytes = persistent_entry_bytes(&path, &poison_path)?;
             if persistent_bytes == 0 {
                 continue;
             }
@@ -1781,7 +1891,7 @@ impl CompilationCache {
                     entry.last_access.max(discovered_recency)
                 }),
                 persistent_bytes,
-                poison_path.is_file(),
+                poisoned,
             );
             self.enforce_cache_limits();
         }
@@ -1800,6 +1910,10 @@ impl CompilationCache {
         }
         self.evict_memory();
         self.enforce_cache_limits();
+        if self.telemetry.limit_enforcement_failures != failures {
+            return Err("cache inventory could not enforce persistent limits".to_string());
+        }
+        Ok(())
     }
 
     /// Return the number of entries currently in the cache.
@@ -2545,13 +2659,31 @@ fn read_poison_sidecar(
     Ok(Some(payload.to_vec()))
 }
 
-fn persistent_entry_bytes(artifact_path: &std::path::Path, poison_path: &std::path::Path) -> u64 {
+fn retire_cache_file(path: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot retire cache file {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn persistent_entry_bytes(
+    artifact_path: &std::path::Path,
+    poison_path: &std::path::Path,
+) -> Result<u64, String> {
     [artifact_path, poison_path]
         .into_iter()
-        .filter_map(|path| std::fs::metadata(path).ok())
-        .filter(|metadata| metadata.is_file())
-        .fold(0_u64, |total, metadata| {
-            total.saturating_add(metadata.len())
+        .try_fold(0_u64, |total, path| match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Ok(total.saturating_add(metadata.len())),
+            Ok(_) => Err(format!("cache artifact is not a file: {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(total),
+            Err(error) => Err(format!(
+                "cannot stat cache artifact {}: {error}",
+                path.display()
+            )),
         })
 }
 
