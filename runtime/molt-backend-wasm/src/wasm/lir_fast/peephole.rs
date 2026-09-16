@@ -94,31 +94,9 @@ pub(super) fn peephole_set_get_to_tee(instructions: WasmBodyOps) -> WasmBodyOps 
             i += 2;
             continue;
         }
-        // Pattern 7: i64.const -1; i64.xor -> (equivalent to bit_not, but keep xor)
-        // Not folded: -1 xor is the canonical bit_not, no simpler form exists.
-
-        // Pattern 8: f64.const 0.0; f64.add -> (eliminated, add 0 is identity)
-        if i + 1 < instructions.len()
-            && let (
-                WasmBodyOp::Instruction(Instruction::F64Const(z)),
-                WasmBodyOp::Instruction(Instruction::F64Add),
-            ) = (&instructions[i], &instructions[i + 1])
-            && f64::from(*z) == 0.0
-        {
-            i += 2;
-            continue;
-        }
-        // Pattern 9: f64.const 1.0; f64.mul -> (eliminated, multiply by 1 is identity)
-        if i + 1 < instructions.len()
-            && let (
-                WasmBodyOp::Instruction(Instruction::F64Const(one)),
-                WasmBodyOp::Instruction(Instruction::F64Mul),
-            ) = (&instructions[i], &instructions[i + 1])
-            && f64::from(*one) == 1.0
-        {
-            i += 2;
-            continue;
-        }
+        // Floating arithmetic is not a copy identity: adding zero can change
+        // its sign, and arithmetic quiets signaling NaNs. This instruction-only
+        // pass has no exactness or fast-math authority to erase those effects.
         match &instructions[i] {
             WasmBodyOp::Instruction(instruction) => out.push(instruction.clone()),
             WasmBodyOp::Call(call) => out.ops.push(WasmBodyOp::Call(*call)),

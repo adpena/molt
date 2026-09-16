@@ -125,15 +125,15 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         .iter()
         .filter(|call_index| **call_index == dec_index)
         .count();
-    let return_count = super::super::literal_ownership::assert_every_return_releases_anchor(
+    let exit_count = super::super::literal_ownership::assert_every_exit_releases_anchor(
         &drop_operators,
         dec_index,
         2,
     );
     assert_eq!(
         (inc_count, dec_count),
-        (1, return_count + 1),
-        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and every mutually exclusive return path releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
+        (1, exit_count + 1),
+        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and every explicit or implicit exit releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
     );
 
     let (binding_calls, _, binding_imports) = compile_local_alias_body(
