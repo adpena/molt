@@ -2213,12 +2213,13 @@ mod sequence_builder_tests {
                 let item = bits_from_ptr(alloc_string(py, b"dict-conversion-borrowed-owner"));
                 let invalid = bits_from_ptr(alloc_list(py, &[]));
                 let first = bits_from_ptr(alloc_tuple(py, &[MoltObject::from_int(1).bits(), item]));
+                let second_items = [invalid, item];
                 let second = bits_from_ptr(alloc_tuple(
                     py,
                     if malformed_pair {
-                        &[item][..]
+                        &second_items[1..]
                     } else {
-                        &[invalid, item][..]
+                        &second_items
                     },
                 ));
                 let source = bits_from_ptr(alloc_list(py, &[first, second]));

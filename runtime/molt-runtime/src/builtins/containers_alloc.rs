@@ -1,7 +1,7 @@
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
     dec_ref_bits, dict_len, dict_update_apply, dict_update_set_in_place, exception_pending,
-    maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception, usize_from_bits,
+    obj_from_bits, object_type_id, raise_exception, usize_from_bits,
 };
 
 #[unsafe(no_mangle)]
