@@ -627,7 +627,7 @@ pub(crate) use crate::builtins::exceptions::{
     generator_exception_stack_take, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
-    molt_exception_pending, molt_exception_set_last, molt_raise,
+    molt_exception_last_pending, molt_exception_pending, molt_exception_set_last, molt_raise,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
     raise_unsupported_inplace, record_exception, record_memory_error_without_allocation,
