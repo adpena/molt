@@ -133,6 +133,10 @@ to `binding_alias` with independent drop obligations. Scalar type annotations
 alone do not exempt projected results from those obligations.
 Removing a box/unbox pair requires an instance-level proof that boxing cannot
 allocate or throw; an integer annotation alone does not prove the inline range.
+Likewise, instruction-only peepholes cannot replace floating add-zero or
+multiply-one with a copy: signed-zero results and signaling-NaN quieting are
+observable. Typed exact-integer identities remain owned by the shared optimizer;
+backend emission does not imply permission to relax floating-point semantics.
 
 Sequence builders have one ownership protocol: append borrows its input,
 reserves capacity, then retains a successfully stored element. Its i32 status

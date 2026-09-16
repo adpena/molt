@@ -20,29 +20,39 @@ fn call_count(operators: &[String], function_index: u32) -> usize {
         .count()
 }
 
-pub(super) fn assert_every_return_releases_anchor(
+pub(super) fn assert_every_exit_releases_anchor(
     operators: &[String],
     dec_ref_index: u32,
     expected_minimum_returns: usize,
 ) -> usize {
     let release = format!("Call {{ function_index: {dec_ref_index} }}");
-    let return_positions: Vec<usize> = operators
+    let mut exit_positions: Vec<usize> = operators
         .iter()
         .enumerate()
         .filter_map(|(index, operator)| (operator == "Return").then_some(index))
         .collect();
     assert!(
-        return_positions.len() >= expected_minimum_returns,
+        exit_positions.len() >= expected_minimum_returns,
         "expected at least {expected_minimum_returns} return paths; operators={operators:?}"
     );
-    for &return_index in &return_positions {
+    assert_eq!(operators.last().map(String::as_str), Some("End"));
+    // Plain bodies include an implicit fallthrough epilogue even when the IR
+    // ends with an explicit return. Dispatch bodies end in an explicit Return.
+    if operators
+        .get(operators.len().wrapping_sub(2))
+        .map(String::as_str)
+        != Some("Return")
+    {
+        exit_positions.push(operators.len() - 1);
+    }
+    for &return_index in &exit_positions {
         assert_eq!(
             operators.get(return_index.wrapping_sub(1)),
             Some(&release),
-            "every anchored function return must release its unique anchor immediately before returning; operators={operators:?}"
+            "every explicit or implicit function exit must release its unique anchor immediately before returning; operators={operators:?}"
         );
     }
-    return_positions.len()
+    exit_positions.len()
 }
 
 #[test]
@@ -76,7 +86,7 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
         2,
         "each original literal op must mint its own result owner from the shared anchor; operators={operators:?}"
     );
-    assert_every_return_releases_anchor(&operators, imports["dec_ref_obj"], 2);
+    assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 2);
 }
 
 #[test]
@@ -101,5 +111,5 @@ fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
             .any(|operator| operator == &format!("I64Const {{ value: {} }}", i64::MAX)),
         "full-width constant must reach int_from_i64 without a 47-bit mask; operators={operators:?}"
     );
-    assert_every_return_releases_anchor(&operators, imports["dec_ref_obj"], 2);
+    assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 2);
 }
