@@ -7247,6 +7247,12 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
+        name: "molt_exception_last_pending",
+        symbol: "molt_exception_last_pending",
+        arity: 0,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_exception_pending",
         symbol: "molt_exception_pending",
         arity: 0,
