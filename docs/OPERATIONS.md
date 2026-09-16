@@ -507,6 +507,16 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   `MOLT_MEMORY_RESERVE_GB`, and `MOLT_CLI_*` aliases), otherwise total
   physical memory. Disk hits for oversized artifacts are returned without
   retaining them in RAM.
+- **Backend TIR cache mutation cost**: `molt-passes::tir::cache` owns the
+  shared cache inventory. Open, insertion, and index publication use the same
+  epoch-checked mutation admission. A complete local inventory is maintained
+  incrementally until a foreign commit, read-side corruption, or uncertain
+  mutation invalidates it; an advisory index read alone never certifies disk
+  capacity. Reconciliation runs under the exclusive odd-epoch transaction,
+  and failures remain fail-closed. Uncontended insertions do not rescan the
+  namespace; resident recency is projected only for eviction or index saving.
+  `CompilationCacheStats.telemetry` exposes index loads, namespace
+  reconciliations, and recency projections for structural cost regressions.
 - **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
   bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
   512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream

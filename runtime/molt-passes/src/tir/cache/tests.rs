@@ -1331,3 +1331,258 @@ fn sorted_index_serialization_is_process_stable() {
         std::fs::read(dir_b.join("index.txt")).unwrap()
     );
 }
+
+#[test]
+fn self_owned_mutations_reuse_complete_inventory_without_namespace_scans() {
+    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 4096, 128, 1 << 20);
+    assert!(cache.inventory_complete);
+    let initial = cache.stats().telemetry;
+    let hashes = (0..64)
+        .map(|index| fixture_hash(&format!("self-owned-{index}"), b"artifact"))
+        .collect::<Vec<_>>();
+
+    for hash in &hashes {
+        cache.put(hash, b"artifact").unwrap();
+        assert!(cache.inventory_complete);
+    }
+    cache.put(&hashes[0], b"artifact").unwrap();
+    let after_puts = cache.stats().telemetry;
+    assert_eq!(
+        after_puts.namespace_reconciliations,
+        initial.namespace_reconciliations
+    );
+    assert_eq!(after_puts.index_loads, initial.index_loads);
+    assert_eq!(after_puts.recency_projections, initial.recency_projections);
+    assert_eq!(cache.len(), hashes.len());
+
+    for _ in 0..2 {
+        cache.save_index().unwrap();
+        assert!(cache.inventory_complete);
+        let after_save = cache.stats().telemetry;
+        assert_eq!(
+            after_save.namespace_reconciliations,
+            initial.namespace_reconciliations
+        );
+        assert_eq!(after_save.index_loads, initial.index_loads);
+    }
+    for hash in &hashes {
+        assert_eq!(cache.get(hash).as_deref(), Some(b"artifact".as_slice()));
+    }
+}
+
+#[test]
+fn observing_foreign_unsaved_artifacts_does_not_certify_capacity_inventory() {
+    let dir = tmp_cache_dir();
+    let h1 = fixture_hash("foreign-visible", b"row");
+    let h2 = fixture_hash("foreign-undiscovered", b"row");
+    let h3 = fixture_hash("local-new", b"row");
+    let envelope_bytes =
+        encode_cache_envelope(&h1, CacheEnvelopeKind::Artifact, b"row").len() as u64;
+    let max_bytes = envelope_bytes * 2;
+    let mut local = CompilationCache::open_with_limits(dir.clone(), 4096, 2, max_bytes);
+    let mut foreign = CompilationCache::open_with_limits(dir.clone(), 4096, 2, max_bytes);
+    foreign.put(&h1, b"row").unwrap();
+    foreign.put(&h2, b"row").unwrap();
+    assert!(!dir.join("index.txt").exists());
+
+    let before_read = local.stats().telemetry;
+    assert_eq!(local.get(&h1).as_deref(), Some(b"row".as_slice()));
+    assert!(!local.inventory_complete);
+    assert!(!local.index.contains_key(h2.as_str()));
+    assert_eq!(
+        local.stats().telemetry.namespace_reconciliations,
+        before_read.namespace_reconciliations
+    );
+    assert!(local.artifact_path(&h2).unwrap().is_file());
+
+    let before_put = local.stats().telemetry;
+    local.put(&h3, b"row").unwrap();
+    assert!(local.inventory_complete);
+    assert_eq!(
+        local.stats().telemetry.namespace_reconciliations,
+        before_put.namespace_reconciliations + 1
+    );
+    assert_eq!(
+        local.stats().telemetry.index_loads,
+        before_put.index_loads + 1
+    );
+    let persisted = std::fs::read_dir(dir.join("functions"))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "bin")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted.len(), 2);
+    assert_eq!(
+        persisted
+            .iter()
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum::<u64>(),
+        max_bytes
+    );
+    assert_eq!(local.stats().persistent_bytes, max_bytes);
+    assert_eq!(local.len(), 2);
+    assert!(local.artifact_path(&h3).unwrap().is_file());
+    local.save_index().unwrap();
+    assert_eq!(
+        local.stats().telemetry.namespace_reconciliations,
+        before_put.namespace_reconciliations + 1
+    );
+}
+
+#[test]
+fn corrupt_read_invalidates_complete_inventory_before_repair() {
+    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 8, 1 << 20);
+    let hash = fixture_hash("corrupt-inventory", b"artifact");
+    cache.put(&hash, b"artifact").unwrap();
+    assert!(cache.inventory_complete);
+    let artifact_path = cache.artifact_path(&hash).unwrap();
+    std::fs::write(&artifact_path, b"not-an-authenticated-envelope").unwrap();
+
+    assert!(cache.get(&hash).is_none());
+    assert!(artifact_path.is_file());
+    assert!(!cache.index.contains_key(hash.as_str()));
+    assert!(!cache.inventory_complete);
+    let before_repair = cache.stats().telemetry;
+    cache.put(&hash, b"artifact").unwrap();
+    assert!(cache.inventory_complete);
+    assert_eq!(
+        cache.stats().telemetry.namespace_reconciliations,
+        before_repair.namespace_reconciliations + 1
+    );
+    assert_eq!(
+        cache.stats().telemetry.index_loads,
+        before_repair.index_loads + 1
+    );
+    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+    assert_eq!(
+        cache.stats().persistent_bytes,
+        std::fs::metadata(artifact_path).unwrap().len()
+    );
+}
+
+#[test]
+fn failed_artifact_mutation_invalidates_inventory_until_reconciliation() {
+    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 8, 1 << 20);
+    let hash = fixture_hash("blocked-artifact", b"artifact");
+    let artifact_path = cache.artifact_path(&hash).unwrap();
+    std::fs::create_dir_all(&artifact_path).unwrap();
+    assert!(cache.inventory_complete);
+    let before_failure = cache.stats().telemetry;
+
+    assert!(matches!(
+        cache.put(&hash, b"artifact"),
+        Err(CompilationCacheWriteError::Unavailable(_))
+    ));
+    assert!(!cache.inventory_complete);
+    assert_eq!(
+        cache.stats().telemetry.namespace_reconciliations,
+        before_failure.namespace_reconciliations
+    );
+    std::fs::remove_dir(&artifact_path).unwrap();
+    cache.put(&hash, b"artifact").unwrap();
+    assert!(cache.inventory_complete);
+    assert_eq!(
+        cache.stats().telemetry.namespace_reconciliations,
+        before_failure.namespace_reconciliations + 1
+    );
+    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+}
+
+#[test]
+fn failed_namespace_reconciliation_cannot_certify_complete_inventory() {
+    let dir = tmp_cache_dir();
+    let mut cache = CompilationCache::open_with_limits(dir.clone(), 0, 8, 1 << 20);
+    assert!(cache.inventory_complete);
+    cache.discard_local_namespace_view();
+    let functions = dir.join("functions");
+    if functions.exists() {
+        std::fs::remove_dir(&functions).unwrap();
+    }
+    std::fs::write(&functions, b"not-a-directory").unwrap();
+    let before_failure = cache.stats().telemetry;
+    let admission = cache
+        .with_namespace_lock(true, |cache| cache.prepare_namespace_mutation_locked())
+        .unwrap();
+    assert!(
+        admission.is_err(),
+        "an unreadable inventory must fail mutation admission"
+    );
+    assert!(!cache.inventory_complete);
+    assert_eq!(
+        cache.stats().telemetry.namespace_reconciliations,
+        before_failure.namespace_reconciliations + 1
+    );
+    assert!(cache.index.is_empty());
+    assert!(functions.is_file());
+}
+
+#[test]
+fn ordinary_miss_then_put_preserves_complete_inventory() {
+    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 128, 1 << 20);
+    let initial = cache.stats().telemetry;
+    for index in 0..64 {
+        let hash = fixture_hash(&format!("miss-then-put-{index}"), b"artifact");
+        assert!(cache.get(&hash).is_none());
+        assert!(
+            cache.inventory_complete,
+            "an absent key is not an uncertain inventory"
+        );
+        cache.put(&hash, b"artifact").unwrap();
+    }
+    cache.save_index().unwrap();
+    let final_stats = cache.stats().telemetry;
+    assert_eq!(
+        final_stats.namespace_reconciliations,
+        initial.namespace_reconciliations
+    );
+    assert_eq!(final_stats.index_loads, initial.index_loads);
+    assert_eq!(final_stats.recency_projections, initial.recency_projections);
+}
+
+#[test]
+fn recovered_startup_error_does_not_leave_successful_put_in_odd_epoch() {
+    let dir = tmp_cache_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let functions = dir.join("functions");
+    std::fs::write(&functions, b"temporarily-not-a-directory").unwrap();
+    let mut cache = CompilationCache::open_with_limits(dir, 1024, 8, 1 << 20);
+    assert!(cache.namespace_epoch_error.is_some());
+    assert!(!cache.inventory_complete);
+    std::fs::remove_file(&functions).unwrap();
+
+    let hash = fixture_hash("recovered-startup", b"artifact");
+    cache.put(&hash, b"artifact").unwrap();
+    assert!(cache.namespace_epoch_error.is_none());
+    assert_eq!(cache.read_namespace_epoch().unwrap() & 1, 0);
+    assert!(cache.inventory_complete);
+    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+    assert!(cache.artifact_path(&hash).unwrap().is_file());
+}
+
+#[test]
+fn foreign_mutation_admission_loads_index_only_once() {
+    let dir = tmp_cache_dir();
+    let mut local = CompilationCache::open_with_limits(dir.clone(), 0, 8, 1 << 20);
+    let mut foreign = CompilationCache::open_with_limits(dir, 0, 8, 1 << 20);
+    let foreign_hash = fixture_hash("foreign-mutation", b"artifact");
+    foreign.put(&foreign_hash, b"artifact").unwrap();
+    foreign.save_index().unwrap();
+    let before = local.stats().telemetry;
+    local
+        .put(&fixture_hash("local-mutation", b"artifact"), b"artifact")
+        .unwrap();
+    assert_eq!(local.stats().telemetry.index_loads, before.index_loads + 1);
+    assert_eq!(
+        local.stats().telemetry.namespace_reconciliations,
+        before.namespace_reconciliations + 1
+    );
+    assert_eq!(
+        local.get(&foreign_hash).as_deref(),
+        Some(b"artifact".as_slice())
+    );
+}
