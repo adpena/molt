@@ -139,30 +139,21 @@ def _collect_ir_json(out_dir: Path) -> dict | None:
     return None
 
 
-def _entry_ir_function_names(module_name: str) -> set[str]:
-    # Only compare the user module's globals function — molt_init, molt_main,
-    # and module chunks contain backend-specific setup that legitimately differs.
-    return {
-        f"{module_name}____molt_globals_builtin__",
-    }
-
-
 def _filter_entry_ir(ir_json: dict, module_name: str) -> dict:
     """Keep only the entry-module IR surface that should be backend-independent.
 
     Full emitted IR includes target-specific stdlib/module initialization
     functions (for example capability-gated ``sys`` wiring). The frontend
-    guarantee we want here is that the user module and ``__main__`` wrapper
+    guarantee here is that the user module's functions, including its chunks,
     lower identically before backend-specific runtime integration.
     """
 
-    keep_names = _entry_ir_function_names(module_name)
     filtered_functions = [
         function
         for function in ir_json.get("functions", [])
-        if function.get("name") in keep_names
-        or function.get("name", "").startswith(f"{module_name}__")
+        if function.get("name", "").startswith(f"{module_name}__")
     ]
+    assert filtered_functions, f"Missing entry-module IR for {module_name}"
     return {"functions": filtered_functions}
 
 
