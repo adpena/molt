@@ -475,8 +475,6 @@ class GeneratorStateMixin(_MixinBase):
         self.module_annotation_exec_name: str | None = None
         self.module_annotation_exec_counter = 0
         self.module_annotation_emitted = False
-        self.globals_builtin_val: MoltValue | None = None
-        self.globals_builtin_emitted = False
         self.module_annotations_conditional = False
         self._init_midend_state(optimization_profile, pgo_hot_functions)
         self.class_annotation_items: list[tuple[str, ast.expr, int]] = []

@@ -4,13 +4,15 @@ Move-only extraction from frontend/__init__.py. This lowering authority owns
 module-cache references, module global get/delete, synthesized ``globals`` and
 ``locals`` backing dictionaries, and the frame-locals pin used by function,
 module, import, annotation, expression, and assignment lowering.
+First-class builtins use canonical runtime callable materialization, never
+module-local wrappers: their identity is shared and globals follows the caller.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import _MOLT_GLOBALS_BUILTIN, MoltOp, MoltValue
+from molt.frontend._types import MoltOp, MoltValue
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -121,62 +123,6 @@ class ModuleGlobalsMixin(_MixinBase):
             MoltOp(kind="MODULE_GET_ATTR", args=[module_val, dict_name], result=res)
         )
         return res
-
-    def _emit_globals_builtin_obj(self) -> MoltValue:
-        if self.globals_builtin_val is not None:
-            return self.globals_builtin_val
-        func_symbol = self._function_symbol(_MOLT_GLOBALS_BUILTIN)
-        func_val = MoltValue(self.next_var(), type_hint=f"Func:{func_symbol}")
-        self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 0], result=func_val))
-        self._emit_function_metadata(
-            func_val,
-            name="globals",
-            qualname="globals",
-            trace_lineno=None,
-            posonly_params=[],
-            pos_or_kw_params=[],
-            kwonly_params=[],
-            vararg=None,
-            varkw=None,
-            default_exprs=[],
-            kw_default_exprs=[],
-            docstring="Return the current module globals.",
-            module_override="builtins",
-        )
-        self._emit_runtime_call(
-            "molt_function_set_builtin",
-            [func_val],
-            type_hint="None",
-        )
-
-        prev_func = self.current_func_name
-        prev_state = self._capture_function_state()
-        self.start_function(
-            func_symbol, params=[], type_facts_name=_MOLT_GLOBALS_BUILTIN
-        )
-        res = self._emit_globals_dict()
-        self._emit_normal_return_terminator(res)
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
-        self.globals_builtin_val = func_val
-        return func_val
-
-    def _ensure_globals_builtin(self) -> None:
-        if (
-            self.globals_builtin_emitted
-            or self.current_func_name != "molt_main"
-        ):
-            return
-        self._emit_globals_builtin_obj()
-        self.globals_builtin_emitted = True
-
-    def _emit_globals_builtin_ref(self) -> MoltValue:
-        if not self.globals_builtin_emitted:
-            self._ensure_globals_builtin()
-        func_symbol = self._function_symbol(_MOLT_GLOBALS_BUILTIN)
-        func_val = MoltValue(self.next_var(), type_hint=f"Func:{func_symbol}")
-        self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 0], result=func_val))
-        return func_val
 
     def _init_locals_cache(self) -> None:
         if self.locals_cache_cell is not None:

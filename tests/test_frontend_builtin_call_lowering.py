@@ -91,6 +91,59 @@ def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
         assert _builtin_func_abi_arity(spec) == manifest_arity
 
 
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize("module_name", ["globals_callable", "imported_globals"])
+def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
+    target_python: tuple[int, int], chunked: bool, module_name: str
+) -> None:
+    from molt.cli.module_cache import _module_lowering_local_reference_issue
+
+    generator = SimpleTIRGenerator(
+        module_name=module_name,
+        target_python=target_python,
+        module_chunking=chunked,
+        module_chunk_max_ops=1,
+    )
+    source = (
+        Path(__file__).parent / "differential/basic/globals_callable.py"
+    ).read_text(encoding="utf-8")
+    generator.visit(ast.parse(source))
+    functions = generator.to_json()["functions"]
+    assert _module_lowering_local_reference_issue(module_name, functions) is None
+    assert not any("__molt_globals_builtin__" in fn["name"] for fn in functions)
+    assert any(
+        op["kind"] == "builtin_func" and op.get("s_value") == "molt_globals_builtin"
+        for fn in functions
+        for op in fn["ops"]
+    )
+    if chunked:
+        assert len(generator.module_chunk_symbols) > 1
+
+
+@pytest.mark.parametrize("name", ["globals", "vars", "dir"])
+def test_frame_builtin_references_share_named_callable_materialization(name: str) -> None:
+    generator = SimpleTIRGenerator(module_name="frame_builtin")
+    value = generator.visit(ast.Name(id=name, ctx=ast.Load()))
+    op = next(op for op in generator.current_ops if op.result == value)
+    assert op.kind == "BUILTIN_FUNC"
+    assert op.args[:2] == [
+        BUILTIN_FUNC_SPECS[name].runtime,
+        _builtin_func_abi_arity(BUILTIN_FUNC_SPECS[name]),
+    ]
+    assert op.metadata["builtin_name"] == name
+    assert not any(op.kind == "FUNC_NEW" for op in generator.current_ops)
+
+
+def test_former_globals_wrapper_name_is_an_ordinary_user_frame() -> None:
+    generator = SimpleTIRGenerator(module_name="user_globals")
+    generator.visit(ast.parse("def __molt_globals_builtin__():\n    return globals()\n"))
+    name = next(
+        name for name in generator.funcs_map if "__molt_globals_builtin__" in name
+    )
+    assert generator._function_needs_frame_trace(name)
+
+
 @pytest.mark.parametrize("name", ["print", "len", "abs", "sorted", "sum"])
 def test_deferred_builtin_lookup_preserves_mutable_global_binding(name: str) -> None:
     ir = compile_to_tir(

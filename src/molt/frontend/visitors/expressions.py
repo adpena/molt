@@ -160,8 +160,6 @@ class ExpressionVisitorMixin(_MixinBase):
                         if node.id in self.stable_module_funcs:
                             return self._emit_stable_module_func_ref(node.id)
                         return self._emit_global_get(node.id)
-                if node.id == "globals":
-                    return self._emit_globals_builtin_ref()
                 if node.id in {"locals", "__import__"}:
                     return self._emit_module_attr_get_on("builtins", node.id)
                 builtin_tag = BUILTIN_TYPE_TAGS.get(node.id)
