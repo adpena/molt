@@ -386,7 +386,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
             } else {
                 format!("molt_{kind}")
             };
-            let calls = call_sites_for_import(function, compiled.import_ids[&symbol]);
+            let calls = call_sites_for_import(function, compiled.import_ids[symbol.as_str()]);
             assert_eq!(calls.len(), 1, "{kind}: {}", function.display());
             let owner = function.dfg.first_result(calls[0].1);
             let releases = compiled
