@@ -4,8 +4,8 @@ use crate::*;
 use memchr::memmem;
 use molt_obj_model::MoltObject;
 
-use super::ops_string::validate_string_receiver;
 use super::ops_string_utf8::{utf8_codepoint_count_cached, wtf8_codepoint_at};
+use super::validate_string_receiver;
 fn partition_string_bytes(
     _py: &PyToken<'_>,
     hay_bytes: &[u8],
