@@ -14,6 +14,8 @@ from molt.frontend._types import BUILTIN_TYPE_TAGS, _SCCP_OVERDEFINED
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
+    SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
+    SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
 )
 from molt.type_facts import collect_type_facts_from_paths
 
@@ -3500,6 +3502,40 @@ def test_runtime_callable_protected_acquisition_survives_value_transport(
     ]
     assert len(protected) == 1, (case, protected)
     assert protected[0]["kind"] == "get_attr_generic_obj"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f():\n    return __import__\n",
+        "import builtins\ndef f():\n    return builtins.__import__\n",
+        "from importlib import import_module as load\ndef f():\n    return load\n",
+        "import importlib\ndef f():\n    return importlib.import_module\n",
+        "import importlib\ndef f():\n    return (importlib,)[0].reload\n",
+        "import importlib\ndef f(other, flag):\n    module = importlib if flag else other\n    return module.import_module\n",
+        'import importlib\ndef f():\n    return getattr(importlib, "reload")\n',
+        "import importlib\ndef f(name):\n    return getattr(importlib, name)\n",
+        'import importlib\ndef f():\n    return importlib.__dict__["reload"]\n',
+        'import importlib\ndef f():\n    return vars(importlib)["reload"]\n',
+        "import runpy\ndef f():\n    return runpy.run_module\n",
+    ],
+)
+def test_runtime_callable_import_requirements_survive_acquisition(source: str) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    requirements = [
+        op.get("runtime_requirement_bits", 0)
+        | SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS.get(op.get("runtime_symbol"), 0)
+        for op in function["ops"]
+    ]
+    assert any(
+        bits & SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL for bits in requirements
+    ), function["ops"]
 
 
 def test_runtime_callable_exact_class_receiver_is_proven_nonmodule() -> None:

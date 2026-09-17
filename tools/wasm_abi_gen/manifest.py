@@ -91,6 +91,7 @@ CALLABLE_DISPATCH_MODES = {
 }
 OP_LOOP_RUNTIME_SINKS = {
     "result_or_drop": "ResultOrDrop",
+    "owned_result_or_release": "OwnedResultOrRelease",
     "non_none_result_or_drop": "NonNoneResultOrDrop",
     "drop": "Drop",
     "none": "None",
@@ -670,6 +671,116 @@ def runtime_export_name(entry: dict) -> str | None:
     if name.startswith("molt_"):
         return name
     return f"molt_{name}"
+
+
+def runtime_boxed_call_specs(data: dict) -> list[dict]:
+    """Project explicit value semantics, never infer them from an i64 carrier.
+
+    Direct Python-callable imports already promise positional object values.
+    LIR boxed-operand calls and op-loop calls with a fixed LIR adapter use the
+    same boxed-operand / boxed-result emitter. Compiler-only imports may declare
+    that representation with boxed_call without becoming Python-callable.
+    Plain op-loop local/result sinks are transport facts, not value semantics,
+    so only explicitly boxed op-loop rows authorize this projection.
+    Raw and trampoline imports stay out.
+    """
+    specs: dict[str, dict] = {}
+    reserved = {
+        entry["import_name"]: entry
+        for entry in data.get("reserved_runtime_callable", [])
+    }
+    lir_arities: dict[str, int] = {}
+    for source in data.get("lir_runtime_call", []):
+        if (arity := source.get("boxed_operand_count")) is not None:
+            lir_arities[source["import_name"]] = arity
+    for source in data.get("op_loop_runtime_call", []):
+        if source.get("lir_variant") is None:
+            continue
+        arity = source["lir_operand_count"]
+        name = source["import_name"]
+        if name in lir_arities and lir_arities[name] != arity:
+            raise WasmAbiManifestError(
+                f"import {name!r} has conflicting boxed LIR arities"
+            )
+        lir_arities[name] = arity
+    op_loop_shapes: dict[str, tuple[int, str]] = {}
+    for source in data.get("op_loop_runtime_call", []):
+        boxed = source.get("boxed_call", False)
+        if not isinstance(boxed, bool):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {source['kind']!r} has invalid boxed_call"
+            )
+        if not boxed:
+            continue
+        args = source["args"]
+        if args != [f"local:{index}" for index in range(len(args))]:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {source['kind']!r} boxed_call requires positional locals"
+            )
+        sink = source["sink"]
+        if sink not in (
+            "result_or_drop",
+            "owned_result_or_release",
+            "non_none_result_or_drop",
+            "none",
+        ):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {source['kind']!r} boxed_call requires an explicit value or void sink"
+            )
+        shape = (len(args), "void" if sink == "none" else "i64")
+        name = source["import_name"]
+        if name in op_loop_shapes and op_loop_shapes[name] != shape:
+            raise WasmAbiManifestError(
+                f"import {name!r} has conflicting boxed op-loop shapes"
+            )
+        op_loop_shapes[name] = shape
+    for import_entry in data["import"]:
+        entry = {**import_entry, **reserved.get(import_entry["name"], {})}
+        explicit = entry.get("boxed_call", False)
+        if not isinstance(explicit, bool):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} has invalid boxed_call"
+            )
+        callable_arity = entry.get("callable_arity")
+        lir_arity = lir_arities.get(entry["name"])
+        op_loop_shape = op_loop_shapes.get(entry["name"])
+        direct = entry.get("callable_dispatch", "direct") == "direct"
+        compiler_boxed = explicit or lir_arity is not None or op_loop_shape is not None
+        if compiler_boxed and not direct:
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} cannot combine boxed_call with trampoline dispatch"
+            )
+        if not compiler_boxed and not (callable_arity is not None and direct):
+            continue
+        signature = data["static_type"][entry["type"]]
+        params = signature["params"]
+        results = signature["results"]
+        if any(param != "i64" for param in params) or results not in ([], ["i64"]):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} boxed call requires i64 object parameters "
+                "and an i64 object or void result"
+            )
+        arity = len(params)
+        result = "i64" if results else "void"
+        if lir_arity is not None and (lir_arity != arity or result != "i64"):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} boxed LIR shape disagrees with its import ABI"
+            )
+        if op_loop_shape is not None and op_loop_shape != (arity, result):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} boxed op-loop shape disagrees with its import ABI"
+            )
+        if callable_arity is not None and (
+            callable_arity != arity or entry.get("callable_result", "i64") != result
+        ):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} boxed callable shape disagrees with its import ABI"
+            )
+        symbol = runtime_export_name(entry)
+        if symbol in specs:
+            raise WasmAbiManifestError(f"duplicate boxed runtime symbol {symbol!r}")
+        specs[symbol] = {"runtime_name": symbol, "arity": arity, "result": result}
+    return [specs[symbol] for symbol in sorted(specs)]
 
 
 def _annotate_runtime_callable_features(
@@ -1391,6 +1502,11 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
                 f"op_loop_runtime_call_group entry {idx} has invalid marked_import_name"
             )
         args = [f"local:{arg_idx}" for arg_idx in range(arg_count)]
+        boxed_call = entry.get("boxed_call", False)
+        if not isinstance(boxed_call, bool):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid boxed_call"
+            )
         for kind in kinds:
             expanded_import_name = import_name or kind
             expanded_entry = {
@@ -1402,6 +1518,8 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             }
             if marked_import_name is not None:
                 expanded_entry["marked_import_name"] = marked_import_name
+            if boxed_call:
+                expanded_entry["boxed_call"] = True
             expanded.append(expanded_entry)
     return expanded
 
@@ -1874,6 +1992,12 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call {kind!r} has invalid sink {sink!r}"
             )
+        if sink == "owned_result_or_release" and "dec_ref_obj" not in required_seen:
+            if "dec_ref_obj" not in seen_imports:
+                raise WasmAbiManifestError(
+                    f"op_loop_runtime_call {kind!r} owned result requires dec_ref_obj"
+                )
+            normalized_required_imports.append("dec_ref_obj")
         args = entry.get("args")
         if not isinstance(args, list):
             raise WasmAbiManifestError(
@@ -1908,6 +2032,7 @@ def validate_loaded_manifest(
             )
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
+    runtime_boxed_call_specs(data)
 
     bulk_memory_ops = data.get("wasm_bulk_memory_op", [])
     if not isinstance(bulk_memory_ops, list) or not bulk_memory_ops:

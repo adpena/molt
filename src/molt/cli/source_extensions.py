@@ -18,7 +18,7 @@ from molt._wasm_abi_generated import (
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
-from molt.cli.python_module_names import encode_python_module_names
+from molt.python_module_names import encode_python_module_names
 from molt.cli.compiler_target import compiler_target_triple, validate_compiler_target
 from molt.cli.source_extension_target import (
     SourceExtensionLinkDialect,

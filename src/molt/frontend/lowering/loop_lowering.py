@@ -66,7 +66,7 @@ class LoopLoweringMixin(_MixinBase):
         loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         target = node.target
-        item_hint = self._iterable_element_hint(iterable) or "Any"
+        item_hint = self._iteration_element_hint(node, iterable) or "Any"
         if self.is_async():
             iter_obj = self._emit_iter_new(iterable)
             iter_slot = self._new_async_internal_slot()
@@ -171,7 +171,7 @@ class LoopLoweringMixin(_MixinBase):
         loop_break_flag: int | ScratchCell | None = None,
     ) -> None:
         target = node.target
-        item_hint = self._iterable_element_hint(iterable) or "Any"
+        item_hint = self._iteration_element_hint(node, iterable) or "Any"
         if self.is_async():
             seq_slot = self._new_async_internal_slot()
             self.emit(
@@ -328,7 +328,7 @@ class LoopLoweringMixin(_MixinBase):
     ) -> tuple[MoltValue, MoltValue, MoltValue, bool] | None:
         if not isinstance(node, ast.Call):
             return None
-        if not isinstance(node.func, ast.Name) or node.func.id != "range":
+        if self._specializable_builtin_name(node) != "range":
             return None
         if len(node.args) > 3:
             return None
@@ -664,18 +664,27 @@ class LoopLoweringMixin(_MixinBase):
     def _loop_guard_assumption(self, obj_name: str, expected_class: str) -> bool | None:
         for guard_map in reversed(self.loop_guard_assumptions):
             entry = guard_map.get(obj_name)
-            if entry and entry[0] == expected_class:
-                return entry[1]
+            if entry is not None:
+                class_id, assumption, token = entry
+                if class_id == expected_class and token == self.exact_class_token:
+                    return assumption
         return None
 
     def _push_loop_guard_assumptions(
         self,
-        guard_map: dict[str, tuple[str, MoltValue]],
+        guard_map: dict[str, tuple[str, MoltValue, int]],
         assume_true: bool,
     ) -> None:
-        assumptions: dict[str, tuple[str, bool]] = {}
-        for name, (expected_class, _) in guard_map.items():
-            assumptions[name] = (expected_class, assume_true)
+        assumptions: dict[str, tuple[str, bool, int]] = {}
+        for name, (expected_class, _, _) in guard_map.items():
+            # Entering the emitted bool-only guard branch establishes the
+            # layout proof at this exact point. Later callbacks advance the
+            # token and retire the assumption.
+            assumptions[name] = (
+                expected_class,
+                assume_true,
+                self.exact_class_token,
+            )
         self.loop_guard_assumptions.append(assumptions)
 
     def _pop_loop_guard_assumptions(self) -> None:
@@ -688,14 +697,16 @@ class LoopLoweringMixin(_MixinBase):
         if not self.loop_layout_guards:
             return None
         name = obj_name or obj.name
-        if self.exact_locals.get(name) != expected_class:
+        if self._exact_class_for_name(name) != expected_class:
             return None
         guard_map = self.loop_layout_guards[-1]
         cached = guard_map.get(name)
-        if cached and cached[0] == expected_class:
-            return cached[1]
+        if cached is not None:
+            class_id, guard, token = cached
+            if class_id == expected_class and token == self.exact_class_token:
+                return guard
         guard = self._emit_layout_guard(obj, expected_class)
-        guard_map[name] = (expected_class, guard)
+        guard_map[name] = (expected_class, guard, self.exact_class_token)
         return guard
 
     def _invalidate_loop_guard(self, name: str) -> None:
@@ -704,21 +715,24 @@ class LoopLoweringMixin(_MixinBase):
 
     def _invalidate_loop_guards_for_class(self, class_name: str) -> None:
         for guard_map in self.loop_layout_guards:
-            stale = [
-                key for key, (klass, _) in guard_map.items() if klass == class_name
-            ]
+            stale = [key for key, entry in guard_map.items() if entry[0] == class_name]
             for key in stale:
                 guard_map.pop(key, None)
 
+    def _prepare_exact_class_loop_entry(self, body: list[ast.stmt]) -> None:
+        """Establish the loop-carried exact-fact fixed point before lowering."""
+        if self.is_async() or not self._loop_body_preserves_exact_class_lifetimes(body):
+            self._expire_exact_class_facts()
+
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]
-    ) -> dict[str, tuple[str, MoltValue]]:
-        if self.is_async():
+    ) -> dict[str, tuple[str, MoltValue, int]]:
+        if self.is_async() or not self._loop_body_preserves_exact_class_lifetimes(body):
             return {}
         candidates = self._collect_loop_guard_candidates(body)
         if not candidates:
             return {}
-        guard_map: dict[str, tuple[str, MoltValue]] = {}
+        guard_map: dict[str, tuple[str, MoltValue, int]] = {}
         for name, expected_class in sorted(candidates.items()):
             obj = self._load_local_value(name)
             if obj is None:
@@ -726,14 +740,18 @@ class LoopLoweringMixin(_MixinBase):
             if obj is None:
                 continue
             guard = self._emit_layout_guard(obj, expected_class)
-            guard_map[name] = (expected_class, guard)
-        return guard_map
+            guard_map[name] = (expected_class, guard, self.exact_class_token)
+        return {
+            name: entry
+            for name, entry in guard_map.items()
+            if entry[2] == self.exact_class_token
+        }
 
     def _emit_guard_map_condition(
-        self, guard_map: dict[str, tuple[str, MoltValue]]
+        self, guard_map: dict[str, tuple[str, MoltValue, int]]
     ) -> MoltValue:
         condition: MoltValue | None = None
-        for _, (_, guard) in sorted(guard_map.items()):
+        for _, (_, guard, _) in sorted(guard_map.items()):
             if condition is None:
                 condition = guard
                 continue
@@ -958,9 +976,7 @@ class LoopLoweringMixin(_MixinBase):
         obj_value = self.locals.get(obj_name)
         if obj_value is None and self.current_func_name == "molt_main":
             obj_value = self.globals.get(obj_name)
-        class_id = self.exact_locals.get(obj_name)
-        if class_id is None and obj_value is not None:
-            class_id = self.boxed_local_hints.get(obj_name) or obj_value.type_hint
+        class_id = self._exact_class_for_name(obj_name)
         class_info = self.classes.get(class_id or "")
         return bool(
             class_info
@@ -1155,7 +1171,7 @@ class LoopLoweringMixin(_MixinBase):
     def _visit_loop_body(
         self,
         body: list[ast.stmt],
-        prefill: dict[str, tuple[str, MoltValue]] | None = None,
+        prefill: dict[str, tuple[str, MoltValue, int]] | None = None,
         loop_break_flag: int | ScratchCell | None = None,
     ) -> bool:
         if not self.is_async() and self._emit_taq_ingest_loop_body(body):

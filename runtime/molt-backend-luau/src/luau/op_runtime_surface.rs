@@ -10,55 +10,6 @@ impl LuauBackend {
             "context_depth" => {
                 self.emit_unsupported_op(op);
             }
-            "state_yield" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    if let Some(val) = args.first() {
-                        self.emit_line(&format!(
-                            "local {out} = coroutine.yield({})",
-                            sanitize_ident(val)
-                        ));
-                    } else {
-                        self.emit_line(&format!("local {out} = coroutine.yield()"));
-                    }
-                } else if let Some(val) = args.first() {
-                    self.emit_line(&format!("coroutine.yield({})", sanitize_ident(val)));
-                } else {
-                    self.emit_line("coroutine.yield()");
-                }
-            }
-            "state_switch"
-            | "state_transition"
-            | "chan_new"
-            | "chan_drop"
-            | "chan_send_yield"
-            | "chan_recv_yield"
-            | "cancel_token_new"
-            | "cancel_token_clone"
-            | "cancel_token_drop"
-            | "cancel_token_cancel"
-            | "cancel_token_is_cancelled"
-            | "cancel_token_set_current"
-            | "cancel_token_get_current"
-            | "cancelled"
-            | "cancel_current"
-            | "future_cancel"
-            | "future_cancel_msg"
-            | "future_cancel_clear"
-            | "promise_new"
-            | "promise_set_result"
-            | "promise_set_exception"
-            | "thread_submit"
-            | "task_register_token_owned" => {
-                self.emit_unsupported_op(op);
-            }
-            "is_native_awaitable" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = false"));
-                }
-            }
             "file_open" | "file_read" | "file_write" | "file_close" | "file_flush" => {
                 self.emit_unsupported_op(op);
             }
@@ -99,21 +50,18 @@ impl LuauBackend {
                     self.emit_line(&format!("error({diagnostic})"));
                 }
             }
-            "fn_ptr_code_set"
-            | "asyncgen_locals_register"
-            | "gen_locals_register"
-            | "function_closure_bits" => {
+            "function_closure_bits" => {
                 self.emit_unsupported_op(op);
             }
             "code_slot_set" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(code) = args.first() {
+                if let [code, globals] = args {
                     let slot = op.value.unwrap_or(0);
                     self.emit_line(&format!(
-                        "molt_code_slots[{slot}] = {}",
-                        sanitize_ident(code)
+                        "molt_code_slots[{slot}] = molt_frame_bind_code({slot}, {}, {})",
+                        sanitize_ident(code),
+                        sanitize_ident(globals),
                     ));
-                    self.emit_line(&format!("molt_frame_bind_code({})", sanitize_ident(code)));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -137,7 +85,7 @@ impl LuauBackend {
             "trace_enter_slot" => {
                 let code_id = op.value.unwrap_or(0);
                 self.emit_line(&format!(
-                    "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter(molt_code_slots[{code_id}])"
+                    "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));
             }
             "trace_exit" => {

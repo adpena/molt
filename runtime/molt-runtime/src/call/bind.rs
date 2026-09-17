@@ -1,4 +1,4 @@
-use crate::builtins::frames::{frame_stack_pop, frame_stack_push_function};
+use crate::builtins::frames::FrameInvocationGuard;
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
@@ -7,16 +7,15 @@ use crate::call::{
     CallAttrLookup, StaticmethodCallTarget, lookup_call_attr, require_call_attr,
     resolve_staticmethod_call_target,
 };
-use crate::object::layout::ensure_function_code_bits;
-use crate::state::recursion::{recursion_guard_enter, recursion_guard_exit};
+use crate::state::recursion::RecursionGuard;
 use crate::state::tls::FRAME_STACK;
 use crate::{
     ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_OPEN, BIND_KIND_TYPE_NEW_INIT,
-    CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, GEN_CONTROL_SIZE,
-    HEADER_FLAG_FUNC_REQUIRES_BINDER, INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader,
-    MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT,
-    TYPE_ID_FOREIGN, TYPE_ID_FROZENSET, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class,
+    CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
+    INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
+    TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
+    TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
+    TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class,
     alloc_instance_for_default_object_new, alloc_object, alloc_string, alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
@@ -25,7 +24,7 @@ use crate::{
     code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place, dict_get_method,
     dict_order, dict_setdefault_method, dict_update_method, dict_update_set_via_store,
     exception_pending, function_arity, function_arity_usize, function_attr_bits,
-    function_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
+    function_execution_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
     generic_alias_origin_bits, has_capability, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
     intern_static_name, is_builtin_class_bits, is_trusted, is_truthy, isinstance_bits,
     issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
@@ -40,21 +39,21 @@ use crate::{
     molt_file_reconfigure, molt_frozenset_copy_method, molt_frozenset_difference_multi,
     molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
     molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
-    molt_generator_new, molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_list_append,
-    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
-    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
-    molt_open_builtin, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_intersection_multi,
-    molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
-    molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
-    molt_string_endswith_slice, molt_string_find_slice, molt_string_format_method,
-    molt_string_index_slice, molt_string_rfind_slice, molt_string_rindex_slice,
-    molt_string_rsplit_max, molt_string_split_max, molt_string_splitlines,
-    molt_string_startswith_slice, molt_tuple_index_range, molt_type_call, molt_type_init,
-    molt_type_new, obj_from_bits, object_class_bits, object_type_id, profile_hit_unchecked,
-    ptr_from_bits, raise_exception, raise_not_callable, runtime_state, runtime_state_for_gil,
-    string_obj_to_owned, type_name, type_of_bits,
+    molt_int_from_bytes, molt_int_new, molt_int_to_bytes, molt_list_append, molt_list_index_range,
+    molt_list_pop, molt_list_sort, molt_memoryview_cast, molt_memoryview_hex, molt_object_init,
+    molt_object_init_subclass, molt_object_new_bound, molt_open_builtin, molt_set_clear,
+    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_symmetric_difference,
+    molt_set_symmetric_difference_update, molt_set_union_multi, molt_set_update_multi,
+    molt_string_count_slice, molt_string_encode, molt_string_endswith_slice,
+    molt_string_find_slice, molt_string_format_method, molt_string_index_slice,
+    molt_string_rfind_slice, molt_string_rindex_slice, molt_string_rsplit_max,
+    molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice,
+    molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new, obj_from_bits,
+    object_class_bits, object_type_id, profile_hit_unchecked, ptr_from_bits, raise_exception,
+    raise_not_callable, runtime_state, runtime_state_for_gil, string_obj_to_owned, type_name,
+    type_of_bits,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{MutexGuard, OnceLock};
@@ -67,6 +66,7 @@ mod inline_cache;
 use inline_cache::{call_bind_ic_entry_for_call, try_call_bind_ic_fast};
 pub(crate) use inline_cache::{
     clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache,
+    detach_callable_ic_caches,
 };
 
 #[cfg(test)]
@@ -1956,13 +1956,16 @@ unsafe fn call_foreign_with_builder(
     if kwargs_bits != 0 {
         dec_ref_bits(_py, kwargs_bits);
     }
-    if result == 0 {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+    match result.decode() {
+        molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => bits,
+        molt_cpython_abi::hooks::DecodedHandleResult::Missing
+        | molt_cpython_abi::hooks::DecodedHandleResult::Error => {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            raise_exception::<_>(_py, "TypeError", "foreign object call failed")
         }
-        return raise_exception::<_>(_py, "TypeError", "foreign object call failed");
     }
-    result
 }
 
 #[unsafe(no_mangle)]
@@ -2222,6 +2225,15 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 Err(err) => return err,
             };
             let args = &prepared;
+            if let Some(result) = crate::cpython_abi_hooks::try_call_cext_with_keywords(
+                _py,
+                func_ptr,
+                args.pos,
+                &args.kw_names,
+                &args.kw_values,
+            ) {
+                return result;
+            }
             if let Some(binding) = builtin_args::builtin_call_binding(_py, func_ptr) {
                 return binding.call(_py, func_bits, func_ptr, args);
             }
@@ -2607,64 +2619,6 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 };
                 final_args.push(val);
             }
-            let is_gen = function_attr_bits(
-                _py,
-                func_ptr,
-                intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.molt_is_generator,
-                    b"__molt_is_generator__",
-                ),
-            )
-            .is_some_and(|bits| is_truthy(_py, obj_from_bits(bits)));
-            if is_gen {
-                let size_bits = function_attr_bits(
-                    _py,
-                    func_ptr,
-                    intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.molt_closure_size,
-                        b"__molt_closure_size__",
-                    ),
-                )
-                .unwrap_or_else(|| MoltObject::none().bits());
-                let Some(size_val) = obj_from_bits(size_bits).as_int() else {
-                    return raise_exception::<_>(_py, "TypeError", "call expects function object");
-                };
-                if size_val < 0 {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "closure size must be non-negative",
-                    );
-                }
-                let closure_size = size_val as usize;
-                let fn_ptr = function_fn_ptr(func_ptr);
-                let closure_bits = function_closure_bits(func_ptr);
-                let mut payload: Vec<u64> =
-                    Vec::with_capacity(final_args.len() + if closure_bits != 0 { 1 } else { 0 });
-                if closure_bits != 0 {
-                    payload.push(closure_bits);
-                }
-                payload.extend(final_args.iter().copied());
-                let base = GEN_CONTROL_SIZE;
-                let needed = base + payload.len() * std::mem::size_of::<u64>();
-                if closure_size < needed {
-                    return raise_exception::<_>(_py, "TypeError", "call expects function object");
-                }
-                let obj_bits = molt_generator_new(fn_ptr, closure_size as u64);
-                let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                let mut offset = base;
-                for val_bits in payload {
-                    let slot = obj_ptr.add(offset) as *mut u64;
-                    *slot = val_bits;
-                    inc_ref_bits(_py, val_bits);
-                    offset += std::mem::size_of::<u64>();
-                }
-                return obj_bits;
-            }
             call_function_obj_bound_vec(_py, func_bits, final_args.as_slice())
         }
     })
@@ -2897,6 +2851,7 @@ mod tests {
                     class_bits: 0,
                     class_version: 0,
                     type_version: crate::global_type_version(),
+                    function_version: 0,
                     cached_alloc_size: 0,
                     arity: 1,
                     kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
@@ -3344,6 +3299,7 @@ mod tests {
                 class_bits,
                 class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
                 type_version: crate::global_type_version(),
+                function_version: 0,
                 cached_alloc_size: layout_size
                     .checked_add(std::mem::size_of::<crate::object::MoltHeader>())
                     .expect("class allocation size must be representable"),
@@ -3424,6 +3380,7 @@ mod tests {
                 class_bits: 0,
                 class_version: 33,
                 type_version: 0,
+                function_version: 0,
                 cached_alloc_size: 44,
                 arity: 1,
                 kind: CALL_BIND_IC_KIND_DIRECT_FUNC,
@@ -3457,6 +3414,7 @@ mod tests {
                 class_bits: 0,
                 class_version: 0,
                 type_version: crate::global_type_version(),
+                function_version: 0,
                 cached_alloc_size: 0,
                 arity: 0,
                 kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
@@ -3503,6 +3461,7 @@ mod tests {
                         class_bits: 0,
                         class_version: 0,
                         type_version: crate::global_type_version(),
+                        function_version: 0,
                         cached_alloc_size: 0,
                         arity: 0,
                         kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
@@ -3555,6 +3514,7 @@ mod tests {
                 class_bits: 0,
                 class_version: 0,
                 type_version: crate::global_type_version(),
+                function_version: 0,
                 cached_alloc_size: 0,
                 arity: 1,
                 kind: CALL_BIND_IC_KIND_DIRECT_FUNC,

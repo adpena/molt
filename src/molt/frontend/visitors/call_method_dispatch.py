@@ -80,18 +80,6 @@ class CallMethodDispatchMixin(_MixinBase):
                 return True, True
         return False, False
 
-    def _has_exact_builtin_receiver(
-        self, node: ast.AST, receiver: MoltValue, expected_type: str
-    ) -> bool:
-        if receiver.type_hint != expected_type:
-            return False
-        exact_from_expr = self._builtin_exact_type_from_expr(node)
-        if exact_from_expr == expected_type:
-            return True
-        if isinstance(node, ast.Name):
-            return self.exact_builtin_locals.get(node.id) == expected_type
-        return False
-
     def _load_local_value_unchecked(self, name: str) -> MoltValue | None:
         if name in self.comp_shadow_locals:
             return self._load_local_value(name, guard_unbound=False)
@@ -99,13 +87,8 @@ class CallMethodDispatchMixin(_MixinBase):
             return None
         cell = self._load_boxed_cell(name)
         if cell is not None:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            res = MoltValue(self.next_var())
             hint = self.boxed_local_hints.get(name)
-            if hint is not None:
-                res.type_hint = hint
-            self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
+            res = self._emit_cell_get(cell, type_hint=hint or "Any")
             self._copy_container_hints_for_name_load(name, res.name)
             return res
         if self.is_async() and (
@@ -360,9 +343,7 @@ class CallMethodDispatchMixin(_MixinBase):
         bindings = dict(zip(inline_params, [receiver, *call_args], strict=True))
         for name, expression in init_assigns:
             value = self._emit_inline_expression(expression, bindings)
-            self._emit_guarded_setattr(
-                receiver, name, value, class_name, assume_exact=True
-            )
+            self._emit_guarded_setattr(receiver, name, value, class_name)
         return True
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
@@ -393,7 +374,7 @@ class CallMethodDispatchMixin(_MixinBase):
         if not isinstance(attr_node.value, ast.Name):
             return None
         obj_name = attr_node.value.id
-        class_name = self.exact_locals.get(obj_name)
+        class_name = self._exact_class_for_name(obj_name)
         if class_name is None:
             return None
         class_info = self.classes.get(class_name)
@@ -466,13 +447,10 @@ class CallMethodDispatchMixin(_MixinBase):
         if inlined is not None:
             return inlined
 
-        res_hint = "Any"
-        return_hint = method_info.get("return_hint")
-        if return_hint and (
-            return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-        ):
-            res_hint = return_hint
-        res = MoltValue(self.next_var(), type_hint=res_hint)
+        # A known callable body does not make its return annotation a value
+        # proof. Inlining above can carry actual result facts; an uninlined
+        # Python call must retain generic representation without such evidence.
+        res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
                 kind="CALL",

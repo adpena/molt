@@ -5,13 +5,11 @@ impl RustBackend {
         let used = |name: &str| func_body.contains(name);
         // sys target-version state. The frontend stamps this before user code,
         // and standalone Rust must preserve the same contract as native/WASM.
-        let needs_module_import = used("molt_import_module(");
         let needs_sys_version_state = used("molt_sys_set_version_info(")
             || used("molt_sys_version_info(")
             || used("molt_sys_version(")
             || used("molt_sys_hexversion(")
-            || used("molt_unpack_sequence(")
-            || needs_module_import;
+            || used("molt_unpack_sequence(");
         let needs_module_cache = used("molt_module_cache_get(")
             || used("molt_module_cache_set(")
             || used("molt_module_cache_del(");
@@ -156,28 +154,6 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                 "    let key = molt_str(name);\n",
                 "    molt_module_cache().lock().unwrap().remove(&key);\n",
                 "    MoltValue::None\n",
-                "}\n\n",
-            ));
-        }
-
-        if needs_module_import {
-            self.output.push_str(concat!(
-                "fn molt_import_module(name: &MoltValue) -> MoltValue {\n",
-                "    let module_name = molt_str(name);\n",
-                "    match module_name.as_str() {\n",
-                "        \"sys\" => {\n",
-                "            let mut args = Vec::new();\n",
-                "            let version_info = molt_sys_version_info(&mut args);\n",
-                "            let version = molt_sys_version(&mut args);\n",
-                "            let hexversion = molt_sys_hexversion(&mut args);\n",
-                "            MoltValue::Dict(vec![\n",
-                "                (MoltValue::Str(\"version_info\".to_string()), version_info),\n",
-                "                (MoltValue::Str(\"version\".to_string()), version),\n",
-                "                (MoltValue::Str(\"hexversion\".to_string()), hexversion),\n",
-                "            ])\n",
-                "        }\n",
-                "        other => panic!(\"unsupported module import in Rust backend: {other}\"),\n",
-                "    }\n",
                 "}\n\n",
             ));
         }

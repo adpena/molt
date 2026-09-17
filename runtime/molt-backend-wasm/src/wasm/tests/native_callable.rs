@@ -16,6 +16,60 @@ fn wasm_ld_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("wasm-ld"))
 }
 
+#[test]
+fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
+    for supplied in [0, 1, 2] {
+        let mut call = wasm_test_op("call_guarded", Some("result"), vec!["callee"]);
+        call.s_value = Some("target".to_string());
+        call.args
+            .as_mut()
+            .unwrap()
+            .extend((0..supplied).map(|_| "arg".to_string()));
+        let ir = SimpleIR {
+            functions: vec![
+                wasm_test_function(
+                    "molt_main",
+                    vec![],
+                    None,
+                    vec![
+                        wasm_test_op("const_none", Some("callee"), vec![]),
+                        wasm_test_op("const_none", Some("arg"), vec![]),
+                        call,
+                        wasm_test_op("ret", None, vec!["result"]),
+                    ],
+                ),
+                wasm_test_function(
+                    "target",
+                    vec!["arg"],
+                    None,
+                    vec![wasm_test_op("ret", None, vec!["arg"])],
+                ),
+            ],
+            profile: None,
+        };
+        let wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: false,
+            ..WasmCompileOptions::default()
+        })
+        .compile(ir);
+        wasmparser::Validator::new()
+            .validate_all(&wasm)
+            .expect("guarded call ABI");
+        let imports = wasm_function_import_indices(&wasm);
+        let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+        assert!(calls.contains(&imports["call_func_dispatch"]));
+        let admitted = imports
+            .get("function_direct_call_eligible")
+            .is_some_and(|index| calls.contains(index));
+        assert_eq!(admitted, supplied == 1, "supplied={supplied}");
+        if supplied == 1 {
+            assert!(calls.contains(&imports["frame_invocation_enter"]));
+            assert!(calls.contains(&imports["frame_invocation_exit"]));
+        }
+    }
+}
+
 fn wasm_native_callable_provider_object(symbol: &str, sentinel: i64) -> Vec<u8> {
     let mut types = TypeSection::new();
     types.ty().function([ValType::I64], [ValType::I64]);
@@ -316,6 +370,88 @@ fn native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symb
             "native callable callargs invoke_ffi must not fall back to invoke_ffi_ic; calls={call_indices:?}"
         );
     }
+}
+
+#[test]
+fn native_callable_callargs_wrapper_releases_only_after_builder_allocation() {
+    let mut allocation_check = wasm_test_op("check_exception", None, vec![]);
+    allocation_check.value = Some(2);
+    let mut expansion_check = wasm_test_op("check_exception", None, vec![]);
+    expansion_check.value = Some(1);
+    let mut kw_expansion_check = wasm_test_op("check_exception", None, vec![]);
+    kw_expansion_check.value = Some(1);
+    let mut dispatch_check = wasm_test_op("check_exception", None, vec![]);
+    dispatch_check.value = Some(1);
+    let mut native_call = wasm_test_op("invoke_ffi", Some("result"), vec!["builder"]);
+    native_call.native_callable_export = Some("nativepkg.run".to_string());
+    native_call.native_callable_binding = Some("direct_symbol".to_string());
+    native_call.native_callable_symbol = Some("molt_nativepkg_run".to_string());
+    native_call.native_callable_abi = Some("molt.object_callargs_v1".to_string());
+    let mut failure_label = wasm_test_op("label", None, vec![]);
+    failure_label.value = Some(1);
+    let mut allocation_failure_label = wasm_test_op("label", None, vec![]);
+    allocation_failure_label.value = Some(2);
+    let ir = SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            vec!["args", "kwargs"],
+            None,
+            vec![
+                wasm_test_op("callargs_new", Some("builder"), vec![]),
+                allocation_check,
+                wasm_test_op(
+                    "callargs_expand_star",
+                    Some("expanded"),
+                    vec!["builder", "args"],
+                ),
+                expansion_check,
+                wasm_test_op(
+                    "callargs_expand_kwstar",
+                    Some("kw_expanded"),
+                    vec!["builder", "kwargs"],
+                ),
+                kw_expansion_check,
+                native_call,
+                dispatch_check,
+                wasm_test_op("release", None, vec!["builder"]),
+                wasm_test_op("ret", None, vec!["result"]),
+                failure_label,
+                wasm_test_op("release", None, vec!["builder"]),
+                wasm_test_op("const_none", Some("failure"), vec![]),
+                wasm_test_op("ret", None, vec!["failure"]),
+                allocation_failure_label,
+                wasm_test_op("const_none", Some("allocation_failure"), vec![]),
+                wasm_test_op("ret", None, vec!["allocation_failure"]),
+            ],
+        )],
+        profile: None,
+    };
+
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("callargs wrapper ownership paths must emit valid WASM");
+    let imports = wasm_function_import_indices(&wasm);
+    let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    assert!(calls.contains(&imports["callargs_new"]));
+    assert!(calls.contains(&imports["callargs_expand_star"]));
+    assert!(calls.contains(&imports["callargs_expand_kwstar"]));
+    assert!(calls.contains(&imports["molt_nativepkg_run"]));
+    assert!(
+        calls
+            .iter()
+            .filter(|&&index| index == imports["dec_ref_obj"])
+            .count()
+            >= 2,
+        "success and post-allocation failure paths must each lower a builder release; calls={calls:?}"
+    );
 }
 
 #[test]

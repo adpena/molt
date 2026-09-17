@@ -77,6 +77,8 @@ from molt.cli.models import (
     _ExternalNativeAbiSymbol,
     _ExternalNativeCallableExport,
     _ExternalNativeCapiSymbol,
+    _ExternalNativeModuleAttrPublishSpec,
+    _ExternalNativeModuleInitSpec,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _FrontendWorkerResourceDecision,
@@ -278,7 +280,7 @@ def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
 def _install_fake_backend_compile(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    output_bytes: bytes = b"OBJ",
+    output_bytes: bytes | None = None,
     backend_inputs: list[bytes | None] | None = None,
     backend_ir_files: list[Path] | None = None,
     seen_envs: list[dict[str, str] | None] | None = None,
@@ -328,7 +330,11 @@ def _install_fake_backend_compile(
             seen_envs.append(dict(env) if env is not None else None)
         output = Path(cmd[cmd.index("--output") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(output_bytes)
+        output.write_bytes(
+            native_relocatable_object(symbols=("molt_main",))
+            if output_bytes is None
+            else output_bytes
+        )
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     write_fake_runtime_artifacts()
@@ -4280,7 +4286,6 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
         stdlib_root,
         ROOT,
         stdlib_allowlist,
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     module_graph = discovery_result.graph
@@ -4307,7 +4312,6 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
             ROOT,
             stdlib_allowlist,
             full_scan_roots=False,
-            skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
             stdlib_static_import_helper_modules=set(),
         )
@@ -4472,7 +4476,6 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
         stdlib_root,
         project,
         cli_module_stdlib_policy._stdlib_allowlist(),
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     graph = discovery_result.graph
@@ -4510,7 +4513,6 @@ def test_from_import_star_graph_admits_static_all_child_module(
         stdlib_root,
         project,
         stdlib_allowlist,
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
         resolver_cache=cache,
     )
@@ -7184,8 +7186,7 @@ def test_external_native_artifact_plan_rejects_unknown_callable_export_abi(
     assert plan is None
     assert any(
         "callable_exports[0].abi must be one of: "
-        "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1, "
-        "molt.pyinit_module_v1" in error
+        "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1" in error
         for error in errors
     )
 
@@ -8058,6 +8059,7 @@ def test_reachable_native_artifact_plan_keeps_child_callable_exports(
                         "binding": "direct_symbol",
                         "abi": abi,
                         "symbol": f"molt_nativepkg_ndimage_{name}",
+                        **({"arity": 1} if abi == "molt.object_call_v1" else {}),
                     }
                     for name, abi in operations
                 ],
@@ -8152,6 +8154,7 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
                         binding="direct_symbol",
                         abi="molt.object_call_v1",
                         symbol="molt_nativepkg_linalg_eigh",
+                        arity=1,
                     ),
                 ),
             ),
@@ -8163,6 +8166,1093 @@ def test_reachable_native_artifact_plan_package_root_does_not_wildcard_callables
         artifact.module
         for artifact in plan.with_reachable_imports({"nativepkg.ndimage"}).artifacts
     ] == ["nativepkg.ndimage._nd_image"]
+
+
+def _native_callable_contract_test_artifact(
+    tmp_path: Path,
+    *,
+    provider: str,
+    exports: tuple[_ExternalNativeCallableExport, ...],
+) -> _ExternalPackageNativeArtifact:
+    package_dir = tmp_path / "site" / "nativepkg"
+    return _ExternalPackageNativeArtifact(
+        package="nativepkg",
+        module=provider,
+        package_dir=package_dir,
+        path=package_dir / f"{provider.rsplit('.', 1)[-1]}.a",
+        manifest_path=package_dir / f"{provider.rsplit('.', 1)[-1]}.json",
+        extension_sha256=provider + "-extension",
+        manifest_sha256=provider + "-manifest",
+        capabilities=(),
+        abi_tag="molt-extension-v1",
+        target_triple="x86_64-pc-windows-msvc",
+        platform_tag="win_amd64",
+        runtime_linkage="static_link",
+        artifact_kind="static_archive",
+        link_requirements=SourceExtensionLinkRequirements("x86_64-pc-windows-msvc"),
+        callable_exports=exports,
+    )
+
+
+@pytest.mark.parametrize(
+    "first_abi,first_arity,second_abi,second_arity,detail",
+    [
+        (
+            "molt.forward_f32_v1",
+            None,
+            "molt.object_callargs_v1",
+            None,
+            "conflicting callable contracts",
+        ),
+        (
+            "molt.object_call_v1",
+            1,
+            "molt.object_call_v1",
+            2,
+            "conflicting callable contracts",
+        ),
+    ],
+)
+def test_native_callable_plan_rejects_physical_symbol_contract_conflicts(
+    tmp_path: Path,
+    first_abi: str,
+    first_arity: int | None,
+    second_abi: str,
+    second_arity: int | None,
+    detail: str,
+) -> None:
+    symbol = "molt_nativepkg_shared"
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider="nativepkg._first",
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="first",
+                        binding="direct_symbol",
+                        abi=first_abi,
+                        symbol=symbol,
+                        arity=first_arity,
+                    ),
+                ),
+            ),
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider="nativepkg._second",
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="second",
+                        binding="direct_symbol",
+                        abi=second_abi,
+                        symbol=symbol,
+                        arity=second_arity,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    conflicts = plan.native_callable_contract_conflicts()
+
+    assert len(conflicts) == 1
+    assert detail in conflicts[0]
+    assert symbol in conflicts[0]
+
+
+def test_native_callable_plan_reports_missing_direct_variadic_arity(
+    tmp_path: Path,
+) -> None:
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider="nativepkg._provider",
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="run",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol="molt_nativepkg_run",
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert plan.native_callable_contract_conflicts() == (
+        "native callable export 'nativepkg.run' is invalid: direct_symbol ABI "
+        "'molt.object_call_v1' requires explicit arity",
+    )
+
+
+def test_native_callable_plan_allows_same_symbol_contract_aliases(
+    tmp_path: Path,
+) -> None:
+    symbol = "molt_nativepkg_shared"
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=(
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider="nativepkg._first",
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="first",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol=symbol,
+                        arity=1,
+                    ),
+                ),
+            ),
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider="nativepkg._second",
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="second",
+                        binding="direct_symbol",
+                        abi="molt.object_call_v1",
+                        symbol=symbol,
+                        arity=1,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert plan.native_callable_contract_conflicts() == ()
+    assert set(plan.native_callable_exports_by_qualified_name()) == {
+        "nativepkg.first",
+        "nativepkg.second",
+    }
+
+
+def test_native_callable_plan_deduplicates_identical_qualified_contracts(
+    tmp_path: Path,
+) -> None:
+    export = _ExternalNativeCallableExport(
+        module="nativepkg",
+        name="shared",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_nativepkg_shared",
+        arity=1,
+    )
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=tuple(
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider=provider,
+                exports=(export,),
+            )
+            for provider in ("nativepkg._first", "nativepkg._second")
+        )
+    )
+
+    assert plan.native_callable_contract_conflicts() == ()
+    assert list(plan.native_callable_exports_by_qualified_name()) == [
+        "nativepkg.shared"
+    ]
+    nativepkg_spec = next(
+        spec for spec in plan.native_module_init_specs() if spec.module == "nativepkg"
+    )
+    assert nativepkg_spec.direct_symbol_exports == (export,)
+
+
+def test_native_callable_plan_rejects_qualified_name_provider_collision(
+    tmp_path: Path,
+) -> None:
+    plan = _ExternalPackageNativeArtifactPlan(
+        artifacts=tuple(
+            _native_callable_contract_test_artifact(
+                tmp_path,
+                provider=provider,
+                exports=(
+                    _ExternalNativeCallableExport(
+                        module="nativepkg",
+                        name="shared",
+                        binding="module_attr",
+                        abi="molt.object_callargs_v1",
+                    ),
+                ),
+            )
+            for provider in ("nativepkg._first", "nativepkg._second")
+        )
+    )
+
+    conflicts = plan.native_callable_contract_conflicts()
+
+    assert len(conflicts) == 1
+    assert "nativepkg.shared" in conflicts[0]
+    assert "provider='nativepkg._first'" in conflicts[0]
+    assert "provider='nativepkg._second'" in conflicts[0]
+
+
+def test_direct_native_callable_wrapper_owns_ffi_and_publication_metadata() -> None:
+    export = _ExternalNativeCallableExport(
+        module="nativepkg",
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_callargs_v1",
+        symbol="molt_nativepkg_run",
+    )
+
+    wrapper = BACKEND_IR._native_callable_wrapper_function(export)
+    wrapper_ops = wrapper["ops"]
+    init_ops = BACKEND_IR._build_static_native_module_init_ops(
+        _ExternalNativeModuleInitSpec(
+            module="nativepkg",
+            direct_symbol_exports=(export,),
+        ),
+        register_global_code_id=lambda symbol: {
+            wrapper["name"]: 7,
+            "molt_function_init_metadata_packed": 8,
+        }[symbol],
+    )
+
+    invoke_ops = [op for op in wrapper_ops if op["kind"] == "invoke_ffi"]
+    assert len(invoke_ops) == 1
+    assert invoke_ops[0]["native_callable_symbol"] == "molt_nativepkg_run"
+    assert not any(op["kind"] == "invoke_ffi" for op in init_ops)
+    assert sum(op["kind"] == "release" for op in wrapper_ops) == 2
+    assert wrapper_ops[1] == {"kind": "check_exception", "value": 2}
+    invoke_index = wrapper_ops.index(invoke_ops[0])
+    assert wrapper_ops[invoke_index + 1] == {
+        "kind": "check_exception",
+        "value": 1,
+    }
+    assert wrapper_ops[invoke_index + 2] == {"kind": "release", "args": ["v0"]}
+    failure_label = wrapper_ops.index({"kind": "label", "value": 1})
+    assert wrapper_ops[failure_label + 1] == {"kind": "release", "args": ["v0"]}
+    allocation_failure_label = wrapper_ops.index({"kind": "label", "value": 2})
+    assert wrapper_ops[allocation_failure_label + 1]["kind"] == "const_none"
+    assert all(
+        op["kind"] != "release" for op in wrapper_ops[allocation_failure_label + 1 :]
+    )
+
+    assert sum(op["kind"] == "func_new" for op in init_ops) == 1
+    const_strings = {
+        op["out"]: op["s_value"] for op in init_ops if op["kind"] == "const_str"
+    }
+    globals_ops = [
+        op
+        for op in init_ops
+        if op["kind"] == "module_get_attr"
+        and const_strings.get(op["args"][1]) == "__dict__"
+    ]
+    assert len(globals_ops) == 1
+    code_slot_ops = [op for op in init_ops if op["kind"] == "code_slot_set"]
+    assert len(code_slot_ops) == 1
+    assert code_slot_ops[0]["args"][1] == globals_ops[0]["out"]
+    published = [
+        op
+        for op in init_ops
+        if op["kind"] == "module_set_attr" and const_strings.get(op["args"][1]) == "run"
+    ]
+    assert len(published) == 1
+    for index, op in enumerate(init_ops[:-1]):
+        if op["kind"] in {
+            "func_new",
+            "const_str",
+            "tuple_new",
+            "code_new",
+            "module_get_attr",
+            "code_slot_set",
+            "call",
+            "module_set_attr",
+        }:
+            check = init_ops[index + 1]
+            assert check["kind"] == "check_exception"
+            assert {"kind": "label", "value": check["value"]} in init_ops
+
+
+def _source_init_for_native_callable_publication(
+    module_name: str = "nativepkg",
+) -> dict[str, Any]:
+    return {
+        "name": SimpleTIRGenerator.module_init_symbol(module_name),
+        "params": [],
+        "source_module_publication": {
+            "module_name": module_name,
+            "module_value": "v1",
+            "failure_label": 7,
+        },
+        "ops": [
+            {
+                "kind": "const_str",
+                "s_value": module_name,
+                "out": "v0",
+            },
+            {"kind": "module_new", "args": ["v0"], "out": "v1"},
+            {
+                "kind": "module_cache_set",
+                "args": ["v0", "v1"],
+                "out": "v2",
+            },
+            {"kind": "trace_enter_slot", "value": 3},
+            {
+                "kind": "frame_locals_set",
+                "args": ["v1"],
+                "source_module_publication_boundary": True,
+            },
+            {
+                "kind": "check_exception",
+                "value": 7,
+            },
+            {"kind": "label", "value": 2},
+            {
+                "kind": "const_str",
+                "s_value": "source-body-finished",
+                "out": "v3",
+            },
+            {"kind": "check_exception", "value": 7},
+            {"kind": "trace_exit"},
+            {"kind": "ret_void"},
+            {"kind": "label", "value": 7},
+            {
+                "kind": "module_cache_del",
+                "args": ["v0"],
+                "out": "v4",
+            },
+            {"kind": "trace_exit"},
+            {"kind": "ret_void"},
+        ],
+    }
+
+
+@pytest.mark.parametrize("registry_lane", [False, True])
+@pytest.mark.parametrize("existing_prologue_check", [False, True])
+def test_native_callable_publication_augments_existing_source_init_once(
+    registry_lane: bool,
+    existing_prologue_check: bool,
+) -> None:
+    direct_exports = (
+        _ExternalNativeCallableExport(
+            module="nativepkg",
+            name="run",
+            binding="direct_symbol",
+            abi="molt.object_call_v1",
+            symbol="molt_nativepkg_run",
+            arity=1,
+        ),
+        _ExternalNativeCallableExport(
+            module="nativepkg",
+            name="filter",
+            binding="direct_symbol",
+            abi="molt.object_callargs_v1",
+            symbol="molt_nativepkg_filter",
+        ),
+    )
+    spec = _ExternalNativeModuleInitSpec(
+        module="nativepkg",
+        module_attr_exports=(
+            _ExternalNativeModuleAttrPublishSpec(
+                provider_module="nativepkg._provider",
+                attr="provided",
+            ),
+        ),
+        direct_symbol_exports=direct_exports,
+    )
+    source_init = _source_init_for_native_callable_publication()
+    publication_insert_index = (
+        next(
+            index
+            for index, op in enumerate(source_init["ops"])
+            if op.get("source_module_publication_boundary") is True
+        )
+        + 1
+    )
+    if not existing_prologue_check:
+        del source_init["ops"][publication_insert_index]
+    functions = [source_init]
+    code_ids: dict[str, int] = {}
+
+    def register(symbol: str) -> int:
+        return code_ids.setdefault(symbol, len(code_ids))
+
+    BACKEND_IR._append_static_native_callable_wrapper_functions(
+        functions,
+        specs=(spec,),
+        register_global_code_id=register,
+    )
+    generated = BACKEND_IR._append_static_native_module_init_functions(
+        functions,
+        specs=(spec,),
+        register_global_code_id=register,
+        registry_lane=registry_lane,
+    )
+
+    assert generated == ()
+    init_functions = [
+        function for function in functions if function["name"] == "molt_init_nativepkg"
+    ]
+    assert init_functions == [source_init]
+    assert {
+        function["name"]
+        for function in functions
+        if function["name"].startswith("molt_native_callable_wrapper_")
+    } == {
+        BACKEND_IR._native_callable_wrapper_symbol(export) for export in direct_exports
+    }
+
+    ops = source_init["ops"]
+    source_end = ops.index(
+        {
+            "kind": "const_str",
+            "s_value": "source-body-finished",
+            "out": "v3",
+        }
+    )
+    normal_trace_exit = ops.index({"kind": "trace_exit"})
+    publication_indices = [
+        index for index, op in enumerate(ops) if op["kind"] == "func_new"
+    ]
+    frame_locals_index = ops.index({"kind": "frame_locals_set", "args": ["v1"]})
+    assert len(publication_indices) == 2
+    assert "source_module_publication" not in source_init
+    assert not any("source_module_publication_boundary" in op for op in ops)
+    assert (
+        frame_locals_index
+        < min(publication_indices)
+        < max(publication_indices)
+        < source_end
+        < normal_trace_exit
+    )
+    assert publication_insert_index == frame_locals_index + 1
+    assert ops[publication_insert_index] == {"kind": "check_exception", "value": 7}
+
+    const_strings = {
+        op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"
+    }
+    published_attrs = {
+        const_strings[op["args"][1]]
+        for op in ops
+        if op["kind"] == "module_set_attr"
+        and op["args"][0] == "v1"
+        and op["args"][1] in const_strings
+    }
+    assert published_attrs == {"provided", "run", "filter"}
+    provider_init = SimpleTIRGenerator.module_init_symbol("nativepkg._provider")
+    assert (
+        sum(op["kind"] == "call" and op.get("s_value") == provider_init for op in ops)
+        == 1
+    )
+    provider_gets = [
+        op
+        for op in ops
+        if op["kind"] == "module_get_attr"
+        and const_strings.get(op["args"][1]) == "provided"
+    ]
+    assert len(provider_gets) == 1
+    assert any(
+        op["kind"] == "module_set_attr"
+        and const_strings.get(op["args"][1]) == "provided"
+        and op["args"][2] == provider_gets[0]["out"]
+        for op in ops
+    )
+    provider_call_index = next(
+        index
+        for index, op in enumerate(ops)
+        if op["kind"] == "call" and op.get("s_value") == provider_init
+    )
+    direct_publication_indices = [
+        index
+        for index, op in enumerate(ops)
+        if op["kind"] == "module_set_attr"
+        and const_strings.get(op["args"][1]) in {"run", "filter"}
+    ]
+    assert len(direct_publication_indices) == 2
+    assert max(direct_publication_indices) < provider_call_index
+    assert frame_locals_index + 1 < provider_call_index < source_end
+    assert ops[provider_call_index + 1] == {
+        "kind": "check_exception",
+        "value": 7,
+    }
+    source_body_index = ops.index({"kind": "label", "value": 2})
+    for index in range(publication_insert_index, source_body_index):
+        op = ops[index]
+        if (
+            op["kind"] not in BACKEND_IR.SIMPLEIR_STRUCTURAL_KINDS
+            and op["kind"] != "check_exception"
+        ):
+            assert ops[index + 1] == {
+                "kind": "check_exception",
+                "value": 7,
+            }
+
+
+@pytest.mark.parametrize(
+    "module_chunking,module_chunk_max_ops",
+    [(False, 0), (True, 1)],
+)
+def test_compiled_source_init_publishes_before_capture_and_rebinding(
+    module_chunking: bool,
+    module_chunk_max_ops: int,
+) -> None:
+    export = _ExternalNativeCallableExport(
+        module="nativepkg",
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_nativepkg_run",
+        arity=1,
+    )
+    generator = SimpleTIRGenerator(
+        module_name="nativepkg",
+        source_path="/tmp/nativepkg/__init__.py",
+        module_chunking=module_chunking,
+        module_chunk_max_ops=module_chunk_max_ops,
+        native_callable_exports={export.qualified_name: export.digest_payload()},
+    )
+    generator.visit(
+        ast.parse(
+            'captured = globals()["run"]\n'
+            "def replacement(value):\n"
+            "    return value\n"
+            "run = replacement\n"
+        )
+    )
+    functions = generator.to_json()["functions"]
+    source_init = next(
+        function for function in functions if function["name"] == "molt_main"
+    )
+    source_init["name"] = "molt_init_nativepkg"
+    assert source_init["source_module_publication"]["module_name"] == "nativepkg"
+    assert source_init["source_module_publication"]["module_value"]
+    publication_failure_label = source_init["source_module_publication"][
+        "failure_label"
+    ]
+    assert (
+        sum(
+            op.get("source_module_publication_boundary") is True
+            for op in source_init["ops"]
+        )
+        == 1
+    )
+
+    code_ids: dict[str, int] = {}
+
+    def register(symbol: str) -> int:
+        return code_ids.setdefault(symbol, len(code_ids))
+
+    spec = _ExternalNativeModuleInitSpec(
+        module="nativepkg",
+        direct_symbol_exports=(export,),
+    )
+    BACKEND_IR._append_static_native_callable_wrapper_functions(
+        functions,
+        specs=(spec,),
+        register_global_code_id=register,
+    )
+    generated = BACKEND_IR._append_static_native_module_init_functions(
+        functions,
+        specs=(spec,),
+        register_global_code_id=register,
+        registry_lane=True,
+    )
+
+    assert generated == ()
+    assert "source_module_publication" not in source_init
+    assert not any(
+        op.get("source_module_publication_boundary") is True
+        for function in functions
+        for op in function["ops"]
+    )
+    wrapper_symbol = BACKEND_IR._native_callable_wrapper_symbol(export)
+    init_ops = source_init["ops"]
+    wrapper_value = next(
+        op["out"]
+        for op in init_ops
+        if op["kind"] == "func_new" and op.get("s_value") == wrapper_symbol
+    )
+    frame_locals_index = next(
+        index for index, op in enumerate(init_ops) if op["kind"] == "frame_locals_set"
+    )
+    wrapper_index = next(
+        index
+        for index, op in enumerate(init_ops)
+        if op["kind"] == "func_new" and op.get("s_value") == wrapper_symbol
+    )
+    assert frame_locals_index + 1 < wrapper_index
+    assert init_ops[frame_locals_index + 1] == {
+        "kind": "check_exception",
+        "value": publication_failure_label,
+    }
+
+    execution_rank = {"molt_init_nativepkg": 0}
+    chunk_names = {
+        function["name"]
+        for function in functions
+        if function.get("execution_context") == "inherited"
+    }
+    for call_index, op in enumerate(init_ops, start=1):
+        target = op.get("s_value")
+        if op["kind"] in {"call", "call_internal"} and target in chunk_names:
+            execution_rank[str(target)] = call_index
+
+    attr_events: list[tuple[tuple[int, int], str, dict[str, Any]]] = []
+    for function in functions:
+        rank = execution_rank.get(function["name"])
+        if rank is None:
+            continue
+        ops = function["ops"]
+        const_strings = {
+            op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"
+        }
+        for op_index, op in enumerate(ops):
+            if op["kind"] != "module_set_attr":
+                continue
+            attr = const_strings.get(op["args"][1])
+            if attr in {"captured", "run"}:
+                attr_events.append(((rank, op_index), attr, op))
+
+    native_publication = next(
+        event
+        for event in attr_events
+        if event[1] == "run" and event[2]["args"][2] == wrapper_value
+    )
+    captured_publication = next(
+        event for event in attr_events if event[1] == "captured"
+    )
+    source_rebinding = next(
+        event
+        for event in attr_events
+        if event[1] == "run" and event[2]["args"][2] != wrapper_value
+    )
+    assert native_publication[0] < captured_publication[0] < source_rebinding[0]
+
+
+def test_native_callable_publication_fails_closed_on_unstructured_init_collision() -> (
+    None
+):
+    export = _ExternalNativeCallableExport(
+        module="nativepkg",
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_nativepkg_run",
+        arity=1,
+    )
+    functions = [
+        {
+            "name": "molt_init_nativepkg",
+            "params": [],
+            "ops": [{"kind": "ret_void"}],
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="missing canonical source-module publication metadata",
+    ):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(
+                _ExternalNativeModuleInitSpec(
+                    module="nativepkg",
+                    direct_symbol_exports=(export,),
+                ),
+            ),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=True,
+        )
+
+    assert len(functions) == 1
+
+
+@pytest.mark.parametrize(
+    "publication",
+    [
+        {"module_name": "nativepkg", "module_value": "", "failure_label": 7},
+        {"module_name": "nativepkg", "module_value": "v1", "failure_label": True},
+        {"module_value": "v1", "failure_label": 7},
+        {"module_name": "", "module_value": "v1", "failure_label": 7},
+        {"module_name": 7, "module_value": "v1", "failure_label": 7},
+    ],
+)
+def test_native_callable_publication_rejects_invalid_source_metadata(
+    publication: dict[str, object],
+) -> None:
+    export = _ExternalNativeCallableExport(
+        module="nativepkg",
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_nativepkg_run",
+        arity=1,
+    )
+    source_init = _source_init_for_native_callable_publication()
+    source_init["source_module_publication"] = publication
+
+    with pytest.raises(ValueError):
+        BACKEND_IR._append_static_native_module_init_functions(
+            [source_init],
+            specs=(
+                _ExternalNativeModuleInitSpec(
+                    module="nativepkg",
+                    direct_symbol_exports=(export,),
+                ),
+            ),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=True,
+        )
+
+
+@pytest.mark.parametrize("authority", ["extension", "alias"])
+@pytest.mark.parametrize("registry_lane", [False, True])
+def test_native_extension_init_collision_with_source_init_fails_closed(
+    authority: str,
+    registry_lane: bool,
+) -> None:
+    functions = [_source_init_for_native_callable_publication()]
+
+    with pytest.raises(
+        ValueError,
+        match=f"collides with native {authority} module authority",
+    ):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(
+                _ExternalNativeModuleInitSpec(
+                    module="nativepkg",
+                    init_symbol="PyInit_nativepkg" if authority == "extension" else "",
+                    alias_of="nativepkg._provider" if authority == "alias" else "",
+                ),
+            ),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=registry_lane,
+        )
+
+    assert len(functions) == 1
+
+
+@pytest.mark.parametrize("registry_lane", [False, True])
+@pytest.mark.parametrize(
+    "owners",
+    [
+        "source-source",
+        "duplicate-source",
+        "source-identity-mismatch",
+        "source-native",
+        "source-direct",
+        "native-native",
+    ],
+)
+def test_native_publication_preflights_complete_body_identity_without_mutation(
+    owners: str,
+    registry_lane: bool,
+) -> None:
+    source_name, native_name = "nativepkg_tools", "nativepkg.tools"
+    assert SimpleTIRGenerator.module_init_symbol(source_name) == (
+        SimpleTIRGenerator.module_init_symbol(native_name)
+    )
+    functions: list[dict[str, Any]] = []
+    specs: tuple[_ExternalNativeModuleInitSpec, ...] = ()
+    if owners in {"source-source", "duplicate-source"}:
+        functions = [
+            _source_init_for_native_callable_publication(source_name),
+            _source_init_for_native_callable_publication(
+                native_name if owners == "source-source" else source_name
+            ),
+        ]
+    elif owners == "source-identity-mismatch":
+        source = _source_init_for_native_callable_publication(source_name)
+        source["name"] = SimpleTIRGenerator.module_init_symbol("unrelated")
+        functions = [source]
+    elif owners in {"source-native", "source-direct"}:
+        functions = [_source_init_for_native_callable_publication(source_name)]
+        exports = (
+            (
+                _ExternalNativeCallableExport(
+                    module=native_name,
+                    name="run",
+                    binding="direct_symbol",
+                    abi="molt.object_call_v1",
+                    symbol="molt_native_tools_run",
+                    arity=1,
+                ),
+            )
+            if owners == "source-direct"
+            else ()
+        )
+        specs = (
+            _ExternalNativeModuleInitSpec(
+                module=native_name,
+                direct_symbol_exports=exports,
+            ),
+        )
+    else:
+        # Both specs have no exports: neither may silently consume the other's body.
+        specs = tuple(
+            _ExternalNativeModuleInitSpec(module=name)
+            for name in (source_name, native_name)
+        )
+    before = json.loads(json.dumps(functions))
+    registered: list[str] = []
+
+    def register(symbol: str) -> int:
+        registered.append(symbol)
+        return len(registered)
+
+    with pytest.raises(ValueError):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=specs,
+            register_global_code_id=register,
+            registry_lane=registry_lane,
+        )
+    assert functions == before
+    assert registered == []
+
+
+@pytest.mark.parametrize("source_owner", [False, True])
+@pytest.mark.parametrize("alias_first", [False, True])
+def test_registry_alias_has_no_body_symbol_to_collide_with(
+    source_owner: bool,
+    alias_first: bool,
+) -> None:
+    body_name, alias_name = "nativepkg_tools", "nativepkg.tools"
+    functions = (
+        [_source_init_for_native_callable_publication(body_name)]
+        if source_owner
+        else []
+    )
+    alias = _ExternalNativeModuleInitSpec(module=alias_name, alias_of=body_name)
+    specs = [alias]
+    if not source_owner:
+        body = _ExternalNativeModuleInitSpec(module=body_name)
+        specs = [alias, body] if alias_first else [body, alias]
+    generated = BACKEND_IR._append_static_native_module_init_functions(
+        functions,
+        specs=tuple(specs),
+        register_global_code_id=lambda _symbol: 1,
+        registry_lane=True,
+    )
+    assert set(generated) == ({alias_name} if source_owner else {alias_name, body_name})
+    assert len(functions) == 1
+    assert functions[0]["name"] == SimpleTIRGenerator.module_init_symbol(body_name)
+    assert "source_module_publication" not in functions[0]
+
+
+def test_nonregistry_alias_body_cannot_share_another_module_body_symbol() -> None:
+    functions = [_source_init_for_native_callable_publication("nativepkg_tools")]
+    before = json.loads(json.dumps(functions))
+    with pytest.raises(ValueError):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(
+                _ExternalNativeModuleInitSpec(
+                    module="nativepkg.tools",
+                    alias_of="provider",
+                ),
+            ),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=False,
+        )
+    assert functions == before
+
+
+@pytest.mark.parametrize("source_owner", [False, True])
+def test_native_publication_rejects_export_for_a_different_containing_module(
+    source_owner: bool,
+) -> None:
+    functions = [_source_init_for_native_callable_publication()] if source_owner else []
+    export = _ExternalNativeCallableExport(
+        module="otherpkg",
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_other_run",
+        arity=1,
+    )
+    before = json.loads(json.dumps(functions))
+    with pytest.raises(ValueError):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(
+                _ExternalNativeModuleInitSpec(
+                    module="nativepkg",
+                    direct_symbol_exports=(export,),
+                ),
+            ),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=True,
+        )
+    assert functions == before
+
+
+def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() -> None:
+    generator = SimpleTIRGenerator(
+        module_name="application",
+        entry_module="application",
+        source_path="/virtual/application.py",
+    )
+    generator.visit(ast.parse("pass\n"))
+    functions = json.loads(json.dumps(generator.to_json()["functions"]))
+    source_init = next(
+        function for function in functions if function["name"] == "molt_main"
+    )
+    assert source_init["source_module_publication"]["module_name"] == "application"
+    source_init["name"] = SimpleTIRGenerator.module_init_symbol("application")
+    assert (
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(),
+            register_global_code_id=lambda _symbol: 1,
+            registry_lane=True,
+        )
+        == ()
+    )
+    assert all("source_module_publication" not in function for function in functions)
+    assert all(
+        "source_module_publication_boundary" not in op
+        for function in functions
+        for op in function["ops"]
+    )
+    registry = BACKEND_IR._build_module_registry(
+        entry_module="application",
+        module_graph={"application": Path("/virtual/application.py")},
+        module_order=["application"],
+        runtime_import_dispatch_roots=(),
+        native_module_init_specs=(),
+        generated_native_init_modules=(),
+        spawn_enabled=False,
+    )
+    rows = {row.name: row for row in registry.rows}
+    assert rows["__main__"].init_symbol == rows["application"].init_symbol
+
+
+@pytest.mark.parametrize("registry_lane", [False, True])
+@pytest.mark.parametrize("module_name", ["nativepkg", "nativepkg.child"])
+def test_generated_native_publication_is_direct_first_once_and_rollback_owned(
+    registry_lane: bool,
+    module_name: str,
+) -> None:
+    export = _ExternalNativeCallableExport(
+        module=module_name,
+        name="run",
+        binding="direct_symbol",
+        abi="molt.object_call_v1",
+        symbol="molt_nativepkg_run",
+        arity=1,
+    )
+    spec = _ExternalNativeModuleInitSpec(
+        module=module_name,
+        direct_symbol_exports=(export,),
+        module_attr_exports=(
+            _ExternalNativeModuleAttrPublishSpec(
+                provider_module=f"{module_name}._provider",
+                attr="provided",
+            ),
+        ),
+    )
+    build = (
+        BACKEND_IR._build_registry_native_module_init_ops
+        if registry_lane
+        else BACKEND_IR._build_static_native_module_init_ops
+    )
+    ops = build(spec, register_global_code_id=lambda _symbol: 1)
+    strings = {op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"}
+    publication = {
+        name: [
+            index
+            for index, op in enumerate(ops)
+            if op["kind"] == "module_set_attr" and strings.get(op["args"][1]) == name
+        ]
+        for name in ("run", "provided")
+    }
+    assert all(len(indices) == 1 for indices in publication.values())
+    provider_calls = [
+        index
+        for index, op in enumerate(ops)
+        if op["kind"] == "call"
+        and op.get("s_value")
+        == SimpleTIRGenerator.module_init_symbol(f"{module_name}._provider")
+    ]
+    assert len(provider_calls) == 1
+    provider_call = provider_calls[0]
+    assert publication["run"][0] < provider_call < publication["provided"][0]
+
+    def failure_handler(index: int) -> list[dict[str, Any]]:
+        check = ops[index + 1]
+        assert check["kind"] == "check_exception"
+        start = ops.index({"kind": "label", "value": check["value"]}) + 1
+        end = next(i for i in range(start, len(ops)) if ops[i]["kind"] == "ret_void")
+        return ops[start:end]
+
+    cache_set = next(i for i, op in enumerate(ops) if op["kind"] == "module_cache_set")
+    module_new = next(i for i, op in enumerate(ops) if op["kind"] == "module_new")
+    func_new = next(i for i, op in enumerate(ops) if op["kind"] == "func_new")
+    module_name_value = ops[cache_set]["args"][0]
+    for index in (cache_set, func_new, provider_call, publication["provided"][0]):
+        handler = failure_handler(index)
+        cleanup = [op for op in handler if op["kind"] == "module_cache_del"]
+        assert len(cleanup) == 1
+        assert cleanup[0]["args"] == [module_name_value]
+        assert not any(op["kind"] == "check_exception" for op in handler)
+    for index in (0, module_new):
+        assert not any(
+            op["kind"] == "module_cache_del" for op in failure_handler(index)
+        )
+    if not registry_lane:
+        miss_if = next(i for i, op in enumerate(ops) if op["kind"] == "if")
+        depth = 1
+        miss_end = None
+        for index in range(miss_if + 1, len(ops)):
+            depth += int(ops[index]["kind"] == "if")
+            depth -= int(ops[index]["kind"] == "end_if")
+            if depth == 0:
+                miss_end = index
+                break
+        assert miss_end is not None
+        assert (
+            miss_if
+            < publication["run"][0]
+            < provider_call
+            < publication["provided"][0]
+            < miss_end
+        )
+        initial_probe = next(
+            i for i, op in enumerate(ops) if op["kind"] == "module_cache_get"
+        )
+        assert initial_probe < miss_if
+        assert not any(
+            op["kind"] == "module_cache_del" for op in failure_handler(initial_probe)
+        )
+        canonical_reload = next(
+            i
+            for i in range(publication["provided"][0] + 1, miss_end)
+            if ops[i]["kind"] == "module_cache_get"
+            and ops[i].get("args") == [module_name_value]
+        )
+        assert any(
+            op["kind"] == "module_cache_del" for op in failure_handler(canonical_reload)
+        )
+        cached_return = next(
+            i for i in range(miss_end + 1, len(ops)) if ops[i]["kind"] == "ret_void"
+        )
+        assert all(
+            op["kind"] in BACKEND_IR.SIMPLEIR_STRUCTURAL_KINDS
+            for op in ops[miss_end + 1 : cached_return]
+        )
+        if "." in module_name:
+            parent_publication = next(
+                i
+                for i, op in enumerate(ops)
+                if op["kind"] == "module_set_attr"
+                and strings.get(op["args"][1]) == module_name.rsplit(".", 1)[1]
+            )
+            assert canonical_reload < parent_publication < miss_end
+            assert any(
+                op["kind"] == "module_cache_del"
+                for op in failure_handler(parent_publication)
+            )
 
 
 @_source_tree_fingerprint_transaction()
@@ -8232,6 +9322,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
                         "binding": "direct_symbol",
                         "abi": abi,
                         "symbol": f"molt_nativepkg_ndimage_{name}",
+                        **({"arity": 1} if abi == "molt.object_call_v1" else {}),
                     }
                     for name, abi in operations
                 ],
@@ -9480,7 +10571,13 @@ def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() ->
         },
     )
 
-    assert any(op.get("kind") == "call_bind" for op in ops)
+    calls = [
+        op for op in ops if op.get("kind") == "call_func" and op.get("source_line") == 3
+    ]
+    assert len(calls) == 1
+    assert len(calls[0]["args"]) == 2
+    callee = next(op for op in ops if op.get("out") == calls[0]["args"][0])
+    assert callee["kind"] == "module_get_global"
     assert all(
         not (
             op.get("kind") == "call"
@@ -9512,7 +10609,14 @@ def test_frontend_from_import_known_child_module_does_not_authorize_python_direc
         },
     )
 
-    assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
+    calls = [
+        op for op in ops if op.get("kind") == "call_func" and op.get("source_line") == 3
+    ]
+    assert len(calls) == 1
+    assert len(calls[0]["args"]) == 2
+    callee = next(op for op in ops if op.get("out") == calls[0]["args"][0])
+    assert callee["kind"] == "get_attr_generic_obj"
+    assert callee["s_value"] == "distance_transform_edt"
     assert all(
         not (
             op.get("kind") == "call"
@@ -9522,7 +10626,7 @@ def test_frontend_from_import_known_child_module_does_not_authorize_python_direc
     )
 
 
-def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None:
+def test_frontend_native_callable_export_uses_captured_import_object() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "distance_transform_edt",
@@ -9551,22 +10655,14 @@ def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None
         native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
     )
 
-    invoke_ops = [
-        op
+    assert not any(
+        op.get("kind") == "invoke_ffi" and op.get("native_callable_export")
         for op in ops
-        if op.get("kind") == "invoke_ffi"
-        and op.get("native_callable_export") == "scipy.ndimage.distance_transform_edt"
-    ]
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert len(invoke_op["args"]) == 1
-    assert invoke_op["native_callable_binding"] == "direct_symbol"
-    assert invoke_op["native_callable_abi"] == "molt.forward_f32_v1"
-    assert (
-        invoke_op["native_callable_symbol"]
-        == "molt_scipy_ndimage_distance_transform_edt"
     )
-    assert all(op.get("kind") != "call_bind" for op in ops)
+    assert any(
+        op.get("kind") in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+        for op in ops
+    )
     assert all(
         not (
             op.get("kind") == "call"
@@ -9576,15 +10672,14 @@ def test_frontend_native_callable_export_lowers_to_invoke_ffi_metadata() -> None
     )
 
 
-def test_frontend_native_callable_export_lowers_from_imported_child_module_attr() -> (
-    None
-):
+def test_frontend_native_callable_export_uses_live_child_module_attr() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "distance_transform_edt",
         "binding": "direct_symbol",
         "abi": "molt.object_call_v1",
         "symbol": "molt_scipy_ndimage_distance_transform_edt",
+        "arity": 1,
     }
 
     ops = _frontend_main_ops_for_import_source(
@@ -9607,23 +10702,14 @@ def test_frontend_native_callable_export_lowers_from_imported_child_module_attr(
         native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
     )
 
-    invoke_ops = [
-        op
+    assert not any(
+        op.get("kind") == "invoke_ffi" and op.get("native_callable_export")
         for op in ops
-        if op.get("kind") == "invoke_ffi"
-        and op.get("native_callable_export") == "scipy.ndimage.distance_transform_edt"
-    ]
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert len(invoke_op["args"]) == 1
-    assert invoke_op["native_callable_binding"] == "direct_symbol"
-    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
-    assert (
-        invoke_op["native_callable_symbol"]
-        == "molt_scipy_ndimage_distance_transform_edt"
     )
-    assert all(op.get("kind") != "call_bind" for op in ops)
-    assert all(op.get("kind") != "call_indirect" for op in ops)
+    assert any(
+        op.get("kind") in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+        for op in ops
+    )
     assert all(
         not (
             op.get("kind") == "call"
@@ -9633,9 +10719,7 @@ def test_frontend_native_callable_export_lowers_from_imported_child_module_attr(
     )
 
 
-def test_frontend_native_callable_callargs_export_lowers_keyword_child_module_attr() -> (
-    None
-):
+def test_frontend_native_callable_callargs_export_uses_live_child_module_attr() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "gaussian_filter",
@@ -9656,23 +10740,14 @@ def test_frontend_native_callable_callargs_export_lowers_keyword_child_module_at
         native_callable_exports={"scipy.ndimage.gaussian_filter": export},
     )
 
-    invoke_ops = [
-        op
+    assert not any(
+        op.get("kind") == "invoke_ffi" and op.get("native_callable_export")
         for op in ops
-        if op.get("kind") == "invoke_ffi"
-        and op.get("native_callable_export") == "scipy.ndimage.gaussian_filter"
-    ]
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert len(invoke_op["args"]) == 1
-    assert invoke_op["native_callable_binding"] == "direct_symbol"
-    assert invoke_op["native_callable_abi"] == "molt.object_callargs_v1"
-    assert invoke_op["native_callable_symbol"] == "molt_scipy_ndimage_gaussian_filter"
+    )
     assert any(op.get("kind") == "callargs_new" for op in ops)
     assert any(op.get("kind") == "callargs_push_pos" for op in ops)
     assert any(op.get("kind") == "callargs_push_kw" for op in ops)
-    assert all(op.get("kind") != "call_bind" for op in ops)
-    assert all(op.get("kind") != "call_indirect" for op in ops)
+    assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
 
 
 @pytest.mark.parametrize(
@@ -9694,7 +10769,7 @@ def test_frontend_native_callable_callargs_export_lowers_keyword_child_module_at
         ("import scipy.ndimage", "scipy.ndimage.{name}"),
     ],
 )
-def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi(
+def test_frontend_pact_ndimage_operation_closure_calls_published_callable(
     name: str,
     arguments: str,
     abi: str,
@@ -9724,21 +10799,20 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi(
             }
         },
     )
-    invoke_ops = [op for op in ops if op.get("kind") == "invoke_ffi"]
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert invoke_op["native_callable_export"] == export_name
-    assert invoke_op["native_callable_binding"] == "module_attr"
-    assert invoke_op["native_callable_abi"] == abi
-    assert "native_callable_symbol" not in invoke_op
-    assert len(invoke_op["args"]) == 2
+    assert not any(
+        op.get("kind") == "invoke_ffi" and op.get("native_callable_export")
+        for op in ops
+    )
     assert sum(op.get("kind") == "callargs_new" for op in ops) == int(
         keyword is not None
     )
     assert sum(op.get("kind") == "callargs_push_kw" for op in ops) == int(
         keyword is not None
     )
-    assert all(op.get("kind") not in {"call_bind", "call_indirect"} for op in ops)
+    assert any(
+        op.get("kind") in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+        for op in ops
+    )
     assert all(
         not (
             op.get("kind") == "call"
@@ -9749,7 +10823,7 @@ def test_frontend_pact_ndimage_operation_closure_lowers_to_native_abi(
     )
 
 
-def test_frontend_native_callable_module_attr_export_lowers_to_runtime_ffi() -> None:
+def test_frontend_native_callable_module_attr_export_uses_normal_dispatch() -> None:
     export: dict[str, object] = {
         "module": "scipy.ndimage",
         "name": "distance_transform_edt",
@@ -9777,19 +10851,14 @@ def test_frontend_native_callable_module_attr_export_lowers_to_runtime_ffi() -> 
         native_callable_exports={"scipy.ndimage.distance_transform_edt": export},
     )
 
-    invoke_ops = [
-        op
+    assert not any(
+        op.get("kind") == "invoke_ffi" and op.get("native_callable_export")
         for op in ops
-        if op.get("kind") == "invoke_ffi"
-        and op.get("native_callable_export") == "scipy.ndimage.distance_transform_edt"
-    ]
-    assert len(invoke_ops) == 1
-    invoke_op = invoke_ops[0]
-    assert len(invoke_op["args"]) == 2
-    assert invoke_op["native_callable_binding"] == "module_attr"
-    assert invoke_op["native_callable_abi"] == "molt.object_call_v1"
-    assert "native_callable_symbol" not in invoke_op
-    assert all(op.get("kind") != "call_bind" for op in ops)
+    )
+    assert any(
+        op.get("kind") in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+        for op in ops
+    )
     assert all(
         not (
             op.get("kind") == "call"
@@ -9807,7 +10876,7 @@ def test_frontend_native_callable_module_attr_rejects_memory_abi() -> None:
         "abi": "molt.forward_f32_v1",
     }
 
-    with pytest.raises(CompatibilityError, match="uses module_attr direct-symbol ABI"):
+    with pytest.raises(ValueError, match="module_attr binding cannot use"):
         _frontend_main_ops_for_import_source(
             "from scipy.ndimage import distance_transform_edt\n"
             "mask = 1\n"
@@ -9837,6 +10906,12 @@ def test_frontend_native_python_export_without_callable_metadata_fails_closed() 
         "from scipy import ndimage\n"
         "mask = 1\n"
         "result = ndimage.distance_transform_edt(mask)\n",
+        "import scipy.ndimage as ndi\n"
+        "mask = 1\n"
+        "result = ndi.distance_transform_edt(mask)\n",
+        "import scipy.ndimage\n"
+        "mask = 1\n"
+        "result = scipy.ndimage.distance_transform_edt(mask)\n",
     ]
 
     for source in sources:
@@ -9856,6 +10931,31 @@ def test_frontend_native_python_export_without_callable_metadata_fails_closed() 
                 stdlib_allowlist=set(),
                 native_python_exports={"scipy.ndimage.distance_transform_edt"},
             )
+
+
+def test_rebound_native_python_export_calls_replacement_without_abi_metadata() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "from scipy.ndimage import distance_transform_edt\n"
+        "distance_transform_edt = replacement\n"
+        "result = distance_transform_edt(1)\n",
+        module_name="field_solve",
+        parse_codec="json",
+        known_modules={"field_solve", "scipy", "scipy.ndimage"},
+        direct_call_modules={"field_solve"},
+        stdlib_allowlist=set(),
+        native_python_exports={"scipy.ndimage.distance_transform_edt"},
+    )
+    names = {op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"}
+    callees = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "module_get_global"
+        and names.get(op["args"][1]) == "distance_transform_edt"
+    }
+    calls = [op for op in ops if op["kind"] == "call_func" and op["args"][0] in callees]
+    assert len(calls) == 1
+    assert len(calls[0]["args"]) == 2
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
 
 
 def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
@@ -9960,7 +11060,7 @@ def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
     assert "warnings" in imports
 
 
-def test_molt_os_module_init_imports_do_not_pull_typing() -> None:
+def test_molt_os_module_init_retains_reentrant_type_checking_branch() -> None:
     tree = ast.parse((ROOT / "src/molt/stdlib/os.py").read_text(encoding="utf-8"))
 
     imports = cli_module_import_scanner._collect_imports(
@@ -9970,7 +11070,9 @@ def test_molt_os_module_init_imports_do_not_pull_typing() -> None:
     )
 
     assert "abc" in imports
-    assert "typing" not in imports
+    # abc executes before TYPE_CHECKING is stored. Its import can populate a
+    # finalizable prior binding whose release rewrites the newly stored False.
+    assert "typing" in imports
 
 
 def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
@@ -10201,7 +11303,6 @@ def test_discover_module_graph_includes_importlib_from_alias_target(
         stdlib_root,
         tmp_path,
         cli_module_stdlib_policy._stdlib_allowlist(),
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     graph = discovery_result.graph
@@ -10256,7 +11357,6 @@ def test_discover_module_graph_admits_static_loader_source_under_execution_name(
         stdlib_root,
         None,
         cli_module_stdlib_policy._stdlib_allowlist(),
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     graph = discovery_result.graph
@@ -10294,7 +11394,7 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     assert "sys" in imports
 
 
-def test_collect_imports_avoids_module_tree_walk_for_nested_scans(
+def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tree = ast.parse(
@@ -10317,10 +11417,21 @@ def test_collect_imports_avoids_module_tree_walk_for_nested_scans(
     monkeypatch.setattr(cli_module_import_scanner.ast, "walk", wrapped_walk)
 
     imports = cli_module_import_scanner._collect_imports(tree)
+    uses_runtime_import_protocol = (
+        cli_module_import_scanner._tree_uses_runtime_import_protocol(
+            tree,
+            module_name=None,
+            is_package=False,
+        )
+    )
 
     assert module_tree_walks == 0
     assert "os" in imports
-    assert "warnings" in imports
+    # Executing os can replace MODULE_NAME before its store; releasing that
+    # possible prior value can then rewrite the stored literal. Do not promote
+    # the spelling to an exact static edge, but retain the dynamic protocol.
+    assert "warnings" not in imports
+    assert uses_runtime_import_protocol
 
 
 def test_backend_ir_text_is_compact() -> None:
@@ -11959,13 +13070,14 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         import_scan_mode="module_init",
         scan=cli_module_graph_cache._PersistedImportScan(("json",), ()),
     )
-    assert cli_module_graph_cache._read_persisted_import_scan(
+    record = cli_module_graph_cache._read_persisted_import_scan_record(
         tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-    ) == ("json",)
+    )
+    assert record is not None and record.imports == ("json",)
 
     monkeypatch.setattr(
         cli_module_graph_cache,
@@ -11973,7 +13085,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         lambda: "tool-b",
     )
     assert (
-        cli_module_graph_cache._read_persisted_import_scan(
+        cli_module_graph_cache._read_persisted_import_scan_record(
             tmp_path,
             module_path,
             module_name="pkg.mod",
@@ -12009,7 +13121,7 @@ def test_persisted_import_scan_cache_tracks_source_content(
     _rewrite_preserving_mtime(module_path, "import math\n", original)
 
     assert (
-        cli_module_graph_cache._read_persisted_import_scan(
+        cli_module_graph_cache._read_persisted_import_scan_record(
             tmp_path,
             module_path,
             module_name="pkg.mod",
@@ -12697,8 +13809,14 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     monkeypatch.setattr(cache, "resolve_module", fail_resolve)
     monkeypatch.setattr(cache, "read_module_source", fail_read)
 
-    def fail_read_text(*args: object, **kwargs: object) -> str:
-        raise AssertionError("unexpected persisted graph reread")
+    read_text = Path.read_text
+
+    def fail_read_text(path: Path, *args: Any, **kwargs: Any) -> str:
+        # Only the application graph is warm here. A new operation must still
+        # validate compiler-tooling content/topology through its own authority.
+        if "module_graph_cache" in path.parts:
+            raise AssertionError("unexpected persisted graph reread")
+        return read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", fail_read_text)
 
@@ -13161,37 +14279,10 @@ def test_module_graph_cache_path_uses_cached_graph_key(
     calls = 0
     original = cli_module_graph_cache._module_graph_cache_key
 
-    def wrapped(
-        entry_path_str: str,
-        roots_key: tuple[str, ...],
-        module_roots_key: tuple[str, ...],
-        stdlib_root_str: str,
-        skip_modules: tuple[str, ...],
-        stub_parents: tuple[str, ...],
-        stdlib_static_import_helper_modules: tuple[str, ...],
-        stdlib_allowlist_digest: str,
-        compiler_fingerprint: str,
-        target_python_tag: str = cli_module_graph_cache._DEFAULT_TARGET_PYTHON_VERSION.tag,
-        capability_config_digest: str = "",
-        *,
-        full_scan_roots: bool,
-    ) -> str:
+    def wrapped(*args: Any, **kwargs: Any) -> str:
         nonlocal calls
         calls += 1
-        return original(
-            entry_path_str,
-            roots_key,
-            module_roots_key,
-            stdlib_root_str,
-            skip_modules,
-            stub_parents,
-            stdlib_static_import_helper_modules,
-            stdlib_allowlist_digest,
-            compiler_fingerprint,
-            target_python_tag,
-            capability_config_digest=capability_config_digest,
-            full_scan_roots=full_scan_roots,
-        )
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(
         cli_module_graph_cache, "_module_graph_cache_key", wrapped, raising=True
@@ -13678,6 +14769,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
 
     common = {
         "runtime/molt-backend",
+        "runtime/molt-artifact-publish",
         "runtime/molt-ir",
         "runtime/molt-passes",
         "runtime/molt-tir",
@@ -16922,7 +18014,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             json_output=True,
             diagnostics=True,
         )
-    assert rc == 0
+    assert rc == 0, first_stdout.getvalue()
     first_submit_calls = submit_calls
     assert first_submit_calls >= 2
 
@@ -16938,7 +18030,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             json_output=True,
             diagnostics=True,
         )
-    assert rc == 0
+    assert rc == 0, second_stdout.getvalue()
     assert 0 <= submit_calls < first_submit_calls
 
     payload = json.loads(second_stdout.getvalue())
@@ -17075,7 +18167,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             json_output=True,
             diagnostics=True,
         )
-    assert rc == 0
+    assert rc == 0, first_stdout.getvalue()
 
     alpha.write_text("VALUE = 10\n")
 
@@ -17090,7 +18182,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             json_output=True,
             diagnostics=True,
         )
-    assert rc == 0
+    assert rc == 0, second_stdout.getvalue()
 
     payload = json.loads(second_stdout.getvalue())
     compile_diagnostics = payload["data"]["compile_diagnostics"]
@@ -17232,7 +18324,7 @@ def test_parallel_build_allows_scoped_type_facts(
             type_hint_policy="trust",
         )
 
-    assert rc == 0
+    assert rc == 0, stdout.getvalue()
     assert captured_payloads, stdout.getvalue()
     for payload in captured_payloads:
         scoped = payload["type_facts"]
@@ -17244,7 +18336,9 @@ def test_parallel_build_allows_scoped_type_facts(
 
 
 def test_build_one_shot_backend_compile_uses_ir_file_lease(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -17290,7 +18384,8 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
         json_output=False,
     )
 
-    assert rc == 0
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
     assert len(backend_inputs) == 1
     assert backend_inputs[0] is None
     assert len(backend_ir_files) == 1
@@ -17355,7 +18450,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         assert socket_path == daemon_socket
         backend_output = cast(Path, kwargs["backend_output"])
         backend_output.parent.mkdir(parents=True, exist_ok=True)
-        backend_output.write_bytes(b"OBJ")
+        backend_output.write_bytes(native_relocatable_object(symbols=("molt_main",)))
         return cli._BackendDaemonCompileResult(
             ok=True,
             error=None,
@@ -17384,12 +18479,14 @@ def test_build_skips_daemon_preflight_when_socket_exists(
             diagnostics=True,
         )
 
-    assert rc == 0
+    assert rc == 0, stdout.getvalue()
     assert compile_calls == 1
 
 
 def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -17403,11 +18500,21 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
     backend_bin.write_text("")
-    expected_stdlib_obj = cache_root / "stdlib-object.o"
+
+    def unexpected_stdlib_object_cache_path(*args: object, **kwargs: object) -> Path:
+        pytest.fail("Explicit object output must not request a shared stdlib artifact")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    partition_env = {
+        "MOLT_STDLIB_OBJ": str(cache_root / "ambient-stdlib.o"),
+        "MOLT_STDLIB_CACHE_KEY": "ambient-key",
+        "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"ambient-key"}',
+        "MOLT_STDLIB_MODULE_SYMBOLS": '["ambient_mod"]',
+    }
+    for key, value in partition_env.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
     monkeypatch.setattr(
         cli_frontend_parallel, "_resolve_frontend_parallel_module_workers", lambda: 0
@@ -17422,7 +18529,7 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     monkeypatch.setattr(
         cli_backend_cache_setup,
         "_stdlib_object_cache_path",
-        lambda cache_path, cache_key: expected_stdlib_obj,
+        unexpected_stdlib_object_cache_path,
     )
     seen_envs: list[dict[str, str] | None] = []
     _install_fake_backend_compile(monkeypatch, seen_envs=seen_envs)
@@ -17436,11 +18543,11 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
         json_output=False,
     )
 
-    assert rc == 0
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
     assert seen_envs and seen_envs[0] is not None
     seen_backend_env = seen_envs[0]
-    assert seen_backend_env["MOLT_STDLIB_OBJ"] == str(expected_stdlib_obj)
-    assert "MOLT_STDLIB_CACHE_KEY" in seen_backend_env
+    assert partition_env.keys().isdisjoint(seen_backend_env)
 
 
 def test_stdlib_object_cache_path_tracks_build_variant(
@@ -17463,7 +18570,7 @@ def test_stdlib_object_cache_path_tracks_build_variant(
     assert base.parent == explicit_cache_root
     assert base.parent != ambient_cache_root
     assert base.name.startswith("stdlib_shared_")
-    assert base.suffix == ".o"
+    assert base.suffix == ".a"
 
 
 def test_read_module_source_uses_utf8_fast_path(
@@ -17760,7 +18867,7 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         )
 
 
-def test_codecs_os_type_checking_imports_are_pruned() -> None:
+def test_codecs_graph_retains_reentrant_os_guard_but_prunes_lazy_regex() -> None:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]
     roots = module_roots + [stdlib_root]
@@ -17776,7 +18883,6 @@ def test_codecs_os_type_checking_imports_are_pruned() -> None:
         stdlib_root,
         ROOT,
         stdlib_allowlist,
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
         resolver_cache=cache,
     )
@@ -17785,19 +18891,19 @@ def test_codecs_os_type_checking_imports_are_pruned() -> None:
 
     assert "codecs" in graph
     assert "os" in graph
-    assert "typing" not in graph
+    assert "typing" in graph
     assert "warnings" not in graph
     assert "re" not in graph
 
 
-def test_decimal_static_graph_prunes_lazy_typing_deprecated_regex(
+def test_decimal_graph_retains_reentrant_os_guard_but_prunes_lazy_regex(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("import decimal\n")
     graph = _discover_with_core_modules(entry)
     assert "decimal" in graph
-    assert "typing" not in graph
+    assert "typing" in graph
     assert "warnings" not in graph
     assert "re" not in graph
 
@@ -17816,7 +18922,6 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
         stdlib_root,
         ROOT,
         stdlib_allowlist,
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     module_graph = discovery_result.graph
@@ -17844,7 +18949,6 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
             ROOT,
             stdlib_allowlist,
             full_scan_roots=False,
-            skip_modules=cli.STUB_MODULES,
             stub_parents=cli.STUB_PARENT_MODULES,
             stdlib_static_import_helper_modules=set(),
         )
@@ -17868,7 +18972,6 @@ def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> No
         stdlib_root,
         ROOT,
         stdlib_allowlist,
-        skip_modules=cli.STUB_MODULES,
         stub_parents=cli.STUB_PARENT_MODULES,
     )
     module_graph = discovery_result.graph
@@ -21098,7 +22201,8 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert first_cmd[first_cmd.index("--input") + 1] == str(output_wasm)
     linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
     assert linked_output_arg.parent == linked_wasm.parent
-    assert linked_output_arg.name.startswith(f".{linked_wasm.name}.")
+    assert linked_output_arg != linked_wasm
+    assert linked_output_arg.name.startswith(".molt-wasm-link-")
     assert linked_output_arg.name.endswith(".tmp")
     assert first_cmd[-4:] == [
         "--optimize",
@@ -22063,6 +23167,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
                         binding="direct_symbol",
                         abi="molt.object_call_v1",
                         symbol=object_call_symbol,
+                        arity=1,
                         deterministic=True,
                     ),
                     _ExternalNativeCallableExport(
@@ -23352,6 +24457,8 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
 def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -23363,10 +24470,10 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
-    backend_bin = tmp_path / "fake-backend"
+    backend_bin = runtime_fixture_root.path / "fake-backend"
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
-    canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
+    canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -23408,10 +24515,8 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
-        canonical_backend.write_text("#!/bin/sh\n")
-        canonical_backend.chmod(0o755)
-        backend_bin.write_text("#!/bin/sh\n")
-        backend_bin.chmod(0o755)
+        runtime_fixture_root.native_executable(canonical_backend.name)
+        runtime_fixture_root.native_executable(backend_bin.name)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     original_run = cli.subprocess.run
@@ -23477,7 +24582,8 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         json_output=False,
     )
 
-    assert rc == 0
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
     assert seen_features == [("rust-backend",)]
     assert build_cmds == [
         [
@@ -23505,6 +24611,8 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -23516,10 +24624,10 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
-    backend_bin = tmp_path / "fake-backend"
+    backend_bin = runtime_fixture_root.path / "fake-backend"
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
-    canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
+    canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
     build_cmds: list[list[str]] = []
 
@@ -23560,10 +24668,8 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
-        canonical_backend.write_text("#!/bin/sh\n")
-        canonical_backend.chmod(0o755)
-        backend_bin.write_text("#!/bin/sh\n")
-        backend_bin.chmod(0o755)
+        runtime_fixture_root.native_executable(canonical_backend.name)
+        runtime_fixture_root.native_executable(backend_bin.name)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     original_run = cli.subprocess.run
@@ -23618,7 +24724,8 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
         json_output=False,
     )
 
-    assert rc == 0
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
     assert build_cmds == [
         [
             "cargo",
@@ -24899,6 +26006,14 @@ def test_native_backend_compile_routes_stdlib_object_env(
     entry_module = "pkg.app"
     captured_envs: list[dict[str, str] | None] = []
 
+    ambient_partition_metadata = {
+        "MOLT_STDLIB_CACHE_KEY": "ambient-key",
+        "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"ambient-key"}',
+        "MOLT_STDLIB_MODULE_SYMBOLS": '["ambient_mod"]',
+    }
+    for key, value in ambient_partition_metadata.items():
+        monkeypatch.setenv(key, value)
+
     def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
@@ -24978,6 +26093,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
     assert stdlib_obj == str(stdlib_object_path)
     assert stdlib_obj != str(output_artifact)
     assert captured_envs[0]["MOLT_ENTRY_MODULE"] == entry_module
+    assert ambient_partition_metadata.keys().isdisjoint(captured_envs[0])
 
 
 def test_native_backend_compile_overrides_stale_ambient_partition_env(
@@ -24995,6 +26111,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
 
     monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
     monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
+    monkeypatch.setenv("MOLT_STDLIB_CACHE_MANIFEST", '{"cache_key":"ambient-key"}')
     monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
 
@@ -25044,6 +26161,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
             function_cache_path=None,
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key="real-key",
+            stdlib_object_manifest='{"cache_key":"real-key"}',
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
@@ -25074,6 +26192,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
     env = captured_envs[0]
     assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert env["MOLT_STDLIB_CACHE_KEY"] == "real-key"
+    assert env["MOLT_STDLIB_CACHE_MANIFEST"] == '{"cache_key":"real-key"}'
     assert env["MOLT_STDLIB_MODULE_SYMBOLS"] == '["builtins","sys"]'
     assert env["MOLT_ENTRY_MODULE"] == entry_module
 
@@ -25091,6 +26210,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
 
     monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
     monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
+    monkeypatch.setenv("MOLT_STDLIB_CACHE_MANIFEST", '{"cache_key":"ambient-key"}')
     monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
 
@@ -25168,6 +26288,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
     env = captured_envs[0]
     assert "MOLT_STDLIB_OBJ" not in env
     assert "MOLT_STDLIB_CACHE_KEY" not in env
+    assert "MOLT_STDLIB_CACHE_MANIFEST" not in env
     assert "MOLT_STDLIB_MODULE_SYMBOLS" not in env
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
 
@@ -25921,16 +27042,33 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
     assert "skipped output write without a synced-artifact contract" in captured.out
 
 
-def test_backend_daemon_compile_request_includes_partition_env(
+@pytest.mark.parametrize("emit_mode", ["bin", "obj"])
+@pytest.mark.parametrize("shared_stdlib", [False, True])
+def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    emit_mode: str,
+    shared_stdlib: bool,
 ) -> None:
+    # The explicit contract, not the filename suffix, determines output kind.
     backend_output = tmp_path / "output.o"
     stdlib_object_path = tmp_path / "cache" / "main.stdlib.o"
+    partition_env = {
+        "MOLT_STDLIB_OBJ": str(stdlib_object_path),
+        "MOLT_STDLIB_CACHE_KEY": "stdlib-cache-key",
+        "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"stdlib-cache-key"}',
+        "MOLT_STDLIB_MODULE_SYMBOLS": (
+            '["importlib","importlib_machinery","importlib_util","sys"]'
+        ),
+    }
+    for key in partition_env:
+        monkeypatch.setenv(key, "stale-ambient-value")
+    monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
     request_bytes, error = cli._backend_daemon_compile_request_bytes(
         ir={"functions": []},
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="bin", target_triple=None
+            target="native", emit_mode=emit_mode, target_triple=None
         ),
         wasm_link=False,
         wasm_data_base=None,
@@ -25941,24 +27079,35 @@ def test_backend_daemon_compile_request_includes_partition_env(
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
         entry_module="pkg.app",
-        stdlib_object_path=stdlib_object_path,
-        stdlib_object_cache_key="stdlib-cache-key",
-        stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
-        stdlib_module_symbols_json='["importlib","importlib_machinery","importlib_util","sys"]',
+        stdlib_object_path=stdlib_object_path if shared_stdlib else None,
+        stdlib_object_cache_key=(
+            partition_env["MOLT_STDLIB_CACHE_KEY"] if shared_stdlib else None
+        ),
+        stdlib_object_manifest=(
+            partition_env["MOLT_STDLIB_CACHE_MANIFEST"] if shared_stdlib else None
+        ),
+        stdlib_module_symbols_json=(
+            partition_env["MOLT_STDLIB_MODULE_SYMBOLS"] if shared_stdlib else None
+        ),
     )
+
+    if emit_mode == "obj" and shared_stdlib:
+        assert request_bytes is None
+        assert error == "Shared stdlib extraction requires native archive output"
+        return
 
     assert error is None
     assert request_bytes is not None
     payload = json.loads(request_bytes)
+    assert payload["jobs"][0]["native_output_kind"] == (
+        "archive" if emit_mode == "bin" else "object"
+    )
     env = payload["env"]
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
-    assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
-    assert env["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
-    assert env["MOLT_STDLIB_CACHE_MANIFEST"] == '{"cache_key":"stdlib-cache-key"}'
-    assert (
-        env["MOLT_STDLIB_MODULE_SYMBOLS"]
-        == '["importlib","importlib_machinery","importlib_util","sys"]'
-    )
+    if shared_stdlib:
+        assert {key: env[key] for key in partition_env} == partition_env
+    else:
+        assert partition_env.keys().isdisjoint(env)
 
 
 def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
@@ -26276,8 +27425,18 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     native_linker_a = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_LINKER", str(linker_b))
     native_linker_b = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=False)
-    assert native_linker_a != baseline_native
-    assert native_linker_b != native_linker_a
+    # Final-link selection belongs to the link fingerprint, not object
+    # codegen. A linker change must not invalidate reusable compiler output.
+    assert native_linker_a == baseline_native
+    assert native_linker_b == native_linker_a
+    link_a = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path, inputs=[], link_cmd=[str(linker_a)]
+    )
+    link_b = cli_link_pipeline._link_fingerprint(
+        project_root=tmp_path, inputs=[], link_cmd=[str(linker_b)]
+    )
+    assert link_a is not None and link_b is not None
+    assert link_a["hash"] != link_b["hash"]
 
 
 def test_backend_daemon_config_digest_and_socket_path_include_config(
@@ -26309,7 +27468,8 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     linker_digest_b = cli._backend_daemon_config_digest(
         tmp_path, "dev-fast", env={"MOLT_LINKER": str(linker_b)}
     )
-    assert linker_digest_a != linker_digest_b
+    # The backend daemon produces objects; it does not own final-link policy.
+    assert linker_digest_a == linker_digest_b
 
 
 def test_backend_daemon_config_digest_tracks_batch_op_budget(

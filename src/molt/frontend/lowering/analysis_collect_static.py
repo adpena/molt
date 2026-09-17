@@ -16,22 +16,25 @@ from typing import (
     Sequence,
 )
 
-from molt.frontend._types import (
-    MoltOp,
-    MoltValue,
-    _canonical_intrinsic_runtime_name,
+from molt.compiler_analysis.python_effects_generated import (
+    NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
+    WRITES_OBJECT_STATE,
 )
-from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
 from molt.compiler_analysis.python_lexical_scope import (
-    PythonDependencyAuthority,
     LexicalDefinitionNode,
+    PythonDependencyAuthority,
     PythonLexicalScopeVisitor,
     ScopedNamedExprCollector,
 )
+from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
 from molt.compiler_analysis.static_truth import (
-    static_expression_result,
     StaticTruthKwargs,
     static_if_live_branch,
+    static_expression_result,
+)
+from molt.frontend._types import (
+    MoltOp,
+    MoltValue,
 )
 
 
@@ -360,72 +363,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
         for stmt in node.body:
             collector.visit(stmt)
         return mutated
-
-    def _collect_module_optional_intrinsic_globals(
-        self, node: ast.Module
-    ) -> dict[str, str]:
-        bindings: dict[str, str] = {}
-
-        def clear_name(name: str) -> None:
-            bindings.pop(name, None)
-
-        def assigned_names(target: ast.AST) -> list[str]:
-            if isinstance(target, ast.Name):
-                return [target.id]
-            if isinstance(target, (ast.Tuple, ast.List)):
-                names: list[str] = []
-                for elt in target.elts:
-                    names.extend(assigned_names(elt))
-                return names
-            return []
-
-        for stmt in node.body:
-            if isinstance(stmt, ast.Assign):
-                runtime_name = self._match_optional_intrinsic_loader_expr(stmt.value)
-                for target in stmt.targets:
-                    for name in assigned_names(target):
-                        if runtime_name is None:
-                            clear_name(name)
-                        else:
-                            bindings[name] = _canonical_intrinsic_runtime_name(
-                                runtime_name
-                            )
-                continue
-            if isinstance(stmt, ast.AnnAssign):
-                for name in assigned_names(stmt.target):
-                    if stmt.value is None:
-                        continue
-                    runtime_name = self._match_optional_intrinsic_loader_expr(
-                        stmt.value
-                    )
-                    if runtime_name is None:
-                        clear_name(name)
-                    else:
-                        bindings[name] = _canonical_intrinsic_runtime_name(runtime_name)
-                continue
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                clear_name(stmt.name)
-                continue
-            if isinstance(stmt, ast.Import):
-                for alias in stmt.names:
-                    clear_name(alias.asname or alias.name.split(".")[0])
-                continue
-            if isinstance(stmt, ast.ImportFrom):
-                for alias in stmt.names:
-                    if alias.name != "*":
-                        clear_name(alias.asname or alias.name)
-                continue
-            if isinstance(stmt, (ast.For, ast.AsyncFor)):
-                for name in assigned_names(stmt.target):
-                    clear_name(name)
-                continue
-            if isinstance(stmt, ast.With):
-                for item in stmt.items:
-                    if item.optional_vars is not None:
-                        for name in assigned_names(item.optional_vars):
-                            clear_name(name)
-                continue
-        return bindings
 
     def _collect_pattern_capture_names(self, pattern: ast.pattern) -> list[str]:
         return list(python_pattern_capture_names(pattern))
@@ -829,6 +766,36 @@ class AnalysisCollectStaticMixin(_MixinBase):
         candidates = set(authority.summary(node).body.lexical)
         return self._free_vars_in_outer_scope(candidates)
 
+    def _callable_cell_vars(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.GeneratorExp,
+    ) -> tuple[str, ...]:
+        """Return source locals whose canonical storage is a closure cell."""
+
+        authority = self._lexical_dependencies()
+        regions = authority.regions(node)
+        declarations = authority.declarations(node)
+        local_candidates = (
+            set(declarations.bound)
+            - set(declarations.globals)
+            - set(declarations.nonlocals)
+        )
+        captured = self._collect_scope_cell_vars(regions.body, local_candidates)
+        if regions.kind == "function":
+            captured.update(
+                self._collect_comp_walrus_cell_names(
+                    regions.body,
+                    global_decls=set(declarations.globals),
+                    nonlocal_decls=set(declarations.nonlocals),
+                )
+            )
+        # CPython exposes captured parameters first in co_varnames order, then
+        # the remaining local cells in lexical-symbol order. This tuple is also
+        # the storage preboxing order used by every callable producer.
+        parameter_cells = [name for name in regions.parameters if name in captured]
+        parameter_cell_names = set(parameter_cells)
+        return tuple([*parameter_cells, *sorted(captured - parameter_cell_names)])
+
     def _collect_comprehension_cell_vars(
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
     ) -> list[str]:
@@ -951,7 +918,13 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         return captured
 
-    def _collect_comp_walrus_cell_names(self, body: Sequence[ast.stmt]) -> list[str]:
+    def _collect_comp_walrus_cell_names(
+        self,
+        body: Sequence[ast.AST],
+        *,
+        global_decls: set[str] | None = None,
+        nonlocal_decls: set[str] | None = None,
+    ) -> list[str]:
         """Names whose comprehension walrus bindings require function cells.
 
         A walrus inside a comprehension leaks its binding to the enclosing
@@ -1029,8 +1002,8 @@ class AnalysisCollectStaticMixin(_MixinBase):
         scanner = _Scan()
         for stmt in body:
             scanner.visit(stmt)
-        comp_walrus -= self.global_decls
-        comp_walrus -= self.nonlocal_decls
+        comp_walrus -= self.global_decls if global_decls is None else global_decls
+        comp_walrus -= self.nonlocal_decls if nonlocal_decls is None else nonlocal_decls
         return sorted(comp_walrus)
 
     def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[str]:
@@ -1086,6 +1059,18 @@ class AnalysisCollectStaticMixin(_MixinBase):
             collector.visit(stmt)
         return collector.names
 
+    def _loop_body_preserves_exact_class_lifetimes(self, body: list[ast.stmt]) -> bool:
+        """Prove one iteration cannot invalidate a fact used on the next."""
+        index = self.python_binding_index
+        if index is None:
+            return False
+        forbidden = NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_OBJECT_STATE
+        for statement in body:
+            fact = index.statement_fact(statement)
+            if fact is None or fact.effects & forbidden:
+                return False
+        return True
+
     def _collect_loop_guard_candidates(self, body: list[ast.stmt]) -> dict[str, str]:
         if self.is_async():
             return {}
@@ -1118,7 +1103,7 @@ class AnalysisCollectStaticMixin(_MixinBase):
         for name in sorted(attr_names):
             if name in assigned:
                 continue
-            expected_class = self.exact_locals.get(name)
+            expected_class = self._exact_class_for_name(name)
             if expected_class is None:
                 continue
             if expected_class in mutated_classes:

@@ -35,6 +35,7 @@ from wasm_abi_gen.manifest import (
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
+    runtime_boxed_call_specs,
     runtime_export_name,
 )
 from wasm_abi_gen.paths import (
@@ -48,6 +49,7 @@ from wasm_abi_gen.paths import (
     OUT_RS_DIR,
     OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
+    OUT_RUNTIME_BOXED_ABI_RS,
     OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
@@ -57,13 +59,14 @@ from wasm_abi_gen.paths import (
 
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v3"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v4"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 RUSTFMT_CACHE_ENABLED = True
 RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
     "rendered_native_exception_observer_abi_rs",
     "rendered_runtime_callables_rs",
+    "rendered_runtime_boxed_abi_rs",
     "rendered_python_builtin_callables_rs",
     "rendered_wasm_facts_callable_table_rs",
     "rendered_py",
@@ -1060,6 +1063,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum OpLoopRuntimeSinkSpec {\n",
             "    ResultOrDrop,\n",
+            "    OwnedResultOrRelease,\n",
             "    NonNoneResultOrDrop,\n",
             "    Drop,\n",
             "    None,\n",
@@ -1587,6 +1591,43 @@ def _render_rs_runtime_surface(data: dict) -> str:
     return "".join(lines)
 
 
+def render_runtime_boxed_abi_rs(data: dict) -> str:
+    lines = [
+        _header("//"),
+        "//! Target-neutral direct runtime calls whose operands are object values.\n",
+        "//! Results transfer an object owner; borrowed/raw entrypoints are excluded.\n",
+        "//! Machine i64 signatures alone never authorize this contract.\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeBoxedReturn { OwnedValue, Void }\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub struct RuntimeBoxedAbi {\n",
+        "    pub symbol: &'static str,\n",
+        "    pub arity: usize,\n",
+        "    pub result: RuntimeBoxedReturn,\n",
+        "}\n\n",
+        "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
+    ]
+    for spec in runtime_boxed_call_specs(data):
+        result = "OwnedValue" if spec["result"] == "i64" else "Void"
+        lines.append(
+            "    RuntimeBoxedAbi { "
+            f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}, '
+            f"result: RuntimeBoxedReturn::{result}"
+            " },\n"
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "pub fn runtime_boxed_abi(symbol: &str, arity: usize) -> Option<&'static RuntimeBoxedAbi> {\n",
+            "    let index = RUNTIME_BOXED_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
+            "    let abi = &RUNTIME_BOXED_ABIS[index];\n",
+            "    (abi.arity == arity).then_some(abi)\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
     poll_imports = sorted(
@@ -1598,6 +1639,9 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
         key=lambda item: item[0],
     )
     reserved_callables = _shared_runtime_callables(data)
+    boxed_specs = {
+        spec["runtime_name"]: spec for spec in runtime_boxed_call_specs(data)
+    }
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
@@ -1653,13 +1697,20 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     for entry in data["import"]:
         if "callable_arity" not in entry:
             continue
-        result = "Void" if entry.get("callable_result") == "void" else "I64"
+        # The native and WASM direct-call projections share normalized value
+        # semantics. Trampoline dispatch retains its separate transport ABI.
+        spec = boxed_specs.get(entry["runtime_name"])
+        arity = spec["arity"] if spec is not None else entry["callable_arity"]
+        result_kind = (
+            spec["result"] if spec is not None else entry.get("callable_result")
+        )
+        result = "Void" if result_kind == "void" else "I64"
         lines.extend(
             [
                 "    RuntimeCallableImportSpec {\n",
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f"        import: {_rust_runtime_import(import_variants, entry['name'])},\n",
-                f"        arity: {entry['callable_arity']},\n",
+                f"        arity: {arity},\n",
                 f"        result: RuntimeCallableResult::{result},\n",
                 "    },\n",
             ]
@@ -2543,6 +2594,12 @@ def main(argv: list[str]) -> int:
         rendered_runtime_callables_rs = timed(
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
+        rendered_runtime_boxed_abi_rs = timed(
+            "render_runtime_boxed_abi_rs",
+            lambda: _rustfmt(
+                "runtime_boxed_abi_generated.rs", render_runtime_boxed_abi_rs(data)
+            ),
+        )
         rendered_python_builtin_callables_rs = timed(
             "render_python_builtin_callables_rs",
             lambda: _rustfmt(
@@ -2575,6 +2632,7 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs
             ),
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
+            "rendered_runtime_boxed_abi_rs": rendered_runtime_boxed_abi_rs,
             "rendered_python_builtin_callables_rs": rendered_python_builtin_callables_rs,
             "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
             "rendered_py": rendered_py,
@@ -2590,6 +2648,7 @@ def main(argv: list[str]) -> int:
         bundle["rendered_native_exception_observer_abi_rs"]
     )
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
+    rendered_runtime_boxed_abi_rs = str(bundle["rendered_runtime_boxed_abi_rs"])
     rendered_python_builtin_callables_rs = str(
         bundle["rendered_python_builtin_callables_rs"]
     )
@@ -2610,6 +2669,7 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs,
             )
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+            and _check(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
             and _check(
                 OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
             )
@@ -2638,6 +2698,7 @@ def main(argv: list[str]) -> int:
         rendered_native_exception_observer_abi_rs,
     )
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+    _write_if_changed(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
     _write_if_changed(
         OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
     )

@@ -20,6 +20,7 @@ if str(WASM_ABI_GEN_ROOT) not in sys.path:
 from wasm_abi_gen import manifest  # noqa: E402
 from wasm_abi_gen.paths import (  # noqa: E402
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
+    OUT_RUNTIME_BOXED_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
 )
 
@@ -53,6 +54,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     input_files = {path.resolve() for path in manifest.generator_input_files()}
     assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
+    assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
     assert (ROOT / "src/molt/frontend/_types.py").resolve() in input_files
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
@@ -100,6 +102,189 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
         "_PyLong_UnsignedLongLong_Converter",
         "PyLong_GetInfo",
     } <= set(cpython_abi_imports)
+
+
+def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    specs = manifest.runtime_boxed_call_specs(data)
+    symbols = {spec["runtime_name"]: spec for spec in specs}
+    assert list(symbols) == sorted(symbols)
+    for symbol, arity, result in (
+        ("molt_cell_new", 1, "i64"),
+        ("molt_cell_get", 1, "i64"),
+        ("molt_cell_set", 2, "i64"),
+        ("molt_abs_builtin", 1, "i64"),
+        ("molt_chan_new", 1, "i64"),
+        ("molt_eq", 2, "i64"),
+        ("molt_module_import_star", 2, "i64"),
+        ("molt_set_update", 2, "i64"),
+        ("molt_string_split_field_len_from_bounds", 4, "i64"),
+        ("molt_print_newline", 0, "void"),
+        ("molt_spawn", 1, "void"),
+    ):
+        assert symbols[symbol] == {
+            "runtime_name": symbol,
+            "arity": arity,
+            "result": result,
+        }
+    assert (
+        not {
+            "molt_int_from_i64",
+            "molt_int_as_i64",
+            "molt_is_truthy",
+            "molt_obj_get_state",
+            "molt_object_field_get_ptr",
+            "molt_task_new",
+            "molt_json_parse_scalar",
+            "molt_function_closure_bits",
+            "molt_type_of_borrowed",
+            "molt_dict_getitem_borrowed",
+            "molt_list_getitem_borrowed",
+            "molt_tuple_getitem_borrowed",
+        }
+        & symbols.keys()
+    )
+    rendered = gen.render_runtime_boxed_abi_rs(data)
+    assert "pub enum RuntimeBoxedReturn" in rendered
+    assert "RuntimeBoxedReturn::OwnedValue" in rendered
+    assert "RuntimeBoxedReturn::Void" in rendered
+    assert "binary_search_by_key" in rendered
+    assert "(abi.arity == arity).then_some(abi)" in rendered
+    assert "rendered_runtime_boxed_abi_rs" in gen.RENDER_CACHE_FIELDS
+    assert (
+        OUT_RUNTIME_BOXED_ABI_RS
+        == ROOT / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
+    )
+
+
+def _boxed_abi_fixture() -> dict:
+    return {
+        "static_type": [
+            {"params": ["i64"], "results": ["i64"]},
+            {"params": ["i32"], "results": ["i64"]},
+            {"params": ["i64"], "results": []},
+        ],
+        "import": [{"name": "example", "type": 0}],
+    }
+
+
+@pytest.mark.parametrize(
+    "authority", ["callable", "reserved", "lir", "fixed_lir", "compiler", "op_loop"]
+)
+def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) -> None:
+    data = _boxed_abi_fixture()
+    entry = data["import"][0]
+    if authority == "callable":
+        entry.update(runtime_name="molt_example", callable_arity=1)
+    elif authority == "reserved":
+        data["reserved_runtime_callable"] = [
+            {
+                "import_name": "example",
+                "runtime_name": "molt_example",
+                "callable_arity": 1,
+            }
+        ]
+    elif authority == "lir":
+        data["lir_runtime_call"] = [
+            {"import_name": "example", "boxed_operand_count": 1}
+        ]
+    elif authority == "fixed_lir":
+        data["op_loop_runtime_call"] = [
+            {
+                "kind": "example",
+                "import_name": "example",
+                "lir_variant": "Example",
+                "lir_operand_count": 1,
+            }
+        ]
+    elif authority == "compiler":
+        entry["boxed_call"] = True
+    else:
+        data["op_loop_runtime_call_group"] = [
+            {
+                "kinds": ["example"],
+                "arg_count": 1,
+                "sink": "result_or_drop",
+                "boxed_call": True,
+            }
+        ]
+        data["op_loop_runtime_call"] = manifest._expand_op_loop_runtime_calls(data)
+    before = copy.deepcopy(data)
+    assert manifest.runtime_boxed_call_specs(data) == [
+        {"runtime_name": "molt_example", "arity": 1, "result": "i64"}
+    ]
+    assert data == before
+    if authority not in {"callable", "reserved"}:
+        assert "callable_arity" not in entry
+        assert "runtime_name" not in entry
+
+
+def test_runtime_boxed_abi_does_not_promote_transport_only_contracts() -> None:
+    data = _boxed_abi_fixture()
+    data["op_loop_runtime_call"] = [
+        {
+            "kind": "example",
+            "import_name": "example",
+            "args": ["local:0"],
+            "sink": "result_or_drop",
+        }
+    ]
+    assert manifest.runtime_boxed_call_specs(data) == []
+    data["import"][0].update(callable_arity=1, callable_dispatch="trampoline")
+    assert manifest.runtime_boxed_call_specs(data) == []
+    data["import"][0]["boxed_call"] = True
+    with pytest.raises(manifest.WasmAbiManifestError, match="trampoline dispatch"):
+        manifest.runtime_boxed_call_specs(data)
+
+
+@pytest.mark.parametrize(
+    "type_index, arity, result", [(1, 1, "i64"), (0, 2, "i64"), (2, 1, "i64")]
+)
+def test_runtime_boxed_abi_rejects_inconsistent_callable_shapes(
+    type_index: int, arity: int, result: str
+) -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0].update(
+        type=type_index, callable_arity=arity, callable_result=result
+    )
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed call"):
+        manifest.runtime_boxed_call_specs(data)
+
+
+@pytest.mark.parametrize(
+    "args,sink",
+    [
+        (["op_value_i64:raw"], "result_or_drop"),
+        (["local:1"], "result_or_drop"),
+        (["local:0"], "drop"),
+        (["local:0"], "none"),
+    ],
+)
+def test_runtime_boxed_abi_rejects_inconsistent_op_loop_shapes(
+    args: list[str], sink: str
+) -> None:
+    data = _boxed_abi_fixture()
+    data["op_loop_runtime_call"] = [
+        {
+            "kind": "example",
+            "import_name": "example",
+            "args": args,
+            "sink": sink,
+            "boxed_call": True,
+        }
+    ]
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed"):
+        manifest.runtime_boxed_call_specs(data)
+
+
+def test_runtime_boxed_abi_keeps_real_void_distinct_from_boxed_none() -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0].update(type=2, callable_arity=1, callable_result="void")
+    assert manifest.runtime_boxed_call_specs(data)[0]["result"] == "void"
+    data["lir_runtime_call"] = [{"import_name": "example", "boxed_operand_count": 1}]
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed LIR shape"):
+        manifest.runtime_boxed_call_specs(data)
 
 
 def _install_gen_cache(gen) -> None:
@@ -457,9 +642,12 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
     assert static_types[0] == {"params": [], "results": ["i64"]}
     assert static_types[1] == {"params": ["i64"], "results": []}
     assert {"params": [], "results": ["i32"]} in static_types
-    append = next(entry for entry in data["import"] if entry["name"] == "list_builder_append")
+    append = next(
+        entry for entry in data["import"] if entry["name"] == "list_builder_append"
+    )
     assert static_types[append["type"]] == {
-        "params": ["i64", "i64"], "results": ["i32"]
+        "params": ["i64", "i64"],
+        "results": ["i32"],
     }
     assert static_types[31] == {"params": ["i64"] * 9, "results": ["i64"]}
     assert static_types[34] == {"params": ["i64"] * 12, "results": ["i64"]}
@@ -1329,6 +1517,8 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
     assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
+    assert op_loop_calls["asyncgen_new"]["sink"] == "owned_result_or_release"
+    assert "dec_ref_obj" in op_loop_calls["asyncgen_new"]["required_imports"]
     finally_observer = op_loop_calls["exception_finally_pending_observer"]
     assert finally_observer["import_name"] == "exception_last_pending"
     assert (
@@ -1354,6 +1544,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     rendered_rs_modules = gen.render_rs_modules(data)
     rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
     assert "enum LirRuntimeCall" in rendered_lir_rs
+    assert "OwnedResultOrRelease" in rendered_lir_rs
     assert "use super::import_tokens::WasmRuntimeImport;" in rendered_lir_rs
     assert "pub(crate) const fn import(self) -> WasmRuntimeImport" in rendered_lir_rs
     assert "Self::FloorDiv => WasmRuntimeImport::Floordiv" in rendered_lir_rs
@@ -1421,6 +1612,16 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     broken_count["lir_runtime_call"][0]["boxed_operand_count"] = -1
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed_operand_count"):
         manifest.validate_loaded_manifest(broken_count)
+
+    missing_release_import = copy.deepcopy(data)
+    owned_call = next(
+        entry
+        for entry in missing_release_import["op_loop_runtime_call"]
+        if entry["kind"] == "asyncgen_new"
+    )
+    owned_call["required_imports"].remove("dec_ref_obj")
+    with pytest.raises(manifest.WasmAbiManifestError, match="dec_ref_obj"):
+        manifest.validate_loaded_manifest(missing_release_import)
 
     broken_marked_import = copy.deepcopy(data)
     next(

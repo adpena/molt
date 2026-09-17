@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from molt.cli.python_module_names import canonical_python_module_name
+from molt.python_module_names import canonical_python_module_name
 
 
 @dataclass(frozen=True, slots=True)

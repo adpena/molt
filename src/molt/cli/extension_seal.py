@@ -16,7 +16,7 @@ from molt.cli.extension_manifest import (
     _validate_extension_manifest,
 )
 from molt.cli.extension_support import module_attr_support_files
-from molt.cli.python_module_names import encode_python_module_names
+from molt.python_module_names import encode_python_module_names
 from molt.cli.project_roots import _find_molt_root
 from molt.cli.external_native import (
     _manifest_has_sealed_extension_custody,

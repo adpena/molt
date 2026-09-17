@@ -1,7 +1,187 @@
 # Molt Lowering Rules
+
 **Status:** Canonical (compiler-facing)
 **Purpose:** Define deterministic, testable transforms from Python AST → Molt IR for supported idioms.
 **Audience:** Compiler engineers, optimization authors writing compiler passes.
+
+## Builtin shape and lifetime authority
+
+`compiler_analysis.python_builtin_shapes` describes builtin constructors,
+methods, file modes, `range`, and `len`. `PythonBindingIndex` transports their results
+through source-ordered bindings, aliases, joins and loop fixpoints using
+`StaticExpressionResult`; frontend spelling and annotations are not proofs.
+Published mutable containers retain exact kind but not concrete contents,
+cardinality or truth facts. Homogeneous element results have a separate lifetime:
+object writes and callbacks expire them, including mutable descendants inside
+immutable owners. Iteration and frontend specialization consume that shared
+projection; annotations and method spelling cannot manufacture element facts.
+Receiver-kind preservation never authorizes restoring a name rebound by an
+argument or invocation callback. Method effects include index/comparison/iteration
+protocols and displaced-owner finalization before post-call facts are admitted.
+Publication also invalidates callback-free release for object-bearing mutable
+containers, including through immutable tuple/frozenset owners: an alias may
+insert a finalizable object. Exact bytearray storage cannot contain Python
+objects, so its release safety survives publication independently of its shape.
+Kind facts mean exact builtin types, not subclass compatibility: callbackful
+`str`/`bytes` conversions can return user subclasses and cannot publish an
+exact-kind or inert-release fact without stronger operand/protocol evidence.
+
+`PythonCallSiteFact` separates evaluated callee/argument effects, invocation
+effects and post-invocation cleanup. A known normal-result kind does not imply
+a callback-free invocation. `callee_elision_safe` is the authorization for
+specialized calls and fused range/length consumers: identity, argument effects,
+invocation, and release ordering must all permit it. Otherwise lowering loads
+the actual callable before evaluating arguments and uses ordinary object call
+dispatch, retaining any independently proven normal-result kind. Fresh lookups
+consume builtin-member invalidation; aliases retain their captured object
+identity independently of later changes to the builtin slot.
+
+Private helper names do not confer compiler privileges. In particular,
+`_load_optional_intrinsic` is an ordinary Python callable: assignments evaluate
+the live helper, preserve its effects and bind its actual result. Its string
+arguments neither reserve external symbols nor fabricate runtime-function type
+facts. Intrinsic lowering uses the explicit imported intrinsic protocol instead.
+
+Namespace identity and exact dictionary kind are separate facts. Lexical module
+bootstrap pins an exact builtin namespace, so exact `CURRENT_GLOBALS` aliases
+in module scope carry dictionary kind without content, truth or freshness facts.
+Synthetic module code has no callable target and cannot be rebound by
+`FunctionType`. Deferred/rebound function namespaces can be dict subclasses;
+their namespace identity alone never authorizes builtin dictionary methods.
+A runtime storage tag likewise does not prove exact builtin class identity.
+
+Callable code and activation namespaces are independent. `FunctionType` can
+install foreign globals and captured builtins on existing code; same-source
+module history does not certify a deferred body's global names or imports.
+It can also supply different closure cells: lexical origin is not executable
+value custody for a deferred body's free/nonlocal inputs. Proven assignments
+inside the current activation are distinct from supplied closure values.
+Function, lambda, deferred annotation and generator-expression activations share
+external-slot discovery and entry widening: compatible cells may hold arbitrary
+values or be empty. A generator expression's first iterator is acquired in its
+creating scope; only its deferred body uses foreign activation inputs. Inline
+class and eager comprehension scopes inherit their enclosing activation's
+custody, but class preparation and other callbacks still invalidate exposed
+cells. Callback exposure is independent of lexical storage: an empty lexical
+cell raises instead of consulting builtins. Proven lexical values are
+distinct from globals and must not lose precision merely because code is
+callable. Any future namespace-specialized body needs an explicit activation
+guard; guarding a constructor alone cannot certify its downstream result facts,
+branch pruning, receiver methods or loop fusion.
+
+Exact user-class layout follows the actual lowered result, never a constructor
+name recovered from the AST. Only a constructionally exact result may carry
+that identity through local aliases; a live call, guarded target hint, type
+annotation, or lexical class declaration cannot authorize fixed-offset field
+loads/stores. Descriptor lookup, augmented assignment and deletion retain the
+ordinary object protocol when that result identity is unproved.
+Named reloads use the current binding-flow fact, so a producer annotation cannot
+resurrect identity after a merge, rebinding or mutable-cell load. Arbitrary
+initializer callbacks also invalidate post-construction exactness; only a
+proven inline initializer can preserve the allocation's original class fact.
+Exactness is lifetime-bound, including facts on already-evaluated temporary
+operands and loop guards. Later argument evaluation, an augmented-assignment
+RHS/operator, a descriptor, or an owner release may change the receiver class;
+consumers must validate the fact at the actual access, not reuse an earlier
+boolean decision. Dataclass field offsets obey the same authority as ordinary
+class offsets. `getattr` evaluates all arguments, including an unused default,
+before lookup; field specialization cannot elide or move those effects.
+
+Generated arbitrary-heap effects are independent of local memory effects.
+`LOAD_VAR` is a slot read and `BINDING_ALIAS` retains an existing value without
+releasing an owner, so neither alone invalidates class lifetime. `STORE_VAR`
+remains a boundary because slot-backed stores can release a displaced value.
+These facts live in the existing operation registry; consumers must not keep
+their own opcode exceptions.
+
+Lexical cells have one mutable object representation, distinct from sequences.
+The shared `cell_new/get/set` runtime primitives own the retained value and empty
+sentinel; compiler local/free-variable guards own their contextual exception.
+Cell replacement publishes the retained new value before releasing the old one,
+so a finalizer observes the new value and may reenter the same cell. Public
+`cell_contents` operations use that storage, with `ValueError` for an empty read;
+list protocols are not a cell API. Function reconstruction preserves the supplied
+closure tuple and cell identities, and code replacement validates cardinality
+before publishing any new state. Executable closure calling convention is an
+explicit function-layout fact, not a test for nonzero closure storage: a supplied
+empty tuple remains visible as `__closure__` without adding a hidden argument.
+Code identity preserves physical call provenance: positional, lexical-cell
+context, or opaque runtime context. Compiler closures and internal runtime
+contexts both pass a hidden argument but are not reconstructible in the same
+way. `FunctionType` and `__code__` replacement reject opaque-context code before
+publication; an empty `co_freevars` tuple cannot certify a positional ABI.
+Code clones preserve provenance. Dispatch, binding caches and direct-call
+admission consume the published scalar, without inspecting the closure tuple.
+Valid `__code__` replacement changes the executable entry, signature and task
+policy together while retaining the function's globals, builtins, defaults and
+closure cells. Constructor attachment checks identity; executable replacement
+is a distinct validated publication, not attachment of a mismatched code edge.
+
+The shared packed callable metadata appends ordered free-variable and cell-variable
+name tuples after execution kind. Code objects own those immutable tuples;
+capture ordering, executable operands and introspection must agree. Code clones
+retain this metadata, and GC traverses/drops its object edges through the code
+layout authority. Native and WASM consume the same runtime implementation.
+Source backends without actual cell storage and closure transport reject the
+generated `LEXICAL_CELLS` requirement before emission; a plain function wrapper
+is not a closure implementation.
+
+The JavaScript WASM import fixture also refuses lexical cells; closure behavior
+must execute against the linked runtime, never a host-emulated list payload.
+LLVM direct runtime calls and preserved operations share generated object-value
+ABI facts, argument boxing and result handling. Machine `i64` carriers alone do
+not distinguish objects from raw integers, addresses or opaque handles. The
+runtime manifest owns representation contracts; machine declarations and
+dedicated raw/mixed lowering do not confer generic boxed-call eligibility.
+Class allocation publishes initialized storage before exposing an owned result;
+generator locals registration preserves raw function addresses alongside boxed
+metadata. Borrowed closure edges acquire a reference only when retained as an IR
+result, while discarded owned results use the shared release primitive.
+Unknown symbols, wrong arities, and unresolved internal targets must not acquire
+invented signatures.
+
+Immediate builtin method calls and first-class bound-method acquisition consume
+the same source-point exact receiver kind. A known Python method/property target
+or receiver-layout guard does not certify its annotated return value. Only an
+actual inlined/proven result or explicit result guard can authorize its lane.
+
+Reference release composes two independent proofs: a retained identity root or
+a recursively safe result shape can each exclude finalizer/weakref callbacks.
+Coarse `OTHER` identity never overrides precise callback-free result facts.
+Likewise `INERT_VALUE` describes a value, not a retained lifetime root; only
+the result's release facts can establish safety for unrooted values. Cached
+publication-release stability follows the shared result DAG without expanding
+repeated descendants, participates in semantic equality and joins, and survives
+idempotent publication after descendant shape is erased. Immutable owners retain
+their own truth and length even when mutable descendants lose content facts.
+Unknown identity and unknown result remain conservatively callback-bearing.
+
+Retained operands cross callback boundaries in evaluation order; cleanup uses
+the published result, not a stale pre-callback shape. Loop and eager-comprehension
+cleanup includes reachable body effects. Generator creation retains its first
+iterator rather than finalizing it. `PythonIterationFact` owns yielded result
+facts as well as finite string alternatives, so target replacement and backedges
+use result lifetime proofs. Unknown expansions invalidate finite alternatives;
+mutable iteration exposure invalidates unstable element facts.
+
+Binding joins preserve absence in the identity mask without treating it as an
+unknown normal object. Only bound alternatives contribute value/result facts;
+a bound unknown value still widens them. Name lookup then applies its real
+protocol: an unbound lexical cell raises, whereas module/class misses can load
+a different value from the fallback namespace. Fallback results must join before
+any exact-kind, truth, or lifetime fact reaches lowering.
+
+Result contents retain shared sequence-expansion provenance; constructors do
+not flatten a compact fact graph into its potentially exponential runtime
+cardinality. Semantic hashing, equality, publication stability, membership,
+iteration alternatives, and key-effect analysis must preserve this sharing.
+Exact iteration protocol does not imply callback-free element hashing or
+comparison: tuple and frozenset keys include recursive collision effects,
+while an exact bytearray key is unhashable even though its elements are inert.
+
+This contract does not prove imported dataclass/statistics identities, mutable
+container element facts, or target execution parity; those need their own
+runtime identity/ownership and native/WASM receipts.
 
 ---
 

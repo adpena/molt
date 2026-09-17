@@ -76,6 +76,7 @@ _PRE_SOURCE_LITERAL_LIMITED = _kind_set(
     "simpleir_integer_literal_semantics_kinds",
 )
 _PRE_SOURCE_INSTANCE_LIMITED = _kind_set("async_work_poll_marker_kinds")
+_PRE_SOURCE_ORDERED_MAPPING_LIMITED = _kind_set("simpleir_luau_ordered_mapping_kinds")
 _PRE_SOURCE_TYPE_LIMITED = _kind_set(
     "simpleir_dynamic_add_semantics_kinds",
     "simpleir_dynamic_numeric_semantics_kinds",
@@ -317,6 +318,12 @@ def _classify(op: str, body: str) -> Row:
             op,
             "not-admitted",
             "Operation is unclassified in the generated target-contract authority.",
+        )
+    if op in _PRE_SOURCE_ORDERED_MAPPING_LIMITED:
+        return Row(
+            op,
+            "implemented-target-limited",
+            "Pre-source admission requires canonical ordered-dict provenance; generic Python keys/getitem mappings are not implemented.",
         )
     if op in _PRE_SOURCE_INSTANCE_LIMITED:
         return Row(

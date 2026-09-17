@@ -149,8 +149,9 @@ impl LuauBackend {
             "--!native\n--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n",
         );
         self.output.push_str("local molt_rawequal = rawequal\n");
-        self.output
-            .push_str("local molt_func_attrs: {[any]: {[string]: any}} = setmetatable({}, {__mode = \"k\"})\n");
+        self.output.push_str(
+            "local molt_func_attrs: {[any]: {[any]: any}} = setmetatable({}, {__mode = \"k\"})\n",
+        );
         self.output.push_str("local molt_func_self_attr = {}\nlocal function molt_func_attr_get(func: any, name: any): any\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then return nil end\n\tlocal value = rawget(attrs, name)\n\tif value == molt_func_self_attr then return func end\n\treturn value\nend\nlocal function molt_func_attr_set(func: any, name: any, value: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs == nil then attrs = {}; molt_func_attrs[func] = attrs end\n\trawset(attrs, name, if value == func then molt_func_self_attr else value)\n\treturn nil\nend\nlocal function molt_func_attr_del(func: any, name: any): nil\n\tlocal attrs = molt_func_attrs[func]\n\tif attrs ~= nil then rawset(attrs, name, nil) end\n\treturn nil\nend\n");
         self.output.push_str(
             "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})\n",
@@ -161,18 +162,6 @@ impl LuauBackend {
             .push_str("local molt_call_checked: (any, ...any) -> any\n");
         self.output
             .push_str("local molt_equal: (any, any, any?) -> boolean\n");
-        let needs_frame_runtime = func_body.contains("molt_frame_")
-            || func_body.contains("molt_coroutine_execution_wrap(")
-            || func_body.contains("molt_exception_attach_traceback(");
-        self.output
-            .push_str("local molt_sequence_length_key = {}\nlocal molt_sequence_kind_key = {}\nlocal function molt_sequence_len(sequence: {any}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {any}\n\tlocal sequence = table.pack(...)\n\trawset(sequence, molt_sequence_length_key, sequence.n)\n\trawset(sequence, molt_sequence_kind_key, kind)\n\trawset(sequence, \"n\", nil)\n\treturn sequence\nend\nlocal function molt_pack_list(...): {any} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {any} return molt_pack_sequence_kind(\"tuple\", ...) end\nlocal function molt_function_register_signature(func: any, arg_names: {any}): nil\n\tmolt_function_metadata[func] = {arg_names = arg_names, posonly = 0, kwonly = molt_pack_tuple(), vararg = nil, varkw = nil, defaults = nil, kwdefaults = nil}\n\treturn nil\nend\n");
-        if needs_frame_runtime {
-            self.output.push_str(frame_runtime::FRAME_RUNTIME);
-            self.output.push('\n');
-        }
-        if func_body.contains("molt_function_set_builtin") {
-            self.output.push_str("local function molt_function_set_builtin(func: any): any\n\tlocal metadata = molt_function_metadata[func]\n\tif metadata == nil then metadata = {}; molt_function_metadata[func] = metadata end\n\tmetadata.is_builtin = true\n\treturn func\nend\n\n");
-        }
         let needs_callargs_runtime = func_body.contains("molt_callargs_")
             || func_body.contains("molt_function_init_metadata_packed(")
             || func_body.contains("molt_function_set_defaults(")
@@ -182,6 +171,23 @@ impl LuauBackend {
             || func_body.contains("molt_set_attr(")
             || func_body.contains("molt_del_attr(")
             || func_body.contains("molt_class_apply_set_name(");
+        let needs_frame_runtime = needs_callargs_runtime
+            || func_body.contains("molt_frame_")
+            || func_body.contains("molt_coroutine_execution_wrap(")
+            || func_body.contains("molt_exception_attach_traceback(")
+            || func_body.contains("molt_module_get_global(")
+            || func_body.contains("molt_module_get_name(")
+            || func_body.contains("molt_globals_builtin(")
+            || func_body.contains("molt_module_del_global(");
+        self.output
+            .push_str("local molt_sequence_length_key = {}\nlocal molt_sequence_kind_key = {}\nlocal function molt_sequence_len(sequence: {any}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {any}\n\tlocal sequence = table.pack(...)\n\trawset(sequence, molt_sequence_length_key, sequence.n)\n\trawset(sequence, molt_sequence_kind_key, kind)\n\trawset(sequence, \"n\", nil)\n\treturn sequence\nend\nlocal function molt_pack_list(...): {any} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {any} return molt_pack_sequence_kind(\"tuple\", ...) end\nlocal function molt_function_register_signature(func: any, arg_names: {any}): nil\n\tmolt_function_metadata[func] = {arg_names = arg_names, posonly = 0, kwonly = molt_pack_tuple(), vararg = nil, varkw = nil, defaults = nil, kwdefaults = nil}\n\treturn nil\nend\n");
+        if needs_frame_runtime {
+            self.output.push_str(frame_runtime::FRAME_RUNTIME);
+            self.output.push('\n');
+        }
+        if func_body.contains("molt_function_set_builtin") {
+            self.output.push_str("local function molt_function_set_builtin(func: any): any\n\tlocal metadata = molt_function_metadata[func]\n\tif metadata == nil then metadata = {}; molt_function_metadata[func] = metadata end\n\tmetadata.is_builtin = true\n\treturn func\nend\n\n");
+        }
         let needs_equality_repr_runtime = func_body.contains("molt_equal(")
             || func_body.contains("molt_set_")
             || func_body.contains("molt_frozenset_")
@@ -190,6 +196,7 @@ impl LuauBackend {
             || func_body.contains("molt_repr(")
             || func_body.contains("molt_print(");
         let needs_dict_runtime = func_body.contains("molt_dict_")
+            || needs_frame_runtime
             || needs_equality_repr_runtime
             || func_body.contains("molt_len(")
             || func_body.contains("molt_bool(")
@@ -208,20 +215,22 @@ impl LuauBackend {
         }
         if needs_dict_runtime {
             self.output.push_str(dict_runtime::DICT_CORE_RUNTIME);
-            if needs_callargs_runtime {
-                self.output.push_str(dict_runtime::CALLARGS_RUNTIME);
-            }
             if needs_equality_repr_runtime {
                 self.output.push_str(dict_runtime::EQUALITY_REPR_RUNTIME);
             }
             self.output.push('\n');
         }
         self.output.push_str("local molt_module_cache: {[string]: any} = {\n\tmath = nil,\n\tjson = nil,\n\ttime = nil,\n\tos = nil,\n}\n\n");
+        if needs_frame_runtime {
+            self.output.push_str(frame_runtime::CALLABLE_FRAME_RUNTIME);
+            self.output.push('\n');
+        }
+        if needs_callargs_runtime {
+            self.output.push_str(dict_runtime::CALLARGS_RUNTIME);
+            self.output.push('\n');
+        }
 
-        let needs_luau_module_import = func_body.contains("molt_luau_import_module(");
-        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info")
-            || func_body.contains("molt_sys_ensure_module")
-            || needs_luau_module_import;
+        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info");
         if needs_sys_bootstrap {
             self.output.push_str(concat!(
                 "local molt_sys_version_info = {3, 12, 0, \"final\", 0}\n",
@@ -253,13 +262,6 @@ impl LuauBackend {
                 "\tmolt_module_cache[\"sys\"] = sys_module\n",
                 "\treturn sys_module\n",
                 "end\n\n",
-                "local function molt_sys_ensure_module()\n",
-                "\tlocal sys_module = molt_module_cache[\"sys\"]\n",
-                "\tif sys_module == nil then\n",
-                "\t\treturn molt_sys_seed_module()\n",
-                "\tend\n",
-                "\treturn sys_module\n",
-                "end\n\n",
                 "local function molt_sys_set_version_info(major, minor, micro, releaselevel, serial, version)\n",
                 "\tmajor = major or 3\n",
                 "\tminor = minor or 12\n",
@@ -274,21 +276,6 @@ impl LuauBackend {
                 "\tmolt_sys_hexversion = molt_sys_compute_hexversion(major, minor, micro, releaselevel, serial)\n",
                 "\tmolt_sys_seed_module()\n",
                 "\treturn nil\n",
-                "end\n\n",
-            ));
-        }
-
-        if needs_luau_module_import {
-            self.output.push_str(concat!(
-                "local function molt_luau_import_module(name)\n",
-                "\tif name == \"sys\" then\n",
-                "\t\treturn molt_sys_ensure_module()\n",
-                "\tend\n",
-                "\tlocal module = molt_module_cache[name]\n",
-                "\tif module ~= nil then\n",
-                "\t\treturn module\n",
-                "\tend\n",
-                "\terror(\"unsupported module import in Luau backend: \" .. tostring(name))\n",
                 "end\n\n",
             ));
         }
@@ -332,18 +319,15 @@ impl LuauBackend {
                 "\terror({__type = \"NameError\", __msg = \"name '\" .. name_s .. \"' is not defined\"})\n",
                 "end\n\n",
                 "local function molt_module_get_global(module: any, name: any): any\n",
+                "\tlocal context = molt_frame_context()\n",
+                "\tlocal active = context.depth > 0\n",
+                "\tif active then module = context.globals[context.depth] end\n",
                 "\tif type(module) ~= \"table\" then return molt_module_type_error(\"get_global\") end\n",
-                "\tif molt_dict_is_ordered(module) then\n",
-                "\t\tif molt_dict_contains(module, name) then return molt_dict_getitem(module, name) end\n",
-                "\telse\n",
-                "\t\tlocal value = module[name]\n",
-                "\t\tif value ~= nil then return value end\n",
-                "\tend\n",
-                "\tlocal builtins = molt_module_cache[\"builtins\"]\n",
-                "\tif type(builtins) == \"table\" then\n",
-                "\t\tlocal builtin_value = builtins[name]\n",
-                "\t\tif builtin_value ~= nil then return builtin_value end\n",
-                "\tend\n",
+                "\tlocal present, value = molt_frame_namespace_get(module, name)\n",
+                "\tif present then return value end\n",
+                "\tlocal builtins = if active then context.builtins[context.depth] else molt_module_cache[\"builtins\"]\n",
+                "\tlocal builtin_present, builtin_value = molt_frame_namespace_get(builtins, name)\n",
+                "\tif builtin_present then return builtin_value end\n",
                 "\treturn molt_module_name_error(name)\n",
                 "end\n\n",
                 "local function molt_module_get_name(module: any, name: any): any\n",
@@ -357,6 +341,8 @@ impl LuauBackend {
                 "\terror({__type = \"AttributeError\", __msg = \"module has no attribute '\" .. tostring(name) .. \"'\"})\n",
                 "end\n\n",
                 "local function molt_module_del_global(module: any, name: any, missing_ok: boolean): any\n",
+                "\tlocal context = molt_frame_context()\n",
+                "\tif context.depth > 0 then module = context.globals[context.depth] end\n",
                 "\tif type(module) ~= \"table\" then return molt_module_type_error(\"del_global\") end\n",
                 "\tif molt_dict_is_ordered(module) and molt_dict_contains(module, name) then\n",
                 "\t\tmolt_dict_delete(module, name, false)\n",
@@ -897,7 +883,29 @@ pub(super) fn validate_luau_identity_contract(
     function: &FunctionIR,
     plan: &ScalarRepresentationPlan,
 ) -> Result<(), String> {
+    // Luau's CallArgs runtime currently has one exact **mapping carrier: the
+    // ordered Molt dict.  Do not let the presence of an emitter arm imply the
+    // generic Python keys()/__getitem__ mapping protocol.  A direct canonical
+    // producer is deliberately required until that shared protocol exists.
+    let mut canonical_ordered_mappings = BTreeSet::new();
     for (index, op) in function.ops.iter().enumerate() {
+        if molt_ir::tir::op_kinds_generated::simpleir_kind_requires_luau_ordered_mapping(&op.kind) {
+            let args = op.args.as_deref().unwrap_or(&[]);
+            if let Some(mapping) = args.get(1)
+                && !canonical_ordered_mappings.contains(mapping)
+            {
+                return Err(format!(
+                    "luau target rejected before source generation: {}:op#{index} `callargs_expand_kwstar`: Luau requires a directly produced canonical ordered Molt dict because the generic Python keys/getitem mapping protocol is unavailable",
+                    function.name,
+                ));
+            }
+        }
+        if let Some(out) = op.out.as_ref() {
+            canonical_ordered_mappings.remove(out);
+            if matches!(op.kind.as_str(), "dict_new" | "build_dict") {
+                canonical_ordered_mappings.insert(out.clone());
+            }
+        }
         if !matches!(op.kind.as_str(), "is" | "is_not") {
             continue;
         }

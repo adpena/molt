@@ -60,10 +60,10 @@ mod task_state;
 pub(crate) use task_state::thread_task_state;
 pub(crate) use task_state::{
     AwaitWaiterIndex, asyncgen_registry, await_waiter_clear, await_waiter_register, await_waiters,
-    fn_ptr_code_get, fn_ptr_code_set, process_task_state, task_detach_owned_edges,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, task_visit_owned_edges, task_waiting_on, task_waiting_on_blocked,
-    task_waiting_on_event, task_waiting_on_future, wake_await_waiters,
+    process_task_state, task_detach_owned_edges, task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions,
+    task_visit_owned_edges, task_waiting_on, task_waiting_on_blocked, task_waiting_on_event,
+    task_waiting_on_future, wake_await_waiters,
 };
 
 mod asyncio_runtime;
@@ -1145,7 +1145,8 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                                 let class_name = class_name_for_error(class_bits);
                                 let type_id = object_type_id(ptr);
                                 detail = format!(" type_id={} class={}", type_id, class_name);
-                                let code_bits = fn_ptr_code_get(_py, poll_fn);
+                                let code_bits =
+                                    crate::object::aux_header::object_frame_code_bits(ptr);
                                 if code_bits != 0 {
                                     let code_ptr = ptr_from_bits(code_bits);
                                     if !code_ptr.is_null() {

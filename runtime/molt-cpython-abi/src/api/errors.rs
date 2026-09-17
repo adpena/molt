@@ -305,6 +305,29 @@ pub(crate) fn clear_all_pending_errors() {
     }
 }
 
+/// Detach the callee's exact indicator while temporary owners are released.
+/// C errors have canonical precedence; runtime-only errors move through the
+/// existing lossless bridge. Cleanup-only errors cannot escape or replace it.
+pub(crate) fn with_preserved_error<T>(cleanup: impl FnOnce() -> T) -> T {
+    transfer_runtime_pending_to_current();
+    let error = take_current_error();
+    let result = cleanup();
+    clear_all_pending_errors();
+    if let Some(error) = error {
+        restore_current_error_exact(error);
+    }
+    result
+}
+
+/// Release temporary C owners while preserving even an empty error indicator.
+pub(crate) unsafe fn release_preserving_error(objects: &[*mut PyObject]) {
+    with_preserved_error(|| unsafe {
+        for &object in objects {
+            crate::api::refcount::Py_XDECREF(object);
+        }
+    });
+}
+
 fn clear_new_runtime_pending_error(had_pending: bool) {
     if had_pending {
         return;

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from typing import (
     TYPE_CHECKING,
     Any,
 )
 
 from molt.frontend._types import (
-    BUILTIN_TYPE_TAGS,
     MoltOp,
     MoltValue,
 )
@@ -56,36 +56,7 @@ class CallAttributeDispatchMixin(_MixinBase):
             return ".".join((imported_target, *receiver_parts[1:]))
         return None
 
-    def _try_emit_dotted_imported_native_callable(self, node: ast.Call) -> Any:
-        if not isinstance(node.func, ast.Attribute):
-            return CALL_NOT_HANDLED
-        parts = self._dotted_attribute_parts(node.func)
-        if parts is None or len(parts) < 3:
-            return CALL_NOT_HANDLED
-        target_module = self._dotted_imported_module_target(parts[:-1])
-        if target_module is None:
-            return CALL_NOT_HANDLED
-        func_id = parts[-1]
-        normalized = self._normalize_allowlist_module(target_module)
-        visible_module = normalized or target_module
-        lowered = self._try_emit_native_callable_export_call(
-            visible_module,
-            func_id,
-            node,
-        )
-        if lowered is not None:
-            return lowered
-        if self._is_native_python_export(visible_module, func_id):
-            self._raise_native_python_export_missing_callable_metadata(
-                visible_module,
-                func_id,
-                node,
-            )
-        return CALL_NOT_HANDLED
-
-    def _try_emit_attribute_receiver_call(
-        self, node: ast.Call, needs_bind: bool
-    ) -> Any:
+    def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):
             attr_node = node.func
             if (
@@ -142,121 +113,29 @@ class CallAttributeDispatchMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="TRUNC", args=[value], result=res))
                 return res
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "molt_json"
-            ):
-                if node.func.attr == "parse" and len(node.args) == 1:
-                    arg = self.visit(node.args[0])
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    if self.parse_codec == "cbor":
-                        kind = "CBOR_PARSE"
-                    elif self.parse_codec == "json":
-                        kind = "JSON_PARSE"
-                    else:
-                        kind = "MSGPACK_PARSE"
-                    self.emit(MoltOp(kind=kind, args=[arg], result=res))
-                    return res
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "molt_msgpack"
-            ):
-                if node.func.attr == "parse" and len(node.args) == 1:
-                    arg = self.visit(node.args[0])
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="MSGPACK_PARSE", args=[arg], result=res))
-                    return res
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "molt_cbor"
-            ):
-                if node.func.attr == "parse" and len(node.args) == 1:
-                    arg = self.visit(node.args[0])
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="CBOR_PARSE", args=[arg], result=res))
-                    return res
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "molt_buffer"
-            ):
-                if node.func.attr == "new":
-                    if len(node.args) not in (2, 3):
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "molt_buffer.new expects 2 or 3 arguments",
-                        )
-                    rows = self.visit(node.args[0])
-                    cols = self.visit(node.args[1])
-                    if len(node.args) == 3:
-                        init = self.visit(node.args[2])
-                    else:
-                        init = MoltValue(self.next_var(), type_hint="int")
-                        self.emit(MoltOp(kind="CONST", args=[0], result=init))
-                    res = MoltValue(self.next_var(), type_hint="buffer2d")
-                    self.emit(
-                        MoltOp(kind="BUFFER2D_NEW", args=[rows, cols, init], result=res)
-                    )
-                    return res
-                if node.func.attr == "get":
-                    if len(node.args) != 3:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "molt_buffer.get expects 3 arguments",
-                        )
-                    buf = self.visit(node.args[0])
-                    row = self.visit(node.args[1])
-                    col = self.visit(node.args[2])
-                    res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(
-                        MoltOp(kind="BUFFER2D_GET", args=[buf, row, col], result=res)
-                    )
-                    return res
-                if node.func.attr == "set":
-                    if len(node.args) != 4:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "molt_buffer.set expects 4 arguments",
-                        )
-                    buf = self.visit(node.args[0])
-                    row = self.visit(node.args[1])
-                    col = self.visit(node.args[2])
-                    val = self.visit(node.args[3])
-                    res = MoltValue(self.next_var(), type_hint="buffer2d")
-                    self.emit(
-                        MoltOp(
-                            kind="BUFFER2D_SET", args=[buf, row, col, val], result=res
-                        )
-                    )
-                    return res
-                if node.func.attr == "matmul":
-                    if len(node.args) != 2:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "molt_buffer.matmul expects 2 arguments",
-                        )
-                    lhs = self.visit(node.args[0])
-                    rhs = self.visit(node.args[1])
-                    res = MoltValue(self.next_var(), type_hint="buffer2d")
-                    self.emit(
-                        MoltOp(kind="BUFFER2D_MATMUL", args=[lhs, rhs], result=res)
-                    )
-                    return res
-            dotted_native = self._try_emit_dotted_imported_native_callable(node)
-            if dotted_native is not CALL_NOT_HANDLED:
-                return dotted_native
             receiver = self.visit(attr_node.value)
             if receiver is None:
                 receiver = MoltValue("unknown_obj", type_hint="Unknown")
             obj_name = None
-            exact_class = None
             if isinstance(attr_node.value, ast.Name):
                 obj_name = attr_node.value.id
-                exact_class = self.exact_locals.get(obj_name)
+            exact_class = self._exact_class_for_value(receiver, obj_name)
 
             def load_attr_callee() -> MoltValue:
                 return self._emit_attribute_load(
                     attr_node, receiver, obj_name, exact_class
                 )
+
+            receiver_kind = self._builtin_exact_type_from_expr(attr_node.value)
+            if receiver_kind is not None:
+                # A source-point result is exact. Do not require agreement from
+                # an older transport/annotation hint, and do not mutate its SSA
+                # producer merely to project the fact at this use.
+                receiver = MoltValue(receiver.name, type_hint=receiver_kind)
+            elif receiver.type_hint in BUILTIN_SHAPE_NAMES:
+                # Every builtin method family shares this admission boundary.
+                # An annotation or stale frontend cache is not exact-class proof.
+                return self._emit_dynamic_call(node, load_attr_callee())
 
             method = attr_node.attr
             if receiver.type_hint == "bytearray" and method in {
@@ -269,8 +148,6 @@ class CallAttributeDispatchMixin(_MixinBase):
                 "resize",
             }:
                 self._invalidate_bytearray_len_hint(obj_name, receiver)
-            if method == "sort" and receiver.type_hint == "list":
-                needs_bind = True
             if receiver.type_hint == "generator":
                 if method == "send":
                     if len(node.args) != 1:
@@ -363,235 +240,26 @@ class CallAttributeDispatchMixin(_MixinBase):
                     self.emit(MoltOp(kind="GEN_CLOSE", args=[receiver], result=res))
                     return res
             class_name = None
-            class_info = self.classes.get(receiver.type_hint)
-            receiver_is_class_obj = False
             if isinstance(node.func.value, ast.Name):
                 candidate = node.func.value.id
                 candidate_info = self.classes.get(candidate)
-                if candidate in BUILTIN_TYPE_TAGS or candidate_info is not None:
-                    receiver_is_class_obj = True
-                    if candidate_info is not None:
-                        class_name = candidate
-                        class_info = candidate_info
-            if receiver_is_class_obj:
-                needs_bind = True
+                if candidate_info is not None:
+                    class_name = candidate
             lookup_class = class_name
             if lookup_class is None and receiver.type_hint in self.classes:
                 lookup_class = receiver.type_hint
             method_info = None
-            method_class = None
             if lookup_class:
-                method_info, method_class = self._resolve_method_info(
-                    lookup_class, method
-                )
-            if method_info and (
-                needs_bind
-                or method_info.get("descriptor") == "decorated"
-                or method_info.get("has_vararg", False)
-                or method_info.get("has_varkw", False)
-                or method_info.get("has_closure", False)
-            ):
+                method_info, _ = self._resolve_method_info(lookup_class, method)
+            if method_info:
+                # Attribute lookup owns descriptor binding; the actual callable
+                # owns defaults, implicit receiver arguments, and variadic shape.
                 callee = load_attr_callee()
                 if callee is None:
                     raise FrontendRejection(
                         Diagnostic.CALL_TARGET, "Unsupported call target"
                     )
-                callargs = self._emit_call_args_builder(node)
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[callee, callargs],
-                        result=res,
-                    )
-                )
-                return res
-            if method_info and not needs_bind:
-                if class_name is None and receiver.type_hint not in self.classes:
-                    callee = load_attr_callee()
-                    if callee is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_TARGET, "Unsupported call target"
-                        )
-                    callargs = self._emit_call_args_builder(node)
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[callee, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
-                func_val = method_info["func"]
-                descriptor = method_info["descriptor"]
-                args = self._emit_call_args(node.args)
-                if descriptor == "function":
-                    if class_name is None and receiver.type_hint in self.classes:
-                        if not receiver_is_class_obj:
-                            args = [receiver] + args
-                elif descriptor == "classmethod":
-                    if class_name is None and receiver.type_hint in self.classes:
-                        class_name = receiver.type_hint
-                    if class_name is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported classmethod call",
-                        )
-                    class_ref = (
-                        receiver
-                        if isinstance(node.func.value, ast.Name)
-                        and class_name == node.func.value.id
-                        else self._emit_module_attr_get(class_name)
-                    )
-                    args = [class_ref] + args
-                elif descriptor != "staticmethod":
-                    args = []
-                if args or descriptor in {"function", "classmethod", "staticmethod"}:
-                    param_count = method_info.get("param_count")
-                    defaults = method_info.get("defaults", [])
-                    has_vararg = method_info.get("has_vararg", False)
-                    has_varkw = method_info.get("has_varkw", False)
-                    kwonly_count = method_info.get("kwonly_count")
-                    if param_count is not None:
-                        fixed_param_count = param_count
-                        if has_vararg:
-                            fixed_param_count -= 1
-                        if has_varkw:
-                            fixed_param_count -= 1
-                        func_obj = None
-                        missing = fixed_param_count - len(args)
-                        # Load the function object whenever a trailing default is
-                        # filled: a const default needs the version stamp for the
-                        # `__defaults__`-mutation deopt guard, a non-const default
-                        # needs the live `__defaults__`/`__kwdefaults__` read.
-                        if 0 < missing <= len(defaults):
-                            class_ref = None
-                            if lookup_class:
-                                class_info = self.classes.get(lookup_class)
-                                if class_info:
-                                    class_ref = self._emit_module_attr_get_on(
-                                        class_info["module"], lookup_class
-                                    )
-                            if class_ref is not None:
-                                class_attr = self._emit_class_method_func(
-                                    class_ref, method
-                                )
-                                if descriptor == "classmethod":
-                                    func_obj = self._emit_bound_method_func(class_attr)
-                                else:
-                                    func_obj = class_attr
-                            else:
-                                callee = load_attr_callee()
-                                if callee is not None:
-                                    if descriptor == "classmethod":
-                                        func_obj = self._emit_bound_method_func(callee)
-                                    elif descriptor == "function":
-                                        if isinstance(
-                                            callee.type_hint, str
-                                        ) and callee.type_hint.startswith(
-                                            "BoundMethod:"
-                                        ):
-                                            func_obj = self._emit_bound_method_func(
-                                                callee
-                                            )
-                                        else:
-                                            func_obj = callee
-                                    else:
-                                        func_obj = callee
-                        positional_limit = None
-                        if isinstance(kwonly_count, int):
-                            positional_limit = fixed_param_count - kwonly_count
-                            if positional_limit < 0:
-                                positional_limit = 0
-                        args = self._apply_default_specs(
-                            fixed_param_count,
-                            defaults,
-                            args,
-                            node,
-                            call_name=f"{lookup_class}.{method}",
-                            func_obj=func_obj,
-                            implicit_self=False,
-                            positional_limit=positional_limit,
-                        )
-                        if args is None:
-                            callee = load_attr_callee()
-                            if callee is None:
-                                raise FrontendRejection(
-                                    Diagnostic.CALL_TARGET,
-                                    "Unsupported call target",
-                                )
-                            callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[callee, callargs],
-                                    result=res,
-                                )
-                            )
-                            return res
-                        if has_vararg:
-                            if len(args) > fixed_param_count:
-                                extra = args[fixed_param_count:]
-                                tuple_val = MoltValue(
-                                    self.next_var(), type_hint="tuple"
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="TUPLE_NEW",
-                                        args=extra,
-                                        result=tuple_val,
-                                    )
-                                )
-                                args = args[:fixed_param_count] + [tuple_val]
-                            elif len(args) == fixed_param_count:
-                                empty_tuple = MoltValue(
-                                    self.next_var(), type_hint="tuple"
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="TUPLE_NEW",
-                                        args=[],
-                                        result=empty_tuple,
-                                    )
-                                )
-                                args = args + [empty_tuple]
-                        if has_varkw:
-                            empty_kwargs = MoltValue(self.next_var(), type_hint="dict")
-                            self.emit(
-                                MoltOp(
-                                    kind="DICT_NEW",
-                                    args=[],
-                                    result=empty_kwargs,
-                                )
-                            )
-                            args = args + [empty_kwargs]
-                    res_hint = "Any"
-                    return_hint = method_info["return_hint"]
-                    # Builtin scalar/container return types must propagate as
-                    # type hints — see _resolve_method_call_hints for the same
-                    # fix; lane inference falls back to NaN-boxed accumulator
-                    # if `int` returns are erased here.
-                    if return_hint and (
-                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-                    ):
-                        res_hint = return_hint
-                    res = MoltValue(self.next_var(), type_hint=res_hint)
-                    # Route known-method calls through CALL_BIND so descriptor binding and
-                    # handle semantics stay aligned with dynamic attribute calls.
-                    callee = load_attr_callee()
-                    if callee is None:
-                        target_name = func_val.type_hint.split(":", 1)[1]
-                        self.emit(
-                            MoltOp(kind="CALL", args=[target_name] + args, result=res)
-                        )
-                        return res
-                    callargs = self._emit_call_args_builder(node)
-                    self.emit(
-                        MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
-                    )
-                    return res
+                return self._emit_dynamic_call(node, callee)
             if method == "add" and receiver.type_hint == "set":
                 if len(node.args) != 1:
                     raise FrontendRejection(
@@ -960,9 +628,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                     )
                 )
                 return res
-            if method == "pop" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "pop" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1014,9 +680,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="LIST_POP", args=[receiver, idx], result=res))
                 return res
-            if method == "get" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "get" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1038,9 +702,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                     MoltOp(kind="DICT_GET", args=[receiver, key, default], result=res)
                 )
                 return res
-            if method == "setdefault" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "setdefault" and receiver.type_hint == "dict":
                 if node.keywords or len(node.args) not in (1, 2):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1085,9 +747,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                     )
                 )
                 return res
-            if method == "update" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "update" and receiver.type_hint == "dict":
                 if (
                     node.keywords
                     or len(node.args) > 1
@@ -1112,9 +772,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                     )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
-            if method == "clear" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "clear" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1123,9 +781,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
                 return res
-            if method == "copy" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "copy" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1134,9 +790,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
                 return res
-            if method == "popitem" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "popitem" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE,
@@ -1145,21 +799,15 @@ class CallAttributeDispatchMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
-            if method == "keys" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "keys" and receiver.type_hint == "dict":
                 res = MoltValue(self.next_var(), type_hint="dict_keys_view")
                 self.emit(MoltOp(kind="DICT_KEYS", args=[receiver], result=res))
                 return res
-            if method == "values" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "values" and receiver.type_hint == "dict":
                 res = MoltValue(self.next_var(), type_hint="dict_values_view")
                 self.emit(MoltOp(kind="DICT_VALUES", args=[receiver], result=res))
                 return res
-            if method == "items" and self._has_exact_builtin_receiver(
-                attr_node.value, receiver, "dict"
-            ):
+            if method == "items" and receiver.type_hint == "dict":
                 res = MoltValue(self.next_var(), type_hint="dict_items_view")
                 self.emit(MoltOp(kind="DICT_ITEMS", args=[receiver], result=res))
                 return res
@@ -1645,7 +1293,7 @@ class CallAttributeDispatchMixin(_MixinBase):
             if method == "join":
                 if len(node.args) != 1:
                     callee = load_attr_callee()
-                    return self._emit_dynamic_call(node, callee, True)
+                    return self._emit_dynamic_call(node, callee)
                 items = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="str")
                 if receiver.type_hint == "str":
@@ -1989,7 +1637,7 @@ class CallAttributeDispatchMixin(_MixinBase):
             )
             if module_name is None:
                 callee = load_attr_callee()
-                # Dynamic attribute calls must use binder semantics so bound methods
-                # receive `self` even when local type inference is imprecise.
-                return self._emit_dynamic_call(node, callee, True)
+                # Object dispatch binds the actual descriptor result; only the
+                # argument syntax determines whether a builder is necessary.
+                return self._emit_dynamic_call(node, callee)
         return CALL_NOT_HANDLED

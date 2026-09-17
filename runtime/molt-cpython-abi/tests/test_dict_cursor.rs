@@ -4,7 +4,7 @@
 //! These need a fake dict model whose `dict_entry`/`dict_set`/`classify_heap`
 //! hooks would collide with another test file's first-wins `RUNTIME_HOOKS`
 //! OnceLock, so they get their own test binary (fresh OnceLock). A process-wide
-//! `TEST_LOCK` serializes the two tests because they share the fake dict statics.
+//! `TEST_LOCK` serializes the tests because they share the fake dict statics.
 //!
 //! LOAD-BEARING revert proof (reproduced manually per M05): reverting
 //! `PyDict_Next` to its pre-fix stub (`*pos = size; return 0` + RuntimeError when
@@ -20,8 +20,9 @@ use molt_cpython_abi::abi_types::{MoltTypeTag, Py_ssize_t, PyObject};
 use molt_lang_obj_model::MoltObject;
 use std::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-// Serializes the two tests below (they share the fake dict statics).
+// Serializes the tests below (they share the fake dict statics).
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 // The fake `other` dict's entries (key_bits, val_bits), indexed by the cursor.
 static ENTRIES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
@@ -30,6 +31,10 @@ static SETS: Mutex<Vec<(u64, u64, u64)>> = Mutex::new(Vec::new());
 // Keys reported present by dict_get (drives the merge override path).
 static PRESENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 static CLEARS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static LOOKUP_KEYS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static NEXT_FOREIGN_WRAPPER: AtomicU64 = AtomicU64::new(0x7e00_0000);
+static FOREIGN_C_PTR: AtomicUsize = AtomicUsize::new(0);
+static FOREIGN_WRAPPER: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" fn fx_dict_entry(
     _d: u64,
@@ -61,10 +66,27 @@ unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
     0
 }
 unsafe extern "C" fn fx_dict_get(_d: u64, k: u64) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    LOOKUP_KEYS.lock().unwrap().push(k);
     if PRESENT.lock().unwrap().contains(&k) {
         molt_cpython_abi::hooks::BorrowedHandleResult::ok(k)
     } else {
         molt_cpython_abi::hooks::BorrowedHandleResult::missing()
+    }
+}
+unsafe extern "C" fn fx_foreign_new(c_ptr: usize) -> u64 {
+    assert_ne!(c_ptr, 0);
+    assert_eq!(FOREIGN_C_PTR.swap(c_ptr, Ordering::SeqCst), 0);
+    let address = NEXT_FOREIGN_WRAPPER.fetch_add(0x10, Ordering::SeqCst) as usize;
+    let wrapper = MoltObject::from_ptr(address as *mut u8).bits();
+    assert_eq!(FOREIGN_WRAPPER.swap(wrapper, Ordering::SeqCst), 0);
+    wrapper
+}
+unsafe extern "C" fn fx_dec_ref(bits: u64) {
+    if bits == FOREIGN_WRAPPER.load(Ordering::SeqCst) && bits != 0 {
+        FOREIGN_WRAPPER.store(0, Ordering::SeqCst);
+        let c_ptr = FOREIGN_C_PTR.swap(0, Ordering::SeqCst);
+        assert_ne!(c_ptr, 0);
+        unsafe { molt_cpython_abi::bridge::molt_foreign_object_release(c_ptr) };
     }
 }
 unsafe extern "C" fn fx_dict_len(_b: u64) -> usize {
@@ -88,6 +110,8 @@ fn install() {
     hooks.dict_get = fx_dict_get;
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
+    hooks.foreign_new = fx_foreign_new;
+    hooks.dec_ref = fx_dec_ref;
     support::prepare_abi_test_thread(hooks);
 }
 
@@ -237,4 +261,64 @@ fn dict_proxy_is_read_only() {
         molt_cpython_abi::api::errors::PyErr_Clear();
         molt_cpython_abi::api::refcount::Py_DECREF(proxy);
     }
+}
+
+#[test]
+fn test_dict_getitem_preserves_entry_error_and_routes_foreign_key() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    install();
+    LOOKUP_KEYS.lock().unwrap().clear();
+    PRESENT.lock().unwrap().clear();
+
+    let dict = register(fake_dict_handle(0x8400));
+    let marker = register(MoltObject::from_int(0x5eed).bits());
+    let exc_type = (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError).cast::<PyObject>();
+    molt_cpython_abi::api::errors::restore_current_error_exact(
+        molt_cpython_abi::api::errors::OwnedCError {
+            exc_type,
+            value: marker,
+            traceback: ptr::null_mut(),
+        },
+    );
+
+    let mut foreign_key = Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: ptr::null_mut(),
+    });
+    let key = &raw mut *foreign_key;
+    let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(dict, key) };
+    assert!(
+        result.is_null(),
+        "the fake dictionary does not contain the key"
+    );
+
+    let wrapper = *LOOKUP_KEYS
+        .lock()
+        .unwrap()
+        .as_slice()
+        .first()
+        .expect("foreign key must reach the canonical dict_get hook");
+    assert_ne!(wrapper, 0);
+    assert_eq!(
+        LOOKUP_KEYS.lock().unwrap().as_slice(),
+        &[wrapper],
+        "PyDict_GetItem must perform exactly one canonical lookup"
+    );
+    assert_eq!(
+        FOREIGN_C_PTR.load(Ordering::SeqCst),
+        0,
+        "the temporary foreign runtime wrapper must release its C custody"
+    );
+    assert_eq!(
+        foreign_key.ob_refcnt, 1,
+        "the non-stealing lookup must leave the caller's key reference intact"
+    );
+
+    let pending = molt_cpython_abi::api::errors::take_current_error()
+        .expect("PyDict_GetItem must restore the exact entry error");
+    assert_eq!(pending.exc_type, exc_type);
+    assert_eq!(pending.value, marker);
+    assert!(pending.traceback.is_null());
+    drop(pending);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
 }

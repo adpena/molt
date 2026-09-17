@@ -29,6 +29,7 @@ pub mod abstract_number;
 pub mod abstract_sequence;
 pub mod buffer;
 pub mod capsule;
+pub mod cfunction;
 pub mod contextvars;
 pub mod datetime;
 pub mod errors;

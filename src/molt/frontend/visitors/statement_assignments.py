@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, cast
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
-    _canonical_intrinsic_runtime_name,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -90,29 +89,14 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     self._emit_annotation_exec_mark(exec_map, exec_id)
         if node.value is None:
             return None
-        optional_intrinsic_name = self._match_optional_intrinsic_loader_expr(node.value)
-        if optional_intrinsic_name is not None:
-            value_node = self._emit_optional_intrinsic_lookup_value(
-                optional_intrinsic_name
-            )
-        else:
-            value_node = self.visit(node.value)
+        value_node = self.visit(node.value)
         if isinstance(node.target, ast.Name):
-            if self.current_func_name == "molt_main":
-                if optional_intrinsic_name is None:
-                    self.module_intrinsic_globals.pop(node.target.id, None)
-                else:
-                    runtime_name = _canonical_intrinsic_runtime_name(
-                        optional_intrinsic_name
-                    )
-                    self.module_intrinsic_globals[node.target.id] = runtime_name
-                    self.reserved_external_func_symbols.add(runtime_name)
             self._apply_explicit_hint(node.target.id, value_node)
             if (
                 self.current_func_name == "molt_main"
                 or node.target.id not in self.global_decls
             ):
-                self._update_exact_local(node.target.id, node.value)
+                self._update_exact_local(node.target.id, node.value, value_node)
             if (
                 self.current_func_name != "molt_main"
                 and node.target.id in self.global_decls
@@ -136,118 +120,13 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             obj_name = class_name
             if class_name in self.classes:
                 self._invalidate_loop_guards_for_class(class_name)
-        exact_class = None
-        if isinstance(node.target.value, ast.Name):
-            exact_class = self.exact_locals.get(node.target.value.id)
-        class_info = None
-        if obj is not None:
-            class_info = self.classes.get(obj.type_hint)
-        if exact_class is not None:
-            self._record_instance_attr_mutation(exact_class, node.target.attr)
-        elif obj is not None and obj.type_hint in self.classes:
-            self._record_instance_attr_mutation(obj.type_hint, node.target.attr)
-        if exact_class is not None and obj is not None:
-            exact_info = self.classes.get(exact_class)
-            if (
-                exact_info
-                and not exact_info.get("dynamic")
-                and not exact_info.get("dataclass")
-            ):
-                field_map = exact_info.get("fields", {})
-                if (
-                    node.target.attr in field_map
-                    and not self._class_attr_is_data_descriptor(
-                        exact_class, node.target.attr
-                    )
-                ):
-                    self._emit_guarded_setattr(
-                        obj,
-                        node.target.attr,
-                        value_node,
-                        exact_class,
-                        obj_name=obj_name,
-                        assume_exact=True,
-                    )
-                    return None
-        if class_info and class_info.get("dataclass"):
-            field_map = class_info["fields"]
-            if node.target.attr not in field_map:
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[obj, node.target.attr, value_node],
-                        result=MoltValue("none"),
-                    )
-                )
-                return None
-            idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[field_map[node.target.attr]], result=idx_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="DATACLASS_SET",
-                    args=[obj, idx_val, value_node],
-                    result=MoltValue("none"),
-                )
-            )
-        else:
-            field_map = class_info.get("fields", {}) if class_info else {}
-            if obj is not None and obj.type_hint in self.classes:
-                if class_info and class_info.get("dynamic"):
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_PTR",
-                            args=[obj, node.target.attr, value_node],
-                            result=MoltValue("none"),
-                        )
-                    )
-                elif node.target.attr in field_map:
-                    if self._class_attr_is_data_descriptor(
-                        obj.type_hint, node.target.attr
-                    ):
-                        self.emit(
-                            MoltOp(
-                                kind="SETATTR_GENERIC_PTR",
-                                args=[obj, node.target.attr, value_node],
-                                result=MoltValue("none"),
-                            )
-                        )
-                    else:
-                        # Inside a method body, `self` (the first parameter)
-                        # is guaranteed to be an instance of the current class.
-                        # Mark it as exact so the guarded setattr can use a
-                        # direct field store instead of the slow generic path.
-                        is_method_self = (
-                            self.current_class is not None
-                            and isinstance(node.target.value, ast.Name)
-                            and node.target.value.id == self.current_method_first_param
-                            and obj.type_hint == self.current_class
-                        )
-                        self._emit_guarded_setattr(
-                            obj,
-                            node.target.attr,
-                            value_node,
-                            obj.type_hint,
-                            obj_name=obj_name,
-                            assume_exact=is_method_self,
-                        )
-                else:
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_PTR",
-                            args=[obj, node.target.attr, value_node],
-                            result=MoltValue("none"),
-                        )
-                    )
-            else:
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[obj, node.target.attr, value_node],
-                        result=MoltValue("none"),
-                    )
-                )
+        self._emit_attribute_store(
+            obj,
+            node.target.value,
+            obj_name,
+            node.target.attr,
+            value_node,
+        )
         return None
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -268,13 +147,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     )
                 )
                 return None
-        optional_intrinsic_name = self._match_optional_intrinsic_loader_expr(node.value)
-        if optional_intrinsic_name is not None:
-            value_node = self._emit_optional_intrinsic_lookup_value(
-                optional_intrinsic_name
-            )
-        else:
-            value_node = self.visit(node.value)
+        value_node = self.visit(node.value)
         for target in node.targets:
             self._emit_assign_target(target, value_node, node.value)
         return None
@@ -301,9 +174,10 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     raise FrontendRejection(
                         Diagnostic.CALL_SIGNATURE, "del expects attribute owner"
                     )
-                exact_class = None
-                if isinstance(target.value, ast.Name):
-                    exact_class = self.exact_locals.get(target.value.id)
+                target_name = (
+                    target.value.id if isinstance(target.value, ast.Name) else None
+                )
+                exact_class = self._exact_class_for_value(obj, target_name)
                 if exact_class is not None:
                     self._record_instance_attr_mutation(exact_class, target.attr)
                 elif obj.type_hint in self.classes:
@@ -444,7 +318,7 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             exact_class = None
             if isinstance(node.target.value, ast.Name):
                 obj_name = node.target.value.id
-                exact_class = self.exact_locals.get(obj_name)
+            exact_class = self._exact_class_for_value(obj, obj_name)
             current = self._emit_attribute_load(node.target, obj, obj_name, exact_class)
             if self.is_async() and may_yield:
                 obj_slot = self._spill_async_value(obj)
@@ -470,7 +344,6 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 obj,
                 node.target.value,
                 obj_name,
-                exact_class,
                 node.target.attr,
                 res,
             )
@@ -796,15 +669,12 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             self._record_imported_module_attr_mutation(target)
             obj = self.visit(target.value)
             obj_name = None
-            exact_class = None
             if isinstance(target.value, ast.Name):
                 obj_name = target.value.id
-                exact_class = self.exact_locals.get(obj_name)
             self._emit_attribute_store(
                 obj,
                 target.value,
                 obj_name,
-                exact_class,
                 target.attr,
                 value_node,
             )
@@ -824,11 +694,6 @@ class AssignmentStatementVisitorMixin(_MixinBase):
             if self._active_class_ns_scope(target.id) is not None:
                 self._store_local_value(target.id, value_node)
                 return
-            optional_intrinsic_name = (
-                self._match_optional_intrinsic_loader_expr(source_expr)
-                if source_expr is not None
-                else None
-            )
             imported_module_alias = self._imported_module_alias_target(source_expr)
             imported_module_provenance = self._imported_module_alias_provenance(
                 source_expr
@@ -846,14 +711,6 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 self.global_imported_attr_names.pop(target.id, None)
                 self.global_imported_modules.pop(target.id, None)
                 self.global_imported_module_provenance.pop(target.id, None)
-                if optional_intrinsic_name is None:
-                    self.module_intrinsic_globals.pop(target.id, None)
-                else:
-                    runtime_name = _canonical_intrinsic_runtime_name(
-                        optional_intrinsic_name
-                    )
-                    self.module_intrinsic_globals[target.id] = runtime_name
-                    self.reserved_external_func_symbols.add(runtime_name)
             if imported_module_alias is not None:
                 if self.current_func_name == "molt_main":
                     self.global_imported_modules[target.id] = imported_module_alias
@@ -877,8 +734,8 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                 self.current_func_name == "molt_main"
                 or target.id not in self.global_decls
             ):
+                self._update_exact_local(target.id, source_expr, value_node)
                 if source_expr is not None:
-                    self._update_exact_local(target.id, source_expr)
                     self._propagate_func_type_hint(value_node, source_expr)
             if self.current_func_name != "molt_main" and target.id in self.global_decls:
                 self._store_local_value(target.id, value_node)
@@ -975,27 +832,13 @@ class AssignmentStatementVisitorMixin(_MixinBase):
         if self.current_func_name == "molt_main":
             if name in self.boxed_locals:
                 cell = self.boxed_locals[name]
-                idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-                # Read old value from cell before overwriting, then dec_ref
-                # to release the initial allocation ref.  Without this, the
-                # object's __del__ won't fire until function return.
-                old_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=old_val))
                 missing = self._emit_missing_value()
                 self.globals.pop(name, None)
                 if allow_missing:
                     self._emit_module_global_del_safe(name)
                 else:
                     self._emit_module_global_del(name)
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[cell, idx, missing],
-                        result=MoltValue("none"),
-                    )
-                )
-                self._emit_drop_owned_value(old_val)
+                self._emit_cell_set(cell, missing)
                 self.unbound_check_names.add(name)
                 return
             # Module scope already has a canonical mutable store: the module

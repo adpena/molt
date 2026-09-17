@@ -1,3 +1,4 @@
+use super::super::result_sink::store_owned_result_or_release;
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -12,15 +13,8 @@ pub(super) fn emit_code_metadata_call_op(
     match op.kind.as_str() {
         "code_new" => emit_code_new(call_ctx, func, op),
         "code_slot_set" => {
-            emit_value_then_local_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)
+            emit_value_then_two_locals_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)
         }
-        "fn_ptr_code_set" => emit_table_local_drop_call(
-            call_ctx,
-            func,
-            op,
-            "fn_ptr_code_set",
-            WasmRuntimeImport::FnPtrCodeSet,
-        ),
         "asyncgen_locals_register" => emit_table_two_local_drop_call(
             call_ctx,
             func,
@@ -61,15 +55,16 @@ fn emit_code_new(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, op: 
         call_ctx.reloc_enabled,
         call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CodeNew],
     );
-    if let Some(out) = op.out.as_ref() {
-        let res = call_ctx.locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_owned_result_or_release(
+        func,
+        op,
+        call_ctx.locals,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+    );
 }
 
-fn emit_value_then_local_drop_call(
+fn emit_value_then_two_locals_drop_call(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
@@ -79,30 +74,7 @@ fn emit_value_then_local_drop_call(
     let value = op.value.unwrap_or(0);
     func.instruction(&Instruction::I64Const(value));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
-    emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
-}
-
-fn emit_table_local_drop_call(
-    call_ctx: &mut CallOpContext<'_, '_, '_>,
-    func: &mut Function,
-    op: &OpIR,
-    table_context: &str,
-    import: WasmRuntimeImport,
-) {
-    let args = op.args.as_ref().unwrap();
-    let func_name = op.s_value.as_ref().unwrap();
-    let target = call_ctx
-        .call_site_abi
-        .table_target(func_name, table_context);
-    call_ctx.table_relocations.emit_i64(
-        call_ctx.reloc_enabled,
-        call_ctx.func_import_count,
-        call_ctx.func_index,
-        func,
-        &target,
-    );
-    func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
+    func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     func.instruction(&Instruction::Drop);
 }

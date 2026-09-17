@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     ActiveException,
+    ExactClassFact,
     MoltOp,
     MoltValue,
     ScratchCell,
@@ -46,6 +47,27 @@ def _with_module_provenance_loop_flow(
 
 
 class ControlFlowStatementVisitorMixin(_MixinBase):
+    def _clear_exact_bindings(self, names: set[str]) -> None:
+        for name in names:
+            self.exact_locals.pop(name, None)
+
+    def _join_exact_binding_states(
+        self,
+        left: dict[str, ExactClassFact],
+        left_token: int,
+        right: dict[str, ExactClassFact],
+        right_token: int,
+    ) -> dict[str, ExactClassFact]:
+        token = self._advance_exact_class_token()
+        return {
+            name: ExactClassFact(fact.class_id, token)
+            for name, fact in left.items()
+            if (other := right.get(name)) is not None
+            and fact.token == left_token
+            and other.token == right_token
+            and other.class_id == fact.class_id
+        }
+
     def visit_If(self, node: ast.If) -> None:
         decision = static_expression_result(node.test, **self._static_truth_kwargs())
         # Result knowledge is not permission to erase condition evaluation.
@@ -68,8 +90,8 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 ),
                 node,
             )
+        assigned = self._collect_assigned_names(node.body + node.orelse)
         if not self.is_async():
-            assigned = self._collect_assigned_names(node.body + node.orelse)
             assigned |= set(self._collect_namedexpr_names(node.test))
             if self.current_func_name == "molt_main":
                 self._prepare_mutable_control_flow_bindings(assigned)
@@ -79,6 +101,8 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         self._box_local(name)
         cond = self._emit_condition(node.test)
         self.emit(MoltOp(kind="IF", args=[cond], result=MoltValue("none")))
+        exact_entry = self._snapshot_live_exact_bindings()
+        exact_entry_token = self.exact_class_token
         self.control_flow_depth += 1
         # Snapshot unbound_check_names on flow entry so per-branch
         # discards don't leak into the post-merge state — only names
@@ -92,13 +116,19 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         else_provenance = provenance_snapshot
         try:
             self._visit_block(node.body)
+            then_exact = self._snapshot_live_exact_bindings()
+            then_exact_token = self.exact_class_token
             then_unbound = set(self.unbound_check_names)
             then_provenance = dict(self.imported_module_provenance)
             if node.orelse:
                 self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
                 self.unbound_check_names = set(unbound_snapshot)
                 self.imported_module_provenance = dict(provenance_snapshot)
+                self.exact_locals = dict(exact_entry)
+                self.exact_class_token = exact_entry_token
                 self._visit_block(node.orelse)
+                else_exact = self._snapshot_live_exact_bindings()
+                else_exact_token = self.exact_class_token
                 else_unbound = set(self.unbound_check_names)
                 else_provenance = dict(self.imported_module_provenance)
                 # Names discarded in BOTH branches stay discarded;
@@ -109,11 +139,20 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 # so it can't add discards.  Restore to snapshot —
                 # any discards in `body` may not have happened.
                 self.unbound_check_names = unbound_snapshot
+                else_exact = exact_entry
+                else_exact_token = exact_entry_token
         finally:
             self.control_flow_depth -= 1
         self._finish_module_provenance_flow(
             provenance_flow,
             normal_paths=(then_provenance, else_provenance),
+        )
+        # The join creates one fresh authority for facts proven on every path.
+        self.exact_locals = self._join_exact_binding_states(
+            then_exact,
+            then_exact_token,
+            else_exact,
+            else_exact_token,
         )
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         # Evict module_global_mutations names from the locals/globals cache so
@@ -293,42 +332,22 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.try_handler_scopes.pop()
         self.try_scopes.pop()
         self.try_suppress_depth = prior_suppress
+        self._expire_exact_class_facts()
         return None
 
     @_with_module_provenance_loop_flow
     def visit_For(self, node: ast.For) -> None:
+        self._prepare_exact_class_loop_entry(node.body)
+        exact_assigned = self._collect_assigned_names(node.body + node.orelse)
+        exact_assigned.update(self._collect_target_names(node.target))
         if self._emit_split_dict_increment_for_loop(node):
+            self._clear_exact_bindings(exact_assigned)
             return None
         break_name: ScratchCell | None = None
         if node.orelse:
             break_init = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=break_init))
             break_name = self._new_scratch_cell(break_init, type_hint="bool")
-        matmul_match = (
-            self._match_matmul_loop(node) if isinstance(node.target, ast.Name) else None
-        )
-        if matmul_match is not None:
-            out_name, a_name, b_name = matmul_match
-            a_val = self.locals.get(a_name) or self.globals.get(a_name)
-            b_val = self.locals.get(b_name) or self.globals.get(b_name)
-            if a_val is None or b_val is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Matmul operands must be simple locals",
-                )
-            a_hint = self.boxed_local_hints.get(a_name, a_val.type_hint)
-            b_hint = self.boxed_local_hints.get(b_name, b_val.type_hint)
-            if a_hint == "buffer2d" and b_hint == "buffer2d":
-                a_arg = self._load_local_value(a_name) or a_val
-                b_arg = self._load_local_value(b_name) or b_val
-                res = MoltValue(self.next_var(), type_hint="buffer2d")
-                self.emit(
-                    MoltOp(kind="BUFFER2D_MATMUL", args=[a_arg, b_arg], result=res)
-                )
-                self._store_local_value(out_name, res)
-                if break_name is not None:
-                    self._emit_loop_orelse(break_name, node.orelse)
-                return None
         target_names = self._collect_target_names(node.target)
         if not target_names:
             raise FrontendRejection(
@@ -489,6 +508,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                             )
                             if break_name is not None:
                                 self._emit_loop_orelse(break_name, node.orelse)
+                            self._clear_exact_bindings(exact_assigned)
                             return None
         range_args = self._parse_range_call(node.iter)
         if range_args is not None:
@@ -569,12 +589,14 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                             )
                             if break_name is not None:
                                 self._emit_loop_orelse(break_name, node.orelse)
+                            self._clear_exact_bindings(exact_assigned)
                             return None
                 self._emit_range_loop(
                     node, start, stop, step, loop_break_flag=break_name
                 )
                 if break_name is not None:
                     self._emit_loop_orelse(break_name, node.orelse)
+                self._clear_exact_bindings(exact_assigned)
                 return None
             iterable = self._emit_range_obj_from_args(start, stop, step)
         else:
@@ -660,15 +682,20 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                     if break_name is not None:
                         self._emit_loop_orelse(break_name, node.orelse)
+                    self._clear_exact_bindings(exact_assigned)
                     return None
 
         self._emit_for_loop(node, iterable, loop_break_flag=break_name)
         if break_name is not None:
             self._emit_loop_orelse(break_name, node.orelse)
+        self._clear_exact_bindings(exact_assigned)
         return None
 
     @_with_module_provenance_loop_flow
     def visit_While(self, node: ast.While) -> None:
+        self._prepare_exact_class_loop_entry(node.body)
+        exact_assigned = self._collect_assigned_names(node.body + node.orelse)
+        exact_assigned |= set(self._collect_namedexpr_names(node.test))
         break_name: ScratchCell | None = None
         if node.orelse:
             break_init = MoltValue(self.next_var(), type_hint="bool")
@@ -712,6 +739,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 idx_res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[stop], result=idx_res))
                 self._store_local_value(index_name, idx_res)
+                self._clear_exact_bindings(exact_assigned)
                 return None
             acc_name = self._match_counted_while_sum(index_name, body)
             if acc_name is not None:
@@ -745,6 +773,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     idx_res = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
                     self._store_local_value(index_name, idx_res)
+                    self._clear_exact_bindings(exact_assigned)
                     return None
             const_inc = self._match_counted_while_const_increment(body)
             if const_inc is not None:
@@ -771,10 +800,12 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     idx_res = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
                     self._store_local_value(index_name, idx_res)
+                    self._clear_exact_bindings(exact_assigned)
                     return None
             assigned = self._collect_assigned_names(node.body)
             self._prepare_mutable_control_flow_bindings(assigned)
             self._emit_counted_while(index_name, bound, body)
+            self._clear_exact_bindings(exact_assigned)
             return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= set(self._collect_namedexpr_names(node.test))
@@ -824,6 +855,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         self.locals.pop(name, None)
             if break_name is not None:
                 self._emit_loop_orelse(break_name, node.orelse)
+            self._clear_exact_bindings(exact_assigned)
             return None
 
         emit_loop_body()
@@ -838,6 +870,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     self.locals.pop(name, None)
         if break_name is not None:
             self._emit_loop_orelse(break_name, node.orelse)
+        self._clear_exact_bindings(exact_assigned)
         return None
 
     def visit_Try(self, node: ast.Try) -> None:
@@ -859,6 +892,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 detail="try/else requires an except handler",
             )
             return None
+        exact_assigned = self._collect_assigned_names([node])
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
         )
@@ -912,6 +946,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             self._evict_module_control_flow_bindings(assigned)
             self._finish_module_provenance_flow(provenance_flow)
+            self._clear_exact_bindings(exact_assigned)
             return None
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
@@ -1254,6 +1289,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.block_terminated = prior_terminated
         self._evict_module_control_flow_bindings(assigned)
         self._finish_module_provenance_flow(provenance_flow)
+        self._clear_exact_bindings(exact_assigned)
         return None
 
     def visit_TryStar(self, node: ast.TryStar) -> None:
@@ -1275,6 +1311,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 detail="try*/else requires an except* handler",
             )
             return None
+        exact_assigned = self._collect_assigned_names([node])
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
         )
@@ -1364,8 +1401,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self._emit_context_unwind_to(scope, exc_val)
         self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
 
-        rest_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[exc_val], result=rest_cell))
+        rest_cell = self._emit_cell_new(exc_val)
         raised_list = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=raised_list))
         rest_slot = None
@@ -1396,25 +1432,17 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         def load_rest_cell() -> MoltValue:
             if rest_slot is None or not self.is_async():
                 return rest_cell
-            res = MoltValue(self.next_var(), type_hint="list")
+            res = MoltValue(self.next_var(), type_hint="cell")
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", rest_slot], result=res))
             return res
 
         def load_rest_value() -> MoltValue:
             cell = load_rest_cell()
-            res = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=res))
-            return res
+            return self._emit_cell_get(cell, type_hint="exception")
 
         def store_rest_value(value: MoltValue) -> None:
             cell = load_rest_cell()
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, zero, value],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, value)
 
         def load_raised() -> MoltValue:
             if raised_slot is None or not self.is_async():
@@ -1827,6 +1855,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
         self._finish_module_provenance_flow(provenance_flow)
+        self._clear_exact_bindings(exact_assigned)
         return None
 
     def visit_Raise(self, node: ast.Raise) -> None:

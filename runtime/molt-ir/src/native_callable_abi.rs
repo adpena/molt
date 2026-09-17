@@ -112,6 +112,17 @@ impl NativeCallableAbi {
         matches!(self, Self::ObjectCallargsV1)
     }
 
+    pub const fn is_python_export(self) -> bool {
+        matches!(
+            self,
+            Self::ObjectCallV1 | Self::ObjectCallargsV1 | Self::ForwardF32V1
+        )
+    }
+
+    pub const fn requires_explicit_export_arity(self) -> bool {
+        matches!(self, Self::ObjectCallV1)
+    }
+
     pub const fn requires_direct_symbol_binding(self) -> bool {
         matches!(self, Self::ForwardF32V1 | Self::PyinitModuleV1)
     }

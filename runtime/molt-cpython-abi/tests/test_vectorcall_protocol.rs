@@ -232,6 +232,39 @@ fn read_long(op: *mut PyObject) -> std::os::raw::c_long {
     unsafe { PyLong_AsLong(op) }
 }
 
+#[test]
+fn empty_vectorcall_dict_preserves_offset_scratch_address() {
+    let _g = TEST_LOCK.lock().unwrap();
+    setup();
+    unsafe extern "C" fn scratch(
+        callable: *mut PyObject,
+        args: *mut *mut PyObject,
+        nargsf: usize,
+        _names: *mut PyObject,
+    ) -> *mut PyObject {
+        if nargsf == OFFSET_BIT && !args.is_null() {
+            unsafe { *args.sub(1) = callable };
+        }
+        unsafe { PyLong_FromLong(SENTINEL_VC) }
+    }
+    let instance = make_vc_instance(true, Some(scratch), None);
+    let mut storage: [*mut PyObject; 1] = [std::ptr::null_mut(); 1];
+    let result = unsafe {
+        PyObject_VectorcallDict(
+            instance,
+            storage.as_mut_ptr().add(1),
+            OFFSET_BIT,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(read_long(result), SENTINEL_VC);
+    assert_eq!(
+        storage[0], instance,
+        "zero-length carrier must retain caller scratch"
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // #7 — PyObject_Vectorcall reads the slot AND forwards kwnames.
 // Pre-fix: `if !kwnames.is_null() { return NULL }` → bare NULL, slot never run.

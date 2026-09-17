@@ -26,6 +26,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
 )
+from molt.compiler_analysis.python_imports import _PythonAstDigestAdmission
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -63,7 +64,13 @@ def _bind_precomputed_module_import_scan(
     if digest is None:
         raise ValueError(f"cannot bind source scan: {path}")
     return _PrecomputedModuleImportScan(
-        _ModuleSourceScanAuthority(module_name, path, import_scan_mode, is_package),
+        _ModuleSourceScanAuthority(
+            module_name,
+            path,
+            import_scan_mode,
+            is_package,
+            scan.requires_runtime_package_anchor,
+        ),
         digest,
         target_python.tag,
         capability_config_digest,
@@ -83,6 +90,8 @@ def _validate_precomputed_module_import_scan(
     record.authority.validate(module_name, path)
     if (
         record.authority.mode != import_scan_mode
+        or record.authority.requires_runtime_package_anchor
+        != record.scan.requires_runtime_package_anchor
         or record.target_python_tag != target_python.tag
         or record.capability_config_digest != capability_config_digest
         or _module_source._source_content_sha256(path, path.stat())
@@ -408,15 +417,28 @@ def _discover_module_graph_from_paths(
     explicit_imports: set[str] = set()
     seen_import_names: set[str] = set()
     resolution_cache = resolver_cache or _module_resolution._ModuleResolutionCache()
-    queue: list[tuple[Path, str | None]] = [
-        (
-            path,
-            precomputed_scans_by_path[path.resolve()].authority.module_name
-            if path.resolve() in precomputed_scans_by_path
-            else None,
+    seed_entries: list[tuple[Path, str | None]] = []
+    for path in entry_paths:
+        resolved_path = path.resolve()
+        precomputed = precomputed_scans_by_path.get(resolved_path)
+        if precomputed is not None:
+            seed_entries.append((path, precomputed.authority.module_name))
+            continue
+        custody_owner_names = (
+            tuple(
+                name
+                for name, owner_path in runtime_import_custody.owners
+                if owner_path == resolved_path
+            )
+            if runtime_import_custody is not None
+            else ()
         )
-        for path in reversed(entry_paths)
-    ]
+        if custody_owner_names:
+            seed_entries.extend((path, name) for name in custody_owner_names)
+        else:
+            seed_entries.append((path, None))
+    seed_entries = list(dict.fromkeys(seed_entries))
+    queue: list[tuple[Path, str | None]] = list(reversed(seed_entries))
     queued_entries = {
         (resolution_cache.resolved_path(path), forced_name)
         for path, forced_name in queue
@@ -443,6 +465,8 @@ def _discover_module_graph_from_paths(
                             record.target_python_tag,
                             record.capability_config_digest,
                             record.scan.imports,
+                            record.scan.dynamic_relative_import_candidates,
+                            record.scan.requires_runtime_package_anchor,
                             [
                                 (name, str(source_path))
                                 for name, source_path in record.scan.source_executions
@@ -569,6 +593,8 @@ def _discover_module_graph_from_paths(
             module_name, path, import_scan_mode, is_package
         )
         imports: tuple[str, ...]
+        dynamic_relative_import_candidates: tuple[str, ...] = ()
+        requires_runtime_package_anchor = False
         source_executions: tuple[_module_import_scanner._StaticSourceExecution, ...]
         if import_admission_policy.owns_source_closure_with_native_artifact_plan(
             module_name,
@@ -594,6 +620,13 @@ def _discover_module_graph_from_paths(
                     precomputed_scan.scan.source_executions if precomputed_scan else ()
                 )
             )
+            if precomputed_scan is not None:
+                dynamic_relative_import_candidates = (
+                    precomputed_scan.scan.dynamic_relative_import_candidates
+                )
+                requires_runtime_package_anchor = (
+                    precomputed_scan.scan.requires_runtime_package_anchor
+                )
         else:
             try:
                 loaded_scan = _load_module_import_scan(
@@ -614,10 +647,23 @@ def _discover_module_graph_from_paths(
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
             imports = loaded_scan.scan.imports
+            dynamic_relative_import_candidates = (
+                loaded_scan.scan.dynamic_relative_import_candidates
+            )
+            requires_runtime_package_anchor = (
+                loaded_scan.scan.requires_runtime_package_anchor
+            )
             source_executions = tuple(
                 _module_import_scanner._StaticSourceExecution(name, source_path)
                 for name, source_path in loaded_scan.scan.source_executions
             )
+        scan_sources[module_name] = _ModuleSourceScanAuthority(
+            module_name,
+            path,
+            import_scan_mode,
+            is_package,
+            requires_runtime_package_anchor,
+        )
         for execution in source_executions:
             execution_name = (
                 execution.module_name
@@ -660,7 +706,10 @@ def _discover_module_graph_from_paths(
             if entry not in queued_entries:
                 queued_entries.add(entry)
                 queue.append((execution.source_path, execution_name))
-        for name in imports:
+        discovery_imports = tuple(
+            dict.fromkeys((*imports, *dynamic_relative_import_candidates))
+        )
+        for name in discovery_imports:
             if name in seen_import_names:
                 continue
             seen_import_names.add(name)
@@ -886,19 +935,21 @@ def _load_module_import_scan(
         )
         source_parsed = True
     assert tree is not None
-    imports = resolution_cache.collect_imports(
+    ast_digest_admission = _PythonAstDigestAdmission(tree)
+    import_projection = resolution_cache.collect_graph_imports(
         path,
         tree,
-        collector=_module_import_scanner._collect_imports,
+        collector=_module_import_scanner._collect_imports_for_graph,
         target_python=target_python,
         module_name=module_name,
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         runtime_import_custody=runtime_import_custody,
+        ast_digest_admission=ast_digest_admission,
     )
     if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
-        imports = _module_import_scanner._expand_imports_with_static_package_all_star_children(
-            imports,
+        import_projection = _module_import_scanner._expand_imports_with_static_package_all_star_children_for_graph(
+            import_projection,
             tree,
             module_name=module_name,
             is_package=is_package,
@@ -910,6 +961,7 @@ def _load_module_import_scan(
             target_python=target_python,
             runtime_import_custody=runtime_import_custody,
             source_path=path.resolve(),
+            ast_digest_admission=ast_digest_admission,
         )
     assert tree is not None
     executions = (
@@ -921,13 +973,17 @@ def _load_module_import_scan(
             source_path=path,
             import_scan_mode=import_scan_mode,
             module_name=module_name,
+            target_python=target_python,
+            ast_digest_admission=ast_digest_admission,
         )
     )
     scan = _module_graph_cache._PersistedImportScan(
-        tuple(imports),
+        import_projection.imports,
         tuple(
             (execution.module_name, execution.source_path) for execution in executions
         ),
+        import_projection.dynamic_relative_import_candidates,
+        import_projection.requires_runtime_package_anchor,
     )
     if project_root is not None:
         with contextlib.suppress(OSError):

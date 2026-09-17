@@ -89,16 +89,6 @@ SERIALIZATION_MODULES = (
     SERIALIZATION_DIR / "serialization_object_attr_ops.py",
 )
 SSA_RS = OP_KIND_TIR_SRC / "ssa.rs"
-LLVM_RS = ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering.rs"
-LLVM_RUNTIME_IMPORT_ABI_FACTS_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
-)
-LLVM_RUNTIME_IMPORT_FIXED_RS = (
-    ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/fixed.rs"
-)
-LLVM_RUNTIME_IMPORT_ABI_RS = (
-    ROOT / "runtime/molt-backend-native/src/runtime_import_abi.rs"
-)
 LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
 )
@@ -390,7 +380,7 @@ def extract_matches_macro(path: Path, fn: str) -> list[str]:
     return list(dict.fromkeys(_string_literals(block)))
 
 
-def extract_llvm_preserved_op_kinds() -> set[str]:
+def extract_llvm_preserved_op_kinds(root: Path = ROOT) -> set[str]:
     """LLVM dedicated preserved-op coverage from handler-owned slices.
 
     `preserved_ops.rs` is only a dispatcher. The source of truth for dedicated
@@ -400,6 +390,7 @@ def extract_llvm_preserved_op_kinds() -> set[str]:
     """
     kinds: set[str] = set()
     for path, _, const_name in _llvm_preserved_handler_slices():
+        path = root / path.relative_to(ROOT)
         kinds.update(_extract_required_rust_str_slice(path, const_name))
     return kinds
 
@@ -574,13 +565,14 @@ def _static_kind_strings(expr: ast.expr) -> set[str] | None:
     return None
 
 
-def extract_frontend_kinds() -> FrontendKinds:
+def extract_frontend_kinds(root: Path = ROOT) -> FrontendKinds:
     fk = FrontendKinds()
     for path in SERIALIZATION_MODULES:
+        path = root / path.relative_to(ROOT)
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src, filename=str(path))
         _attach_parents(tree)
-        rel_path = path.relative_to(ROOT).as_posix()
+        rel_path = path.relative_to(root).as_posix()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Dict):
                 continue
@@ -598,6 +590,16 @@ def extract_frontend_kinds() -> FrontendKinds:
                 if isinstance(v, ast.Attribute) and v.attr == "kind":
                     # bare `op.kind` under a guard with (lowercase) literals
                     resolved = set(guard) if guard else None
+                elif (
+                    isinstance(v, ast.Call)
+                    and not v.args
+                    and not v.keywords
+                    and isinstance(v.func, ast.Attribute)
+                    and v.func.attr == "lower"
+                    and isinstance(v.func.value, ast.Attribute)
+                    and v.func.value.attr == "kind"
+                ):
+                    resolved = {kind.lower() for kind in guard} if guard else None
                 elif isinstance(v, ast.Name) and func is not None:
                     resolved = _resolve_name_assignment(func, v.id, guard)
                 if resolved:
@@ -618,13 +620,6 @@ class RuntimeExtern:
     params: tuple[str, ...]
     return_ty: str
     path: Path
-
-
-@dataclass(frozen=True)
-class ClassifiedRuntimeImport:
-    symbol: str
-    param_count: int
-    return_abi: str
 
 
 def extract_runtime_type_aliases(src_root: Path) -> dict[str, str]:
@@ -664,9 +659,10 @@ def _normalize_runtime_type(ty: str, aliases: dict[str, str]) -> str:
 def extract_runtime_molt_externs() -> dict[str, RuntimeExtern]:
     """All `pub (unsafe)? extern "C" fn molt_*` exports in runtime leaf crates.
 
-    The LLVM generic fallback may only claim symbols whose ABI is positional
-    boxed integers; pointer/string/function-pointer ABIs require dedicated
-    lowering arms and must stay red in this audit. Runtime symbols now live in
+    This scan provides availability and machine-shape evidence only. Generic
+    fallback eligibility additionally requires normalized boxed semantics;
+    raw integer/pointer/function-pointer helpers need dedicated lowering.
+    Runtime symbols now live in
     leaf crates (`molt-runtime-math`, `molt-stdlib-text`, ...), so scanning only
     the root runtime crate would recreate the pre-decomposition monolith.
     """
@@ -698,232 +694,33 @@ def extract_runtime_molt_symbols() -> set[str]:
     return set(extract_runtime_molt_externs())
 
 
-def _runtime_import_array_body(path: Path, const_name: str) -> str:
-    text = path.read_text(encoding="utf-8")
-    m = re.search(
-        re.escape(const_name) + r"\s*:\s*&\[[^\]]+\]\s*=\s*&\[",
-        text,
-    )
-    if m is None:
-        raise RustMatchParseError(f"{const_name} array not found")
-    start = m.end()
-    depth = 1
-    i = start
-    while i < len(text) and depth > 0:
-        if text[i] == "[":
-            depth += 1
-        elif text[i] == "]":
-            depth -= 1
-        i += 1
-    if depth != 0:
-        raise RustMatchParseError(f"{const_name} array is unbalanced")
-    return text[start : i - 1]
+def extract_llvm_boxed_runtime_abis():
+    """Read the generator's normalized object-value contract, not machine tables."""
+    from tools.llvm_runtime_abi_audit import runtime_boxed_abi_facts
+
+    return {fact.symbol: fact for fact in runtime_boxed_abi_facts().values()}
 
 
-def extract_runtime_import_signature_constants() -> dict[str, ClassifiedRuntimeImport]:
-    """Resolve shared RuntimeImportSignature constants used by LLVM import tables."""
-    text = LLVM_RUNTIME_IMPORT_ABI_RS.read_text(encoding="utf-8")
-    out: dict[str, ClassifiedRuntimeImport] = {}
-    for const, symbol, param_count, return_abi in re.findall(
-        r"pub\(crate\)\s+const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
-        r"RuntimeImportSignature\s*=\s*runtime_sig\(\s*"
-        r'"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)\s*;',
-        text,
-        re.S,
-    ):
-        out[const] = ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
-    return out
-
-
-def _insert_classified_runtime_import(
-    out: dict[str, ClassifiedRuntimeImport], classified: ClassifiedRuntimeImport
-) -> None:
-    existing = out.get(classified.symbol)
-    if existing is not None and existing != classified:
-        raise RustMatchParseError(
-            "conflicting LLVM runtime import ABI entries for "
-            f"{classified.symbol}: {existing} vs {classified}"
+def runtime_extern_boxed_shape_matches(ext: RuntimeExtern, boxed) -> bool:
+    """Shape checking is secondary to membership in the boxed semantic authority."""
+    return (
+        len(ext.params) == boxed.arity
+        and all(ty in {"u64", "i64"} for ty in ext.params)
+        and (
+            (boxed.return_abi == "I64" and ext.return_ty in {"u64", "i64"})
+            or (boxed.return_abi == "Void" and ext.return_ty == "()")
         )
-    out[classified.symbol] = classified
-
-
-def _extract_conservative_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
-    body = _runtime_import_array_body(
-        LLVM_RUNTIME_IMPORT_ABI_FACTS_RS, "CONSERVATIVE_RUNTIME_IMPORTS"
-    )
-    constants = extract_runtime_import_signature_constants()
-    out: dict[str, ClassifiedRuntimeImport] = {}
-    for symbol, param_count, return_abi in re.findall(
-        r'runtime_sig\(\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*RuntimeReturnAbi::(I64|Void)\s*\)',
-        body,
-        re.S,
-    ):
-        _insert_classified_runtime_import(
-            out, ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
-        )
-    for line in body.splitlines():
-        stripped = line.split("//", maxsplit=1)[0].strip()
-        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)\s*,", stripped)
-        if match is None:
-            continue
-        const = match.group(1)
-        classified = constants.get(const)
-        if classified is None:
-            raise RustMatchParseError(
-                f"CONSERVATIVE_RUNTIME_IMPORTS references unknown constant {const}"
-            )
-        _insert_classified_runtime_import(out, classified)
-    return out
-
-
-def _extract_fixed_boxed_runtime_imports() -> dict[str, ClassifiedRuntimeImport]:
-    """Boxed fixed imports that are also valid generic fallback ABI facts.
-
-    Custom fixed declarations such as `(ptr, i64, ptr) -> i32` are intentionally
-    excluded: the generic preserved-op fallback can emit only all-i64 parameters
-    and i64/void returns.
-    """
-    body = _runtime_import_array_body(
-        LLVM_RUNTIME_IMPORT_FIXED_RS, "FIXED_RUNTIME_IMPORTS"
-    )
-    constants = extract_runtime_import_signature_constants()
-    out: dict[str, ClassifiedRuntimeImport] = {}
-    for ctor, symbol, param_count in re.findall(
-        r'\b(i64_ret|void_ret)\(\s*"([^"]+)"\s*,\s*(\d+)\s*,',
-        body,
-        re.S,
-    ):
-        return_abi = "I64" if ctor == "i64_ret" else "Void"
-        _insert_classified_runtime_import(
-            out, ClassifiedRuntimeImport(symbol, int(param_count), return_abi)
-        )
-    for ctor, const, param_count in re.findall(
-        r"\b(i64_ret|void_ret)\(\s*([A-Z][A-Z0-9_]*)\.name\s*,\s*(\d+)\s*,",
-        body,
-        re.S,
-    ):
-        classified = constants.get(const)
-        if classified is None:
-            raise RustMatchParseError(
-                f"FIXED_RUNTIME_IMPORTS references unknown constant {const}"
-            )
-        expected_return = "I64" if ctor == "i64_ret" else "Void"
-        if classified.return_abi != expected_return or classified.param_count != int(
-            param_count
-        ):
-            raise RustMatchParseError(
-                f"FIXED_RUNTIME_IMPORTS disagrees with {const}: "
-                f"{classified} vs {ctor}/{param_count}"
-            )
-        _insert_classified_runtime_import(out, classified)
-    return out
-
-
-def extract_llvm_runtime_import_abis() -> dict[str, ClassifiedRuntimeImport]:
-    """Runtime symbols the LLVM generic preserved-op fallback may declare.
-
-    Fixed boxed imports own exact declarations and stronger attributes;
-    conservative imports own the residual on-demand fallback surface. The
-    generic preserved-op fallback may use either authority when the ABI is
-    all-i64 parameters plus i64/void return.
-    """
-    out: dict[str, ClassifiedRuntimeImport] = {}
-    for source in (
-        _extract_fixed_boxed_runtime_imports(),
-        _extract_conservative_runtime_imports(),
-    ):
-        for classified in source.values():
-            _insert_classified_runtime_import(out, classified)
-    return out
-
-
-_BOXED_RUNTIME_TYPES = {"u64", "i64"}
-
-
-def _is_boxed_runtime_type(ty: str) -> bool:
-    return ty in _BOXED_RUNTIME_TYPES
-
-
-def runtime_extern_has_boxed_params(ext: RuntimeExtern, arity: int) -> bool:
-    return len(ext.params) == arity and all(
-        _is_boxed_runtime_type(t) for t in ext.params
     )
 
 
-def runtime_extern_is_boxed_i64_fallback_eligible(ext: RuntimeExtern) -> bool:
-    return all(
-        _is_boxed_runtime_type(t) for t in ext.params
-    ) and _is_boxed_runtime_type(ext.return_ty)
+def llvm_boxed_runtime_abi_mismatches() -> list[str]:
+    from tools.llvm_runtime_abi_audit import boxed_runtime_export_issues
 
-
-def runtime_extern_classified_fallback_eligible(
-    ext: RuntimeExtern, classified: ClassifiedRuntimeImport
-) -> bool:
-    if len(ext.params) != classified.param_count:
-        return False
-    if not all(_is_boxed_runtime_type(t) for t in ext.params):
-        return False
-    if classified.return_abi == "I64":
-        return _is_boxed_runtime_type(ext.return_ty)
-    if classified.return_abi == "Void":
-        return ext.return_ty == "()"
-    return False
-
-
-def runtime_extern_is_boxed_void_fallback_eligible(
-    ext: RuntimeExtern, arity: int
-) -> bool:
-    return ext.return_ty == "()" and runtime_extern_has_boxed_params(ext, arity)
-
-
-def llvm_void_runtime_abi_mismatches(
-    void_runtime_ops: dict[str, tuple[str, int]],
-    runtime_externs: dict[str, RuntimeExtern],
-) -> list[str]:
-    out: list[str] = []
-    for kind, (symbol, arity) in sorted(void_runtime_ops.items()):
-        ext = runtime_externs.get(symbol)
-        if ext is None:
-            out.append(f"{kind}:{symbol}:missing-extern")
-            continue
-        if ext.return_ty != "()":
-            out.append(f"{kind}:{symbol}:return={ext.return_ty}")
-            continue
-        if len(ext.params) != arity:
-            out.append(f"{kind}:{symbol}:arity={arity}:extern_params={len(ext.params)}")
-            continue
-        bad_params = [ty for ty in ext.params if not _is_boxed_runtime_type(ty)]
-        if bad_params:
-            out.append(f"{kind}:{symbol}:non-boxed-params={','.join(bad_params)}")
-    return out
-
-
-def extract_llvm_void_runtime_ops() -> dict[str, tuple[str, int]]:
-    src = LLVM_RS.read_text(encoding="utf-8")
-    m = re.search(
-        r"PRESERVED_VOID_RUNTIME_OPS\s*:\s*&\[\(&str,\s*&str,\s*usize\)\]\s*=\s*&\[",
-        src,
-    )
-    if m is None:
-        return {}
-    start = m.end()
-    depth = 1
-    i = start
-    while i < len(src) and depth > 0:
-        c = src[i]
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-        i += 1
-    block = src[start : i - 1]
-    out: dict[str, tuple[str, int]] = {}
-    for kind, symbol, arity in re.findall(
-        r'\(\s*"([a-z0-9_]+)"\s*,\s*"([A-Za-z0-9_]+)"\s*,\s*(\d+)\s*\)',
-        block,
-    ):
-        out[kind] = (symbol, int(arity))
-    return out
+    return [
+        f"{issue.problem}:{issue.symbol}/{issue.classified_arity}:"
+        f"expected={issue.expected}:actual={issue.actual}"
+        for issue in boxed_runtime_export_issues()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1262,11 +1059,11 @@ def structural_kinds_from_registry(data: dict) -> set[str]:
     return out
 
 
-def extract_vec_reduction_ops() -> set[str]:
+def extract_vec_reduction_ops(path: Path = LLVM_VEC_REDUCTIONS_RS) -> set[str]:
     """The LLVM `VEC_REDUCTION_OPS` exact table (kind, arity). The vec-* family is
     lowered on LLVM by `vec_reduction_runtime_symbol(kind)` BEFORE the dedicated
     `match`, so membership here is real LLVM coverage the arm-extractor misses."""
-    src = LLVM_VEC_REDUCTIONS_RS.read_text(encoding="utf-8")
+    src = path.read_text(encoding="utf-8")
     m = re.search(r"VEC_REDUCTION_OPS\s*:\s*&\[\(&str, usize\)\]\s*=\s*&\[", src)
     if m is None:
         return set()
@@ -1347,7 +1144,7 @@ class AuditResult:
     no_heap_move: set[str]
     runtime_symbols: set[str]
     structural_kinds: set[str]
-    llvm_void_runtime_abi_mismatch: list[str]
+    llvm_boxed_runtime_abi_mismatch: list[str]
     llvm_preserved_handler_routing_drift: list[str]
     native_handler_routing_drift: list[str]
 
@@ -1397,11 +1194,11 @@ class AuditResult:
             "mapped_never_emitted": [],
             # D6 — dead FreshValue allow-list entry the frontend never emits.
             "freshvalue_never_emitted": [],
-            # D7 — explicit LLVM void-runtime fallback table drift. These entries
-            # are backend source data, so a missing symbol, wrong return, wrong
-            # arity, or non-boxed parameter must fail the audit before emission
-            # reaches the stale ABI row.
-            "llvm_void_runtime_abi_mismatch": list(self.llvm_void_runtime_abi_mismatch),
+            # D7 — normalized boxed-call contracts must match runtime export
+            # shapes, including both owned-value and void results.
+            "llvm_boxed_runtime_abi_mismatch": list(
+                self.llvm_boxed_runtime_abi_mismatch
+            ),
             "llvm_preserved_handler_routing_drift": list(
                 self.llvm_preserved_handler_routing_drift
             ),
@@ -1508,12 +1305,12 @@ def run_audit() -> AuditResult:
     inert = set(registry.get("classifier_inert_marker", []))
     transparent_alias = set(registry.get("classifier_transparent_alias", []))
     no_heap = set(registry.get("classifier_no_heap_move", []))
-    # LLVM arms, the vec-reduction table, and runtime extern ABIs are NOT
-    # generated — extract them from source as before.
+    # Dedicated routes remain handler-owned. Generic boxed-call eligibility
+    # comes only from the normalized ABI projection shared with the generator.
     llvm_arms = extract_llvm_preserved_op_kinds()
     llvm_vec = extract_vec_reduction_ops()
     runtime_externs = extract_runtime_molt_externs()
-    runtime_import_abis = extract_llvm_runtime_import_abis()
+    runtime_import_abis = extract_llvm_boxed_runtime_abis()
     runtime_syms = set(runtime_externs)
     classified_runtime_fallback = {
         symbol.removeprefix("molt_")
@@ -1521,21 +1318,11 @@ def run_audit() -> AuditResult:
         if (classified := runtime_import_abis.get(symbol)) is not None
         if symbol.startswith("molt_")
         and symbol.removeprefix("molt_") not in llvm_arms
-        and runtime_extern_classified_fallback_eligible(ext, classified)
+        and symbol.removeprefix("molt_") not in llvm_vec
+        and runtime_extern_boxed_shape_matches(ext, classified)
     }
-    void_runtime_ops = extract_llvm_void_runtime_ops()
-    void_runtime_mismatches = llvm_void_runtime_abi_mismatches(
-        void_runtime_ops, runtime_externs
-    )
-    llvm_runtime_fallback = {
-        kind
-        for kind, (symbol, arity) in void_runtime_ops.items()
-        if symbol in runtime_externs
-        and runtime_extern_is_boxed_void_fallback_eligible(
-            runtime_externs[symbol], arity
-        )
-    }
-    llvm_runtime_fallback |= classified_runtime_fallback
+    boxed_runtime_mismatches = llvm_boxed_runtime_abi_mismatches()
+    llvm_runtime_fallback = classified_runtime_fallback
     native_arms = extract_native_simpleir_arm_kinds()
     native_routing = extract_native_routing_slice_kinds()
     llvm_preserved_handler_routing_drift = (
@@ -1601,7 +1388,7 @@ def run_audit() -> AuditResult:
         no_heap_move=no_heap,
         runtime_symbols=runtime_syms,
         structural_kinds=structural,
-        llvm_void_runtime_abi_mismatch=void_runtime_mismatches,
+        llvm_boxed_runtime_abi_mismatch=boxed_runtime_mismatches,
         llvm_preserved_handler_routing_drift=llvm_preserved_handler_routing_drift,
         native_handler_routing_drift=native_handler_routing_drift,
     )

@@ -9,18 +9,36 @@
 //! hooks (`number_binary_op` / `number_unary_op` / `number_power`).
 
 use crate::abi_types::{Py_ssize_t, PyNumberMethods, PyObject, PyTypeObject};
-use crate::bridge::{ResolvedPyObject, resolve_pyobject, resolved_molt_handle};
+use crate::bridge::{ResolvedPyObject, observe_pyobject};
 use crate::hooks::{NumberBinaryOp, NumberUnaryOp};
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
 
-/// Helper: resolve a PyObject to its Molt bits.
-fn resolve_bits(op: *mut PyObject) -> Option<u64> {
+/// Observe one numeric operand exactly once. A non-NULL `None` result is a
+/// failed managed-view commit with its original exception already pending;
+/// NULL arguments get BadInternalCall only when no earlier error exists.
+unsafe fn observe_numeric_operand(op: *mut PyObject) -> Option<ResolvedPyObject> {
     if op.is_null() {
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        }
         return None;
     }
-    resolved_molt_handle(op).map(|value| value.bits())
+    observe_pyobject(op)
+}
+
+unsafe fn observe_numeric_pair(
+    a: *mut PyObject,
+    b: *mut PyObject,
+) -> Option<(ResolvedPyObject, ResolvedPyObject)> {
+    let first = unsafe { observe_numeric_operand(a) }?;
+    let second = if same_protocol_identity(a, b) {
+        first
+    } else {
+        unsafe { observe_numeric_operand(b) }?
+    };
+    Some((first, second))
 }
 
 struct ProtocolArg {
@@ -31,24 +49,12 @@ struct ProtocolArg {
 impl Drop for ProtocolArg {
     fn drop(&mut self) {
         if self.owned && !self.ptr.is_null() {
-            unsafe {
-                let rc = (*self.ptr).ob_refcnt;
-                if rc > 1 {
-                    (*self.ptr).ob_refcnt = rc - 1;
-                } else {
-                    let ty = (*self.ptr).ob_type;
-                    if !ty.is_null()
-                        && let Some(dealloc) = (*ty).tp_dealloc
-                    {
-                        dealloc(self.ptr);
-                    }
-                }
-            }
+            unsafe { crate::api::errors::release_preserving_error(&[self.ptr]) };
         }
     }
 }
 
-unsafe fn protocol_arg(op: *mut PyObject) -> Option<ProtocolArg> {
+unsafe fn protocol_arg(op: *mut PyObject, observed: ResolvedPyObject) -> Option<ProtocolArg> {
     if !op.is_null() {
         let physical = unsafe { (*op).ob_type };
         if std::ptr::eq(physical, &raw const crate::abi_types::PyLong_Type)
@@ -62,8 +68,8 @@ unsafe fn protocol_arg(op: *mut PyObject) -> Option<ProtocolArg> {
             });
         }
     }
-    let arg = match resolve_pyobject(op) {
-        Some(ResolvedPyObject::ManagedMolt(handle)) => {
+    let arg = match observed {
+        ResolvedPyObject::ManagedMolt(handle) => {
             if crate::api::numbers::is_numeric_handle(handle.bits()) {
                 let (ptr, owned) = unsafe {
                     crate::api::numbers::materialize_numeric_borrowed_handle(handle.bits())
@@ -76,7 +82,7 @@ unsafe fn protocol_arg(op: *mut PyObject) -> Option<ProtocolArg> {
                 }
             }
         }
-        _ => ProtocolArg {
+        ResolvedPyObject::Foreign => ProtocolArg {
             ptr: op,
             owned: false,
         },
@@ -95,37 +101,39 @@ fn same_protocol_identity(a: *mut PyObject, b: *mut PyObject) -> bool {
     a == b
 }
 
-unsafe fn protocol_pair(a: *mut PyObject, b: *mut PyObject) -> Option<(ProtocolArg, ProtocolArg)> {
-    let first = unsafe { protocol_arg(a) }?;
+unsafe fn protocol_pair_observed(
+    a: *mut PyObject,
+    first_observed: ResolvedPyObject,
+    b: *mut PyObject,
+    second_observed: ResolvedPyObject,
+) -> Option<(ProtocolArg, ProtocolArg)> {
+    let first = unsafe { protocol_arg(a, first_observed) }?;
     let second = if same_protocol_identity(a, b) {
         ProtocolArg {
             ptr: first.ptr,
             owned: false,
         }
     } else {
-        unsafe { protocol_arg(b) }?
+        unsafe { protocol_arg(b, second_observed) }?
     };
     Some((first, second))
 }
 
 /// Ensure a NULL return carries a set exception, as the CPython ABI requires.
 ///
-/// The runtime numeric authority sets a pending exception on failure. If a
-/// numeric hook returned 0 (error) but no runtime exception is pending — e.g.
-/// the runtime hooks were never registered (pre-init/test) — we fail closed with
-/// a SystemError rather than returning a bare NULL. A NULL PyObject* without an
-/// exception is an ABI violation that corrupts the caller's error handling.
+/// Numeric hooks return a typed Error/Missing status and normally leave the
+/// exact exception in either the C or runtime channel. Preserve an existing C
+/// error, transfer a runtime error losslessly, and synthesize SystemError only
+/// when neither authority supplied one. A bare NULL violates the C-API contract.
 unsafe fn ensure_exception_set() {
-    let pending = crate::hooks::hooks()
-        .map(|h| unsafe { (h.exception_pending)() } != 0)
-        .unwrap_or(false);
-    if !pending {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"PyNumber operation failed: runtime numeric authority unavailable".as_ptr(),
-            );
-        }
+    if crate::api::errors::transfer_runtime_pending_to_current() {
+        return;
+    }
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
+            c"PyNumber operation failed: runtime numeric authority unavailable".as_ptr(),
+        );
     }
 }
 
@@ -177,6 +185,7 @@ pub(crate) enum InPlaceSlot {
     Or,
     FloorDivide,
     TrueDivide,
+    MatrixMultiply,
 }
 
 unsafe fn number_methods(o: *mut PyObject) -> *mut PyNumberMethods {
@@ -232,6 +241,7 @@ unsafe fn inplace_slot(o: *mut PyObject, slot: InPlaceSlot) -> *mut c_void {
             InPlaceSlot::Or => (*methods).nb_inplace_or,
             InPlaceSlot::FloorDivide => (*methods).nb_inplace_floor_divide,
             InPlaceSlot::TrueDivide => (*methods).nb_inplace_true_divide,
+            InPlaceSlot::MatrixMultiply => (*methods).nb_inplace_matrix_multiply,
         }
     }
 }
@@ -357,6 +367,15 @@ unsafe fn power_slot(o: *mut PyObject) -> *mut c_void {
     }
 }
 
+unsafe fn inplace_power_slot(o: *mut PyObject) -> *mut c_void {
+    let methods = unsafe { number_methods(o) };
+    if methods.is_null() {
+        ptr::null_mut()
+    } else {
+        unsafe { (*methods).nb_inplace_power }
+    }
+}
+
 unsafe fn call_ternary_func(
     slot: *mut c_void,
     o1: *mut PyObject,
@@ -414,35 +433,125 @@ unsafe fn foreign_power(o1: *mut PyObject, o2: *mut PyObject, o3: *mut PyObject)
     unsafe { binop_type_error(o1, o2, "** or pow()") }
 }
 
+unsafe fn foreign_inplace_power(
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+    o3: *mut PyObject,
+) -> *mut PyObject {
+    let slot = unsafe { inplace_power_slot(o1) };
+    if !slot.is_null() {
+        let result = unsafe { call_ternary_func(slot, o1, o2, o3) };
+        if result.is_null() || !is_not_implemented(result) {
+            return result;
+        }
+        unsafe { discard_not_implemented(result) };
+    }
+    unsafe { foreign_power(o1, o2, o3) }
+}
+
+unsafe fn number_power(
+    o1: *mut PyObject,
+    o2: *mut PyObject,
+    o3: *mut PyObject,
+    inplace: bool,
+) -> *mut PyObject {
+    let Some((base, exponent)) = (unsafe { observe_numeric_pair(o1, o2) }) else {
+        return ptr::null_mut();
+    };
+    let modulus = if o3.is_null() {
+        None
+    } else if same_protocol_identity(o1, o3) {
+        Some(base)
+    } else if same_protocol_identity(o2, o3) {
+        Some(exponent)
+    } else {
+        let Some(value) = (unsafe { observe_numeric_operand(o3) }) else {
+            return ptr::null_mut();
+        };
+        Some(value)
+    };
+
+    if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) = (base, exponent) {
+        let managed_modulus = match modulus {
+            None => Some(MoltObject::none().bits()),
+            Some(ResolvedPyObject::ManagedMolt(value)) => Some(value.bits()),
+            Some(ResolvedPyObject::Foreign) => None,
+        };
+        if let Some(mod_bits) = managed_modulus {
+            let h = crate::hooks::hooks_or_stubs();
+            let result = unsafe { (h.number_power)(a.bits(), b.bits(), mod_bits) };
+            return unsafe { pyobj_from_result(result) };
+        }
+    }
+
+    let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, base, o2, exponent) }) else {
+        return ptr::null_mut();
+    };
+    let p3 = if o3.is_null() {
+        ProtocolArg {
+            ptr: &raw mut crate::abi_types::Py_None,
+            owned: false,
+        }
+    } else if same_protocol_identity(o1, o3) {
+        ProtocolArg {
+            ptr: p1.ptr,
+            owned: false,
+        }
+    } else if same_protocol_identity(o2, o3) {
+        ProtocolArg {
+            ptr: p2.ptr,
+            owned: false,
+        }
+    } else {
+        let Some(observed) = modulus else {
+            unreachable!("non-NULL modulus observation missing");
+        };
+        let Some(value) = (unsafe { protocol_arg(o3, observed) }) else {
+            return ptr::null_mut();
+        };
+        value
+    };
+    if inplace {
+        unsafe { foreign_inplace_power(p1.ptr, p2.ptr, p3.ptr) }
+    } else {
+        unsafe { foreign_power(p1.ptr, p2.ptr, p3.ptr) }
+    }
+}
+
+fn binary_protocol(op: NumberBinaryOp) -> (BinarySlot, &'static str) {
+    match op {
+        NumberBinaryOp::Add => (BinarySlot::Add, "+"),
+        NumberBinaryOp::Subtract => (BinarySlot::Subtract, "-"),
+        NumberBinaryOp::Multiply => (BinarySlot::Multiply, "*"),
+        NumberBinaryOp::TrueDivide => (BinarySlot::TrueDivide, "/"),
+        NumberBinaryOp::FloorDivide => (BinarySlot::FloorDivide, "//"),
+        NumberBinaryOp::Remainder => (BinarySlot::Remainder, "%"),
+        NumberBinaryOp::Lshift => (BinarySlot::Lshift, "<<"),
+        NumberBinaryOp::Rshift => (BinarySlot::Rshift, ">>"),
+        NumberBinaryOp::And => (BinarySlot::And, "&"),
+        NumberBinaryOp::Or => (BinarySlot::Or, "|"),
+        NumberBinaryOp::Xor => (BinarySlot::Xor, "^"),
+        NumberBinaryOp::MatrixMultiply => (BinarySlot::MatrixMultiply, "@"),
+    }
+}
+
 unsafe fn inplace_binary_op(
     inplace: InPlaceSlot,
-    binary: BinarySlot,
+    op: NumberBinaryOp,
     op_name: &str,
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    if resolve_bits(o1).is_some() && resolve_bits(o2).is_some() {
-        return unsafe {
-            match binary {
-                BinarySlot::Add => PyNumber_Add(o1, o2),
-                BinarySlot::Subtract => PyNumber_Subtract(o1, o2),
-                BinarySlot::Multiply => PyNumber_Multiply(o1, o2),
-                BinarySlot::Remainder => PyNumber_Remainder(o1, o2),
-                BinarySlot::Lshift => PyNumber_Lshift(o1, o2),
-                BinarySlot::Rshift => PyNumber_Rshift(o1, o2),
-                BinarySlot::And => PyNumber_And(o1, o2),
-                BinarySlot::Xor => PyNumber_Xor(o1, o2),
-                BinarySlot::Or => PyNumber_Or(o1, o2),
-                BinarySlot::FloorDivide => PyNumber_FloorDivide(o1, o2),
-                BinarySlot::TrueDivide => PyNumber_TrueDivide(o1, o2),
-                BinarySlot::Divmod | BinarySlot::MatrixMultiply => unreachable!(),
-            }
-        };
-    }
-    let Some((p1, p2)) = (unsafe { protocol_pair(o1, o2) }) else {
+    let Some((left, right)) = (unsafe { observe_numeric_pair(o1, o2) }) else {
         return ptr::null_mut();
     };
-    let result = unsafe { foreign_binary_iop1(inplace, binary, p1.ptr, p2.ptr) };
+    if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) = (left, right) {
+        return unsafe { managed_binary_op(op, a.bits(), b.bits()) };
+    }
+    let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, left, o2, right) }) else {
+        return ptr::null_mut();
+    };
+    let result = unsafe { foreign_binary_iop1(inplace, binary_protocol(op).0, p1.ptr, p2.ptr) };
     if is_not_implemented(result) {
         unsafe { discard_not_implemented(result) };
         return unsafe { binop_type_error(p1.ptr, p2.ptr, op_name) };
@@ -450,68 +559,65 @@ unsafe fn inplace_binary_op(
     result
 }
 
-/// Dispatch a binary numeric op through the runtime authority.
-unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    let (Some(a), Some(b)) = (resolve_bits(o1), resolve_bits(o2)) else {
-        let (slot, op_name) = match op {
-            NumberBinaryOp::Add => (BinarySlot::Add, "+"),
-            NumberBinaryOp::Subtract => (BinarySlot::Subtract, "-"),
-            NumberBinaryOp::Multiply => (BinarySlot::Multiply, "*"),
-            NumberBinaryOp::TrueDivide => (BinarySlot::TrueDivide, "/"),
-            NumberBinaryOp::FloorDivide => (BinarySlot::FloorDivide, "//"),
-            NumberBinaryOp::Remainder => (BinarySlot::Remainder, "%"),
-            NumberBinaryOp::Lshift => (BinarySlot::Lshift, "<<"),
-            NumberBinaryOp::Rshift => (BinarySlot::Rshift, ">>"),
-            NumberBinaryOp::And => (BinarySlot::And, "&"),
-            NumberBinaryOp::Or => (BinarySlot::Or, "|"),
-            NumberBinaryOp::Xor => (BinarySlot::Xor, "^"),
-            NumberBinaryOp::MatrixMultiply => (BinarySlot::MatrixMultiply, "@"),
-        };
-        let Some((p1, p2)) = (unsafe { protocol_pair(o1, o2) }) else {
-            return ptr::null_mut();
-        };
-        return unsafe { foreign_binary_op(slot, op_name, p1.ptr, p2.ptr) };
-    };
+unsafe fn managed_binary_op(op: NumberBinaryOp, a: u64, b: u64) -> *mut PyObject {
     let h = crate::hooks::hooks_or_stubs();
     let result = unsafe { (h.number_binary_op)(op as u32, a, b) };
     unsafe { pyobj_from_result(result) }
 }
 
-/// Dispatch a unary numeric op through the runtime authority.
-unsafe fn unary_op(op: NumberUnaryOp, o: *mut PyObject) -> *mut PyObject {
-    let Some(a) = resolve_bits(o) else {
-        let methods = unsafe { number_methods(o) };
-        let (slot, op_name) = if methods.is_null() {
-            (ptr::null_mut(), "")
-        } else {
-            unsafe {
-                match op {
-                    NumberUnaryOp::Negative => ((*methods).nb_negative, "unary -"),
-                    NumberUnaryOp::Positive => ((*methods).nb_positive, "unary +"),
-                    NumberUnaryOp::Absolute => ((*methods).nb_absolute, "abs()"),
-                    NumberUnaryOp::Invert => ((*methods).nb_invert, "unary ~"),
-                }
-            }
-        };
-        if !slot.is_null() {
-            let func: UnaryFunc = unsafe { std::mem::transmute(slot) };
-            return unsafe { func(o) };
-        }
-        let message = format!("bad operand type for {op_name}: '{}'", unsafe {
-            type_name_of(o)
-        });
-        let message = std::ffi::CString::new(message).expect("unary error contains no NUL");
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-                message.as_ptr(),
-            )
-        };
+/// Dispatch a binary numeric op through the runtime authority.
+unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
+    let Some((left, right)) = (unsafe { observe_numeric_pair(o1, o2) }) else {
         return ptr::null_mut();
     };
-    let h = crate::hooks::hooks_or_stubs();
-    let result = unsafe { (h.number_unary_op)(op as u32, a) };
-    unsafe { pyobj_from_result(result) }
+    if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) = (left, right) {
+        return unsafe { managed_binary_op(op, a.bits(), b.bits()) };
+    }
+    let (slot, op_name) = binary_protocol(op);
+    let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, left, o2, right) }) else {
+        return ptr::null_mut();
+    };
+    unsafe { foreign_binary_op(slot, op_name, p1.ptr, p2.ptr) }
+}
+
+/// Dispatch a unary numeric op through the runtime authority.
+unsafe fn unary_op(op: NumberUnaryOp, o: *mut PyObject) -> *mut PyObject {
+    let Some(observed) = (unsafe { observe_numeric_operand(o) }) else {
+        return ptr::null_mut();
+    };
+    if let ResolvedPyObject::ManagedMolt(value) = observed {
+        let h = crate::hooks::hooks_or_stubs();
+        let result = unsafe { (h.number_unary_op)(op as u32, value.bits()) };
+        return unsafe { pyobj_from_result(result) };
+    }
+    let methods = unsafe { number_methods(o) };
+    let (slot, op_name) = if methods.is_null() {
+        (ptr::null_mut(), "")
+    } else {
+        unsafe {
+            match op {
+                NumberUnaryOp::Negative => ((*methods).nb_negative, "unary -"),
+                NumberUnaryOp::Positive => ((*methods).nb_positive, "unary +"),
+                NumberUnaryOp::Absolute => ((*methods).nb_absolute, "abs()"),
+                NumberUnaryOp::Invert => ((*methods).nb_invert, "unary ~"),
+            }
+        }
+    };
+    if !slot.is_null() {
+        let func: UnaryFunc = unsafe { std::mem::transmute(slot) };
+        return unsafe { func(o) };
+    }
+    let message = format!("bad operand type for {op_name}: '{}'", unsafe {
+        type_name_of(o)
+    });
+    let message = std::ffi::CString::new(message).expect("unary error contains no NUL");
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
+            message.as_ptr(),
+        )
+    };
+    ptr::null_mut()
 }
 
 /// Helper: extract a numeric value as f64 from Molt bits.
@@ -609,66 +715,7 @@ pub unsafe extern "C" fn PyNumber_Power(
     o2: *mut PyObject,
     o3: *mut PyObject,
 ) -> *mut PyObject {
-    if resolve_bits(o1).is_none()
-        || resolve_bits(o2).is_none()
-        || (!o3.is_null() && resolve_bits(o3).is_none())
-    {
-        let Some((p1, p2)) = (unsafe { protocol_pair(o1, o2) }) else {
-            return ptr::null_mut();
-        };
-        let p3 = if o3.is_null() {
-            ProtocolArg {
-                ptr: o3,
-                owned: false,
-            }
-        } else if same_protocol_identity(o1, o3) {
-            ProtocolArg {
-                ptr: p1.ptr,
-                owned: false,
-            }
-        } else if same_protocol_identity(o2, o3) {
-            ProtocolArg {
-                ptr: p2.ptr,
-                owned: false,
-            }
-        } else {
-            let Some(value) = (unsafe { protocol_arg(o3) }) else {
-                return ptr::null_mut();
-            };
-            value
-        };
-        return unsafe { foreign_power(p1.ptr, p2.ptr, p3.ptr) };
-    }
-    // CPython's `PyNumber_Power(base, exp, mod)` computes `pow(base, exp, mod)`:
-    // a genuine 3-argument modular exponentiation, NOT `base ** exp` with the
-    // modulus dropped. When `mod` is None (or absent), it is plain `base ** exp`.
-    // The runtime numeric authority owns both forms (`molt_pow` / `molt_pow_mod`)
-    // with correct bignum and exception semantics.
-    let a = match resolve_bits(o1) {
-        Some(b) => b,
-        None => {
-            unsafe { ensure_exception_set() };
-            return ptr::null_mut();
-        }
-    };
-    let b = match resolve_bits(o2) {
-        Some(b) => b,
-        None => {
-            unsafe { ensure_exception_set() };
-            return ptr::null_mut();
-        }
-    };
-    // A NULL o3 means "no modulus" (two-arg pow). A non-NULL o3 that resolves
-    // to None likewise means two-arg pow; the runtime authority treats a None
-    // / 0 modulus as the two-argument form.
-    let mod_bits = if o3.is_null() {
-        0
-    } else {
-        resolve_bits(o3).unwrap_or(0)
-    };
-    let h = crate::hooks::hooks_or_stubs();
-    let result = unsafe { (h.number_power)(a, b, mod_bits) };
-    unsafe { pyobj_from_result(result) }
+    unsafe { number_power(o1, o2, o3, false) }
 }
 
 // ─── Unary operations ────────────────────────────────────────────────────
@@ -857,31 +904,40 @@ pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
             (o == (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) as i64,
         );
     }
-    // Native Molt fast path.
-    if let Some(bits) = resolve_bits(o) {
-        let obj = MoltObject::from_bits(bits);
-        if obj.is_bool() {
-            return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
+    // Native Molt fast path. A failed managed projection never falls through
+    // into foreign numeric slots and masks its original exception.
+    let foreign = match unsafe { observe_numeric_operand(o) } {
+        Some(ResolvedPyObject::ManagedMolt(value)) => {
+            let bits = value.bits();
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_bool() {
+                return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
+            }
+            if is_runtime_int(bits) {
+                return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
+            }
+            if obj.is_float()
+                && let Some(v) = obj.as_float()
+            {
+                return unsafe { crate::api::numbers::PyLong_FromDouble(v) };
+            }
+            false
         }
-        if is_runtime_int(bits) {
-            return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
-        }
-        if obj.is_float()
-            && let Some(v) = obj.as_float()
-        {
-            return unsafe { crate::api::numbers::PyLong_FromDouble(v) };
-        }
-    }
-    if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
+        Some(ResolvedPyObject::Foreign) => true,
+        None => return ptr::null_mut(),
+    };
+    if foreign && unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
         return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
     }
     // Foreign object: dispatch to its `nb_int` slot, then `nb_index`
     // (CPython Objects/abstract.c `PyNumber_Long`).
-    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Int) } {
-        return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
-    }
-    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
+    if foreign {
+        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Int) } {
+            return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
+        }
+        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
+            return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
+        }
     }
     let message = format!(
         "int() argument must be a string, a bytes-like object or a real number, not '{}'",
@@ -907,30 +963,36 @@ pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
     }
-    // Native Molt fast path.
-    if let Some(bits) = resolve_bits(o) {
-        let obj = MoltObject::from_bits(bits);
-        if obj.is_float() {
-            return pyobj_from_float(obj.as_float().unwrap_or(0.0));
-        }
-        if let Some(v) = as_f64(bits) {
-            return pyobj_from_float(v);
-        }
-        if is_runtime_int(bits) {
-            let carrier =
-                unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
-            if carrier.is_null() {
-                return ptr::null_mut();
+    // Native Molt fast path. Failed observation is terminal, not foreign.
+    let foreign = match unsafe { observe_numeric_operand(o) } {
+        Some(ResolvedPyObject::ManagedMolt(value)) => {
+            let bits = value.bits();
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_float() {
+                return pyobj_from_float(obj.as_float().unwrap_or(0.0));
             }
-            let value = unsafe { crate::api::numbers::PyLong_AsDouble(carrier) };
-            unsafe { crate::api::refcount::Py_DECREF(carrier) };
-            if value == -1.0 && conversion_exception_pending() {
-                return ptr::null_mut();
+            if let Some(v) = as_f64(bits) {
+                return pyobj_from_float(v);
             }
-            return pyobj_from_float(value);
+            if is_runtime_int(bits) {
+                let carrier =
+                    unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
+                if carrier.is_null() {
+                    return ptr::null_mut();
+                }
+                let value = unsafe { crate::api::numbers::PyLong_AsDouble(carrier) };
+                unsafe { crate::api::refcount::Py_DECREF(carrier) };
+                if value == -1.0 && conversion_exception_pending() {
+                    return ptr::null_mut();
+                }
+                return pyobj_from_float(value);
+            }
+            false
         }
-    }
-    if unsafe { crate::api::numbers::PyFloat_Check(o) } != 0 {
+        Some(ResolvedPyObject::Foreign) => true,
+        None => return ptr::null_mut(),
+    };
+    if foreign && unsafe { crate::api::numbers::PyFloat_Check(o) } != 0 {
         let value = unsafe { crate::api::numbers::PyFloat_AsDouble(o) };
         if value == -1.0 && conversion_exception_pending() {
             return ptr::null_mut();
@@ -942,20 +1004,22 @@ pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
     // offers is intentionally omitted — every numeric foreign type Molt links
     // (numpy scalars, decimals) defines `nb_float`, and an honest TypeError for
     // the residual case is strictly better than the prior bare NULL.
-    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Float) } {
-        return unsafe { finalize_slot_result(o, result, "PyNumber_Float") };
-    }
-    if let Some(index) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        let index = unsafe { finalize_slot_result(o, index, "PyNumber_Float") };
-        if index.is_null() {
-            return ptr::null_mut();
+    if foreign {
+        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Float) } {
+            return unsafe { finalize_slot_result(o, result, "PyNumber_Float") };
         }
-        let value = unsafe { crate::api::numbers::PyLong_AsDouble(index) };
-        unsafe { crate::api::refcount::Py_DECREF(index) };
-        if value == -1.0 && conversion_exception_pending() {
-            return ptr::null_mut();
+        if let Some(index) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
+            let index = unsafe { finalize_slot_result(o, index, "PyNumber_Float") };
+            if index.is_null() {
+                return ptr::null_mut();
+            }
+            let value = unsafe { crate::api::numbers::PyLong_AsDouble(index) };
+            unsafe { crate::api::refcount::Py_DECREF(index) };
+            if value == -1.0 && conversion_exception_pending() {
+                return ptr::null_mut();
+            }
+            return pyobj_from_float(value);
         }
-        return pyobj_from_float(value);
     }
     let message = format!(
         "float() argument must be a string or a real number, not '{}'",
@@ -980,23 +1044,31 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
             (o == (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) as i64,
         );
     }
-    // Native Molt fast path.
-    if let Some(bits) = resolve_bits(o) {
-        let obj = MoltObject::from_bits(bits);
-        if obj.is_bool() {
-            return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
+    // Native Molt fast path. Failed observation is terminal, not foreign.
+    let foreign = match unsafe { observe_numeric_operand(o) } {
+        Some(ResolvedPyObject::ManagedMolt(value)) => {
+            let bits = value.bits();
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_bool() {
+                return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
+            }
+            if is_runtime_int(bits) {
+                return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
+            }
+            false
         }
-        if is_runtime_int(bits) {
-            return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
-        }
-    }
-    if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
+        Some(ResolvedPyObject::Foreign) => true,
+        None => return ptr::null_mut(),
+    };
+    if foreign && unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
         return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
     }
     // Foreign object: dispatch to its `nb_index` slot only (CPython's
     // `_PyNumber_Index` never falls back to `nb_int`/`nb_float`).
-    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        return unsafe { finalize_slot_result(o, result, "PyNumber_Index") };
+    if foreign {
+        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
+            return unsafe { finalize_slot_result(o, result, "PyNumber_Index") };
+        }
     }
     let message = format!("'{}' object cannot be interpreted as an integer", unsafe {
         type_name_of(o)
@@ -1006,20 +1078,21 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyIndex_Check(o: *mut PyObject) -> c_int {
-    // Native Molt integers/bools are indices.
-    if let Some(bits) = resolve_bits(o) {
-        if is_runtime_int(bits) {
-            return 1;
-        }
+    if o.is_null() {
         return 0;
+    }
+    // Native Molt integers/bools are indices.
+    match observe_pyobject(o) {
+        Some(ResolvedPyObject::ManagedMolt(value)) => {
+            return is_runtime_int(value.bits()) as c_int;
+        }
+        Some(ResolvedPyObject::Foreign) => {}
+        None => return 0,
     }
     // Foreign object: CPython's `PyIndex_Check` tests `tp_as_number->nb_index`
     // (numpy integer scalars define it). A native non-integer (float) has no
     // `nb_index` slot and correctly yields 0 — the prior code answered 0 for
     // every foreign object, stranding numpy's index-checks on its own scalars.
-    if o.is_null() {
-        return 0;
-    }
     let tp = unsafe { (*o).ob_type };
     if tp.is_null() {
         return 0;
@@ -1078,7 +1151,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceAdd(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Add, BinarySlot::Add, "+=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Add, NumberBinaryOp::Add, "+=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -1086,7 +1159,15 @@ pub unsafe extern "C" fn PyNumber_InPlaceSubtract(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Subtract, BinarySlot::Subtract, "-=", o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::Subtract,
+            NumberBinaryOp::Subtract,
+            "-=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1094,7 +1175,15 @@ pub unsafe extern "C" fn PyNumber_InPlaceMultiply(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Multiply, BinarySlot::Multiply, "*=", o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::Multiply,
+            NumberBinaryOp::Multiply,
+            "*=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1105,7 +1194,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceTrueDivide(
     unsafe {
         inplace_binary_op(
             InPlaceSlot::TrueDivide,
-            BinarySlot::TrueDivide,
+            NumberBinaryOp::TrueDivide,
             "/=",
             o1,
             o2,
@@ -1121,7 +1210,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceFloorDivide(
     unsafe {
         inplace_binary_op(
             InPlaceSlot::FloorDivide,
-            BinarySlot::FloorDivide,
+            NumberBinaryOp::FloorDivide,
             "//=",
             o1,
             o2,
@@ -1134,7 +1223,15 @@ pub unsafe extern "C" fn PyNumber_InPlaceRemainder(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Remainder, BinarySlot::Remainder, "%=", o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::Remainder,
+            NumberBinaryOp::Remainder,
+            "%=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1142,7 +1239,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceLshift(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Lshift, BinarySlot::Lshift, "<<=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Lshift, NumberBinaryOp::Lshift, "<<=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -1150,7 +1247,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceRshift(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Rshift, BinarySlot::Rshift, ">>=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Rshift, NumberBinaryOp::Rshift, ">>=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -1158,12 +1255,12 @@ pub unsafe extern "C" fn PyNumber_InPlaceAnd(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::And, BinarySlot::And, "&=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::And, NumberBinaryOp::And, "&=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_InPlaceOr(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Or, BinarySlot::Or, "|=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Or, NumberBinaryOp::Or, "|=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -1171,7 +1268,7 @@ pub unsafe extern "C" fn PyNumber_InPlaceXor(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { inplace_binary_op(InPlaceSlot::Xor, BinarySlot::Xor, "^=", o1, o2) }
+    unsafe { inplace_binary_op(InPlaceSlot::Xor, NumberBinaryOp::Xor, "^=", o1, o2) }
 }
 
 #[unsafe(no_mangle)]
@@ -1180,7 +1277,7 @@ pub unsafe extern "C" fn PyNumber_InPlacePower(
     o2: *mut PyObject,
     o3: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_Power(o1, o2, o3) }
+    unsafe { number_power(o1, o2, o3, true) }
 }
 
 #[unsafe(no_mangle)]
@@ -1188,36 +1285,56 @@ pub unsafe extern "C" fn PyNumber_InPlaceMatrixMultiply(
     o1: *mut PyObject,
     o2: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { PyNumber_MatrixMultiply(o1, o2) }
+    unsafe {
+        inplace_binary_op(
+            InPlaceSlot::MatrixMultiply,
+            NumberBinaryOp::MatrixMultiply,
+            "@=",
+            o1,
+            o2,
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Divmod(o1: *mut PyObject, o2: *mut PyObject) -> *mut PyObject {
-    if resolve_bits(o1).is_none() || resolve_bits(o2).is_none() {
-        let Some((p1, p2)) = (unsafe { protocol_pair(o1, o2) }) else {
+    let Some((left, right)) = (unsafe { observe_numeric_pair(o1, o2) }) else {
+        return ptr::null_mut();
+    };
+    let (a, b) = if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) =
+        (left, right)
+    {
+        (a.bits(), b.bits())
+    } else {
+        let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, left, o2, right) }) else {
             return ptr::null_mut();
         };
         return unsafe { foreign_binary_op(BinarySlot::Divmod, "divmod()", p1.ptr, p2.ptr) };
+    };
+    let quotient = unsafe { managed_binary_op(NumberBinaryOp::FloorDivide, a, b) };
+    if quotient.is_null() {
+        return ptr::null_mut();
     }
-    let quotient = unsafe { PyNumber_FloorDivide(o1, o2) };
-    let remainder = unsafe { PyNumber_Remainder(o1, o2) };
-    if quotient.is_null() || remainder.is_null() {
-        if !quotient.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(quotient) };
-        }
-        if !remainder.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(remainder) };
-        }
+    let remainder = unsafe { managed_binary_op(NumberBinaryOp::Remainder, a, b) };
+    if remainder.is_null() {
+        unsafe { crate::api::errors::release_preserving_error(&[quotient]) };
         return ptr::null_mut();
     }
     let tuple = unsafe { crate::api::sequences::PyTuple_New(2) };
     if tuple.is_null() {
-        unsafe { crate::api::refcount::Py_DECREF(quotient) };
-        unsafe { crate::api::refcount::Py_DECREF(remainder) };
+        unsafe { crate::api::errors::release_preserving_error(&[quotient, remainder]) };
         return ptr::null_mut();
     }
-    unsafe { crate::api::sequences::PyTuple_SetItem(tuple, 0, quotient) };
-    unsafe { crate::api::sequences::PyTuple_SetItem(tuple, 1, remainder) };
+    if unsafe { crate::api::sequences::PyTuple_SetItem(tuple, 0, quotient) } < 0 {
+        // PyTuple_SetItem consumes `quotient` on both success and failure.
+        unsafe { crate::api::errors::release_preserving_error(&[remainder, tuple]) };
+        return ptr::null_mut();
+    }
+    if unsafe { crate::api::sequences::PyTuple_SetItem(tuple, 1, remainder) } < 0 {
+        // The failed setter consumed `remainder`; the tuple owns `quotient`.
+        unsafe { crate::api::errors::release_preserving_error(&[tuple]) };
+        return ptr::null_mut();
+    }
     tuple
 }
 

@@ -251,6 +251,96 @@ def test_relative_dependency_requests_demand_canonical_binding_facts_once(
     assert calls[0].analyze_deferred_bodies is not module_only
 
 
+def test_python_source_snapshot_caches_its_ast_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text("from pkg import child\n", encoding="utf-8")
+    digest = python_import_resolution.python_ast_digest
+    calls = 0
+
+    def record_digest(tree: ast.AST) -> str:
+        nonlocal calls
+        calls += 1
+        return digest(tree)
+
+    monkeypatch.setattr(python_import_resolution, "python_ast_digest", record_digest)
+    snapshot = LocalPythonModuleResolver((tmp_path,)).capture_source(path)
+    assert snapshot.ast_digest == snapshot.ast_digest
+    assert calls == 1
+
+
+def test_local_resolver_reuses_regular_package_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    initializer = package / "__init__.py"
+    initializer.write_text("VALUE = 1\n", encoding="utf-8")
+    first = package / "first.py"
+    second = package / "second.py"
+    first.write_text("VALUE = 2\n", encoding="utf-8")
+    second.write_text("VALUE = 3\n", encoding="utf-8")
+    checked: list[Path] = []
+    owned_path = LocalPythonModuleResolver._owned_path
+
+    def record_owned_path(
+        self: LocalPythonModuleResolver, candidate: Path
+    ) -> Path | None:
+        checked.append(candidate)
+        return owned_path(self, candidate)
+
+    monkeypatch.setattr(LocalPythonModuleResolver, "_owned_path", record_owned_path)
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    assert [
+        source.path
+        for source in resolver.resolve_import_sources(
+            "pkg.first", include_parent_packages=True
+        )
+    ] == [initializer.resolve(), first.resolve()]
+    prefix_checks = checked.count(package) + checked.count(initializer)
+    assert prefix_checks == 2
+    assert [
+        source.path
+        for source in resolver.resolve_import_sources(
+            "pkg.second", include_parent_packages=True
+        )
+    ] == [initializer.resolve(), second.resolve()]
+    assert checked.count(package) + checked.count(initializer) == prefix_checks
+    assert {"pkg", "pkg.first", "pkg.second"}.issubset(resolver._resolution_cache)
+
+
+def test_local_resolver_reuses_namespace_package_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = (tmp_path / "left", tmp_path / "right")
+    for root in roots:
+        (root / "namespace").mkdir(parents=True)
+    first = roots[0] / "namespace" / "first.py"
+    second = roots[1] / "namespace" / "second.py"
+    first.write_text("VALUE = 1\n", encoding="utf-8")
+    second.write_text("VALUE = 2\n", encoding="utf-8")
+    checked: list[Path] = []
+    owned_path = LocalPythonModuleResolver._owned_path
+
+    def record_owned_path(
+        self: LocalPythonModuleResolver, candidate: Path
+    ) -> Path | None:
+        checked.append(candidate)
+        return owned_path(self, candidate)
+
+    monkeypatch.setattr(LocalPythonModuleResolver, "_owned_path", record_owned_path)
+    resolver = LocalPythonModuleResolver(roots)
+    assert resolver.source_for_module("namespace.first") == first.resolve()
+    prefix_checks = tuple(checked.count(root / "namespace") for root in roots)
+    assert prefix_checks == (1, 1)
+    assert resolver.source_for_module("namespace.second") == second.resolve()
+    assert tuple(checked.count(root / "namespace") for root in roots) == prefix_checks
+    assert {"namespace", "namespace.first", "namespace.second"}.issubset(
+        resolver._resolution_cache
+    )
+
+
 def test_branch_join_preserves_whole_possible_states() -> None:
     source = (
         "if condition is None:\n"

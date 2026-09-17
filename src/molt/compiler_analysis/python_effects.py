@@ -75,26 +75,35 @@ def _joined_child_effects(
     return mask
 
 
-def _result_hash_effects(result: StaticExpressionResult) -> EffectMask:
-    if result.kind == "unknown":
-        return EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
-    if result.kind in {"list", "set", "dict"}:
-        return RAISES  # Exact builtin containers are unhashable, not callbacks.
-    return _sequence_hash_effects(result) if result.kind == "tuple" else NO_EFFECTS
+def _key_effects(result: StaticExpressionResult, *, expanded: bool) -> EffectMask:
+    """Reduce key effects once per shared shape node and interpretation.
 
-
-def _sequence_hash_effects(result: StaticExpressionResult) -> EffectMask:
-    if result.items is None:
-        if result.kind in {"str", "bytes"}:
-            return NO_EFFECTS
-        return EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+    Expanded bytearrays yield inert integers; a bytearray used as a key raises.
+    Keep that distinction while retaining compact DAGs such as ``(*x, *x)``.
+    """
     mask = NO_EFFECTS
-    for item in result.items:
-        mask |= (
-            _sequence_hash_effects(item.result)
-            if item.expanded
-            else _result_hash_effects(item.result)
-        )
+    pending = [(result, expanded)]
+    seen: set[tuple[int, bool]] = set()
+    callbacks = EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+    while pending:
+        current, as_sequence = pending.pop()
+        key = (id(current), as_sequence)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not as_sequence:
+            if current.kind == "unknown":
+                return mask | callbacks
+            if current.kind in {"bytearray", "list", "set", "dict"}:
+                mask |= RAISES
+                continue
+            if current.kind not in {"tuple", "frozenset"}:
+                continue
+        if current.items is None:
+            if current.kind not in {"str", "bytes", "bytearray", "range"}:
+                return mask | callbacks
+            continue
+        pending.extend((item.result, item.expanded) for item in current.items)
     return mask
 
 
@@ -120,11 +129,11 @@ class AccumulatedKeyEffects:
         return boundary
 
     def add(self, result: StaticExpressionResult) -> EffectMask:
-        return self._insert(_result_hash_effects(result))
+        return self._insert(_key_effects(result, expanded=False))
 
     def extend(self, result: StaticExpressionResult) -> EffectMask:
         return self._insert(
-            _sequence_hash_effects(result),
+            _key_effects(result, expanded=True),
             empty=result.items == () or result.truth is False,
         )
 
@@ -137,7 +146,18 @@ def iterable_unpack_effects(
     result = static_expression_result(node, fact_result=fact_result)
     return (
         NO_EFFECTS
-        if result.kind in {"tuple", "list", "set", "dict", "str", "bytes"}
+        if result.kind
+        in {
+            "tuple",
+            "list",
+            "set",
+            "frozenset",
+            "dict",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+        }
         else EXECUTES_ARBITRARY_PYTHON | INVOKES_ITERATION_CALLBACK | RAISES
     )
 
@@ -149,7 +169,7 @@ def mapping_unpack_effects(
 ) -> EffectMask:
     result = static_expression_result(node, fact_result=fact_result)
     if result.kind == "dict":
-        return _sequence_hash_effects(result)
+        return _key_effects(result, expanded=True)
     return (
         EXECUTES_ARBITRARY_PYTHON
         | INVOKES_ITERATION_CALLBACK

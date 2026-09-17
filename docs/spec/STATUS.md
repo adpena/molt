@@ -6,6 +6,20 @@ of truth; when this file conflicts with implementation, update this file from
 the implementation. For forward-looking priorities, use
 [ROADMAP.md](../../ROADMAP.md).
 
+## Reading Support Claims
+
+Molt remains under active development. Implemented code, a passing unit test,
+and a completed compatibility cell are different claims. A verified cell needs
+replayable evidence for its source revision, Python version, OS/architecture,
+backend, runtime profile, and capabilities. Host-side tests of a version policy
+do not establish execution on that CPython version or on WASM.
+
+The [compatibility indexes](areas/compat/README.md) own detailed language,
+stdlib, C-API, and ecosystem coverage. C-API coverage does not certify an entire
+package. Dated benchmark and deployment reports describe their recorded inputs,
+not current-source performance or release readiness. Release promotion follows
+the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
+
 ## Project Scope And Target
 
 - Strategic target: full CPython `>=3.12` parity for supported Molt semantics.
@@ -15,12 +29,15 @@ the implementation. For forward-looking priorities, use
   is in scope as it appears, with behavior gated by the verified subset and
   version-specific differential evidence.
 - Compiled binaries must not rely on a host Python installation.
-- runtime monkeypatching, unrestricted `exec`/`eval`/`compile`, and unrestricted
-  reflection remain intentional design exclusions for compiled binaries.
+- Arbitrary runtime monkeypatching, unrestricted `exec`/`eval`/`compile`, and
+  unrestricted reflection are not blanket compatibility promises. Scoped
+  mutation and introspection follow the
+  [dynamic-semantics contract](areas/compat/contracts/dynamic_execution_policy_contract.md).
 
-## Supported Today
+## Implemented Surfaces
 
-- Native AOT compilation is real and active.
+- Native AOT compilation uses Cranelift by default; LLVM is opt-in. The Rust
+  source emitter is a separate experimental target, not the native backend.
 - Native Cranelift codegen decomposition is active at function-boundary
   granularity:
   `runtime/molt-backend-native/src/native_backend/function_compiler/fc/` owns extracted op-family
@@ -57,18 +74,15 @@ the implementation. For forward-looking priorities, use
   `molt build --python-version`, `[tool.molt.build] python-version`, and
   `project.requires-python` resolve the target version before parsing, module
   graph discovery, frontend cache lookup, backend cache lookup, and runtime
-  `sys.version_info` bootstrap. The compiled bootstrap is unconditional: native,
-  WASM, standalone Rust source emission, and isolate entry paths stamp the
-  selected target version before user code/importlib gates run. Runtime
+  `sys.version_info` bootstrap. Native/WASM runtime and isolate entry paths stamp
+  the selected target version before user code/importlib gates run. Runtime
   version-gated stdlib decisions read that runtime state instead of ambient
-  process env, and Rust source outputs materialize `sys.version_info`,
-  `sys.version`, and `sys.hexversion` from the same stamped state. Rust source
-  outputs also own executable module-cache get/set/delete semantics for emitted
-  import bootstrap IR, with cache misses represented as `None` rather than a
-  truthy sentinel. Luau source outputs materialize the same target-version `sys`
-  metadata into `molt_module_cache["sys"]`, and dynamic Luau module import now
-  fails closed instead of manufacturing empty table fallbacks for unsupported
-  modules. Translation validation uses the same resolver, probes the selected
+  process env. The experimental Rust and Luau source emitters implement
+  statically lowered, closed-world bootstrap/cache operations, including
+  target-version `sys` metadata. That is not general Python import support:
+  residual `module_import`, `module_import_from`, and `module_import_star`
+  operations are rejected by target admission and checked emission on both
+  source backends. Translation validation uses the same resolver, probes the selected
   CPython command for an exact minor-version match, and passes
   `molt build --python-version` through the Molt run, so validation baselines
   cannot silently inherit `sys.executable`. Malformed or non-string
@@ -902,7 +916,8 @@ the implementation. For forward-looking priorities, use
 ## Intentionally Unsupported
 
 - Unrestricted dynamic execution (`exec`, `eval`, `compile`) in compiled binaries.
-- Runtime monkeypatching as a compatibility mechanism.
+- Arbitrary runtime monkeypatching as a general compatibility mechanism;
+  this does not exclude explicitly implemented, test-backed mutation contracts.
 - Unrestricted reflection that breaks AOT determinism and layout guarantees.
 - Silent fallback to a host CPython runtime.
 

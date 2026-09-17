@@ -568,7 +568,6 @@ pub(crate) struct RuntimeState {
     pub(crate) exit_registry: Mutex<ExitRegistry>,
     pub(crate) abc_invalidation_counter: AtomicU64,
     pub(crate) asyncgen_registry: Mutex<HashSet<PtrSlot>>,
-    pub(crate) fn_ptr_code: Mutex<HashMap<u64, u64>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_pool_started: AtomicBool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -580,7 +579,7 @@ pub(crate) struct RuntimeState {
     pub(crate) socket_state: SocketRuntimeState,
     pub(crate) signal: SignalRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
-    pub(crate) code_slots: OnceLock<Vec<AtomicU64>>,
+    pub(crate) code_slots: OnceLock<Vec<crate::builtins::frames::CompiledCodeSlot>>,
     pub(crate) python_builtin_function_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
     /// VFS state lazily initialized from environment variables on first access.
@@ -688,7 +687,6 @@ impl RuntimeState {
             exit_registry: Mutex::new(ExitRegistry::new()),
             abc_invalidation_counter: AtomicU64::new(0),
             asyncgen_registry: Mutex::new(HashSet::new()),
-            fn_ptr_code: Mutex::new(HashMap::new()),
             #[cfg(not(target_arch = "wasm32"))]
             thread_pool_started: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]

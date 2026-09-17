@@ -1,4 +1,4 @@
-# What Molt Is WIlling To Break
+# What Molt Is Willing To Break
 **Spec ID:** 0800
 **Status:** Foundational Positioning
 **Audience:** contributors, adopters, skeptics, investors
@@ -19,8 +19,13 @@ These breaks are not accidents. They are the source of Molt’s power.
 Molt does not promise to support:
 - arbitrary monkeypatching at runtime
 - unrestricted `eval`/`exec` execution in compiled binaries
-- mutation of global state after startup
 - reflection-heavy patterns that prevent static reasoning
+
+This does not prohibit all mutation after startup. Mutable globals, supported
+attribute updates, and scoped introspection obey their documented runtime
+contracts. The [dynamic-semantics policy](../compat/contracts/dynamic_execution_policy_contract.md)
+owns the boundary; a design exclusion is not a substitute for implementing
+behavior already inside the verified subset.
 
 This enables:
 - ahead-of-time compilation
@@ -34,8 +39,12 @@ performance, or force hidden host-Python fallback.
 
 ---
 
-## 2. Molt breaks CPython ABI compatibility
-Molt does not load arbitrary CPython C extensions.
+## 2. Molt does not promise arbitrary CPython binary compatibility
+An arbitrary CPython extension wheel is not automatically a Molt extension.
+Molt implements a [C-API/ABI compatibility surface](../compat/surfaces/c_api/c_api_surface_index.md)
+for source-recompiled extensions with explicit target, symbol, ownership, and
+package custody. A symbol scan or successful import alone does not establish
+package compatibility; execution and parity evidence are required.
 
 This enables:
 - static binaries

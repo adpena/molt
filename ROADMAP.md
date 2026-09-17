@@ -15,8 +15,9 @@ roadmap claim drifts.
   and MLIR output surfaces must have the same canonical evidence matrix, with
   release artifacts ratcheting toward <50 ms cold start and <2 MB
   gzipped/runtime payloads on the five-year arc.
-- Preserve Molt's design exclusions around runtime monkeypatching,
-  unrestricted dynamic execution, and unrestricted reflection.
+- Preserve the [dynamic-semantics boundary](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
+  around arbitrary runtime monkeypatching, unrestricted dynamic execution, and
+  unrestricted reflection while expanding explicitly verified contracts.
 
 ## Current Priorities
 

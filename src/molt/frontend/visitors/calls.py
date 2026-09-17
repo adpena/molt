@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-from molt.frontend.visitors.call_defaults import CallDefaultsMixin
 from molt.frontend.visitors.call_dispatch_attribute import CallAttributeDispatchMixin
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend.visitors.call_dispatch_imported import (
@@ -43,20 +42,27 @@ class CallVisitorMixin(
     CallRuntimeHelperMixin,
     CallMethodDispatchMixin,
     CallModuleDispatchMixin,
-    CallDefaultsMixin,
     CallReductionMixin,
     _MixinBase,
 ):
     def visit_Call(self, node: ast.Call) -> Any:
-        if self._expression_has_invalidated_binding(
-            node.func
-        ) or self._call_has_bound_builtin_name(node.func):
+        if self._expression_has_invalidated_binding(node.func) or (
+            self._call_has_bound_builtin_name(node.func)
+            and self._specializable_builtin_name(node) is None
+        ):
+            # Runtime lookup custody precedes every spelling/import registry,
+            # including native candidate validation and builtin shape emission.
             callee = self.visit(node.func)
             if callee is None:
                 raise FrontendRejection(
                     Diagnostic.CALL_TARGET, "Unsupported call target"
                 )
-            return self._emit_dynamic_call(node, callee, self._call_needs_bind(node))
+            return self._emit_dynamic_call(node, callee)
+
+        self._validate_native_python_call_candidate(node)
+        builtin_result = self._try_emit_shape_builtin_call(node)
+        if builtin_result is not CALL_NOT_HANDLED:
+            return builtin_result
 
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
         if gpu_launch is not None:
@@ -75,7 +81,7 @@ class CallVisitorMixin(
             return importlib_literal
 
         needs_bind = self._call_needs_bind(node)
-        attribute_result = self._try_emit_attribute_receiver_call(node, needs_bind)
+        attribute_result = self._try_emit_attribute_receiver_call(node)
         if attribute_result is not CALL_NOT_HANDLED:
             return attribute_result
 
@@ -92,4 +98,4 @@ class CallVisitorMixin(
         callee = self.visit(node.func)
         if callee is None:
             raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
-        return self._emit_dynamic_call(node, callee, needs_bind)
+        return self._emit_dynamic_call(node, callee)

@@ -6,6 +6,7 @@ use super::*;
 /// lowering cannot drift independently.
 pub(super) const HANDLED_KINDS: &[&str] = &[
     "call_async",
+    "alloc_class",
     "chan_new",
     "cast",
     "widen",
@@ -90,6 +91,7 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "binding_alias",
     "release",
     "gen_locals_register",
+    "asyncgen_locals_register",
     "guard_type",
     "guard_tag",
     "guard_layout",
@@ -1908,17 +1910,42 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            // Generator-frame locals registration (introspection support for
-            // `gi_frame.f_locals` / `frame_locals_set`). Result-less side effect:
-            // `molt_gen_locals_register(func_addr, names_tuple, offsets_tuple)`
-            // where `func_addr` is the ADDRESS of the generator function named in
-            // `s_value` (cast to i64, exactly like `func_new`), and the two
-            // operands are the boxed names/offsets tuples. Dropping it (the old
-            // `Copy` passthrough) silently diverges generator-frame introspection
-            // from CPython. Mirrors the native handler
-            // (function_compiler.rs `gen_locals_register`).
-            "gen_locals_register" => {
-                if op.operands.len() != 2 {
+            "alloc_class" => {
+                if op.operands.len() != 1 || op.results.len() > 1 {
+                    return false;
+                }
+                let Some(AttrValue::Int(size)) = op.attrs.get("value") else {
+                    return false;
+                };
+                let size = i64_ty.const_int(*size as u64, false);
+                let class_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let alloc = self.ensure_runtime_i64_fn("molt_alloc_class", 2);
+                let unpublished = self
+                    .backend
+                    .builder
+                    .build_call(alloc, &[size.into(), class_bits.into()], "alloc_class")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                // Allocation returns an unpublished instance. Publish its
+                // initialized object edges before exposing or retiring it.
+                let publish = self.ensure_runtime_i64_fn("molt_object_publish_initialized", 1);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(publish, &[unpublished.into()], "class_initialized")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                self.bind_owned_runtime_result(op, result);
+                true
+            }
+
+            // Both generator families register a raw function address and two
+            // boxed tuples. The shared adapter owns this mixed ABI; neither
+            // operation may enter the positional boxed-call fallback.
+            "gen_locals_register" | "asyncgen_locals_register" => {
+                if op.operands.len() != 2 || op.results.len() > 1 {
                     return false;
                 }
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
@@ -1947,13 +1974,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 let names_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let offsets_bits = self.materialize_dynbox_operand(op.operands[1]);
-                let reg_fn = self.ensure_runtime_i64_fn("molt_gen_locals_register", 3);
+                let symbol = if kind == "asyncgen_locals_register" {
+                    "molt_asyncgen_locals_register"
+                } else {
+                    "molt_gen_locals_register"
+                };
+                let reg_fn = self.ensure_runtime_i64_fn(symbol, 3);
                 self.backend
                     .builder
                     .build_call(
                         reg_fn,
                         &[func_addr.into(), names_bits.into(), offsets_bits.into()],
-                        "gen_locals_register",
+                        kind,
                     )
                     .unwrap();
                 if let Some(&result_id) = op.results.first() {

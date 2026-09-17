@@ -8,7 +8,6 @@ pub(in crate::wasm) struct WasmCallableCallSiteAbi<'a> {
     func_indices: &'a BTreeMap<String, u32>,
     trampoline_slots: &'a BTreeMap<String, u32>,
     plan: &'a WasmCallableTablePlan,
-    closure_functions: &'a BTreeSet<String>,
     escaped_callable_targets: &'a BTreeSet<String>,
     call_func_spill_offset: u32,
 }
@@ -24,7 +23,6 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             func_indices: &plan.func_to_index,
             trampoline_slots: &plan.func_to_trampoline_idx,
             plan,
-            closure_functions: &plan.closure_functions,
             escaped_callable_targets,
             call_func_spill_offset,
         }
@@ -85,7 +83,17 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
     }
 
     pub(in crate::wasm) fn is_closure_function(&self, target_name: &str) -> bool {
-        self.closure_functions.contains(target_name)
+        self.plan
+            .positional_call_shapes
+            .get(target_name)
+            .is_some_and(|shape| shape.1)
+    }
+
+    pub(in crate::wasm) fn positional_arity(&self, target_name: &str) -> Option<usize> {
+        self.plan
+            .positional_call_shapes
+            .get(target_name)
+            .map(|shape| shape.0)
     }
 
     pub(in crate::wasm) fn is_escaped_callable(&self, target_name: &str) -> bool {
@@ -124,7 +132,7 @@ mod tests {
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             app_callable_resolver: None,
-            closure_functions: BTreeSet::from(["callee".to_string()]),
+            positional_call_shapes: BTreeMap::from([("callee".to_string(), (2, true))]),
             function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),
             trampoline_entries: Vec::new(),
         };
@@ -137,6 +145,8 @@ mod tests {
         assert_eq!(abi.function_index("callee", "test_call"), 42);
         assert!(abi.function_abi_returns_value("callee"));
         assert!(abi.is_closure_function("callee"));
+        assert_eq!(abi.positional_arity("callee"), Some(2));
+        assert_eq!(abi.positional_arity("unknown"), None);
         assert!(abi.is_escaped_callable("callee"));
         assert_eq!(abi.call_func_spill_offset(), 4096);
     }
@@ -157,7 +167,7 @@ mod tests {
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             app_callable_resolver: None,
-            closure_functions: BTreeSet::new(),
+            positional_call_shapes: BTreeMap::new(),
             function_abi_returns_value: BTreeMap::from([("callee".to_string(), true)]),
             trampoline_entries: Vec::new(),
         };

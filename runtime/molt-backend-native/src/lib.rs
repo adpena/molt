@@ -24,8 +24,7 @@ pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_d
 pub use molt_tir::trampolines::externalize_function_with_signature;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::trampolines::{
-    TrampolineBehavior, TrampolineKind, TrampolineSpec, TrampolineTaskKind,
-    function_requires_value_return,
+    TrampolineBehavior, TrampolineKind, TrampolineSpec, function_requires_value_return,
 };
 pub use molt_tir::{passes, representation_plan, tir};
 
@@ -80,6 +79,20 @@ pub(crate) use molt_codegen_abi::{
     TAG_PTR, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_FUNCTION,
     TYPE_ID_OBJECT, TYPE_ID_TYPE, pending_bits, stable_ic_site_id,
 };
+
+/// Project the shared task-constructor kind onto the native runtime ABI once
+/// for Cranelift and LLVM ordinary/trampoline constructors.
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) const fn native_task_runtime_kind_bits(
+    kind: molt_tir::trampolines::TaskRuntimeKind,
+) -> i64 {
+    match kind {
+        molt_tir::trampolines::TaskRuntimeKind::Future => TASK_KIND_FUTURE,
+        molt_tir::trampolines::TaskRuntimeKind::Generator => TASK_KIND_GENERATOR,
+        molt_tir::trampolines::TaskRuntimeKind::Coroutine => TASK_KIND_COROUTINE,
+    }
+}
+
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the
 /// `pub` `tir::lower_to_lir::lower_function_to_lir`, which backend codegen paths

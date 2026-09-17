@@ -464,7 +464,12 @@ fn c_api_method_build_function(
     }
     unsafe {
         function_set_call_target_ptr(func_ptr, molt_capi_method_dispatch as *const ());
-        function_set_closure_bits(_py, func_ptr, closure_bits);
+        function_set_closure_bits(
+            _py,
+            func_ptr,
+            closure_bits,
+            crate::FunctionCallAbi::OpaqueContextFirst,
+        );
     }
     dec_ref_bits(_py, closure_bits);
     let func_bits = MoltObject::from_ptr(func_ptr).bits();

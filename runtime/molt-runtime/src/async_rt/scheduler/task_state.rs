@@ -39,10 +39,6 @@ pub(crate) fn asyncgen_registry(_py: &PyToken<'_>) -> &'static Mutex<HashSet<Ptr
     &runtime_state(_py).asyncgen_registry
 }
 
-pub(crate) fn fn_ptr_code_map(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, u64>> {
-    &runtime_state(_py).fn_ptr_code
-}
-
 #[derive(Default)]
 pub(crate) struct AwaitWaiterIndex {
     positions: HashMap<PtrSlot, usize>,
@@ -102,45 +98,6 @@ fn indexed_unique_vec_swap_remove<T: Copy + Eq + Hash>(
         index.insert(last, idx);
     }
     true
-}
-
-pub(crate) fn fn_ptr_code_set(_py: &PyToken<'_>, fn_ptr: u64, code_bits: u64) {
-    crate::gil_assert();
-    if fn_ptr == 0 {
-        return;
-    }
-    let old_to_dec = {
-        let mut guard = fn_ptr_code_map(_py).lock().unwrap();
-        if code_bits == 0 {
-            guard.remove(&fn_ptr)
-        } else if guard.get(&fn_ptr).copied() == Some(code_bits) {
-            None
-        } else {
-            crate::inc_ref_bits(_py, code_bits);
-            guard.insert(fn_ptr, code_bits)
-        }
-    };
-    if let Some(old_bits) = old_to_dec
-        && old_bits != 0
-    {
-        crate::dec_ref_bits(_py, old_bits);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fn_ptr_code_set(fn_ptr: u64, code_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        fn_ptr_code_set(_py, fn_ptr, code_bits);
-        MoltObject::none().bits()
-    })
-}
-
-pub(crate) fn fn_ptr_code_get(_py: &PyToken<'_>, fn_ptr: u64) -> u64 {
-    if fn_ptr == 0 {
-        return 0;
-    }
-    let guard = fn_ptr_code_map(_py).lock().unwrap();
-    guard.get(&fn_ptr).copied().unwrap_or(0)
 }
 
 pub(crate) fn task_exception_depths(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, usize>> {

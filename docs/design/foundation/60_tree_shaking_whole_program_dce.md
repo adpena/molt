@@ -304,21 +304,13 @@ derive the name, and what the reachability roots are."
 
 - **Artifact:** new sections in `op_kinds.toml`:
   - `[[reference_kind]]` rows: one per SimpleIR `op.kind` string that can reference a
-    function by name. Each row carries `kind = "..."`, `name_source = "s_value"` (the
-    field the referenced name comes from — all 26 current kinds read `s_value`), and
-    `derives_poll = true|false` (whether `{name}_poll` is also implied — `true` for
-    exactly `generator_create`/`coro_create`, the rule at `passes.rs:2546` /
-    `cli/__init__.py:19258`). The **26 kinds** are exactly the union of
-    `passes.rs:2520-2565` and `cli/__init__.py:19180-19205` (verified byte-identical
-    today): `call`, `call_internal`, `func_new`, `func_new_closure`, `func_new_builtin`,
-    `code_new`, `call_guarded`, `call_indirect`, `alloc_task`, `generator_create`,
-    `coro_create`, `fn_ptr_code_set`, `asyncgen_locals_register`, `gen_locals_register`,
-    `task_new`, `generator_send`, `spawn`, `call_func`, `call_method`, `import_from`,
-    `import_name`, `class_def`, `decorator`, `super_call`, `yield_from`, `await`. (Note
-    `alloc_task` reads the poll name *directly* in `s_value`; `generator_create`/
-    `coro_create` read the *base* and derive `_poll` — encode this as
-    `name_is_poll_direct = true` on `alloc_task` so the generator does not double-apply
-    the suffix, matching `passes.rs:2535-2552`.)
+    function by name. Each row carries the operation and its explicit symbol
+    field. Constructors and task operations reference exact physical targets;
+    no companion symbol is inferred by appending `_poll`. The live consumers
+    are `runtime/molt-tir/src/passes/dead_functions.rs` and
+    `src/molt/cli/function_references.py`; do not copy their evolving operation
+    inventory into this design proposal. Function-pointer-to-code registration
+    is retired and must not reappear as a reachability edge.
   - `[[reachability_root]]` rows: the root set — exact names (`molt_main`,
     `molt_host_init`, `_start`) + prefixes (`molt_isolate_`) + the entry-function rule
     (`functions[0]`) — replacing the hand-duplicated `is_protected_runtime_entrypoint`

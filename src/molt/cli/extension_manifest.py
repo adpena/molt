@@ -14,7 +14,7 @@ from molt.capability_policy import split_capability_tokens
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
 from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
-from molt.cli.python_module_names import (
+from molt.python_module_names import (
     canonical_python_module_name,
     canonical_python_module_names,
 )
@@ -24,8 +24,10 @@ from molt.cli.source_extension_link_requirements import (
 from molt.cli.source_extension_target import source_extension_artifact_kind
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
-    native_callable_abi_choices,
-    normalize_native_callable_abi,
+)
+from molt.native_callable_exports import (
+    NativeCallableExportError,
+    normalize_native_callable_export,
 )
 
 _ABI_VERSION_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
@@ -34,7 +36,6 @@ _CURRENT_MOLT_C_API_VERSION = "4"
 _WHEEL_TOKEN_RE = re.compile(r"[^A-Za-z0-9_.]+")
 _WHEEL_VERSION_RE = re.compile(r"[^A-Za-z0-9._]+")
 _PYTHON_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_NATIVE_SYMBOL_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
 _PYMETHODDEF_ENTRY_RE = re.compile(
     r"\{\s*\"(?P<name>(?:\\.|[^\"\\])+)\"\s*,"
     r"(?P<body>[^{};]*?\bMETH_[A-Z_]+[^{};]*?)\}",
@@ -318,130 +319,41 @@ def _manifest_callable_exports(
             errors.append(f"extension_manifest.json {label} must be an object")
             continue
 
-        module = raw_export.get("module")
-        name = raw_export.get("name")
-        binding = raw_export.get("binding")
-        abi = raw_export.get("abi")
-        symbol = raw_export.get("symbol")
-        provider_module = raw_export.get("provider_module")
-        deterministic = raw_export.get("deterministic", False)
-        effects_raw = raw_export.get("effects", [])
-
         try:
-            module = canonical_python_module_name(
-                module, field=f"extension_manifest.json {label}.module"
+            export = normalize_native_callable_export(raw_export)
+        except NativeCallableExportError as exc:
+            detail = str(exc)
+            field_prefixes = (
+                "module ",
+                "name ",
+                "binding ",
+                "abi ",
+                "symbol ",
+                "provider_module ",
+                "arity ",
+                "effects ",
+                "deterministic ",
             )
-        except ValueError as exc:
-            errors.append(str(exc))
+            separator = "." if detail.startswith(field_prefixes) else " "
+            errors.append(f"extension_manifest.json {label}{separator}{detail}")
             continue
-        if module != package and not module.startswith(package + "."):
+        if export.module != package and not export.module.startswith(package + "."):
             errors.append(
-                f"extension_manifest.json {label}.module {module!r} escapes "
+                f"extension_manifest.json {label}.module {export.module!r} escapes "
                 f"admitted package {package!r}"
             )
             continue
-
-        if not isinstance(name, str) or _PYTHON_IDENTIFIER_RE.fullmatch(name) is None:
-            errors.append(
-                f"extension_manifest.json {label}.name must be a Python identifier"
-            )
-            continue
-        if not isinstance(binding, str) or binding not in {
-            "module_attr",
-            "direct_symbol",
-        }:
-            errors.append(
-                f"extension_manifest.json {label}.binding must be "
-                "'module_attr' or 'direct_symbol'"
-            )
-            continue
-        normalized_abi = normalize_native_callable_abi(abi)
-        if normalized_abi is None:
-            errors.append(
-                f"extension_manifest.json {label}.abi must be one of: "
-                f"{native_callable_abi_choices()}"
-            )
-            continue
-
-        normalized_symbol: str | None = None
-        if symbol is not None:
-            if not isinstance(symbol, str) or not symbol.strip():
-                errors.append(
-                    f"extension_manifest.json {label}.symbol must be non-empty "
-                    "when present"
-                )
-                continue
-            normalized_symbol = symbol.strip()
-            if _NATIVE_SYMBOL_RE.fullmatch(normalized_symbol) is None:
-                errors.append(
-                    f"extension_manifest.json {label}.symbol has invalid native "
-                    f"symbol {normalized_symbol!r}"
-                )
-                continue
-        if binding == "direct_symbol" and normalized_symbol is None:
-            errors.append(
-                f"extension_manifest.json {label} direct_symbol binding requires symbol"
-            )
-            continue
-
-        normalized_provider_module: str | None = None
-        if provider_module is not None:
-            if binding != "module_attr":
-                errors.append(
-                    f"extension_manifest.json {label}.provider_module is only valid "
-                    "for module_attr binding"
-                )
-                continue
-            try:
-                normalized_provider_module = canonical_python_module_name(
-                    provider_module,
-                    field=f"extension_manifest.json {label}.provider_module",
-                )
-            except ValueError as exc:
-                errors.append(str(exc))
-                continue
+        if export.provider_module is not None:
             if (
-                normalized_provider_module != package
-                and not normalized_provider_module.startswith(package + ".")
+                export.provider_module != package
+                and not export.provider_module.startswith(package + ".")
             ):
                 errors.append(
                     f"extension_manifest.json {label}.provider_module "
-                    f"{normalized_provider_module!r} escapes admitted package "
+                    f"{export.provider_module!r} escapes admitted package "
                     f"{package!r}"
                 )
                 continue
-
-        normalized_effects: list[str] = []
-        if isinstance(effects_raw, list):
-            normalized_effects = [
-                effect.strip()
-                for effect in effects_raw
-                if isinstance(effect, str) and effect.strip()
-            ]
-        if not isinstance(effects_raw, list) or len(normalized_effects) != len(
-            effects_raw
-        ):
-            errors.append(
-                f"extension_manifest.json {label}.effects must be a list of "
-                "non-empty strings"
-            )
-            continue
-        if not isinstance(deterministic, bool):
-            errors.append(
-                f"extension_manifest.json {label}.deterministic must be boolean"
-            )
-            continue
-
-        export = _ExternalNativeCallableExport(
-            module=module,
-            name=name,
-            binding=binding,
-            symbol=normalized_symbol,
-            provider_module=normalized_provider_module,
-            abi=normalized_abi,
-            effects=tuple(sorted(set(normalized_effects))),
-            deterministic=deterministic,
-        )
         if export.qualified_name in seen:
             errors.append(
                 f"extension_manifest.json {label} duplicates callable export "

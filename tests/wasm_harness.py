@@ -367,6 +367,9 @@ const taskWaitingOn = new Map();
 const runnableTasks = new Set();
 const runnableQueue = [];
 let codeSlots = null;
+const codeSlotByCode = new Map();
+const pendingFrameInvocations = [];
+const taskFrameContexts = new Map();
 const frameStack = [];
 let lastAttrName = null;
 let lastAttrObjType = null;
@@ -390,6 +393,8 @@ let lastBuiltinName = null;
 let recursionLimit = 1000;
 let recursionDepth = 0;
 const HEADER_SIZE = 40;
+// The harness owns this simulated header word; zero means not a task.
+const HEADER_TASK_KIND_OFFSET = HEADER_SIZE;
 const HEADER_POLL_FN_OFFSET = HEADER_SIZE - 8;
 const HEADER_STATE_OFFSET = HEADER_SIZE - 16;
 const HEADER_FLAGS_OFFSET = HEADER_SIZE - 32;
@@ -402,6 +407,7 @@ const GEN_YIELD_FROM_OFFSET = 40;
 const GEN_CONTROL_SIZE = 48;
 const TASK_KIND_FUTURE = 0n;
 const TASK_KIND_GENERATOR = 1n;
+const TASK_KIND_COROUTINE = 2n;
 const ASYNCGEN_OP_ANEXT = 0n;
 const ASYNCGEN_OP_ASEND = 1n;
 const ASYNCGEN_OP_ATHROW = 2n;
@@ -835,32 +841,6 @@ const getInstanceAttrMap = (objBits) => {
   }
   return attrs;
 };
-const callAsyncFunction = (funcBits, func, args) => {
-  const payload = [];
-  if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
-    payload.push(func.closure);
-  }
-  payload.push(...args);
-  let payloadBytes = payload.length * 8;
-  const sizeBits = lookupAttr(funcBits, '__molt_closure_size__');
-  if (sizeBits !== undefined && isIntLike(sizeBits)) {
-    const size = Number(unboxIntLike(sizeBits));
-    if (size > payloadBytes) {
-      payloadBytes = size;
-    }
-  }
-  const res = baseImports.alloc(payloadBytes);
-  if (isNone(res)) return res;
-  if (!memory) return boxNone();
-  const addr = ptrAddr(res);
-  const view = new DataView(memory.buffer);
-  for (let i = 0; i < payload.length; i += 1) {
-    view.setBigInt64(addr + i * 8, payload[i], true);
-  }
-  view.setUint32(addr - HEADER_POLL_FN_OFFSET, func.idx, true);
-  view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
-  return res;
-};
 const getTableFunc = (idx) => {
   if ((idx >>> 31) === 1) {
     return hostTable[idx & HOST_TABLE_MASK] ?? null;
@@ -869,14 +849,71 @@ const getTableFunc = (idx) => {
   return table.get(idx);
 };
 const DIRECT_CALL_MAX = 12;
-const functionNeedsTaskTrampoline = (funcBits) => {
-  const genBits = lookupAttr(funcBits, '__molt_is_generator__');
-  if (genBits !== undefined && isTruthyBits(genBits)) return true;
-  const coroBits = lookupAttr(funcBits, '__molt_is_coroutine__');
-  if (coroBits !== undefined && isTruthyBits(coroBits)) return true;
-  const asyncgenBits = lookupAttr(funcBits, '__molt_is_async_generator__');
-  if (asyncgenBits !== undefined && isTruthyBits(asyncgenBits)) return true;
-  return false;
+const CODE_EXECUTION_DIRECT = 0;
+const CODE_EXECUTION_GENERATOR = 1;
+const CODE_EXECUTION_COROUTINE = 2;
+const CODE_EXECUTION_ASYNC_GENERATOR = 3;
+const publishCodeExecutionKind = (code, executionKind) => {
+  if (code.executionKind !== null && code.executionKind !== undefined) {
+    if (code.executionKind !== executionKind) {
+      throw new Error('TypeError: code execution kind is already published');
+    }
+    return;
+  }
+  code.executionKind = executionKind;
+};
+const functionCodeExecutionKind = (func) => {
+  if (!func || func.codeBits === undefined) return null;
+  const code = getCode(func.codeBits);
+  if (!code) return null;
+  return code.executionKind ?? CODE_EXECUTION_DIRECT;
+};
+const functionNeedsTaskTrampoline = (func) => {
+  const executionKind = functionCodeExecutionKind(func);
+  return executionKind !== null && executionKind !== CODE_EXECUTION_DIRECT;
+};
+const functionRawPositionalCallNeedsBinding = (func, supplied) => {
+  if (!func || typeof func.builtinName === 'string') return true;
+  const attrs = func.attrs || new Map();
+  for (const name of ['__molt_bind_kind__', '__molt_vararg__', '__molt_varkw__']) {
+    const bits = attrs.get(name);
+    if (bits !== undefined && !isNone(bits)) return true;
+  }
+  const kwonlyBits = attrs.get('__molt_kwonly_names__');
+  if (kwonlyBits !== undefined && !isNone(kwonlyBits)) {
+    const kwonly = getTuple(kwonlyBits);
+    if (!kwonly || kwonly.items.length !== 0) return true;
+  }
+  const kwdefaultsBits = attrs.get('__kwdefaults__');
+  if (kwdefaultsBits !== undefined && !isNone(kwdefaultsBits)) {
+    const kwdefaults = getDict(kwdefaultsBits);
+    if (!kwdefaults || kwdefaults.entries.length !== 0) return true;
+  }
+  const defaultsBits = attrs.get('__defaults__');
+  let positionalDefaults = 0;
+  if (defaultsBits !== undefined && !isNone(defaultsBits)) {
+    const defaults = getTuple(defaultsBits);
+    if (!defaults) return true;
+    positionalDefaults = defaults.items.length;
+  }
+  return positionalDefaults !== 0 && supplied !== func.arity;
+};
+const functionDirectCallEligible = (funcBits, supplied, expectsClosure) => {
+  const func = getFunction(funcBits);
+  if (!func || !Number.isSafeInteger(supplied) || supplied < 0) return false;
+  const hasClosure = func.closure !== undefined && func.closure !== 0n;
+  if (
+    func.arity !== supplied ||
+    hasClosure !== expectsClosure ||
+    functionRawPositionalCallNeedsBinding(func, supplied)
+  ) {
+    return false;
+  }
+  const executionKind = functionCodeExecutionKind(func);
+  if (executionKind === null) {
+    return !func.trampoline;
+  }
+  return executionKind === CODE_EXECUTION_DIRECT;
 };
 const callFunctionTrampoline = (func, args) => {
   if (!memory) {
@@ -912,16 +949,34 @@ const callFunctionBits = (funcBits, args) => {
   if (!fn) {
     throw new Error('TypeError: call expects function object');
   }
-  if (functionNeedsTaskTrampoline(funcBits)) {
-    return callFunctionTrampoline(func, args);
+  const invoke = () => {
+    if (functionNeedsTaskTrampoline(func)) {
+      return callFunctionTrampoline(func, args);
+    }
+    if (func.trampoline && args.length > DIRECT_CALL_MAX && memory) {
+      return callFunctionTrampoline(func, args);
+    }
+    if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
+      return fn(func.closure, ...args);
+    }
+    return fn(...args);
+  };
+  const slot = codeSlotByCode.get(func.codeBits);
+  if (!slot) return invoke();
+  const context = {
+    codeBits: func.codeBits,
+    globalsBits: func.globalsBits,
+    builtinsBits:
+      func.builtinsBits === undefined
+        ? effectiveBuiltinsBits(func.globalsBits)
+        : func.builtinsBits,
+  };
+  const depth = pendingFrameInvocationPush(slot.slot, context);
+  try {
+    return invoke();
+  } finally {
+    pendingFrameInvocationPop(depth);
   }
-  if (func.trampoline && args.length > DIRECT_CALL_MAX && memory) {
-    return callFunctionTrampoline(func, args);
-  }
-  if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
-    return fn(func.closure, ...args);
-  }
-  return fn(...args);
 };
 const callCallable0 = (callableBits) => {
   const bound = getBoundMethod(callableBits);
@@ -2480,10 +2535,13 @@ const formatStringRepr = (text) => {
   out += quote;
   return out;
 };
-const isGenerator = (val) =>
-  isPtr(val) &&
-  !heap.has(val & POINTER_MASK) &&
-  !instanceClasses.has(ptrAddr(val));
+const isGenerator = (val) => {
+  if (!memory || !isPtr(val) || heap.has(val & POINTER_MASK)) return false;
+  const addr = ptrAddr(val);
+  return addr >= HEADER_SIZE && addr <= memory.buffer.byteLength &&
+    !instanceClasses.has(addr) &&
+    memView().getBigInt64(addr - HEADER_TASK_KIND_OFFSET, true) === TASK_KIND_GENERATOR + 1n;
+};
 const getList = (val) => {
   const obj = getObj(val);
   if (!obj || obj.type !== 'list') return null;
@@ -4186,6 +4244,32 @@ const exceptionPop = () => {
   return boxNone();
 };
 const FILE_NAME_BITS = boxPtr({ type: 'str', value: '__file__' });
+const BUILTINS_NAME_BITS = boxPtr({ type: 'str', value: '__builtins__' });
+const namespaceDictBits = (valueBits) => {
+  if (getDict(valueBits)) return valueBits;
+  const moduleObj = getModule(valueBits);
+  if (moduleObj && getDict(moduleObj.dictBits)) return moduleObj.dictBits;
+  return boxNone();
+};
+const fallbackBuiltinsBits = () => {
+  const moduleBits = moduleCache.get('builtins');
+  if (moduleBits === undefined) return boxNone();
+  return namespaceDictBits(moduleBits);
+};
+const effectiveBuiltinsBits = (globalsBits, fallbackBits = boxNone()) => {
+  const globals = getDict(globalsBits);
+  if (globals) {
+    const selected = dictGetValue(globals, BUILTINS_NAME_BITS);
+    if (selected !== null) {
+      const selectedDict = namespaceDictBits(selected);
+      if (!isNone(selectedDict)) return selectedDict;
+    }
+  }
+  if (!isNone(fallbackBits) && getDict(fallbackBits)) return fallbackBits;
+  return fallbackBuiltinsBits();
+};
+const activeFrameEntry = () =>
+  frameStack.length ? frameStack[frameStack.length - 1] : null;
 const frameLineFromCode = (codeBits) => {
   const codeObj = getCode(codeBits);
   if (!codeObj) return 0;
@@ -4213,32 +4297,6 @@ const codeIsModule = (codeBits) => {
   const name = getStrObj(codeObj.nameBits);
   return name === '<module>';
 };
-const frameGlobalsBitsForCode = (codeBits) => {
-  const codeObj = getCode(codeBits);
-  const filename = codeObj ? getStrObj(codeObj.filenameBits) : null;
-  if (filename !== null) {
-    for (const moduleBits of moduleCache.values()) {
-      const moduleObj = getModule(moduleBits);
-      if (!moduleObj) continue;
-      const dict = getDict(moduleObj.dictBits);
-      if (!dict) continue;
-      const fileBits = dictGetValue(dict, FILE_NAME_BITS);
-      if (fileBits === null) continue;
-      const moduleFile = getStrObj(fileBits);
-      if (moduleFile !== null && moduleFile === filename) {
-        return moduleObj.dictBits;
-      }
-    }
-  }
-  const mainBits = moduleCache.get('__main__');
-  if (mainBits !== undefined) {
-    const mainObj = getModule(mainBits);
-    if (mainObj && getDict(mainObj.dictBits)) {
-      return mainObj.dictBits;
-    }
-  }
-  return boxPtr({ type: 'dict', entries: [], lookup: new Map() });
-};
 const frameLocalsBitsForEntry = (entry, globalsBits) => {
   if (!isNone(entry.localsBits) && getDict(entry.localsBits)) {
     return entry.localsBits;
@@ -4248,9 +4306,11 @@ const frameLocalsBitsForEntry = (entry, globalsBits) => {
   }
   return boxPtr({ type: 'dict', entries: [], lookup: new Map() });
 };
-const frameStackPush = (codeBits) => {
+const frameStackPush = (codeBits, globalsBits, builtinsBits) => {
   frameStack.push({
     codeBits,
+    globalsBits,
+    builtinsBits,
     line: frameLineFromCode(codeBits),
     lasti: -1,
     traceEvents: 0,
@@ -4279,6 +4339,54 @@ const frameStackPop = () => {
     frameStack.pop();
   }
 };
+const cloneFrameContext = (context) => ({
+  codeBits: context.codeBits,
+  globalsBits: context.globalsBits,
+  builtinsBits: context.builtinsBits,
+});
+const pendingFrameInvocationPush = (slot, context) => {
+  const depth = pendingFrameInvocations.length;
+  pendingFrameInvocations.push({
+    slot,
+    context: cloneFrameContext(context),
+  });
+  return depth;
+};
+const pendingFrameInvocationPop = (depth) => {
+  if (depth !== pendingFrameInvocations.length - 1) {
+    throw new Error('compiled invocation custody is not LIFO');
+  }
+  pendingFrameInvocations.pop();
+};
+const frameContextForTaskConstruction = (pollFn) => {
+  const pending = pendingFrameInvocations[pendingFrameInvocations.length - 1];
+  if (!pending || pending.context === null) return null;
+  const code = getCode(pending.context.codeBits);
+  const target = BigInt(pollFn);
+  if (!code || target === 0n || code.callableFnPtr !== target) return null;
+  return cloneFrameContext(pending.context);
+};
+const taskFrameContextCapture = (addr, pollFn) => {
+  const context = frameContextForTaskConstruction(pollFn);
+  if (context !== null) taskFrameContexts.set(addr, context);
+};
+const taskFrameContextForget = (addr) => {
+  taskFrameContexts.delete(addr);
+};
+const taskPollWithFrameContext = (addr, poll) => {
+  const context = taskFrameContexts.get(addr);
+  if (context === undefined) return poll(BigInt(addr));
+  const slot = codeSlotByCode.get(context.codeBits);
+  if (!slot) {
+    throw new Error('compiled task context references an unbound code slot');
+  }
+  const depth = pendingFrameInvocationPush(slot.slot, context);
+  try {
+    return poll(BigInt(addr));
+  } finally {
+    pendingFrameInvocationPop(depth);
+  }
+};
 const frameObjectBits = (entry, backBits) => {
   if (!memory) return boxNone();
   const classBits = getFrameType();
@@ -4288,13 +4396,14 @@ const frameObjectBits = (entry, backBits) => {
   if (attrs) {
     const line = frameLineFromEntry(entry);
     const lasti = frameLastiFromEntry(entry);
-    const globalsBits = frameGlobalsBitsForCode(entry.codeBits);
+    const globalsBits = entry.globalsBits;
     const localsBits = frameLocalsBitsForEntry(entry, globalsBits);
     attrs.set('f_code', entry.codeBits);
     attrs.set('f_lineno', boxInt(BigInt(line)));
     attrs.set('f_lasti', boxInt(BigInt(lasti)));
     attrs.set('f_back', backBits);
     attrs.set('f_globals', globalsBits);
+    attrs.set('f_builtins', entry.builtinsBits);
     attrs.set('f_locals', localsBits);
   }
   return frameBits;
@@ -4475,6 +4584,7 @@ const generatorClearIntrospection = (addr) => {
   generatorSetYieldFromBits(addr, boxNone());
   generatorSetFrameBits(addr, boxNone());
   generatorSetRunning(addr, false);
+  taskFrameContextForget(addr);
 };
 const frameNew = (lasti) => {
   const addr = allocRaw(8);
@@ -4530,7 +4640,9 @@ const generatorResume = (gen) => {
   generatorSetRunning(addr, true);
   let res;
   try {
-    res = poll ? poll(BigInt(addr)) : tupleFromArray([boxNone(), boxBool(true)]);
+    res = poll
+      ? taskPollWithFrameContext(addr, poll)
+      : tupleFromArray([boxNone(), boxBool(true)]);
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(addr, false);
@@ -4608,7 +4720,9 @@ const generatorSend = (gen, sendVal) => {
   generatorSetRunning(addr, true);
   let res;
   try {
-    res = poll ? poll(BigInt(addr)) : tupleFromArray([boxNone(), boxBool(true)]);
+    res = poll
+      ? taskPollWithFrameContext(addr, poll)
+      : tupleFromArray([boxNone(), boxBool(true)]);
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(addr, false);
@@ -4684,7 +4798,7 @@ const generatorThrow = (gen, exc) => {
   generatorSetRunning(addr, true);
   let res;
   try {
-    res = poll(BigInt(addr));
+    res = taskPollWithFrameContext(addr, poll);
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(addr, false);
@@ -4759,7 +4873,7 @@ const generatorClose = (gen) => {
   generatorSetRunning(addr, true);
   let res;
   try {
-    res = poll(BigInt(addr));
+    res = taskPollWithFrameContext(addr, poll);
   } finally {
     generatorRaise = prevRaise;
     generatorSetRunning(addr, false);
@@ -5135,15 +5249,14 @@ const asyncgenFutureNew = (asyncgenBits, opKind, argBits) => {
     if (pollIdx === null) return boxNone();
     asyncgenPollIdx = pollIdx;
   }
-  const addr = allocRaw(24);
-  if (!addr) return boxNone();
+  const taskBits = baseImports.task_new(BigInt(pollIdx), 24n, TASK_KIND_FUTURE);
+  if (isNone(taskBits)) return taskBits;
+  const addr = ptrAddr(taskBits);
   const view = new DataView(memory.buffer);
-  view.setUint32(addr - HEADER_POLL_FN_OFFSET, pollIdx, true);
-  view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
   view.setBigInt64(addr + 0, asyncgenBits, true);
   view.setBigInt64(addr + 8, boxInt(opKind), true);
   view.setBigInt64(addr + 16, argBits, true);
-  return boxPtrAddr(addr);
+  return taskBits;
 };
 const asyncgenAiterMethod = (selfBits) => selfBits;
 const asyncgenAnextMethod = (selfBits) =>
@@ -6669,11 +6782,12 @@ BASE_IMPORTS = """\
     asyncRaise = true;
     let res;
     try {
-      res = poll(BigInt(awaitAddr));
+      res = taskPollWithFrameContext(awaitAddr, poll);
     } finally {
       asyncRaise = prevAsync;
     }
     if (isPending(res)) return res;
+    taskFrameContextForget(awaitAddr);
     if (exceptionPending() !== 0n) {
       const excBits = exceptionLast();
       const kindBits = exceptionKind(excBits);
@@ -6718,10 +6832,11 @@ BASE_IMPORTS = """\
     asyncRaise = true;
     let res;
     try {
-      res = poll(BigInt(addr));
+      res = taskPollWithFrameContext(addr, poll);
     } finally {
       asyncRaise = prevAsync;
     }
+    if (!isPending(res)) taskFrameContextForget(addr);
     if (currentTaskPtr !== 0 && addr !== currentTaskPtr) {
       if (isPending(res)) {
         taskWaitingOn.set(currentTaskPtr, ptrBits);
@@ -8389,8 +8504,15 @@ BASE_IMPORTS = """\
   },
   module_get_global: (moduleBits, nameBits) => {
     const name = getStrObj(nameBits);
-    const moduleObj = getModule(moduleBits);
-    if (!moduleObj || name === null) {
+    const active = activeFrameEntry();
+    let globalsBits = active ? active.globalsBits : boxNone();
+    let dict = getDict(globalsBits);
+    if (!dict) {
+      const moduleObj = getModule(moduleBits);
+      globalsBits = moduleObj ? moduleObj.dictBits : boxNone();
+      dict = getDict(globalsBits);
+    }
+    if (!dict || name === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
@@ -8399,20 +8521,31 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
-    const dict = getDict(moduleObj.dictBits);
-    if (!dict) {
-      const exc = exceptionNew(
-        boxPtr({ type: 'str', value: 'TypeError' }),
-        exceptionArgs(boxPtr({ type: 'str', value: 'module dict missing' })),
-      );
-      return raiseException(exc);
-    }
     const val = dictGetValue(dict, nameBits);
     if (val !== null) return val;
+    const builtinsBits = active
+      ? active.builtinsBits
+      : effectiveBuiltinsBits(globalsBits);
+    const builtins = getDict(builtinsBits);
+    if (builtins) {
+      const builtin = dictGetValue(builtins, nameBits);
+      if (builtin !== null) return builtin;
+    }
     const exc = exceptionNew(
       boxPtr({ type: 'str', value: 'NameError' }),
       exceptionArgs(
         boxPtr({ type: 'str', value: `name '${name}' is not defined` }),
+      ),
+    );
+    return raiseException(exc);
+  },
+  globals_builtin: () => {
+    const active = activeFrameEntry();
+    if (active && getDict(active.globalsBits)) return active.globalsBits;
+    const exc = exceptionNew(
+      boxPtr({ type: 'str', value: 'SystemError' }),
+      exceptionArgs(
+        boxPtr({ type: 'str', value: 'Python frame has no bound globals namespace' }),
       ),
     );
     return raiseException(exc);
@@ -10198,22 +10331,29 @@ BASE_IMPORTS = """\
     return callCallable0(attr);
   },
   task_new: (pollFn, closureSize, kind) => {
-    if (kind === TASK_KIND_GENERATOR) {
-      return baseImports.generator_new(pollFn, closureSize);
-    }
-    if (kind !== TASK_KIND_FUTURE) {
+    if (kind !== TASK_KIND_GENERATOR && kind !== TASK_KIND_FUTURE && kind !== TASK_KIND_COROUTINE) {
       throw new Error(`TypeError: unknown task kind ${kind}`);
     }
     const size = Number(closureSize);
+    if (kind === TASK_KIND_GENERATOR && size < GEN_CONTROL_SIZE) {
+      throw new Error('TypeError: generator task closure too small');
+    }
     const addr = allocRaw(size);
     if (!addr || !memory) return boxNone();
     const view = new DataView(memory.buffer);
+    view.setBigInt64(addr - HEADER_TASK_KIND_OFFSET, kind + 1n, true);
     view.setBigInt64(addr - HEADER_POLL_FN_OFFSET, pollFn, true);
     view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
     const slots = Math.floor(size / 8);
     for (let i = 0; i < slots; i += 1) {
       view.setBigInt64(addr + i * 8, boxNone(), true);
     }
+    if (kind === TASK_KIND_GENERATOR) {
+      view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(false), true);
+      view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(1), true);
+      view.setBigInt64(addr + GEN_FRAME_OFFSET, frameNew(-1), true);
+    }
+    taskFrameContextCapture(addr, pollFn);
     return boxPtrAddr(addr);
   },
   task_register_token_owned: (taskBits, tokenBits) => {
@@ -10229,27 +10369,6 @@ BASE_IMPORTS = """\
     const tokenId = tokenIdFromBits(tokenBits);
     registerTaskToken(addr, tokenId === 0n ? 1n : tokenId);
     return boxNone();
-  },
-  generator_new: (pollFn, closureSize) => {
-    const size = Number(closureSize);
-    const addr = allocRaw(size);
-    if (!addr || !memory) return boxNone();
-    const view = new DataView(memory.buffer);
-    view.setBigInt64(addr - HEADER_POLL_FN_OFFSET, pollFn, true);
-    view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
-    const slots = Math.floor(size / 8);
-    for (let i = 0; i < slots; i += 1) {
-      view.setBigInt64(addr + i * 8, boxNone(), true);
-    }
-    if (size >= GEN_CONTROL_SIZE) {
-      view.setBigInt64(addr + GEN_SEND_OFFSET, boxNone(), true);
-      view.setBigInt64(addr + GEN_THROW_OFFSET, boxNone(), true);
-      view.setBigInt64(addr + GEN_CLOSED_OFFSET, boxBool(false), true);
-      view.setBigInt64(addr + GEN_EXC_DEPTH_OFFSET, boxInt(1), true);
-      view.setBigInt64(addr + GEN_FRAME_OFFSET, frameNew(-1), true);
-      view.setBigInt64(addr + GEN_YIELD_FROM_OFFSET, boxNone(), true);
-    }
-    return boxPtrAddr(addr);
   },
   asyncgen_new: (genBits) => {
     if (!isGenerator(genBits)) {
@@ -10298,14 +10417,10 @@ BASE_IMPORTS = """\
   is_generator: (val) => boxBool(isGenerator(val)),
   is_bound_method: (val) => boxBool(isBoundMethod(val)),
   function_is_generator: (val) => {
-    const attr = lookupAttr(val, '__molt_is_generator__');
-    if (attr === undefined) return boxBool(false);
-    return boxBool(isTruthyBits(attr));
+    return boxBool(functionCodeExecutionKind(getFunction(val)) === CODE_EXECUTION_GENERATOR);
   },
   function_is_coroutine: (val) => {
-    const attr = lookupAttr(val, '__molt_is_coroutine__');
-    if (attr === undefined) return boxBool(false);
-    return boxBool(isTruthyBits(attr));
+    return boxBool(functionCodeExecutionKind(getFunction(val)) === CODE_EXECUTION_COROUTINE);
   },
   function_default_kind: (val) => {
     const func = getFunction(val);
@@ -10656,37 +10771,6 @@ BASE_IMPORTS = """\
         `TypeError: call arity mismatch (expected ${func.arity}, got ${finalArgs.length})`,
       );
     }
-    const isGenBits = attrs.get('__molt_is_generator__');
-    if (isGenBits !== undefined && isTruthyBits(isGenBits)) {
-      const payload = [];
-      if (func.closure && func.closure !== 0n && isPtr(func.closure)) {
-        payload.push(func.closure);
-      }
-      payload.push(...finalArgs);
-      let payloadBytes = payload.length * 8;
-      const sizeBits = attrs.get('__molt_closure_size__');
-      if (sizeBits !== undefined && isIntLike(sizeBits)) {
-        const size = Number(unboxIntLike(sizeBits));
-        if (size > payloadBytes) {
-          payloadBytes = size;
-        }
-      }
-      const genBits = baseImports.generator_new(
-        BigInt(func.idx),
-        BigInt(payloadBytes),
-      );
-      if (isNone(genBits) || !memory) return genBits;
-      const addr = ptrAddr(genBits);
-      const view = new DataView(memory.buffer);
-      for (let i = 0; i < payload.length; i += 1) {
-        view.setBigInt64(
-          addr + GEN_CONTROL_SIZE + i * 8,
-          payload[i],
-          true,
-        );
-      }
-      return genBits;
-    }
     return callFunctionBits(funcBits, finalArgs);
   },
   call_bind_ic: (_siteBits, callBits, builderBits) =>
@@ -10701,6 +10785,14 @@ BASE_IMPORTS = """\
     return boxBool(attr !== undefined);
   },
   is_function_obj: (val) => boxBool(getFunction(val) !== null),
+  function_direct_call_eligible: (funcBits, supplied, expectsClosure) =>
+    functionDirectCallEligible(
+      funcBits,
+      Number(supplied),
+      expectsClosure !== 0n,
+    )
+      ? 1n
+      : 0n,
   index: (seq, idxBits) => {
     const list = getList(seq);
     const tup = getTuple(seq);
@@ -12715,17 +12807,8 @@ BASE_IMPORTS = """\
       memAddr: addr || null,
     });
   },
-  func_new_closure: (fnIdx, trampolineIdx, arity, closureBits) => {
-    const bits = baseImports.func_new(fnIdx, trampolineIdx, arity);
-    const func = getFunction(bits);
-    if (func) {
-      func.closure = closureBits;
-      if (func.memAddr && memory) {
-        const view = new DataView(memory.buffer);
-        view.setBigInt64(func.memAddr + 24, closureBits, true);
-      }
-    }
-    return bits;
+  func_new_closure: (_fnIdx, _trampolineIdx, _arity, _closureBits) => {
+    throw new Error('Unsupported: lexical cells require the linked Molt runtime');
   },
   bound_method_new: (funcBits, selfBits) => {
     const addr = allocRaw(16);
@@ -12931,10 +13014,25 @@ BASE_IMPORTS = """\
   trace_enter_slot: (codeId) => {
     const idx = Number(codeId);
     let codeBits = boxNone();
+    let globalsBits = boxNone();
+    let builtinsBits = boxNone();
     if (codeSlots && Number.isSafeInteger(idx) && idx >= 0 && idx < codeSlots.length) {
-      codeBits = codeSlots[idx];
+      const pending = pendingFrameInvocations[pendingFrameInvocations.length - 1];
+      if (pending && pending.slot === idx && pending.context !== null) {
+        codeBits = pending.context.codeBits;
+        globalsBits = pending.context.globalsBits;
+        builtinsBits = pending.context.builtinsBits;
+        pending.context = null;
+      } else {
+        const slot = codeSlots[idx];
+        if (slot) {
+          codeBits = slot.codeBits;
+          globalsBits = slot.globalsBits;
+          builtinsBits = effectiveBuiltinsBits(globalsBits);
+        }
+      }
     }
-    frameStackPush(codeBits);
+    frameStackPush(codeBits, globalsBits, builtinsBits);
     return codeBits;
   },
   trace_set_line: (lineBits) => {
@@ -12963,10 +13061,10 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
-    codeSlots = new Array(count).fill(boxNone());
+    codeSlots = new Array(count).fill(null);
     return boxNone();
   },
-  code_slot_set: (codeIdBits, codeBits) => {
+  code_slot_set: (codeIdBits, codeBits, globalsBits) => {
     if (codeSlots === null) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'RuntimeError' }),
@@ -12984,7 +13082,7 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
-    if (!isNone(codeBits) && !getCode(codeBits)) {
+    if (!getCode(codeBits)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
@@ -12993,7 +13091,61 @@ BASE_IMPORTS = """\
       );
       return raiseException(exc);
     }
-    codeSlots[idx] = codeBits;
+    if (!getDict(globalsBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code slot expects globals dictionary' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    const previousSlot = codeSlotByCode.get(codeBits);
+    if (previousSlot && previousSlot.slot !== idx) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'SystemError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'code object cannot move between compiled slots' })),
+      );
+      return raiseException(exc);
+    }
+    const slot = { slot: idx, codeBits, globalsBits };
+    codeSlots[idx] = slot;
+    codeSlotByCode.set(codeBits, slot);
+    return boxNone();
+  },
+  frame_invocation_enter: (calleeBits) => {
+    const bound = getBoundMethod(calleeBits);
+    const callableBits = bound ? bound.func : calleeBits;
+    const callable = getFunction(callableBits);
+    if (!callable) return 1n;
+    const slot = codeSlotByCode.get(callable.codeBits);
+    if (!slot) return 1n;
+    if (!getDict(callable.globalsBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'SystemError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'compiled invocation has no globals namespace' }),
+        ),
+      );
+      raiseException(exc);
+      return 0n;
+    }
+    const context = {
+      codeBits: callable.codeBits,
+      globalsBits: callable.globalsBits,
+      builtinsBits:
+        callable.builtinsBits === undefined
+          ? effectiveBuiltinsBits(callable.globalsBits)
+          : callable.builtinsBits,
+    };
+    const depth = pendingFrameInvocationPush(slot.slot, context);
+    return BigInt(depth + 2);
+  },
+  frame_invocation_exit: (token) => {
+    const raw = Number(token);
+    if (raw === 0 || raw === 1) return boxNone();
+    const depth = raw - 2;
+    pendingFrameInvocationPop(depth);
     return boxNone();
   },
   code_new: (
@@ -13107,6 +13259,8 @@ BASE_IMPORTS = """\
       argcount,
       posonlyargcount,
       kwonlyargcount,
+      callableFnPtr: 0n,
+      executionKind: null,
     });
   },
   compile_builtin: (
@@ -14436,15 +14590,14 @@ BASE_IMPORTS = """\
       if (pollIdx === null) return boxNone();
       anextDefaultPollIdx = pollIdx;
     }
-    const addr = allocRaw(24);
-    if (!addr) return boxNone();
+    const taskBits = baseImports.task_new(BigInt(pollIdx), 24n, TASK_KIND_FUTURE);
+    if (isNone(taskBits)) return taskBits;
+    const addr = ptrAddr(taskBits);
     const view = new DataView(memory.buffer);
-    view.setUint32(addr - HEADER_POLL_FN_OFFSET, pollIdx, true);
-    view.setBigInt64(addr - HEADER_STATE_OFFSET, 0n, true);
     view.setBigInt64(addr + 0, iterBits, true);
     view.setBigInt64(addr + 8, defaultBits, true);
     view.setBigInt64(addr + 16, boxNone(), true);
-    return boxPtrAddr(addr);
+    return taskBits;
   },
   print_builtin: (argsBits, sepBits, endBits, fileBits, flushBits) => {
     const args = getTuple(argsBits);
@@ -14665,8 +14818,91 @@ BASE_IMPORTS = """\
   chan_try_recv: (chan) => baseImports.chan_recv(chan),
   func_new_builtin: (fnIdx, trampolineIdx, arity) =>
     baseImports.func_new(fnIdx, trampolineIdx, arity),
+  function_init_metadata_packed: (funcBits, metadataBits, codeBits, bindKindBits) => {
+    const funcObj = getFunction(funcBits);
+    if (!funcObj) {
+      throw new Error('TypeError: expected function');
+    }
+    const metadata = getTuple(metadataBits);
+    if (!metadata || metadata.items.length !== 14) {
+      throw new Error('TypeError: metadata tuple must contain 14 items');
+    }
+    const lexicalNames = metadata.items.slice(12).map((bits) => {
+      const names = getTuple(bits);
+      if (!names || !names.items.every((item) => getStrObj(item) !== null)) {
+        throw new Error('TypeError: code lexical names must be tuples of str');
+      }
+      return names.items;
+    });
+    // The JavaScript import fixture is not the linked Molt runtime. Never
+    // pretend its closure payload implements Python cell ownership/protocol.
+    if (lexicalNames.some((names) => names.length !== 0)) {
+      throw new Error('Unsupported: lexical cells require the linked Molt runtime');
+    }
+    const executionKindBits = metadata.items[11];
+    if (!isIntLike(executionKindBits)) {
+      throw new Error('TypeError: metadata execution kind must be an int in range 0..=3');
+    }
+    const executionKind = Number(unboxIntLike(executionKindBits));
+    if (
+      !Number.isSafeInteger(executionKind) ||
+      executionKind < CODE_EXECUTION_DIRECT ||
+      executionKind > CODE_EXECUTION_ASYNC_GENERATOR
+    ) {
+      throw new Error('TypeError: metadata execution kind must be an int in range 0..=3');
+    }
+    const code = isNone(codeBits) ? null : getCode(codeBits);
+    if (!isNone(codeBits) && !code) {
+      throw new Error('TypeError: expected code object');
+    }
+    if (!code && executionKind !== CODE_EXECUTION_DIRECT) {
+      throw new Error('TypeError: task execution kind requires a code object');
+    }
+    if (
+      code &&
+      code.executionKind !== null &&
+      code.executionKind !== undefined &&
+      code.executionKind !== executionKind
+    ) {
+      throw new Error('TypeError: code execution kind is already published');
+    }
+    const metadataNames = [
+      '__name__',
+      '__qualname__',
+      '__module__',
+      '__molt_arg_names__',
+      '__molt_posonly__',
+      '__molt_kwonly_names__',
+      '__molt_vararg__',
+      '__molt_varkw__',
+      '__defaults__',
+      '__kwdefaults__',
+      '__doc__',
+    ];
+    for (let i = 0; i < metadataNames.length; i += 1) {
+      funcObj.attrs.set(metadataNames[i], metadata.items[i]);
+    }
+    if (!isNone(bindKindBits)) {
+      funcObj.attrs.set('__molt_bind_kind__', bindKindBits);
+    }
+    funcObj.codeBits = codeBits;
+    if (code) {
+      if (code.callableFnPtr === 0n && funcObj.idx !== 0) {
+        code.callableFnPtr = BigInt(funcObj.idx);
+      }
+      publishCodeExecutionKind(code, executionKind);
+    }
+    const slot = codeSlotByCode.get(codeBits);
+    funcObj.globalsBits = slot ? slot.globalsBits : boxNone();
+    const active = activeFrameEntry();
+    const fallbackBuiltins = active ? active.builtinsBits : boxNone();
+    funcObj.builtinsBits = effectiveBuiltinsBits(
+      funcObj.globalsBits,
+      fallbackBuiltins,
+    );
+    return boxNone();
+  },
   function_set_builtin: (_funcBits) => boxNone(),
-  fn_ptr_code_set: (_fnPtr, _codeBits) => boxNone(),
   asyncgen_hooks_get: () => boxNone(),
   asyncgen_hooks_set: (_hooks, _finalizer) => boxNone(),
   asyncgen_locals: (_obj) => boxNone(),

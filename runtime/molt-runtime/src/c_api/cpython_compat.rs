@@ -659,15 +659,15 @@ pub extern "C" fn PyNumber_Remainder(a: u64, b: u64) -> u64 {
     })
 }
 
-/// `PyNumber_Power(a, b, mod_)` — return `pow(a, b)`.
-/// The `mod_` argument is accepted for API compatibility but only plain
-/// two-argument power is used when `mod_` is None/0.
+/// `PyNumber_Power(a, b, mod_)` — return `pow(a, b, mod_)`.
+/// Canonical None selects two-argument power; every other bit pattern is a
+/// present modulus, including float +0.0 (`0`), float -0.0, and integer zero.
 pub extern "C" fn PyNumber_Power(a: u64, b: u64, mod_: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = if mod_ != 0 && !obj_from_bits(mod_).is_none() {
-            molt_pow_mod(a, b, mod_)
-        } else {
+        let res = if obj_from_bits(mod_).is_none() {
             molt_pow(a, b)
+        } else {
+            molt_pow_mod(a, b, mod_)
         };
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {

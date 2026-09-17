@@ -48,7 +48,7 @@ from molt.cli.models import (
     _StagedExternalPackageNativeArtifact,
 )
 from molt.cli.module_resolution import _case_exact_file
-from molt.cli.python_module_names import canonical_python_module_names
+from molt.python_module_names import canonical_python_module_names
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface

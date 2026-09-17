@@ -34,38 +34,14 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![
-                OpIR {
-                    kind: "const_bool".to_string(),
-                    out: Some("flag".to_string()),
-                    value: Some(1),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("closure_size".to_string()),
-                    value: Some(3),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "func_new_closure".to_string(),
-                    out: Some("poll_obj".to_string()),
-                    s_value: Some("worker_poll".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "set_attr_generic_obj".to_string(),
-                    s_value: Some("__molt_is_coroutine__".to_string()),
-                    args: Some(vec!["poll_obj".to_string(), "flag".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "set_attr_generic_obj".to_string(),
-                    s_value: Some("__molt_closure_size__".to_string()),
-                    args: Some(vec!["poll_obj".to_string(), "closure_size".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
+            ops: vec![OpIR {
+                kind: "func_new_closure".to_string(),
+                out: Some("poll_obj".to_string()),
+                s_value: Some("worker_poll".to_string()),
+                task_kind: Some("coroutine".to_string()),
+                task_closure_size: Some(3),
+                ..OpIR::default()
+            }],
             param_types: None,
             source_file: None,
             is_extern: false,

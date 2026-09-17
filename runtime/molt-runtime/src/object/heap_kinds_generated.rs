@@ -57,10 +57,11 @@ pub(crate) const TYPE_ID_FOREIGN: u32 = 254;
 pub(crate) const TYPE_ID_WEAK_CONTAINER_STATE: u32 = 255;
 pub(crate) const TYPE_ID_WEAKREF: u32 = 256;
 pub(crate) const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
+pub(crate) const TYPE_ID_CELL: u32 = 258;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_NATIVE_DESCRIPTOR;
-pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 57] = [
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CELL;
+pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -118,6 +119,7 @@ pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 57] = [
     TYPE_ID_WEAK_CONTAINER_STATE,
     TYPE_ID_WEAKREF,
     TYPE_ID_NATIVE_DESCRIPTOR,
+    TYPE_ID_CELL,
 ];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapLayoutPolicy {
@@ -185,6 +187,7 @@ pub(crate) enum HeapDropPolicy {
     Bytearray,
     CallIter,
     Callargs,
+    Cell,
     Classmethod,
     Code,
     ContextManager,
@@ -258,6 +261,7 @@ pub(crate) enum HeapExternalGcPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicCapability {
     CodeMetadata,
+    IntCells,
     IntTriplet,
     None,
 }
@@ -273,6 +277,7 @@ pub(crate) enum HeapAcyclicEdgeDomain {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapAcyclicSlot {
+    Buffer2dCell,
     RangeStart,
     RangeStop,
     RangeStep,
@@ -286,6 +291,8 @@ pub(crate) enum HeapAcyclicSlot {
     CodeKwonly,
     CodeVararg,
     CodeVarkw,
+    CodeFreevars,
+    CodeCellvars,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -356,6 +363,7 @@ pub(crate) enum HeapLifecycleHandler {
     WeakContainerState,
     Weakref,
     NativeDescriptor,
+    Cell,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -376,7 +384,7 @@ pub(crate) struct HeapKindDescriptor {
     pub(crate) acyclic: HeapAcyclicCapability,
 }
 
-pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 59] = [
+pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 60] = [
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_OBJECT,
         name: "OBJECT",
@@ -637,8 +645,8 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 59] = [
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_BUFFER2D,
         name: "BUFFER2D",
-        layout: HeapLayoutPolicy::Boxed,
-        edges: HeapEdgePolicy::None,
+        layout: HeapLayoutPolicy::InlineRust,
+        edges: HeapEdgePolicy::Dynamic,
         cycle: HeapCyclePolicy::Never,
         weakref: HeapWeakrefPolicy::Deny,
         shape: HeapShapePolicy::Fixed,
@@ -648,7 +656,7 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 59] = [
         handler: HeapLifecycleHandler::Buffer2d,
         publication: HeapPublicationPolicy::Python,
         external_gc: HeapExternalGcPolicy::None,
-        acyclic: HeapAcyclicCapability::None,
+        acyclic: HeapAcyclicCapability::IntCells,
     }),
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_CONTEXT_MANAGER,
@@ -1291,6 +1299,22 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 59] = [
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
     }),
+    Some(HeapKindDescriptor {
+        type_id: TYPE_ID_CELL,
+        name: "CELL",
+        layout: HeapLayoutPolicy::FixedBits,
+        edges: HeapEdgePolicy::Fixed,
+        cycle: HeapCyclePolicy::Always,
+        weakref: HeapWeakrefPolicy::Deny,
+        shape: HeapShapePolicy::Fixed,
+        drop: HeapDropPolicy::Cell,
+        metrics: HeapMetricsPolicy::None,
+        track: HeapTrackProjection::Always,
+        handler: HeapLifecycleHandler::Cell,
+        publication: HeapPublicationPolicy::Python,
+        external_gc: HeapExternalGcPolicy::None,
+        acyclic: HeapAcyclicCapability::None,
+    }),
 ];
 
 #[inline(always)]
@@ -1369,6 +1393,7 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapTrackProjection::Always),
         TYPE_ID_WEAKREF => Some(HeapTrackProjection::Always),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapTrackProjection::Always),
+        TYPE_ID_CELL => Some(HeapTrackProjection::Always),
         _ => None,
     }
 }
@@ -1433,6 +1458,7 @@ pub(crate) const fn heap_drop_policy(type_id: u32) -> Option<HeapDropPolicy> {
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapDropPolicy::WeakContainer),
         TYPE_ID_WEAKREF => Some(HeapDropPolicy::ObjectShape),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapDropPolicy::NativeDescriptor),
+        TYPE_ID_CELL => Some(HeapDropPolicy::Cell),
         _ => None,
     }
 }
@@ -1497,6 +1523,7 @@ pub(crate) const fn heap_metrics_policy(type_id: u32) -> Option<HeapMetricsPolic
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapMetricsPolicy::None),
         TYPE_ID_WEAKREF => Some(HeapMetricsPolicy::None),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapMetricsPolicy::None),
+        TYPE_ID_CELL => Some(HeapMetricsPolicy::None),
         _ => None,
     }
 }
@@ -1561,6 +1588,7 @@ pub(crate) const fn heap_weakref_policy(type_id: u32) -> Option<HeapWeakrefPolic
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_WEAKREF => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapWeakrefPolicy::Deny),
+        TYPE_ID_CELL => Some(HeapWeakrefPolicy::Deny),
         _ => None,
     }
 }
@@ -1625,6 +1653,7 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapCyclePolicy::Always),
         TYPE_ID_WEAKREF => Some(HeapCyclePolicy::Always),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapCyclePolicy::Always),
+        TYPE_ID_CELL => Some(HeapCyclePolicy::Always),
         _ => None,
     }
 }
@@ -1648,7 +1677,7 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_SLICE => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_EXCEPTION => Some(HeapLayoutPolicy::Exception),
         TYPE_ID_DATACLASS => Some(HeapLayoutPolicy::Dynamic),
-        TYPE_ID_BUFFER2D => Some(HeapLayoutPolicy::Boxed),
+        TYPE_ID_BUFFER2D => Some(HeapLayoutPolicy::InlineRust),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_FILE_HANDLE => Some(HeapLayoutPolicy::Boxed),
         TYPE_ID_MEMORYVIEW => Some(HeapLayoutPolicy::Memoryview),
@@ -1689,6 +1718,7 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapLayoutPolicy::Boxed),
         TYPE_ID_WEAKREF => Some(HeapLayoutPolicy::Object),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapLayoutPolicy::FixedBits),
+        TYPE_ID_CELL => Some(HeapLayoutPolicy::FixedBits),
         _ => None,
     }
 }
@@ -1753,6 +1783,7 @@ pub(crate) const fn heap_shape_policy(type_id: u32) -> Option<HeapShapePolicy> {
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapShapePolicy::Fixed),
         TYPE_ID_WEAKREF => Some(HeapShapePolicy::Class),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapShapePolicy::Fixed),
+        TYPE_ID_CELL => Some(HeapShapePolicy::Fixed),
         _ => None,
     }
 }
@@ -1817,6 +1848,7 @@ pub(crate) const fn heap_publication_policy(type_id: u32) -> Option<HeapPublicat
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapPublicationPolicy::Python),
         TYPE_ID_WEAKREF => Some(HeapPublicationPolicy::Python),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapPublicationPolicy::Python),
+        TYPE_ID_CELL => Some(HeapPublicationPolicy::Python),
         _ => None,
     }
 }
@@ -1881,6 +1913,7 @@ pub(crate) const fn heap_external_gc_policy(type_id: u32) -> Option<HeapExternal
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapExternalGcPolicy::None),
         TYPE_ID_WEAKREF => Some(HeapExternalGcPolicy::None),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapExternalGcPolicy::None),
+        TYPE_ID_CELL => Some(HeapExternalGcPolicy::None),
         _ => None,
     }
 }
@@ -1904,7 +1937,7 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_SLICE => Some(HeapAcyclicCapability::None),
         TYPE_ID_EXCEPTION => Some(HeapAcyclicCapability::None),
         TYPE_ID_DATACLASS => Some(HeapAcyclicCapability::None),
-        TYPE_ID_BUFFER2D => Some(HeapAcyclicCapability::None),
+        TYPE_ID_BUFFER2D => Some(HeapAcyclicCapability::IntCells),
         TYPE_ID_CONTEXT_MANAGER => Some(HeapAcyclicCapability::None),
         TYPE_ID_FILE_HANDLE => Some(HeapAcyclicCapability::None),
         TYPE_ID_MEMORYVIEW => Some(HeapAcyclicCapability::None),
@@ -1945,6 +1978,7 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapAcyclicCapability::None),
         TYPE_ID_WEAKREF => Some(HeapAcyclicCapability::None),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapAcyclicCapability::None),
+        TYPE_ID_CELL => Some(HeapAcyclicCapability::None),
         _ => None,
     }
 }
@@ -1952,6 +1986,7 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
 #[inline(always)]
 pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcyclicEdgeDomain {
     match slot {
+        HeapAcyclicSlot::Buffer2dCell => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStart => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStop => HeapAcyclicEdgeDomain::Int,
         HeapAcyclicSlot::RangeStep => HeapAcyclicEdgeDomain::Int,
@@ -1965,6 +2000,8 @@ pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcycl
         HeapAcyclicSlot::CodeKwonly => HeapAcyclicEdgeDomain::StrTuple,
         HeapAcyclicSlot::CodeVararg => HeapAcyclicEdgeDomain::StrOrNone,
         HeapAcyclicSlot::CodeVarkw => HeapAcyclicEdgeDomain::StrOrNone,
+        HeapAcyclicSlot::CodeFreevars => HeapAcyclicEdgeDomain::StrTuple,
+        HeapAcyclicSlot::CodeCellvars => HeapAcyclicEdgeDomain::StrTuple,
     }
 }
 
@@ -2028,6 +2065,7 @@ pub(crate) const fn heap_lifecycle_handler(type_id: u32) -> Option<HeapLifecycle
         TYPE_ID_WEAK_CONTAINER_STATE => Some(HeapLifecycleHandler::WeakContainerState),
         TYPE_ID_WEAKREF => Some(HeapLifecycleHandler::Weakref),
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapLifecycleHandler::NativeDescriptor),
+        TYPE_ID_CELL => Some(HeapLifecycleHandler::Cell),
         _ => None,
     }
 }
@@ -2103,6 +2141,7 @@ pub(crate) fn heap_kind_id_by_name(name: &str) -> Option<u32> {
         "WEAK_CONTAINER_STATE" => Some(TYPE_ID_WEAK_CONTAINER_STATE),
         "WEAKREF" => Some(TYPE_ID_WEAKREF),
         "NATIVE_DESCRIPTOR" => Some(TYPE_ID_NATIVE_DESCRIPTOR),
+        "CELL" => Some(TYPE_ID_CELL),
         _ => None,
     }
 }

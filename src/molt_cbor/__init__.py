@@ -1,4 +1,4 @@
-"""CPython fallback for Molt CBOR parsing."""
+"""CBOR parsing through the shared runtime codec authority."""
 
 from __future__ import annotations
 

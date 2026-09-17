@@ -1,4 +1,9 @@
-from molt.frontend import compile_to_tir
+import ast
+from pathlib import Path
+
+import pytest
+
+from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -67,42 +72,92 @@ show("str_find", s_find("na"))
     assert any(op.get("s_value") == "__main____show" for op in ops)
 
 
-def test_default_codec_is_msgpack():
-    src = """
-import molt_json
-x = molt_json.parse(42)
-"""
-    ir = compile_to_tir(src)
-    assert "msgpack_parse" in _op_kinds(ir)
-    assert "json_parse" not in _op_kinds(ir)
+@pytest.mark.parametrize(
+    "module", ["molt_json", "molt_msgpack", "molt_cbor", "molt_buffer"]
+)
+@pytest.mark.parametrize("from_import", [False, True])
+def test_runtime_packages_publish_real_import_bindings(module, from_import):
+    member = "new" if module == "molt_buffer" else "parse"
+    statement = (
+        f"from {module} import {member} as bound"
+        if from_import
+        else f"import {module} as bound"
+    )
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(statement))
+    ops = [op for fn in generator.funcs_map.values() for op in fn["ops"]]
+    names = {
+        op.result.name for op in ops if op.kind == "CONST_STR" and op.args == ["bound"]
+    }
+    publications = [
+        op
+        for op in ops
+        if op.kind == "MODULE_SET_ATTR"
+        and isinstance(op.args[1], MoltValue)
+        and op.args[1].name in names
+    ]
+    assert len(publications) == 1
+    origins = generator.imported_names if from_import else generator.imported_modules
+    assert origins["bound"] == module
 
 
-def test_json_codec_flag():
-    src = """
-import molt_json
-x = molt_json.parse(42)
-"""
-    ir = compile_to_tir(src, parse_codec="json")
-    assert "json_parse" in _op_kinds(ir)
-    assert "msgpack_parse" not in _op_kinds(ir)
+@pytest.mark.parametrize(
+    "module", ["molt_json", "molt_msgpack", "molt_cbor", "molt_buffer"]
+)
+@pytest.mark.parametrize(
+    "binding", ["direct", "alias", "from", "captured", "rebound", "shadowed", "mutated"]
+)
+def test_runtime_package_calls_use_live_callable(module, binding):
+    member = "new" if module == "molt_buffer" else "parse"
+    args = "2, 2" if module == "molt_buffer" else "'1'"
+    statements = {
+        "direct": f"import {module}\nx = {module}.{member}({args})",
+        "alias": f"import {module} as api\nx = api.{member}({args})",
+        "from": f"from {module} import {member} as invoke\nx = invoke({args})",
+        "captured": f"import {module}\ninvoke = {module}.{member}\nx = invoke({args})",
+        "rebound": f"import {module}\n{module} = replacement\nx = {module}.{member}({args})",
+        "shadowed": f"def run({module}):\n    return {module}.{member}({args})",
+        "mutated": f"import {module}\n{module}.{member} = replacement\nx = {module}.{member}({args})",
+    }
+    ir = compile_to_tir(statements[binding])
+    ops = _all_ops(ir)
+    assert not any(
+        op["kind"] in {"json_parse", "msgpack_parse", "cbor_parse"}
+        or op["kind"].startswith("buffer2d_")
+        for op in ops
+    )
+    # Package intrinsics belong inside the package function. The caller must
+    # retain the actual callable, including alias/capture/rebinding semantics.
+    call_line = len(statements[binding].splitlines())
+    calls = [
+        op
+        for op in ops
+        if op["kind"] == "call_func" and op.get("source_line") == call_line
+    ]
+    assert len(calls) == 1
+    call = calls[0]
+    assert len(call["args"]) == (3 if module == "molt_buffer" else 2)
+    function_ops = next(fn["ops"] for fn in ir["functions"] if call in fn["ops"])
+    callee = next(op for op in function_ops if op.get("out") == call["args"][0])
+    assert callee["kind"] == (
+        "module_get_global"
+        if binding in {"from", "captured"}
+        else "get_attr_generic_obj"
+    )
+    assert any(
+        op["kind"] in {"module_set_attr", "ret"} and call["out"] in op.get("args", [])
+        for op in function_ops
+    )
 
 
-def test_explicit_msgpack_parse():
-    src = """
-import molt_msgpack
-x = molt_msgpack.parse(42)
-"""
-    ir = compile_to_tir(src, parse_codec="json")
-    assert "msgpack_parse" in _op_kinds(ir)
-
-
-def test_explicit_cbor_parse():
-    src = """
-import molt_cbor
-x = molt_cbor.parse(42)
-"""
-    ir = compile_to_tir(src)
-    assert "cbor_parse" in _op_kinds(ir)
+@pytest.mark.parametrize("parse_codec", ["msgpack", "cbor", "json"])
+def test_json_package_intrinsic_is_independent_of_transport_codec(parse_codec):
+    source = Path(__file__).resolve().parents[1] / "src/molt_json/__init__.py"
+    ir = compile_to_tir(source.read_text(encoding="utf-8"), parse_codec=parse_codec)
+    symbols = {op.get("s_value") for op in _all_ops(ir)}
+    assert "molt_json_parse_scalar_obj" in symbols
+    assert "molt_msgpack_parse_scalar_obj" not in symbols
+    assert "molt_cbor_parse_scalar_obj" not in symbols
 
 
 def test_const_bytes_lowering():
@@ -115,8 +170,41 @@ def test_len_lowering():
     src = "x = len(b'hello')"
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "call_func" in kinds
     assert 5 in _const_values(ir)
+    assert "len" not in kinds
+    assert "const_bytes" not in kinds
+
+
+@pytest.mark.parametrize("hint", ["Any", "BoundMethod:unknown"])
+def test_positional_dynamic_call_uses_live_callable_without_argument_builder(hint):
+    generator = SimpleTIRGenerator()
+    callee = MoltValue("live_callable", type_hint=hint)
+    result = generator._emit_dynamic_call(
+        ast.parse("callee(1)", mode="eval").body, callee
+    )
+    calls = [op for op in generator.current_ops if op.kind == "CALL_FUNC"]
+    assert len(calls) == 1
+    assert calls[0].args[0] is callee
+    assert len(calls[0].args) == 2
+    assert calls[0].result is result
+    assert result.type_hint == "Any"
+    assert not any(
+        op.kind.startswith("CALLARGS_") or op.kind == "CALL_INDIRECT"
+        for op in generator.current_ops
+    )
+
+
+def test_dynamic_keyword_call_keeps_runtime_argument_binding():
+    generator = SimpleTIRGenerator()
+    callee = MoltValue("live_callable", type_hint="Any")
+    result = generator._emit_dynamic_call(
+        ast.parse("callee(value=1)", mode="eval").body, callee
+    )
+    calls = [op for op in generator.current_ops if op.kind == "CALL_INDIRECT"]
+    assert len(calls) == 1
+    assert calls[0].args[0] is callee
+    assert calls[0].result is result
+    assert any(op.kind == "CALLARGS_PUSH_KW" for op in generator.current_ops)
 
 
 def test_slice_lowering():
@@ -270,7 +358,7 @@ async def work():
     _assert_control_values_are_ints(ir)
 
 
-def test_async_sleep_call_async_uses_poll_table_target():
+def test_imported_async_sleep_uses_live_callable_and_awaitable_result():
     src = """
 from molt.concurrency import molt_async_sleep
 
@@ -278,10 +366,52 @@ async def main():
     await molt_async_sleep(0, None)
 """
     ir = compile_to_tir(src)
-    call_async_ops = [op for op in _all_ops(ir) if op["kind"] == "call_async"]
+    ops = _all_ops(ir)
+    assert not any(op["kind"] == "call_async" for op in ops)
+    names = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "const_str" and op.get("s_value") == "molt_async_sleep"
+    }
+    callees = {
+        op["out"]
+        for op in ops
+        if op["kind"] == "module_get_global" and op["args"][1] in names
+    }
+    calls = [op for op in ops if op["kind"] == "call_bind" and op["args"][0] in callees]
+    assert len(calls) == 1
+    call = calls[0]
+    assert len(call["args"]) == 2
+    function_ops = next(fn["ops"] for fn in ir["functions"] if call in fn["ops"])
+    argument_values = [
+        op["args"][1]
+        for op in function_ops
+        if op["kind"] == "callargs_push_pos" and op["args"][0] == call["args"][1]
+    ]
+    assert len(argument_values) == 2
+    definitions = {op["out"]: op for op in function_ops if "out" in op}
+    assert definitions[argument_values[0]]["kind"] == "const"
+    assert definitions[argument_values[0]]["value"] == 0
+    assert definitions[argument_values[1]]["kind"] == "const_none"
+    assert any(
+        op["kind"] == "is_native_awaitable" and call["out"] in op.get("args", [])
+        for op in function_ops
+    )
 
-    assert call_async_ops
-    assert {op["s_value"] for op in call_async_ops} == {"molt_async_sleep_poll"}
+
+def test_task_target_serialization_preserves_exact_symbols_without_suffix_inference():
+    import pytest
+
+    from molt.frontend.lowering.serialization import SerializationMixin
+
+    for kind in ("ALLOC_TASK", "CALL_ASYNC"):
+        for target in ("opaque_task_body", "ordinary_poll"):
+            assert SerializationMixin._require_async_poll_target(kind, target) == target
+        for target in (None, "", 1):
+            with pytest.raises(
+                ValueError, match="nonempty table-addressable task target"
+            ):
+                SerializationMixin._require_async_poll_target(kind, target)
 
 
 def test_for_file_text_loop_item_hint_enables_string_split():
@@ -871,12 +1001,15 @@ def test_format_spec_lowering():
 
 
 def test_type_hint_check_lowering():
-    src = "x: int = 1"
+    src = "def verify(value):\n    checked: int = value\n    return checked\n"
     ir = compile_to_tir(src, type_hint_policy="check")
-    kinds = _op_kinds(ir)
-    # Type hint check lowering emits type verification via builtin_type + dict
-    # based checking rather than a dedicated guard_tag op.
-    assert "builtin_type" in kinds or "guard_tag" in kinds
+    ops = _ops_by_func_suffix(ir, "verify")
+    assert any(op["kind"] == "guard_tag" for op in ops)
+
+
+def test_type_hint_check_eliminates_proven_constant_guard():
+    ir = compile_to_tir("x: int = 1", type_hint_policy="check")
+    assert "guard_tag" not in _op_kinds(ir)
 
 
 def test_type_hint_integer_lowering_preserves_semantic_op_shapes():
@@ -968,7 +1101,7 @@ def test_tuple_lowering():
     assert "tuple_new" in kinds
 
 
-def test_buffer2d_lowering():
+def test_buffer2d_calls_do_not_substitute_raw_storage_for_public_objects():
     src = """
 import molt_buffer
 a = molt_buffer.new(2, 2, 0)
@@ -979,13 +1112,11 @@ c = molt_buffer.matmul(a, b)
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "buffer2d_new" in kinds
-    assert "buffer2d_set" in kinds
-    assert "buffer2d_get" in kinds
-    assert "buffer2d_matmul" in kinds
+    assert "call_func" in kinds
+    assert not any(kind.startswith("buffer2d_") for kind in kinds)
 
 
-def test_buffer2d_matmul_loop_lowering():
+def test_buffer2d_loop_preserves_live_methods_and_existing_destination():
     src = """
 import molt_buffer
 a = molt_buffer.new(2, 2, 0)
@@ -1000,7 +1131,8 @@ for i in range(2):
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "buffer2d_matmul" in kinds
+    assert "buffer2d_matmul" not in kinds
+    assert "call_func" in kinds
 
 
 def test_range_lowering():

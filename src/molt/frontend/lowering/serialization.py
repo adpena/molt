@@ -19,6 +19,7 @@ from typing import (
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
+    parse_source_module_publication,
 )
 from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOpsMixin
 from molt.frontend.lowering.serialization_collection_ops import (
@@ -58,9 +59,9 @@ class SerializationMixin(
 ):
     @staticmethod
     def _require_async_poll_target(kind: str, target: Any) -> str:
-        if not isinstance(target, str) or not target.endswith("_poll"):
+        if not isinstance(target, str) or not target:
             raise ValueError(
-                f"{kind} requires a table-addressable poll target ending in _poll; "
+                f"{kind} requires a nonempty table-addressable task target symbol; "
                 f"got {target!r}"
             )
         return target
@@ -575,7 +576,8 @@ class SerializationMixin(
         # expression-level col_offset after the main serialization loop.
         _col_inject: list[tuple[int, MoltOp]] = []
         for op in ops:
-            _col_inject.append((len(json_ops), op))
+            serialized_start = len(json_ops)
+            _col_inject.append((serialized_start, op))
             ctx = SerializationContext(
                 json_ops=json_ops,
                 const_none_vars=const_none_vars,
@@ -583,16 +585,27 @@ class SerializationMixin(
                 function_name=function_name,
             )
             if self._serialize_basic_op(op, ctx):
-                continue
-            if self._serialize_function_op(op, ctx):
-                continue
-            if self._serialize_exception_op(op, ctx):
-                continue
-            if self._serialize_object_attr_op(op, ctx):
-                continue
-            if self._serialize_collection_op(op, ctx):
-                continue
-            self._serialize_loop_string_async_op(op, ctx)
+                pass
+            elif self._serialize_function_op(op, ctx):
+                pass
+            elif self._serialize_exception_op(op, ctx):
+                pass
+            elif self._serialize_object_attr_op(op, ctx):
+                pass
+            elif self._serialize_collection_op(op, ctx):
+                pass
+            else:
+                self._serialize_loop_string_async_op(op, ctx)
+            if op.metadata and op.metadata.get("source_module_publication_boundary"):
+                if (
+                    len(json_ops) != serialized_start + 1
+                    or json_ops[-1].get("kind") != "frame_locals_set"
+                ):
+                    raise ValueError(
+                        "source module publication boundary must serialize as one "
+                        "frame_locals_set operation"
+                    )
+                json_ops[-1]["source_module_publication_boundary"] = True
 
         if ops and ops[-1].kind not in {"ret", "ret_void"} and not emit_function_frame:
             json_ops.append({"kind": "ret_void"})
@@ -688,6 +701,29 @@ class SerializationMixin(
                 "params": data["params"],
                 "ops": json_ops,
             }
+            source_publication = data.get("source_module_publication")
+            boundary_ops = [
+                op
+                for op in json_ops
+                if op.get("source_module_publication_boundary") is True
+            ]
+            if source_publication is not None:
+                source_publication = parse_source_module_publication(source_publication)
+                if len(boundary_ops) != 1:
+                    raise ValueError(
+                        f"source module init {name!r} must retain exactly one native "
+                        "publication boundary"
+                    )
+                if boundary_ops[0].get("kind") != "frame_locals_set":
+                    raise ValueError(
+                        f"source module init {name!r} publication boundary lost its "
+                        "frame-locals anchor"
+                    )
+                func_entry["source_module_publication"] = dict(source_publication)
+            elif boundary_ops:
+                raise ValueError(
+                    f"source module init {name!r} has an unowned publication boundary"
+                )
             if name in self.module_chunk_symbols:
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == "trace_enter_slot" for op in json_ops):

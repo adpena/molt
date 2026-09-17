@@ -14,7 +14,7 @@ use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 // ─── Test hook implementations ───────────────────────────────────────────────
@@ -54,6 +54,15 @@ static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
     LazyLock::new(|| Mutex::new(FakeModuleState::default()));
 static FAKE_REFCOUNTS: LazyLock<Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static CROSSING_TEST: AtomicBool = AtomicBool::new(false);
+static CROSSING_FAIL: AtomicBool = AtomicBool::new(false);
+static CROSSING_CLEANUP_ERROR: AtomicBool = AtomicBool::new(false);
+static CROSSING_SET_CALLS: AtomicU64 = AtomicU64::new(0);
+static CROSSING_DEALLOCS: AtomicU64 = AtomicU64::new(0);
+static CROSSING_ERROR_VALUE: AtomicUsize = AtomicUsize::new(0);
+static CROSSING_FOREIGN: LazyLock<Mutex<HashMap<u64, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static CROSSING_STORED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct FakeModuleState {
@@ -345,9 +354,29 @@ unsafe extern "C" fn fake_inc_ref(bits: u64) {
     }
 }
 unsafe extern "C" fn fake_dec_ref(bits: u64) {
-    if let Some(count) = FAKE_REFCOUNTS.lock().unwrap().get_mut(&bits) {
-        assert!(*count > 0, "fake refcount underflow");
-        *count -= 1;
+    let retired = {
+        let mut counts = FAKE_REFCOUNTS.lock().unwrap();
+        if let Some(count) = counts.get_mut(&bits) {
+            assert!(*count > 0, "fake refcount underflow");
+            *count -= 1;
+            *count == 0
+        } else {
+            false
+        }
+    };
+    if retired {
+        let address = CROSSING_FOREIGN.lock().unwrap().remove(&bits);
+        if let Some(address) = address {
+            unsafe { molt_cpython_abi::bridge::molt_foreign_object_release(address) };
+            if CROSSING_CLEANUP_ERROR.load(Ordering::Relaxed) {
+                unsafe {
+                    molt_cpython_abi::api::errors::PyErr_SetString(
+                        (&raw mut PyExc_KeyError).cast(),
+                        c"crossing cleanup error".as_ptr(),
+                    )
+                };
+            }
+        }
     }
 }
 unsafe extern "C" fn fake_ref_count(bits: u64) -> usize {
@@ -393,11 +422,22 @@ unsafe extern "C" fn fake_eval_get_builtins_borrowed() -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
 unsafe extern "C" fn fake_module_set_attr(
-    _m: u64,
+    module: u64,
     data: *const u8,
     len: usize,
-    _v: u64,
+    value: u64,
 ) -> std::os::raw::c_int {
+    if CROSSING_TEST.load(Ordering::Relaxed) {
+        CROSSING_SET_CALLS.fetch_add(1, Ordering::Relaxed);
+        if !FAKE_MODULE_STATE
+            .lock()
+            .unwrap()
+            .dict_by_module
+            .contains_key(&module)
+        {
+            return -1;
+        }
+    }
     if !data.is_null() {
         let name = unsafe { std::slice::from_raw_parts(data, len) };
         if name == b"reject_attr" {
@@ -410,8 +450,17 @@ unsafe extern "C" fn fake_module_set_attr(
                     c"method publication detail".as_ptr(),
                 );
             }
+            if CROSSING_TEST.load(Ordering::Relaxed) {
+                let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+                CROSSING_ERROR_VALUE.store(error.value.addr(), Ordering::Relaxed);
+                molt_cpython_abi::api::errors::restore_current_error_exact(error);
+            }
             return -1;
         }
+    }
+    if CROSSING_TEST.load(Ordering::Relaxed) {
+        unsafe { fake_inc_ref(value) };
+        CROSSING_STORED.lock().unwrap().push(value);
     }
     0
 }
@@ -495,6 +544,8 @@ unsafe extern "C" fn fake_register_c_function(
     _meth: u64,
     _flags: std::os::raw::c_int,
     _self_bits: u64,
+    _self_is_null: bool,
+    _defining_class_bits: u64,
     data: *const u8,
     len: usize,
 ) -> u64 {
@@ -700,8 +751,21 @@ unsafe extern "C" fn fake_object_call(
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_foreign_new(_c_ptr: usize) -> u64 {
-    next_fake_handle()
+unsafe extern "C" fn fake_foreign_new(c_ptr: usize) -> u64 {
+    if CROSSING_TEST.load(Ordering::Relaxed) && CROSSING_FAIL.load(Ordering::Relaxed) {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_MemoryError).cast(),
+                c"foreign allocation rejected".as_ptr(),
+            )
+        };
+        return 0;
+    }
+    let bits = next_fake_handle();
+    if CROSSING_TEST.load(Ordering::Relaxed) {
+        CROSSING_FOREIGN.lock().unwrap().insert(bits, c_ptr);
+    }
+    bits
 }
 unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
@@ -1013,6 +1077,199 @@ fn test_module_getdict_null_returns_null() {
 // ---------------------------------------------------------------------------
 // PyModule_AddObject
 // ---------------------------------------------------------------------------
+
+struct CrossingFixture;
+
+impl CrossingFixture {
+    fn new() -> Self {
+        assert!(!CROSSING_TEST.swap(true, Ordering::Relaxed));
+        assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+        assert!(CROSSING_STORED.lock().unwrap().is_empty());
+        CROSSING_SET_CALLS.store(0, Ordering::Relaxed);
+        CROSSING_DEALLOCS.store(0, Ordering::Relaxed);
+        CROSSING_ERROR_VALUE.store(0, Ordering::Relaxed);
+        Self
+    }
+
+    fn remove_values(&self) {
+        let values = std::mem::take(&mut *CROSSING_STORED.lock().unwrap());
+        for value in values {
+            unsafe { fake_dec_ref(value) };
+        }
+    }
+}
+
+impl Drop for CrossingFixture {
+    fn drop(&mut self) {
+        CROSSING_FAIL.store(false, Ordering::Relaxed);
+        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
+        self.remove_values();
+        CROSSING_TEST.store(false, Ordering::Relaxed);
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    }
+}
+
+unsafe extern "C" fn crossing_dealloc(object: *mut PyObject) {
+    CROSSING_DEALLOCS.fetch_add(1, Ordering::Relaxed);
+    unsafe { drop(Box::from_raw(object)) };
+}
+
+fn crossing_object(typ: &mut PyTypeObject) -> *mut PyObject {
+    typ.tp_dealloc = Some(crossing_dealloc);
+    Box::into_raw(Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: typ,
+    }))
+}
+
+#[test]
+fn module_insertion_balances_foreign_temporary_and_exact_native_steal() {
+    let _guard = init();
+    let fixture = CrossingFixture::new();
+    for steal in [false, true] {
+        let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+        let value = crossing_object(&mut typ);
+        unsafe {
+            let module = molt_cpython_abi::api::modules::PyModule_New(c"custody".as_ptr());
+            let result = if steal {
+                molt_cpython_abi::api::modules::PyModule_AddObject(module, c"value".as_ptr(), value)
+            } else {
+                molt_cpython_abi::api::modules::PyModule_AddObjectRef(
+                    module,
+                    c"value".as_ptr(),
+                    value,
+                )
+            };
+            assert_eq!(result, 0);
+            let stored = CROSSING_STORED.lock().unwrap()[0];
+            assert_eq!(
+                fake_ref_count(stored),
+                1,
+                "only the module's runtime edge remains"
+            );
+            assert_eq!((*value).ob_refcnt, if steal { 1 } else { 2 });
+            let deallocs = CROSSING_DEALLOCS.load(Ordering::Relaxed);
+            fixture.remove_values();
+            if !steal {
+                assert_eq!((*value).ob_refcnt, 1);
+                assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), deallocs);
+                molt_cpython_abi::api::refcount::Py_DECREF(value);
+            }
+            assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), deallocs + 1);
+            assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+            molt_cpython_abi::api::refcount::Py_DECREF(module);
+        }
+    }
+}
+
+#[test]
+fn module_failed_insertion_preserves_caller_reference_and_exact_error() {
+    let _guard = init();
+    let _fixture = CrossingFixture::new();
+    let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+    let value = crossing_object(&mut typ);
+    CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
+    unsafe {
+        let module = molt_cpython_abi::api::modules::PyModule_New(c"custody_failure".as_ptr());
+        for steal in [false, true] {
+            let result = if steal {
+                molt_cpython_abi::api::modules::PyModule_AddObject(
+                    module,
+                    c"reject_attr_with_error".as_ptr(),
+                    value,
+                )
+            } else {
+                molt_cpython_abi::api::modules::PyModule_AddObjectRef(
+                    module,
+                    c"reject_attr_with_error".as_ptr(),
+                    value,
+                )
+            };
+            assert_eq!(result, -1);
+            let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+            assert_eq!(error.exc_type, (&raw mut PyExc_ValueError).cast());
+            assert_eq!(
+                error.value.addr(),
+                CROSSING_ERROR_VALUE.load(Ordering::Relaxed)
+            );
+            drop(error);
+            assert_eq!((*value).ob_refcnt, 1);
+            assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+        }
+        assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), 0);
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
+        molt_cpython_abi::api::refcount::Py_DECREF(module);
+    }
+    assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn module_crossing_allocation_failure_never_inserts_none_or_steals() {
+    let _guard = init();
+    let _fixture = CrossingFixture::new();
+    let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+    let value = crossing_object(&mut typ);
+    CROSSING_FAIL.store(true, Ordering::Relaxed);
+    unsafe {
+        let module = molt_cpython_abi::api::modules::PyModule_New(c"custody_oom".as_ptr());
+        assert_eq!(
+            molt_cpython_abi::api::modules::PyModule_AddObject(module, c"value".as_ptr(), value),
+            -1
+        );
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        assert_eq!(error.exc_type, (&raw mut PyExc_MemoryError).cast());
+        drop(error);
+        assert_eq!(CROSSING_SET_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!((*value).ob_refcnt, 1);
+        assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
+        molt_cpython_abi::api::refcount::Py_DECREF(module);
+    }
+}
+
+#[test]
+fn module_receiver_crossings_retire_locals_for_lookup_and_state_registration() {
+    let _guard = init();
+    let _fixture = CrossingFixture::new();
+    let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+    let module = crossing_object(&mut typ);
+    CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
+    unsafe {
+        assert!(molt_cpython_abi::api::modules::PyModule_GetDict(module).is_null());
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        assert_eq!(error.exc_type, (&raw mut PyExc_SystemError).cast());
+        drop(error);
+        assert_eq!((*module).ob_refcnt, 1);
+        assert!(molt_cpython_abi::api::modules::PyModule_GetState(module).is_null());
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        assert_eq!((*module).ob_refcnt, 1);
+        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
+        let mut def: PyModuleDef = std::mem::zeroed();
+        assert_eq!(
+            molt_cpython_abi::api::modules::PyState_AddModule(module, &raw mut def),
+            0
+        );
+        let stored = *FAKE_MODULE_STATE
+            .lock()
+            .unwrap()
+            .by_def
+            .get(&((&raw mut def) as usize))
+            .unwrap();
+        assert_eq!(
+            fake_ref_count(stored),
+            1,
+            "registry owns its edge, local wrapper retired"
+        );
+        assert_eq!((*module).ob_refcnt, 2);
+        assert_eq!(
+            molt_cpython_abi::api::modules::PyState_RemoveModule(&raw mut def),
+            0
+        );
+        assert_eq!((*module).ob_refcnt, 1);
+        assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+        molt_cpython_abi::api::refcount::Py_DECREF(module);
+    }
+}
 
 #[test]
 fn test_module_addobject_null_module_returns_error() {

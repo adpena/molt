@@ -5,12 +5,17 @@
 **Purpose:** Canonical architecture for tracking Molt compatibility against CPython 3.12+ across language, stdlib, C-API, native targets, and wasm targets.
 
 ## Non-Negotiable Governance
+
 - This directory is the canonical compatibility truth for Molt.
 - Compatibility claims must be organized by CPython architecture surface, not ad-hoc feature buckets.
 - All major compatibility claims must include reproducible evidence (differential tests and/or generator output).
 - No dual truth: if a file is generated, humans do not hand-edit semantic status in that file.
 - Native and wasm compatibility must be tracked as first-class dimensions, not hidden in prose notes.
 - Version-gated behavior for 3.12/3.13/3.14 must be explicit and test-backed.
+- Implemented or generated API coverage is not execution acceptance. Completed
+  matrix cells identify the source revision, Python version, target OS and
+  architecture, backend, profile, capabilities, and replayable evidence. Missing
+  evidence remains unverified; it must not inherit a sibling cell's result.
 - Third-party ecosystem compatibility is a primitives/wiring/integration
   program, not a package-by-package reimplementation program. Source-recompiled
   extensions must compile against Molt's ABI, link Molt runtime symbols, stage
@@ -53,11 +58,13 @@ Use this status vocabulary in all newly authored coverage matrices:
 - `intentional_divergence`: explicit project-policy divergence.
 
 Track these dimensions when relevant:
+
 - `py312`, `py313`, `py314`
 - `native`
 - `wasm_wasi`
 - `wasm_browser`
 - `linux`, `macos`, `windows`
+- architecture, backend, runtime profile, and capabilities
 
 ## Generated vs Hand-Edited Files
 Generated files (do not hand-edit semantic data):
@@ -80,7 +87,12 @@ Hand-edited control files:
 - all files under `contracts/`
 
 ## Required Update Workflow
-1. Refresh stdlib union baseline and stubs:
+
+Update the authority for the changed contract and regenerate its affected
+projections; do not run unrelated generators for a prose-only change. For
+stdlib/version coverage changes, the existing commands are:
+
+1. Refresh stdlib union baseline and stubs when their inputs change:
    - `python3 tools/gen_stdlib_module_union.py`
    - `python3 tools/sync_stdlib_top_level_stubs.py --write`
    - `python3 tools/sync_stdlib_submodule_stubs.py --write`
@@ -93,11 +105,18 @@ Hand-edited control files:
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
    - `python3 tools/check_dynamic_policy.py`
    - `python3 tools/check_differential_suite_layout.py`
-5. Sync rollup docs in the same change:
+5. Sync affected public claims in the same change, starting with onboarding:
+   - `README.md`
+   - `docs/getting-started.md`
    - `docs/spec/STATUS.md`
    - `ROADMAP.md`
    - `docs/spec/README.md`
    - `docs/INDEX.md`
+
+Keep README concise and link to these authorities instead of copying matrices.
+Historical receipts and machine-specific proof state belong in operational
+evidence, not in the public quickstart. Do not promote diagnostic-only or
+dirty-source results into release or cross-target acceptance claims.
 
 ## Canonical Indexes
 - Language surface index: `docs/spec/areas/compat/surfaces/language/language_surface_matrix.md`

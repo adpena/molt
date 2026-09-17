@@ -1,4 +1,6 @@
-use super::result_sink::{store_non_none_result_or_drop, store_result_or_drop};
+use super::result_sink::{
+    store_non_none_result_or_drop, store_owned_result_or_release, store_result_or_drop,
+};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::{
@@ -82,6 +84,13 @@ pub(super) fn emit_op_loop_runtime_sink(
 ) {
     match sink {
         OpLoopRuntimeSinkSpec::ResultOrDrop => store_result_or_drop(func, op, context.locals),
+        OpLoopRuntimeSinkSpec::OwnedResultOrRelease => store_owned_result_or_release(
+            func,
+            op,
+            context.locals,
+            context.import_ids,
+            context.reloc_enabled,
+        ),
         OpLoopRuntimeSinkSpec::NonNoneResultOrDrop => {
             store_non_none_result_or_drop(func, op, context.locals)
         }

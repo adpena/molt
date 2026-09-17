@@ -130,16 +130,6 @@ class RuntimeReferenceMixin(_MixinBase):
             _intrinsic_defaults_exact(runtime_name),
         )
 
-    def _emit_optional_intrinsic_lookup_value(self, runtime_name: str) -> MoltValue:
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))
-        namespace_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=namespace_val))
-        return self._emit_runtime_call(
-            "molt_load_intrinsic_runtime",
-            [name_val, namespace_val],
-        )
-
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[runtime_name], result=name_val))

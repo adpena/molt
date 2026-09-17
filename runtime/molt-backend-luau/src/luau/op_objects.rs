@@ -314,28 +314,8 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "module_import" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    let args = op.args.as_deref().unwrap_or(&[]);
-                    let module_name = op.s_value.as_deref().unwrap_or("");
-                    let mapped = match module_name {
-                        "math" => "molt_math",
-                        "json" => "json",
-                        "time" => "molt_time",
-                        "os" => "molt_os",
-                        "sys" => "molt_sys_ensure_module()",
-                        _ => "",
-                    };
-                    if !mapped.is_empty() {
-                        self.emit_line(&format!("local {out} = {mapped}"));
-                    } else if let Some(name_var) = args.first() {
-                        let nv = sanitize_ident(name_var);
-                        self.emit_line(&format!("local {out} = molt_luau_import_module({nv})"));
-                    } else {
-                        self.emit_line(&format!("local {out} = nil"));
-                    }
-                }
+            "module_import" | "module_import_from" | "module_import_star" => {
+                self.emit_unsupported_op(op);
             }
             "module_cache_get" => {
                 if let Some(ref out_name) = op.out {
@@ -372,12 +352,6 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "module_import_star" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
-            }
             "module_get_global" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -404,7 +378,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "module_get_attr" | "module_import_from" => {
+            "module_get_attr" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
@@ -480,38 +454,9 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {{}}"));
                 }
             }
-            "alloc" | "alloc_task" => {
+            "alloc" => {
                 let out = self.out_var(op);
-                // If this is a genexpr/listcomp task, create a coroutine-based
-                // iterator that eagerly collects all yielded values into a list.
-                let task_func = op.s_value.as_deref().unwrap_or("");
-                if task_func.contains("genexpr") || task_func.contains("listcomp") {
-                    // Create a list by running the generator to completion.
-                    // The genexpr function uses state_yield to produce values
-                    // as {value, false} tuples and returns {nil, true} when done.
-                    let func_name = self.invocation_target_ident(task_func);
-                    self.emit_line(&format!(
-                        "local {out} = (function()\n\
-                         \t\tlocal __result = {{}}\n\
-                         \t\tlocal __n = 0\n\
-                         \t\tlocal __co, __close = molt_coroutine_execution_wrap({func_name})\n\
-                         \t\twhile true do\n\
-                         \t\t\tlocal __item = __co()\n\
-                         \t\t\tif __item == nil then break end\n\
-                         \t\t\tif type(__item) == \"table\" then\n\
-                         \t\t\t\tif __item[2] == true then break end\n\
-                         \t\t\t\t__n += 1; __result[__n] = __item[1]\n\
-                         \t\t\telse\n\
-                         \t\t\t\t__n += 1; __result[__n] = __item\n\
-                         \t\t\tend\n\
-                         \t\tend\n\
-                         \t\t__close()\n\
-                         \t\treturn __result\n\
-                         \tend)()"
-                    ));
-                } else {
-                    self.emit_line(&format!("local {out} = {{}}"));
-                }
+                self.emit_line(&format!("local {out} = {{}}"));
             }
 
             // ================================================================

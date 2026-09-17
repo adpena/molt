@@ -81,39 +81,25 @@ fn trace_module_attrs_verbose() -> bool {
     })
 }
 
-enum BuiltinsGlobalLookup {
-    Found(u64),
-    Missing { module_bits: u64, globals_bits: u64 },
-    Unavailable,
-}
-
-fn cached_builtins_global_lookup(_py: &PyToken<'_>, name_bits: u64) -> BuiltinsGlobalLookup {
+fn cached_builtins_namespace(_py: &PyToken<'_>) -> Option<(u64, u64)> {
     let builtins_bits = {
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         let guard = cache.lock().unwrap();
         guard.get("builtins").copied()
     };
-    let Some(builtins_bits) = builtins_bits else {
-        return BuiltinsGlobalLookup::Unavailable;
-    };
+    let builtins_bits = builtins_bits?;
     let builtins_ptr = match obj_from_bits(builtins_bits).as_ptr() {
         Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
-        _ => return BuiltinsGlobalLookup::Unavailable,
+        _ => return None,
     };
     let builtins_dict_bits = unsafe { module_dict_bits(builtins_ptr) };
-    let builtins_dict_ptr = match obj_from_bits(builtins_dict_bits).as_ptr() {
-        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
-        _ => return BuiltinsGlobalLookup::Unavailable,
-    };
-    if let Some(val) = unsafe { dict_get_in_place(_py, builtins_dict_ptr, name_bits) } {
-        inc_ref_bits(_py, val);
-        BuiltinsGlobalLookup::Found(val)
-    } else {
-        BuiltinsGlobalLookup::Missing {
-            module_bits: builtins_bits,
-            globals_bits: builtins_dict_bits,
-        }
+    if !obj_from_bits(builtins_dict_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT })
+    {
+        return None;
     }
+    Some((builtins_bits, builtins_dict_bits))
 }
 
 fn runtime_builtins_global_lookup(_py: &PyToken<'_>, name: &str) -> Option<u64> {
@@ -772,32 +758,74 @@ fn simple_edit_distance(a: &str, b: &str) -> usize {
     prev[n]
 }
 
+/// Read one namespace item without overloading an object value as a miss/error
+/// sentinel. Exact dictionaries keep their borrowed fast path; subclasses and
+/// custom mappings retain Python's observable `__getitem__` dispatch.
+fn lookup_namespace_item(
+    _py: &PyToken<'_>,
+    namespace_bits: u64,
+    name_bits: u64,
+) -> Result<Option<u64>, ()> {
+    if exception_pending(_py) {
+        return Err(());
+    }
+    if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
+        && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
+    {
+        let value = unsafe { dict_get_in_place(_py, ptr, name_bits) };
+        if exception_pending(_py) {
+            return Err(());
+        }
+        if let Some(value) = value {
+            inc_ref_bits(_py, value);
+        }
+        return Ok(value);
+    }
+
+    let value = crate::molt_index(namespace_bits, name_bits);
+    if !exception_pending(_py) {
+        return Ok(Some(value));
+    }
+    let exception = molt_exception_last_pending();
+    let absent =
+        crate::builtins::exceptions::exception_matches_builtin_name(_py, exception, "KeyError");
+    dec_ref_bits(_py, exception);
+    if !absent {
+        return Err(());
+    }
+    clear_exception(_py);
+    Ok(None)
+}
+
 fn lookup_builtin_global(
     _py: &PyToken<'_>,
     name_bits: u64,
     name: &str,
     active_globals_bits: u64,
-) -> Option<u64> {
-    match cached_builtins_global_lookup(_py, name_bits) {
-        BuiltinsGlobalLookup::Found(bits) => Some(bits),
-        BuiltinsGlobalLookup::Missing {
-            module_bits,
-            globals_bits,
-        } if globals_bits == active_globals_bits
-            && crate::builtins::module_table::module_execution_owns_initializing_namespace(
-                _py,
-                "builtins",
-                module_bits,
-            ) =>
-        {
-            // The builtins body needs intrinsic names before it has published
-            // them into its own dictionary. A completed namespace miss remains
-            // authoritative: deletion must not resurrect the original builtin.
-            runtime_builtins_global_lookup(_py, name)
-        }
-        BuiltinsGlobalLookup::Missing { .. } => None,
-        BuiltinsGlobalLookup::Unavailable => runtime_builtins_global_lookup(_py, name),
+    builtins_bits: u64,
+) -> Result<Option<u64>, ()> {
+    if builtins_bits == 0 {
+        // An activation created before builtins existed keeps that captured
+        // bootstrap state. Do not switch it to a later cache publication.
+        return Ok(runtime_builtins_global_lookup(_py, name));
     }
+    if let Some(value) = lookup_namespace_item(_py, builtins_bits, name_bits)? {
+        return Ok(Some(value));
+    }
+    // Only the exact executing builtins initializer may synthesize names it
+    // has not published yet. Every other captured dictionary owns its misses.
+    if builtins_bits == active_globals_bits
+        && let Some((module_bits, cached_dict)) = cached_builtins_namespace(_py)
+        && cached_dict == builtins_bits
+        && crate::builtins::module_table::module_execution_owns_initializing_namespace(
+            _py,
+            "builtins",
+            module_bits,
+        )
+    {
+        return Ok(runtime_builtins_global_lookup(_py, name));
+    }
+    Ok(None)
 }
 
 #[unsafe(no_mangle)]
@@ -2701,34 +2729,14 @@ pub extern "C" fn molt_namespace_get(
     missing_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(ptr) = obj_from_bits(namespace_bits).as_ptr()
-            && unsafe { crate::object_is_exact_builtin_dict(_py, ptr) }
-        {
-            let value = unsafe { dict_get_in_place(_py, ptr, name_bits) };
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
+        match lookup_namespace_item(_py, namespace_bits, name_bits) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                inc_ref_bits(_py, missing_bits);
+                missing_bits
             }
-            let value = value.unwrap_or(missing_bits);
-            inc_ref_bits(_py, value);
-            return value;
+            Err(()) => MoltObject::none().bits(),
         }
-        let value = crate::molt_index(namespace_bits, name_bits);
-        if !exception_pending(_py) {
-            return value;
-        }
-        let exception = molt_exception_last_pending();
-        let absent =
-            crate::builtins::exceptions::exception_matches_builtin_name(_py, exception, "KeyError");
-        dec_ref_bits(_py, exception);
-        if !absent {
-            return value;
-        }
-        clear_exception(_py);
-        inc_ref_bits(_py, missing_bits);
-        missing_bits
     })
 }
 
@@ -2768,85 +2776,185 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
     })
 }
 
+/// Select suggestions from the same dictionaries that own LOAD_GLOBAL hits and
+/// misses. Module metadata and a later builtins cache cannot change this search.
+fn global_name_suggestion(py: &PyToken<'_>, dictionary: u64, name: &str) -> Option<String> {
+    let ptr = crate::builtins::frames::globals_namespace_storage_ptr(py, dictionary)?;
+    unsafe {
+        let order = crate::builtins::containers::dict_order(ptr);
+        let mut best: Option<(String, usize)> = None;
+        for pair in order.chunks_exact(2) {
+            let Some(key) = obj_from_bits(pair[0]).as_ptr() else {
+                continue;
+            };
+            if object_type_id(key) != TYPE_ID_STRING {
+                continue;
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(key), string_len(key));
+            let Ok(candidate) = std::str::from_utf8(bytes) else {
+                continue;
+            };
+            let distance = simple_edit_distance(name, candidate);
+            let threshold = if name.len() <= 2 { 1 } else { 2 };
+            if distance > 0
+                && distance <= threshold
+                && best.as_ref().is_none_or(|(_, current)| distance < *current)
+            {
+                best = Some((candidate.to_string(), distance));
+            }
+        }
+        best.map(|(candidate, _)| candidate)
+    }
+}
+
+/// The single lookup path for Python activations and explicit runtime module
+/// dictionaries. The caller selects namespace custody; this primitive never
+/// replaces a captured builtins dictionary after a miss.
+fn lookup_global_namespace(
+    py: &PyToken<'_>,
+    module_bits: u64,
+    module_label: &str,
+    globals_bits: u64,
+    builtins_bits: u64,
+    name_bits: u64,
+    name: &str,
+) -> u64 {
+    let trace_mode = trace_module_globals_mode();
+    let trace_globals = trace_mode != TraceModuleGlobalsMode::Off
+        && (trace_mode == TraceModuleGlobalsMode::Verbose
+            || name == "_SYS_FLAGS_SEQUENCE_FIELDS"
+            || name == "_FlagsTuple");
+    match lookup_namespace_item(py, globals_bits, name_bits) {
+        Ok(Some(value)) => {
+            if trace_globals {
+                eprintln!(
+                    "molt module_get_global hit module={} name={} module_bits=0x{:x} dict_bits=0x{:x} val_type={}",
+                    module_label,
+                    name,
+                    module_bits,
+                    globals_bits,
+                    type_name(py, obj_from_bits(value)),
+                );
+            }
+            return value;
+        }
+        Ok(None) => {
+            if trace_globals {
+                eprintln!(
+                    "molt module_get_global miss module={} name={} module_bits=0x{:x} dict_bits=0x{:x}",
+                    module_label, name, module_bits, globals_bits,
+                );
+            }
+        }
+        Err(()) => return MoltObject::none().bits(),
+    }
+    match lookup_builtin_global(py, name_bits, name, globals_bits, builtins_bits) {
+        Ok(Some(value)) => return value,
+        Ok(None) => {}
+        Err(()) => return MoltObject::none().bits(),
+    }
+    if name == "exec" || name == "eval" {
+        let message = format!(
+            "MOLT_COMPAT_ERROR: {name}() is unsupported in compiled Molt binaries; \
+dynamic code execution is outside the verified subset. \
+Use static modules or pre-generated code paths instead."
+        );
+        return raise_exception::<_>(py, "RuntimeError", &message);
+    }
+    if trace_name_error() {
+        eprintln!(
+            "molt name error module={} name={} pending={}",
+            module_label,
+            name,
+            exception_pending(py),
+        );
+    }
+    let suggestion = global_name_suggestion(py, globals_bits, name)
+        .or_else(|| global_name_suggestion(py, builtins_bits, name));
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let message = match suggestion {
+        Some(similar) => format!("name '{name}' is not defined. Did you mean: '{similar}'?"),
+        None => format!("name '{name}' is not defined"),
+    };
+    raise_exception::<_>(py, "NameError", &message)
+}
+
+/// LOAD_GLOBAL uses the executing frame, including FunctionType aliases whose
+/// lexical module operand differs from their activation namespace. With no
+/// Python frame, runtime callers select the explicit module dictionary.
+/// Attribute access and MODULE_GET_NAME remain module-only APIs.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace = trace_name_error();
-        let trace_globals_mode = trace_module_globals_mode();
-        let trace_globals = trace_globals_mode != TraceModuleGlobalsMode::Off;
-        let trace_globals_all = trace_globals_mode == TraceModuleGlobalsMode::Verbose;
-        let trace_name =
+        let trace_mode = trace_module_globals_mode();
+        let name =
             string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string());
-        let trace_name_match = trace_globals_all
-            || trace_name == "_SYS_FLAGS_SEQUENCE_FIELDS"
-            || trace_name == "_FlagsTuple";
-        let active_globals_bits = frame_stack_active_globals_bits();
-        if active_globals_bits != 0
-            && !obj_from_bits(active_globals_bits).is_none()
-            && let Some(active_globals_ptr) = obj_from_bits(active_globals_bits).as_ptr()
-            && unsafe { object_type_id(active_globals_ptr) } == TYPE_ID_DICT
-        {
-            unsafe {
-                if let Some(val) = dict_get_in_place(_py, active_globals_ptr, name_bits) {
-                    inc_ref_bits(_py, val);
-                    return val;
-                }
-            }
-            if let Some(val) =
-                lookup_builtin_global(_py, name_bits, &trace_name, active_globals_bits)
-            {
-                return val;
-            }
-            if trace_name == "exec" || trace_name == "eval" {
-                let msg = format!(
-                    "MOLT_COMPAT_ERROR: {trace_name}() is unsupported in compiled Molt binaries; \
-dynamic code execution is outside the verified subset. \
-Use static modules or pre-generated code paths instead."
-                );
-                return raise_exception::<_>(_py, "RuntimeError", &msg);
-            }
-            let msg = format!("name '{trace_name}' is not defined");
-            return raise_exception::<_>(_py, "NameError", &msg);
-        }
-        if trace_globals && trace_name_match {
+        let trace_globals = trace_mode != TraceModuleGlobalsMode::Off
+            && (trace_mode == TraceModuleGlobalsMode::Verbose
+                || name == "_SYS_FLAGS_SEQUENCE_FIELDS"
+                || name == "_FlagsTuple");
+        if trace_globals {
             eprintln!(
                 "molt module_get_global enter name={} module_bits=0x{:x} pending={}",
-                trace_name,
+                name,
                 module_bits,
                 exception_pending(_py),
             );
         }
-        let module_obj = obj_from_bits(module_bits);
-        let Some(module_ptr) = module_obj.as_ptr() else {
-            // On exception handler paths, SSA variables may resolve to
-            // None (default for undefined Cranelift Variables).  Return
-            // None silently — the exception handler will check
-            // exception_last and re-raise if needed.
-            if module_obj.is_none() || exception_pending(_py) {
-                if trace_globals && trace_name_match {
+        let active_globals = frame_stack_active_globals_bits();
+        if active_globals != 0 {
+            if crate::builtins::frames::globals_namespace_storage_bits(_py, active_globals)
+                .is_some()
+            {
+                return lookup_global_namespace(
+                    _py,
+                    module_bits,
+                    "<frame>",
+                    active_globals,
+                    crate::builtins::frames::frame_stack_active_builtins_bits(),
+                    name_bits,
+                    &name,
+                );
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return raise_exception::<_>(_py, "SystemError", "active globals is not a dictionary");
+        }
+        let module = obj_from_bits(module_bits);
+        let Some(module_ptr) = module.as_ptr() else {
+            // Preserve the exception-edge ABI: None/uninitialized operands do
+            // not overwrite the exception the caller is about to propagate.
+            if module.is_none() || exception_pending(_py) {
+                if trace_globals {
                     eprintln!(
                         "molt module_get_global early_none name={} module_bits=0x{:x} module_is_none={} pending={}",
-                        trace_name,
+                        name,
                         module_bits,
-                        module_obj.is_none(),
+                        module.is_none(),
                         exception_pending(_py),
                     );
                 }
                 return MoltObject::none().bits();
             }
-            let msg = format!(
-                "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
-                module_bits, trace_name
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "module get_global expects module, got non-pointer (bits=0x{:x}) for name '{}'",
+                    module_bits, name,
+                ),
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
         };
         unsafe {
             if object_type_id(module_ptr) != TYPE_ID_MODULE {
                 if exception_pending(_py) {
-                    if trace_globals && trace_name_match {
+                    if trace_globals {
                         eprintln!(
                             "molt module_get_global early_type name={} module_bits=0x{:x} type_id={} pending={}",
-                            trace_name,
+                            name,
                             module_bits,
                             object_type_id(module_ptr),
                             exception_pending(_py),
@@ -2854,136 +2962,36 @@ Use static modules or pre-generated code paths instead."
                     }
                     return MoltObject::none().bits();
                 }
-                let type_id = object_type_id(module_ptr);
-                let msg = format!(
-                    "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
-                    type_id, module_bits, trace_name
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            let dict_bits = module_dict_bits(module_ptr);
-            let dict_obj = obj_from_bits(dict_bits);
-            let dict_ptr = match dict_obj.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
-            };
-            if let Some(val) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                if trace_globals && trace_name_match {
-                    let module_name =
-                        string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                            .unwrap_or_else(|| "<module>".to_string());
-                    eprintln!(
-                        "molt module_get_global hit module={} name={} module_bits=0x{:x} dict_bits=0x{:x} val_type={}",
-                        module_name,
-                        trace_name,
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    &format!(
+                        "module get_global expects module, got type_id={} (bits=0x{:x}) for name '{}'",
+                        object_type_id(module_ptr),
                         module_bits,
-                        dict_bits,
-                        type_name(_py, obj_from_bits(val)),
-                    );
-                }
-                inc_ref_bits(_py, val);
-                return val;
-            }
-            if trace_globals && trace_name_match {
-                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                    .unwrap_or_else(|| "<module>".to_string());
-                eprintln!(
-                    "molt module_get_global miss module={} name={} module_bits=0x{:x} dict_bits=0x{:x}",
-                    module_name, trace_name, module_bits, dict_bits
+                        name,
+                    ),
                 );
             }
-            // Mirror CPython LOAD_GLOBAL: fall back to the builtins namespace.
-            // Lazy startup may use the intrinsic registry while builtins is
-            // absent, or inside its exact initialization-owned namespace.
-            // Published dictionaries otherwise own both hits and misses.
-            if let Some(val) = lookup_builtin_global(_py, name_bits, &trace_name, dict_bits) {
-                return val;
-            }
-            if trace_name == "exec" || trace_name == "eval" {
-                let msg = format!(
-                    "MOLT_COMPAT_ERROR: {trace_name}() is unsupported in compiled Molt binaries; \
-dynamic code execution is outside the verified subset. \
-Use static modules or pre-generated code paths instead."
-                );
-                return raise_exception::<_>(_py, "RuntimeError", &msg);
-            }
-            if trace {
-                let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                    .unwrap_or_else(|| "<module>".to_string());
-                let pending = exception_pending(_py);
-                eprintln!(
-                    "molt name error module={} name={} pending={}",
-                    module_name, trace_name, pending
-                );
-            }
-            // CPython 3.12+: suggest similar names in NameError.
-            let dict_bits = module_dict_bits(module_ptr);
-            let suggestion: Option<String> = if let Some(dict_ptr) =
-                obj_from_bits(dict_bits).as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
+            let globals = module_dict_bits(module_ptr);
+            if !obj_from_bits(globals)
+                .as_ptr()
+                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
             {
-                let order = crate::builtins::containers::dict_order(dict_ptr);
-                let mut best: Option<(String, usize)> = None;
-                let mut i = 0;
-                while i + 1 < order.len() {
-                    if let Some(key_ptr) = obj_from_bits(order[i]).as_ptr()
-                        && object_type_id(key_ptr) == TYPE_ID_STRING
-                    {
-                        let len = string_len(key_ptr);
-                        let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
-                        if let Ok(cand) = std::str::from_utf8(bytes) {
-                            let d = simple_edit_distance(&trace_name, cand);
-                            let t = if trace_name.len() <= 2 { 1 } else { 2 };
-                            if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
-                                best = Some((cand.to_string(), d));
-                            }
-                        }
-                    }
-                    i += 2;
-                }
-                best.map(|(n, _)| n)
-            } else {
-                None
-            };
-            // Also search builtins dict for suggestions (CPython does this).
-            let suggestion = suggestion.or_else(|| {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().ok()?;
-                let builtins_bits = guard.get("builtins").copied()?;
-                drop(guard);
-                let builtins_ptr = obj_from_bits(builtins_bits).as_ptr()?;
-                let bdict_bits = module_dict_bits(builtins_ptr);
-                let bdict_ptr = obj_from_bits(bdict_bits).as_ptr()?;
-                if object_type_id(bdict_ptr) != TYPE_ID_DICT {
-                    return None;
-                }
-                let order = crate::builtins::containers::dict_order(bdict_ptr);
-                let mut best: Option<(String, usize)> = None;
-                let mut i = 0;
-                while i + 1 < order.len() {
-                    if let Some(key_ptr) = obj_from_bits(order[i]).as_ptr()
-                        && object_type_id(key_ptr) == TYPE_ID_STRING
-                    {
-                        let len = string_len(key_ptr);
-                        let bytes = std::slice::from_raw_parts(string_bytes(key_ptr), len);
-                        if let Ok(cand) = std::str::from_utf8(bytes) {
-                            let d = simple_edit_distance(&trace_name, cand);
-                            let t = if trace_name.len() <= 2 { 1 } else { 2 };
-                            if d > 0 && d <= t && (best.is_none() || d < best.as_ref().unwrap().1) {
-                                best = Some((cand.to_string(), d));
-                            }
-                        }
-                    }
-                    i += 2;
-                }
-                best.map(|(n, _)| n)
-            });
-            let msg = if let Some(similar) = suggestion {
-                format!("name '{trace_name}' is not defined. Did you mean: '{similar}'?")
-            } else {
-                format!("name '{trace_name}' is not defined")
-            };
-            raise_exception::<_>(_py, "NameError", &msg)
+                return raise_exception::<_>(_py, "TypeError", "module dict missing");
+            }
+            let module_label = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
+                .unwrap_or_else(|| "<module>".to_string());
+            let builtins = cached_builtins_namespace(_py).map_or(0, |(_, dictionary)| dictionary);
+            lookup_global_namespace(
+                _py,
+                module_bits,
+                &module_label,
+                globals,
+                builtins,
+                name_bits,
+                &name,
+            )
         }
     })
 }
@@ -2995,29 +3003,28 @@ fn module_del_global_impl(
     missing_ok: bool,
 ) -> u64 {
     let trace = trace_name_error();
-    let module_obj = obj_from_bits(module_bits);
-    let Some(module_ptr) = module_obj.as_ptr() else {
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        return raise_exception::<_>(_py, "TypeError", "module attribute access expects module");
-    };
     unsafe {
-        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+        let active_globals = frame_stack_active_globals_bits();
+        let dict_ptr = if active_globals != 0 {
+            match crate::builtins::frames::globals_namespace_storage_ptr(_py, active_globals) {
+                Some(ptr) => ptr,
+                None if exception_pending(_py) => return MoltObject::none().bits(),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "SystemError",
+                        "active globals is not a dictionary",
+                    );
+                }
+            }
+        } else {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "module attribute access expects module",
-            );
-        }
-        let dict_bits = module_dict_bits(module_ptr);
-        let dict_obj = obj_from_bits(dict_bits);
-        let dict_ptr = match dict_obj.as_ptr() {
-            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-            _ => return raise_exception::<_>(_py, "TypeError", "module dict missing"),
+            match module_dict_ptr(_py, module_bits) {
+                Ok(ptr) => ptr,
+                Err(bits) => return bits,
+            }
         };
         if dict_del_in_place(_py, dict_ptr, name_bits) {
             return MoltObject::none().bits();
@@ -3028,12 +3035,12 @@ fn module_del_global_impl(
         let name =
             string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<name>".to_string());
         if trace {
-            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                .unwrap_or_else(|| "<module>".to_string());
             let pending = exception_pending(_py);
             eprintln!(
-                "molt name error(del) module={} name={} pending={}",
-                module_name, name, pending
+                "molt name error(del) globals=0x{:x} name={} pending={}",
+                MoltObject::from_ptr(dict_ptr).bits(),
+                name,
+                pending
             );
         }
         let msg = format!("name '{name}' is not defined");
@@ -3298,6 +3305,10 @@ pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
 #[cfg(test)]
 #[path = "namespace_delete_tests.rs"]
 mod namespace_delete_tests;
+
+#[cfg(test)]
+#[path = "namespace_lookup_tests.rs"]
+mod namespace_lookup_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3673,6 +3684,146 @@ mod tests {
             dec_ref_bits(_py, len_bits);
             dec_ref_bits(_py, len_name_bits);
             dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
+    fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let string = |value: &[u8]| MoltObject::from_ptr(alloc_string(py, value)).bits();
+            let builtins_name = string(b"builtins");
+            let cache_restore = ModuleCacheRestore::new(py, builtins_name);
+            let cached_module = alloc_module_obj(py, cache_restore.name_bits());
+            let cached_bits = MoltObject::from_ptr(cached_module).bits();
+            molt_module_cache_set(cache_restore.name_bits(), cached_bits);
+            let cached_dict = unsafe { module_dict_bits(cached_module) };
+            let captured_ptr = alloc_dict_with_pairs(py, &[]);
+            let captured = MoltObject::from_ptr(captured_ptr).bits();
+            let globals_ptr = alloc_dict_with_pairs(py, &[]);
+            let globals = MoltObject::from_ptr(globals_ptr).bits();
+            let answer = string(b"answer");
+            let len = string(b"len");
+            let custom = string(b"custom_token");
+            let runtime_only = string(b"runtime_only");
+            let builtins_key = string(b"__builtins__");
+            let module_name = string(b"unrelated_module");
+            let module_ptr = alloc_module_obj(py, module_name);
+            let module = MoltObject::from_ptr(module_ptr).bits();
+            unsafe {
+                dict_set_in_place(py, globals_ptr, answer, MoltObject::from_int(42).bits());
+                dict_set_in_place(py, captured_ptr, len, MoltObject::from_int(11).bits());
+                dict_set_in_place(py, captured_ptr, custom, MoltObject::from_int(1).bits());
+                let cached_ptr = obj_from_bits(cached_dict).as_ptr().unwrap();
+                dict_set_in_place(py, cached_ptr, len, MoltObject::from_int(33).bits());
+                dict_set_in_place(py, cached_ptr, runtime_only, MoltObject::from_int(1).bits());
+                let unrelated = obj_from_bits(module_dict_bits(module_ptr))
+                    .as_ptr()
+                    .unwrap();
+                dict_set_in_place(py, unrelated, answer, MoltObject::from_int(99).bits());
+                // A replaced __builtins__ entry must not reinterpret this activation.
+                dict_set_in_place(py, globals_ptr, builtins_key, cached_dict);
+            }
+            inc_ref_bits(py, globals);
+            inc_ref_bits(py, captured);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured);
+            assert_eq!(
+                molt_module_get_global(module, answer),
+                MoltObject::from_int(42).bits()
+            );
+            assert_eq!(
+                molt_module_get_global(module, len),
+                MoltObject::from_int(11).bits()
+            );
+            // Explicit module attribute access is not Python LOAD_GLOBAL.
+            assert_eq!(
+                molt_module_get_attr(module, answer),
+                MoltObject::from_int(99).bits()
+            );
+            assert!(unsafe { dict_del_in_place(py, captured_ptr, len) });
+            assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
+            assert_pending_exception_class(py, "NameError");
+            assert!(obj_from_bits(molt_module_get_global(module, runtime_only)).is_none());
+            assert_pending_exception_class(py, "NameError");
+
+            for (typo, expected) in [
+                (b"custom_toke".as_slice(), Some("custom_token")),
+                (b"runtime_onl".as_slice(), None),
+            ] {
+                let typo = string(typo);
+                let missing = molt_module_get_global(module, typo);
+                assert!(obj_from_bits(missing).is_none());
+                let exception = molt_exception_last_pending();
+                let ptr = obj_from_bits(exception).as_ptr().unwrap();
+                let message = format_exception_with_traceback(py, ptr);
+                match expected {
+                    Some(candidate) => {
+                        assert!(message.contains(&format!("Did you mean: '{candidate}'?")))
+                    }
+                    None => assert!(!message.contains("Did you mean:")),
+                }
+                dec_ref_bits(py, exception);
+                assert_pending_exception_class(py, "NameError");
+                dec_ref_bits(py, typo);
+            }
+            assert!(unsafe { dict_del_in_place(py, captured_ptr, custom) });
+            assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
+            assert_pending_exception_class(py, "NameError");
+            crate::builtins::frames::frame_stack_pop(py);
+            assert_eq!(
+                molt_module_get_global(module, answer),
+                MoltObject::from_int(99).bits()
+            );
+            assert_eq!(
+                molt_module_get_global(module, len),
+                MoltObject::from_int(33).bits()
+            );
+            for bits in [
+                module,
+                module_name,
+                globals,
+                captured,
+                cached_bits,
+                answer,
+                len,
+                custom,
+                runtime_only,
+                builtins_key,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn module_get_global_captured_unavailable_builtins_does_not_switch_to_cache() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let builtins_name = MoltObject::from_ptr(alloc_string(py, b"builtins")).bits();
+            let cache_restore = ModuleCacheRestore::new(py, builtins_name);
+            let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            inc_ref_bits(py, globals);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, 0);
+            let module_ptr = alloc_module_obj(py, cache_restore.name_bits());
+            let module = MoltObject::from_ptr(module_ptr).bits();
+            let name = MoltObject::from_ptr(alloc_string(py, b"len")).bits();
+            unsafe {
+                let dictionary = obj_from_bits(module_dict_bits(module_ptr))
+                    .as_ptr()
+                    .unwrap();
+                dict_set_in_place(py, dictionary, name, MoltObject::from_int(73).bits());
+            }
+            molt_module_cache_set(cache_restore.name_bits(), module);
+            let found = molt_module_get_global(MoltObject::none().bits(), name);
+            assert!(!exception_pending(py));
+            assert_ne!(found, MoltObject::from_int(73).bits());
+            assert!(crate::builtins::callable::is_callable_impl(py, found));
+            dec_ref_bits(py, found);
+            crate::builtins::frames::frame_stack_pop(py);
+            for bits in [globals, module, name] {
+                dec_ref_bits(py, bits);
+            }
         });
     }
 

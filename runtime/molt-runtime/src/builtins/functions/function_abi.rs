@@ -6,6 +6,7 @@
 use super::wasm_callables_generated as wasm_callables;
 use super::*;
 use crate::ClassEdgeOwnership;
+use crate::object::layout::function_call_abi;
 use crate::object::{object_init_class_edge_unpublished, object_replace_class_edge};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -262,6 +263,73 @@ unsafe fn init_runtime_callable_function_obj(
         unsafe {
             function_set_trampoline_ptr(ptr, normalized_trampoline_ptr);
         }
+    }
+}
+
+/// Atomically retarget a Python function to the executable identity published
+/// by a compatible code object. Signature consumers project directly from the
+/// new code object, while defaults, globals, annotations, and the lexical
+/// closure remain owned by the function.
+pub(crate) unsafe fn function_replace_code_bits(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    code_bits: u64,
+) -> bool {
+    unsafe {
+        let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+            raise_exception::<u64>(_py, "TypeError", "function __code__ must be a code object");
+            return false;
+        };
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            raise_exception::<u64>(_py, "TypeError", "function __code__ must be a code object");
+            return false;
+        }
+        let Some(identity) = crate::object::layout::code_callable_identity(code_ptr) else {
+            raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "function __code__ must have a published callable identity",
+            );
+            return false;
+        };
+        if !identity.call_abi.is_reconstructible()
+            || function_call_abi(func_ptr) != identity.call_abi
+        {
+            raise_exception::<u64>(
+                _py,
+                "ValueError",
+                "function and code object use different callable context ABIs",
+            );
+            return false;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let call_target = runtime_callable_target_ptr(identity.fn_ptr)
+            .or_else(|| crate::provenance::abi::function_ptr(identity.fn_ptr));
+        #[cfg(target_arch = "wasm32")]
+        let call_target = Some(std::ptr::null());
+        let Some(call_target) = call_target else {
+            raise_exception::<u64>(
+                _py,
+                "SystemError",
+                "replacement code has no resolvable native callable target",
+            );
+            return false;
+        };
+
+        let prepared = match crate::object::layout::prepare_function_code_bits(
+            _py,
+            func_ptr,
+            code_bits,
+            Some(identity),
+            None,
+        ) {
+            Ok(prepared) => prepared,
+            Err(()) => return false,
+        };
+        crate::object::layout::function_replace_callable_identity(func_ptr, identity, call_target);
+        publish_function_metadata_code(_py, func_ptr, prepared, true);
+        !exception_pending(_py)
     }
 }
 
@@ -527,6 +595,10 @@ fn alloc_python_builtin_metadata_tuple_bits(
     let defaults_bits = alloc_generated_defaults_tuple_bits(_py, info.defaults, &mut owned)?;
     let kwdefaults_bits = alloc_generated_kwdefaults_dict_bits(_py, info.kw_defaults, &mut owned)?;
     let doc_bits = MoltObject::none().bits();
+    let execution_kind_bits =
+        MoltObject::from_int(crate::object::layout::CodeExecutionKind::Direct as i64).bits();
+    let freevars_bits = alloc_static_str_tuple_bits(_py, std::iter::empty(), &mut owned)?;
+    let cellvars_bits = alloc_static_str_tuple_bits(_py, std::iter::empty(), &mut owned)?;
     let metadata_ptr = alloc_tuple(
         _py,
         &[
@@ -541,6 +613,9 @@ fn alloc_python_builtin_metadata_tuple_bits(
             defaults_bits,
             kwdefaults_bits,
             doc_bits,
+            execution_kind_bits,
+            freevars_bits,
+            cellvars_bits,
         ],
     );
     if metadata_ptr.is_null() {
@@ -714,66 +789,32 @@ pub extern "C" fn molt_func_new_closure(
                 "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits}"
             );
         }
+        let call_abi = if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
+            let Some(closure) = (unsafe { crate::object::cells::inspect_cell_tuple(closure_bits) })
+            else {
+                return raise_exception::<_>(_py, "SystemError", "compiled closure is not a tuple");
+            };
+            if closure.first_non_cell.is_some() {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "compiled closure contains a non-cell value",
+                );
+            }
+            if closure.len == 0 {
+                FunctionCallAbi::Positional
+            } else {
+                FunctionCallAbi::LexicalClosureFirst
+            }
+        } else {
+            FunctionCallAbi::Positional
+        };
         let ptr = alloc_function_obj(_py, fn_key, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
-            let cell_bits = cell_class(_py);
-            if cell_bits == 0 || obj_from_bits(cell_bits).is_none() || exception_pending(_py) {
-                if !exception_pending(_py) {
-                    raise_exception::<u64>(
-                        _py,
-                        "SystemError",
-                        "cell class initialization returned no class",
-                    );
-                }
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            }
-            let closure_obj = obj_from_bits(closure_bits);
-            if let Some(closure_ptr) = closure_obj.as_ptr() {
-                unsafe {
-                    if object_type_id(closure_ptr) == TYPE_ID_TUPLE {
-                        let Some(closure) = crate::object::seq_access::snapshot(
-                            _py,
-                            closure_ptr,
-                            "sequence snapshot allocation failed",
-                        ) else {
-                            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                            return MoltObject::none().bits();
-                        };
-                        for &entry_bits in closure.iter() {
-                            let entry_obj = obj_from_bits(entry_bits);
-                            let Some(entry_ptr) = entry_obj.as_ptr() else {
-                                continue;
-                            };
-                            if object_type_id(entry_ptr) != TYPE_ID_LIST {
-                                continue;
-                            }
-                            if crate::object::seq_access::len(entry_ptr) != 1 {
-                                continue;
-                            }
-                            let old_class_bits = object_class_bits(entry_ptr);
-                            if old_class_bits == cell_bits {
-                                continue;
-                            }
-                            if !object_replace_class_edge(
-                                _py,
-                                entry_ptr,
-                                cell_bits,
-                                ClassEdgeOwnership::Owned,
-                            ) {
-                                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                                return MoltObject::none().bits();
-                            }
-                        }
-                    }
-                }
-            }
-        }
         unsafe {
-            function_set_closure_bits(_py, ptr, closure_bits);
+            function_set_closure_bits(_py, ptr, closure_bits, call_abi);
             init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, true);
         }
         MoltObject::from_ptr(ptr).bits()
@@ -792,12 +833,29 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         if object_type_id(code_ptr) != TYPE_ID_CODE {
             return raise_exception::<_>(_py, "TypeError", "arg 1 (code) must be code");
         }
-        let Some(globals_ptr) = obj_from_bits(args[1]).as_ptr() else {
+        let Some(callable_identity) = crate::object::layout::code_callable_identity(code_ptr)
+        else {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "code object has no Molt callable target",
+            );
+        };
+        if !callable_identity.call_abi.is_reconstructible() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "cannot create a Python function from opaque runtime-context code",
+            );
+        }
+        let Some(globals_ptr) =
+            crate::builtins::frames::globals_namespace_storage_ptr(_py, args[1])
+        else {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<_>(_py, "TypeError", "arg 2 (globals) must be dict");
         };
-        if object_type_id(globals_ptr) != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "arg 2 (globals) must be dict");
-        }
 
         let none_bits = MoltObject::none().bits();
         let name_bits = match args.get(2).copied() {
@@ -839,55 +897,86 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             }
         }
 
-        if let Some(closure_bits) = args.get(4).copied()
-            && !obj_from_bits(closure_bits).is_none()
-        {
-            let Some(closure_ptr) = obj_from_bits(closure_bits).as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "arg 5 (closure) must be None or tuple",
-                );
-            };
-            if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "arg 5 (closure) must be None or tuple",
-                );
-            }
-            if crate::object::seq_access::len(closure_ptr) != 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "NotImplementedError",
-                    "FunctionType closure cells require compiled freevar lowering",
-                );
-            }
-        }
-
-        let fn_ptr = code_callable_fn_ptr(code_ptr);
-        if fn_ptr == 0 {
+        let freevars_bits = code_freevars_bits(code_ptr);
+        let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
-                "code object has no Molt callable target",
+                "SystemError",
+                "code freevars metadata is not a tuple",
+            );
+        };
+        if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "code freevars metadata is not a tuple",
             );
         }
-        let arity = code_callable_arity(code_ptr);
-        let func_ptr = alloc_function_obj(_py, fn_ptr, arity);
+        let required_cells = crate::object::seq_access::len(freevars_ptr);
+        match callable_identity.call_abi {
+            FunctionCallAbi::Positional if required_cells != 0 => {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "positional code object has lexical free variables",
+                );
+            }
+            FunctionCallAbi::LexicalClosureFirst if required_cells == 0 => {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "lexical-closure code object has no free variables",
+                );
+            }
+            FunctionCallAbi::OpaqueContextFirst => unreachable!("opaque code rejected above"),
+            _ => {}
+        }
+        let closure_bits = args.get(4).copied().unwrap_or(none_bits);
+        let closure_to_store = if obj_from_bits(closure_bits).is_none() {
+            if required_cells != 0 {
+                return raise_exception::<_>(_py, "TypeError", "arg 5 (closure) must be tuple");
+            }
+            0
+        } else {
+            let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits) else {
+                return raise_exception::<_>(_py, "TypeError", "arg 5 (closure) must be tuple");
+            };
+            let supplied_cells = closure.len;
+            if supplied_cells != required_cells {
+                let code_name = string_obj_to_owned(obj_from_bits(code_name_bits(code_ptr)))
+                    .unwrap_or_else(|| "<code>".to_string());
+                let msg = format!(
+                    "{code_name} requires closure of length {required_cells}, not {supplied_cells}"
+                );
+                return raise_exception::<_>(_py, "ValueError", &msg);
+            }
+            if let Some(invalid_bits) = closure.first_non_cell {
+                let found = type_name(_py, obj_from_bits(invalid_bits));
+                let msg = format!("arg 5 (closure) expected cell, found {found}");
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+            closure_bits
+        };
+
+        let func_ptr = alloc_function_obj(_py, callable_identity.fn_ptr, callable_identity.arity);
         if func_ptr.is_null() {
             return MoltObject::none().bits();
         }
         init_runtime_callable_function_obj(
             func_ptr,
-            fn_ptr,
-            fn_ptr,
-            code_callable_trampoline_ptr(code_ptr),
+            callable_identity.fn_ptr,
+            callable_identity.fn_ptr,
+            callable_identity.trampoline_ptr,
             true,
         );
         function_set_globals_bits(_py, func_ptr, args[1]);
-        function_set_globals_override_enabled(func_ptr, true);
-        function_set_code_bits(_py, func_ptr, args[0]);
+        if closure_to_store != 0 {
+            function_set_closure_bits(_py, func_ptr, closure_to_store, callable_identity.call_abi);
+        }
+        if !function_set_code_bits(_py, func_ptr, args[0]) {
+            dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
+            return MoltObject::none().bits();
+        }
 
         let set_attr = |name: &'static [u8], value_bits: u64| {
             crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
@@ -903,20 +992,9 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             bits
         };
 
-        let arg_names_bits = code_arg_names_bits(code_ptr);
-        let posonly_bits = code_signature_posonly_bits(code_ptr);
-        let kwonly_bits = code_kwonly_names_bits(code_ptr);
-        let vararg_bits = code_vararg_bits(code_ptr);
-        let varkw_bits = code_varkw_bits(code_ptr);
-
         if !set_attr(b"__name__", name_bits)
             || !set_attr(b"__qualname__", name_bits)
             || !set_attr(b"__module__", module_bits)
-            || !set_attr(b"__molt_arg_names__", arg_names_bits)
-            || !set_attr(b"__molt_posonly__", posonly_bits)
-            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
-            || !set_attr(b"__molt_vararg__", vararg_bits)
-            || !set_attr(b"__molt_varkw__", varkw_bits)
             || !set_attr(b"__defaults__", defaults_bits)
             || !set_attr(b"__kwdefaults__", none_bits)
             || !set_attr(b"__doc__", none_bits)
@@ -924,7 +1002,6 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
             return MoltObject::none().bits();
         }
-
         crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
         if exception_pending(_py) {
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
@@ -966,6 +1043,207 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
     })
 }
 
+/// Preflight is repeated after attribute writes because dictionary replacement
+/// may reenter Python. Only the final preparation is used for publication.
+unsafe fn prepare_function_metadata_code(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    code_bits: u64,
+    signature: Option<crate::object::layout::PreparedCodeSignature>,
+    lexical: Option<(u64, u64, crate::object::layout::CodeExecutionKind)>,
+) -> Result<crate::object::layout::PreparedFunctionCode, ()> {
+    unsafe {
+        let prepared = crate::object::layout::prepare_function_code_bits(
+            py, func_ptr, code_bits, None, signature,
+        )?;
+        match lexical {
+            Some((freevars, cellvars, kind)) => {
+                prepared.with_lexical_metadata(py, freevars, cellvars, kind)
+            }
+            None => Ok(prepared),
+        }
+    }
+}
+
+unsafe fn publish_function_metadata_code(
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    prepared: crate::object::layout::PreparedFunctionCode,
+    user_mutation: bool,
+) {
+    unsafe {
+        let replacing = crate::object::layout::function_code_bits(func_ptr) != 0;
+        let displaced = prepared.publish(py, func_ptr);
+        // Fresh construction must retain the zero epoch used by baked-default
+        // guards. Reentry may already have attached code during initialization.
+        if user_mutation || replacing {
+            crate::object::layout::bump_function_mutation_version(func_ptr);
+        }
+        let detached = crate::call::bind::detach_callable_ic_caches();
+        crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
+        // All scalar, code, version, and cache-visible derived state is coherent
+        // before either detached cache edges or displaced metadata can finalize.
+        detached.release(py);
+        displaced.release(py);
+    }
+}
+
+/// Borrowed input views share one initializer regardless of the transport ABI.
+/// The caller keeps every edge alive across attribute writes and publication.
+struct FunctionMetadata {
+    name_bits: u64,
+    qualname_bits: u64,
+    module_bits: u64,
+    arg_names_bits: u64,
+    posonly_bits: u64,
+    kwonly_bits: u64,
+    vararg_bits: u64,
+    varkw_bits: u64,
+    defaults_bits: u64,
+    kwdefaults_bits: u64,
+    doc_bits: u64,
+    lexical: Option<(u64, u64, crate::object::layout::CodeExecutionKind)>,
+}
+
+fn function_metadata_target(py: &PyToken<'_>, func_bits: u64) -> Option<*mut u8> {
+    if let Some(ptr) = obj_from_bits(func_bits).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_FUNCTION
+    {
+        return Some(ptr);
+    }
+    raise_exception::<u64>(py, "TypeError", "expected function");
+    None
+}
+
+fn initialize_function_metadata(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    metadata: FunctionMetadata,
+    code_bits: u64,
+    bind_kind_bits: u64,
+) -> u64 {
+    let FunctionMetadata {
+        name_bits,
+        qualname_bits,
+        module_bits,
+        arg_names_bits,
+        posonly_bits,
+        kwonly_bits,
+        vararg_bits,
+        varkw_bits,
+        defaults_bits,
+        kwdefaults_bits,
+        doc_bits,
+        lexical,
+    } = metadata;
+
+    let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
+        crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
+    };
+
+    let code_ptr = if obj_from_bits(code_bits).is_none() {
+        if lexical
+            .is_some_and(|(_, _, kind)| kind != crate::object::layout::CodeExecutionKind::Direct)
+        {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "task execution kind requires a code object",
+            );
+        }
+        None
+    } else {
+        let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "expected code object");
+        };
+        if unsafe { object_type_id(code_ptr) } != TYPE_ID_CODE {
+            return raise_exception::<_>(_py, "TypeError", "expected code object");
+        }
+        Some(code_ptr)
+    };
+
+    let signature = if code_ptr.is_some() {
+        match crate::object::layout::prepare_code_signature(
+            _py,
+            [
+                arg_names_bits,
+                posonly_bits,
+                kwonly_bits,
+                vararg_bits,
+                varkw_bits,
+            ],
+        ) {
+            Ok(signature) => Some(signature),
+            Err(()) => return MoltObject::none().bits(),
+        }
+    } else {
+        None
+    };
+    if code_ptr.is_some()
+        && unsafe { prepare_function_metadata_code(_py, func_ptr, code_bits, signature, lexical) }
+            .is_err()
+    {
+        return MoltObject::none().bits();
+    }
+
+    if code_ptr.is_none()
+        && let Some((freevars, cellvars, _)) = lexical
+        && unsafe {
+            crate::object::layout::validate_code_lexical_metadata(_py, None, freevars, cellvars)
+        }
+        .is_err()
+    {
+        return MoltObject::none().bits();
+    }
+
+    if !set_attr(b"__name__", name_bits)
+        || !set_attr(b"__qualname__", qualname_bits)
+        || !set_attr(b"__module__", module_bits)
+        || !set_attr(b"__defaults__", defaults_bits)
+        || !set_attr(b"__kwdefaults__", kwdefaults_bits)
+        || !set_attr(b"__doc__", doc_bits)
+    {
+        return MoltObject::none().bits();
+    }
+    if code_ptr.is_none()
+        && (!set_attr(b"__molt_arg_names__", arg_names_bits)
+            || !set_attr(b"__molt_posonly__", posonly_bits)
+            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
+            || !set_attr(b"__molt_vararg__", vararg_bits)
+            || !set_attr(b"__molt_varkw__", varkw_bits))
+    {
+        return MoltObject::none().bits();
+    }
+
+    unsafe {
+        function_set_globals_from_module_name(_py, func_ptr, module_bits);
+    }
+
+    if code_ptr.is_some() {
+        let prepared = match unsafe {
+            prepare_function_metadata_code(_py, func_ptr, code_bits, signature, lexical)
+        } {
+            Ok(prepared) => prepared,
+            Err(()) => return MoltObject::none().bits(),
+        };
+        unsafe { publish_function_metadata_code(_py, func_ptr, prepared, false) };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+    }
+
+    if !obj_from_bits(bind_kind_bits).is_none() && !set_attr(b"__molt_bind_kind__", bind_kind_bits)
+    {
+        return MoltObject::none().bits();
+    }
+
+    unsafe {
+        crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+    }
+
+    MoltObject::none().bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_init_metadata(
     func_bits: u64,
@@ -984,73 +1262,29 @@ pub extern "C" fn molt_function_init_metadata(
     bind_kind_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
-        };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-        }
-
-        let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
-            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
-        };
-
-        if !set_attr(b"__name__", name_bits)
-            || !set_attr(b"__qualname__", qualname_bits)
-            || !set_attr(b"__module__", module_bits)
-            || !set_attr(b"__molt_arg_names__", arg_names_bits)
-            || !set_attr(b"__molt_posonly__", posonly_bits)
-            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
-            || !set_attr(b"__molt_vararg__", vararg_bits)
-            || !set_attr(b"__molt_varkw__", varkw_bits)
-            || !set_attr(b"__defaults__", defaults_bits)
-            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
-            || !set_attr(b"__doc__", doc_bits)
-        {
+        let Some(func_ptr) = function_metadata_target(_py, func_bits) else {
             return MoltObject::none().bits();
-        }
-
-        unsafe {
-            function_set_globals_from_module_name(_py, func_ptr, module_bits);
-        }
-
-        if !obj_from_bits(code_bits).is_none() {
-            unsafe {
-                function_set_code_bits(_py, func_ptr, code_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
-                unsafe {
-                    if object_type_id(code_ptr) == TYPE_ID_CODE {
-                        code_set_signature_bits(
-                            _py,
-                            code_ptr,
-                            arg_names_bits,
-                            posonly_bits,
-                            kwonly_bits,
-                            vararg_bits,
-                            varkw_bits,
-                        );
-                    }
-                }
-            }
-        }
-
-        if !obj_from_bits(bind_kind_bits).is_none()
-            && !set_attr(b"__molt_bind_kind__", bind_kind_bits)
-        {
-            return MoltObject::none().bits();
-        }
-
-        unsafe {
-            crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
-        }
-
-        MoltObject::none().bits()
+        };
+        initialize_function_metadata(
+            _py,
+            func_ptr,
+            FunctionMetadata {
+                name_bits,
+                qualname_bits,
+                module_bits,
+                arg_names_bits,
+                posonly_bits,
+                kwonly_bits,
+                vararg_bits,
+                varkw_bits,
+                defaults_bits,
+                kwdefaults_bits,
+                doc_bits,
+                lexical: None,
+            },
+            code_bits,
+            bind_kind_bits,
+        )
     })
 }
 
@@ -1062,14 +1296,9 @@ pub extern "C" fn molt_function_init_metadata_packed(
     bind_kind_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
+        let Some(func_ptr) = function_metadata_target(_py, func_bits) else {
+            return MoltObject::none().bits();
         };
-        unsafe {
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
-            }
-        }
 
         let Some(metadata_ptr) = obj_from_bits(metadata_bits).as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
@@ -1088,65 +1317,44 @@ pub extern "C" fn molt_function_init_metadata_packed(
         }) else {
             return MoltObject::none().bits();
         };
-        if metadata.len() != 11 {
-            return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 11 items");
+        if metadata.len() != 14 {
+            return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 14 items");
         }
 
-        let set_attr = |name: &'static [u8], value_bits: u64| unsafe {
-            crate::call::class_init::function_set_attr_name(_py, func_ptr, name, value_bits)
+        let execution_kind = match obj_from_bits(metadata[11]).as_int() {
+            Some(0) => crate::object::layout::CodeExecutionKind::Direct,
+            Some(1) => crate::object::layout::CodeExecutionKind::Generator,
+            Some(2) => crate::object::layout::CodeExecutionKind::Coroutine,
+            Some(3) => crate::object::layout::CodeExecutionKind::AsyncGenerator,
+            _ => {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "metadata execution kind must be an int in range 0..=3",
+                );
+            }
         };
 
-        let name_bits = metadata[0];
-        let qualname_bits = metadata[1];
-        let module_bits = metadata[2];
-        let arg_names_bits = metadata[3];
-        let posonly_bits = metadata[4];
-        let kwonly_bits = metadata[5];
-        let vararg_bits = metadata[6];
-        let varkw_bits = metadata[7];
-        let defaults_bits = metadata[8];
-        let kwdefaults_bits = metadata[9];
-        let doc_bits = metadata[10];
-
-        if !set_attr(b"__name__", name_bits)
-            || !set_attr(b"__qualname__", qualname_bits)
-            || !set_attr(b"__module__", module_bits)
-            || !set_attr(b"__molt_arg_names__", arg_names_bits)
-            || !set_attr(b"__molt_posonly__", posonly_bits)
-            || !set_attr(b"__molt_kwonly_names__", kwonly_bits)
-            || !set_attr(b"__molt_vararg__", vararg_bits)
-            || !set_attr(b"__molt_varkw__", varkw_bits)
-            || !set_attr(b"__defaults__", defaults_bits)
-            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
-            || !set_attr(b"__doc__", doc_bits)
-        {
-            return MoltObject::none().bits();
-        }
-
-        unsafe {
-            function_set_globals_from_module_name(_py, func_ptr, module_bits);
-        }
-
-        if !obj_from_bits(code_bits).is_none() {
-            unsafe {
-                function_set_code_bits(_py, func_ptr, code_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-        }
-
-        if !obj_from_bits(bind_kind_bits).is_none()
-            && !set_attr(b"__molt_bind_kind__", bind_kind_bits)
-        {
-            return MoltObject::none().bits();
-        }
-
-        unsafe {
-            crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
-        }
-
-        MoltObject::none().bits()
+        initialize_function_metadata(
+            _py,
+            func_ptr,
+            FunctionMetadata {
+                name_bits: metadata[0],
+                qualname_bits: metadata[1],
+                module_bits: metadata[2],
+                arg_names_bits: metadata[3],
+                posonly_bits: metadata[4],
+                kwonly_bits: metadata[5],
+                vararg_bits: metadata[6],
+                varkw_bits: metadata[7],
+                defaults_bits: metadata[8],
+                kwdefaults_bits: metadata[9],
+                doc_bits: metadata[10],
+                lexical: Some((metadata[12], metadata[13], execution_kind)),
+            },
+            code_bits,
+            bind_kind_bits,
+        )
     })
 }
 
@@ -1156,6 +1364,11 @@ unsafe fn function_set_globals_from_module_name(
     module_bits: u64,
 ) {
     unsafe {
+        let active_globals = crate::builtins::frames::frame_stack_active_globals_bits();
+        if active_globals != 0 {
+            function_set_globals_bits(_py, func_ptr, active_globals);
+            return;
+        }
         let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
             return;
         };
@@ -1211,13 +1424,12 @@ pub extern "C" fn molt_function_set_defaults(
     })
 }
 
-/// Read a function object's `__defaults__`/`__kwdefaults__` mutation version
-/// stamp as an inline int.  The compile-time defaults-devirt deopt guard calls
-/// this once per direct call site and branches on `version == 0` (the baked
-/// literal default is still observably correct) vs `!= 0` (a runtime
-/// reassignment occurred → read the live tuple/dict).  A non-function or null
-/// argument yields 0 (treated as "pristine" — those call sites never bake a
-/// guarded default against a non-function, so the value is inert).
+/// Read the shared callable-shape mutation version as an inline int. The
+/// compile-time defaults-devirt guard calls this once per direct call site and
+/// branches on `version == 0` (the baked code/default shape is still current)
+/// vs `!= 0` (a runtime defaults, signature, bind-kind, or `__code__` mutation
+/// occurred, so the call must consult live authorities). A non-function or
+/// null argument yields 0; such call sites never bake a function default.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_defaults_version(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1225,7 +1437,7 @@ pub extern "C" fn molt_function_defaults_version(func_bits: u64) -> u64 {
             .as_ptr()
             .map(|func_ptr| unsafe {
                 if object_type_id(func_ptr) == TYPE_ID_FUNCTION {
-                    function_defaults_version(func_ptr)
+                    function_mutation_version(func_ptr)
                 } else {
                     0
                 }
@@ -1553,6 +1765,240 @@ pub unsafe extern "C" fn molt_closure_store(self_ptr_bits: u64, offset: u64, bit
 #[cfg(test)]
 #[path = "closure_storage_tests.rs"]
 mod closure_storage_tests;
+
+#[cfg(test)]
+mod function_type_execution_kind_tests {
+    use super::*;
+    use crate::builtins::exceptions::clear_exception;
+    use crate::object::layout::{
+        code_callable_identity, code_publish_lexical_metadata, code_set_signature_bits,
+        function_closure_bits, function_code_bits, function_fn_ptr, function_trampoline_ptr,
+    };
+
+    extern "C" fn opaque_context_probe(_context: u64, value: u64) -> u64 {
+        value
+    }
+
+    extern "C" fn lexical_closure_probe(_closure: u64) -> u64 {
+        MoltObject::none().bits()
+    }
+
+    fn empty_globals(_py: &crate::PyToken<'_>) -> u64 {
+        let ptr = alloc_dict_with_pairs(_py, &[]);
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    #[test]
+    fn function_type_rejects_synthetic_opaque_context_code() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let function = alloc_runtime_function_obj(
+                _py,
+                opaque_context_probe as *const () as usize as u64,
+                1,
+            );
+            assert!(!function.is_null());
+            let context = alloc_tuple(_py, &[MoltObject::from_int(17).bits()]);
+            assert!(!context.is_null());
+            let context_bits = MoltObject::from_ptr(context).bits();
+            unsafe {
+                function_set_closure_bits(
+                    _py,
+                    function,
+                    context_bits,
+                    FunctionCallAbi::OpaqueContextFirst,
+                );
+            }
+            dec_ref_bits(_py, context_bits);
+            let code_bits = unsafe { ensure_function_code_bits(_py, function) };
+            let code = obj_from_bits(code_bits).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { code_callable_identity(code) }.unwrap().call_abi,
+                FunctionCallAbi::OpaqueContextFirst
+            );
+            let globals_bits = empty_globals(_py);
+            let rejected = unsafe { function_type_new_from_args(_py, &[code_bits, globals_bits]) };
+            assert!(obj_from_bits(rejected).is_none());
+            assert!(exception_pending(_py));
+            clear_exception(_py);
+            dec_ref_bits(_py, globals_bits);
+            dec_ref_bits(_py, MoltObject::from_ptr(function).bits());
+        });
+    }
+
+    #[test]
+    fn function_type_preserves_genuine_lexical_code_abi() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name = alloc_string(_py, b"captured");
+            let empty = alloc_tuple(_py, &[]);
+            assert!(!name.is_null() && !empty.is_null());
+            let name_bits = MoltObject::from_ptr(name).bits();
+            let empty_bits = MoltObject::from_ptr(empty).bits();
+            let freevars = alloc_tuple(_py, &[name_bits]);
+            assert!(!freevars.is_null());
+            let freevars_bits = MoltObject::from_ptr(freevars).bits();
+            let code = alloc_code_obj(
+                _py,
+                name_bits,
+                name_bits,
+                1,
+                MoltObject::none().bits(),
+                empty_bits,
+                empty_bits,
+                0,
+                0,
+                0,
+            );
+            assert!(!code.is_null());
+            let code_bits = MoltObject::from_ptr(code).bits();
+            assert!(unsafe { code_publish_lexical_metadata(_py, code, freevars_bits, empty_bits) });
+
+            let cell_bits = crate::molt_cell_new(MoltObject::from_int(47).bits());
+            let closure = alloc_tuple(_py, &[cell_bits]);
+            assert!(!closure.is_null());
+            let closure_bits = MoltObject::from_ptr(closure).bits();
+            let source = alloc_runtime_function_obj(
+                _py,
+                lexical_closure_probe as *const () as usize as u64,
+                0,
+            );
+            assert!(!source.is_null());
+            unsafe {
+                function_set_closure_bits(
+                    _py,
+                    source,
+                    closure_bits,
+                    FunctionCallAbi::LexicalClosureFirst,
+                );
+                assert!(function_set_code_bits(_py, source, code_bits));
+            }
+            assert_eq!(
+                unsafe { code_callable_identity(code) }.unwrap().call_abi,
+                FunctionCallAbi::LexicalClosureFirst
+            );
+
+            let globals_bits = empty_globals(_py);
+            let rebound_bits = unsafe {
+                function_type_new_from_args(
+                    _py,
+                    &[
+                        code_bits,
+                        globals_bits,
+                        MoltObject::none().bits(),
+                        MoltObject::none().bits(),
+                        closure_bits,
+                    ],
+                )
+            };
+            assert!(!obj_from_bits(rebound_bits).is_none());
+            assert!(!exception_pending(_py));
+            let rebound = obj_from_bits(rebound_bits).as_ptr().unwrap();
+            assert_eq!(unsafe { function_code_bits(rebound) }, code_bits);
+            assert_eq!(
+                unsafe { function_call_abi(rebound) },
+                FunctionCallAbi::LexicalClosureFirst
+            );
+            assert_eq!(unsafe { function_closure_bits(rebound) }, closure_bits);
+
+            for bits in [
+                rebound_bits,
+                MoltObject::from_ptr(source).bits(),
+                globals_bits,
+                closure_bits,
+                cell_bits,
+                code_bits,
+                freevars_bits,
+                empty_bits,
+                name_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn function_type_reconstructs_task_dispatch_from_code() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_ptr = alloc_string(_py, b"reconstructed_generator");
+            let empty_tuple_ptr = alloc_tuple(_py, &[]);
+            let builtins_ptr = alloc_dict_with_pairs(_py, &[]);
+            assert!(!name_ptr.is_null() && !empty_tuple_ptr.is_null() && !builtins_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+            let builtins_bits = MoltObject::from_ptr(builtins_ptr).bits();
+            let builtins_name = attr_name_bits_from_bytes(_py, b"__builtins__").unwrap();
+            let globals_ptr = alloc_dict_with_pairs(_py, &[builtins_name, builtins_bits]);
+            assert!(!globals_ptr.is_null());
+            let globals_bits = MoltObject::from_ptr(globals_ptr).bits();
+
+            let code_ptr = alloc_code_obj(
+                _py,
+                name_bits,
+                name_bits,
+                1,
+                MoltObject::none().bits(),
+                empty_tuple_bits,
+                empty_tuple_bits,
+                0,
+                0,
+                0,
+            );
+            assert!(!code_ptr.is_null());
+            let code_bits = MoltObject::from_ptr(code_ptr).bits();
+            unsafe {
+                code_set_signature_bits(
+                    _py,
+                    code_ptr,
+                    empty_tuple_bits,
+                    MoltObject::from_int(0).bits(),
+                    empty_tuple_bits,
+                    MoltObject::none().bits(),
+                    MoltObject::none().bits(),
+                )
+                .expect("valid compiled signature");
+                let source = alloc_function_obj(_py, 41, 0);
+                assert!(!source.is_null());
+                function_set_trampoline_ptr(source, 73);
+                assert!(function_set_code_bits(_py, source, code_bits));
+                assert_eq!(
+                    crate::object::layout::code_publish_execution_kind(
+                        code_ptr,
+                        crate::object::layout::CodeExecutionKind::Generator,
+                    ),
+                    Ok(())
+                );
+
+                let rebound_bits = function_type_new_from_args(_py, &[code_bits, globals_bits]);
+                assert!(!exception_pending(_py));
+                let rebound = obj_from_bits(rebound_bits)
+                    .as_ptr()
+                    .expect("reconstructed function");
+                assert_eq!(function_fn_ptr(rebound), 41);
+                assert_eq!(function_trampoline_ptr(rebound), 73);
+                assert_eq!(function_code_bits(rebound), code_bits);
+                assert_eq!(
+                    crate::call::function::function_code_execution_kind(rebound),
+                    Some(crate::object::layout::CodeExecutionKind::Generator),
+                );
+                dec_ref_bits(_py, rebound_bits);
+                dec_ref_bits(_py, MoltObject::from_ptr(source).bits());
+            }
+            for bits in [
+                code_bits,
+                globals_bits,
+                builtins_name,
+                builtins_bits,
+                empty_tuple_bits,
+                name_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+}
 
 #[cfg(test)]
 mod wasm_runtime_callable_tests {

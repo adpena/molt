@@ -95,7 +95,9 @@ impl<T> DerefMut for TrackedVecContents<T> {
 
 impl<T> Drop for TrackedVecContents<T> {
     fn drop(&mut self) {
-        release_alloc(self.buffer_bytes);
+        // Owner and initial buffer share one allocation charge. Detaching the
+        // buffer transfers bytes, not the owner's allocation-count obligation.
+        release_grow(self.buffer_bytes);
     }
 }
 
@@ -511,6 +513,47 @@ mod tests {
         }
         let result = with_tracker(|tracker| tracker.on_allocate(1));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn detached_contents_release_bytes_without_stealing_live_allocation_counts() {
+        for owner_first in [false, true] {
+            for capacity in [0, 4, 16] {
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(2),
+                    max_memory: Some(
+                        vec_charge::<u64>(0).unwrap() + vec_charge::<u64>(capacity).unwrap(),
+                    ),
+                    ..Default::default()
+                })));
+                let _reset = TrackerReset;
+                let sentinel = tracked_vec_box_with_capacity::<u64>(0).unwrap();
+                let ptr = tracked_vec_box_with_capacity::<u64>(capacity).unwrap();
+                let contents = unsafe { tracked_vec_take_contents(ptr) };
+                if owner_first {
+                    unsafe { drop(tracked_vec_box_from_raw(ptr)) };
+                    drop(contents);
+                } else {
+                    drop(contents);
+                    assert!(
+                        with_tracker(|tracker| tracker.on_allocate(0)).is_err(),
+                        "detached buffer must not decrement its live owner's count"
+                    );
+                    unsafe { drop(tracked_vec_box_from_raw(ptr)) };
+                }
+                // The sentinel remains live: exactly one count and the complete
+                // displaced owner's byte budget must now be reusable.
+                let replacement = tracked_vec_box_with_capacity::<u64>(capacity).unwrap();
+                assert!(
+                    with_tracker(|tracker| tracker.on_allocate(0)).is_err(),
+                    "rollback stole the unrelated sentinel's allocation count"
+                );
+                unsafe {
+                    drop(tracked_vec_box_from_raw(replacement));
+                    drop(tracked_vec_box_from_raw(sentinel));
+                }
+            }
+        }
     }
 
     #[test]

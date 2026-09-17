@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::methods::is_missing_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
 
 unsafe fn mappingproxy_mapping_bits(ptr: *mut u8) -> u64 {
@@ -173,13 +174,111 @@ pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
 
 pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
     let state = types_state(_py);
-    let methods = [RuntimeClassMethodSpec::fixed(
-        "__new__",
-        &state.cell_new_fn,
-        molt_types_cell_new as *const () as usize as u64,
-        1,
-    )];
-    init_cached_runtime_class(_py, &state.cell_class, "cell", 8, None, &methods)
+    let methods = [
+        RuntimeClassMethodSpec::with_signature(
+            "__new__",
+            &state.cell_new_fn,
+            molt_types_cell_new as *const () as usize as u64,
+            3,
+            RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            &state.cell_eq_fn,
+            crate::molt_cell_eq as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ne__",
+            &state.cell_ne_fn,
+            crate::molt_cell_ne as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__lt__",
+            &state.cell_lt_fn,
+            crate::molt_cell_lt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__le__",
+            &state.cell_le_fn,
+            crate::molt_cell_le as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__gt__",
+            &state.cell_gt_fn,
+            crate::molt_cell_gt as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ge__",
+            &state.cell_ge_fn,
+            crate::molt_cell_ge as *const () as usize as u64,
+            2,
+        ),
+    ];
+    init_cached_runtime_class_configured(
+        _py,
+        &state.cell_class,
+        "cell",
+        8,
+        None,
+        |class_bits, dict_ptr| {
+            if !configure_runtime_class_methods(_py, dict_ptr, &methods)
+                || !set_class_method(_py, dict_ptr, "__hash__", MoltObject::none().bits())
+            {
+                return false;
+            }
+            let getter = builtin_func_bits(
+                _py,
+                &state.cell_contents_get_fn,
+                molt_types_cell_contents_get as *const () as usize as u64,
+                2,
+            );
+            let setter = builtin_func_bits(
+                _py,
+                &state.cell_contents_set_fn,
+                molt_types_cell_contents_set as *const () as usize as u64,
+                3,
+            );
+            let deleter = builtin_func_bits(
+                _py,
+                &state.cell_contents_delete_fn,
+                molt_types_cell_contents_delete as *const () as usize as u64,
+                2,
+            );
+            if [getter, setter, deleter]
+                .into_iter()
+                .any(|bits| bits == 0 || exception_pending(_py))
+            {
+                return false;
+            }
+            let Some(name) = attr_name_bits_from_bytes(_py, b"cell_contents") else {
+                return false;
+            };
+            let descriptor = alloc_native_descriptor(
+                _py,
+                NativeDescriptorSpec {
+                    flavor: NativeDescriptorFlavor::GetSet,
+                    owner: class_bits,
+                    name,
+                    doc: MoltObject::none().bits(),
+                    getter,
+                    setter,
+                    deleter,
+                },
+            );
+            dec_ref_bits(_py, name);
+            if descriptor == 0 || exception_pending(_py) {
+                return false;
+            }
+            let published = set_class_method(_py, dict_ptr, "cell_contents", descriptor);
+            dec_ref_bits(_py, descriptor);
+            published
+        },
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -437,9 +536,93 @@ pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_types_cell_new(_cls_bits: u64) -> u64 {
+pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<_>(_py, "TypeError", "cannot create 'cell' instances")
+        if !obj_from_bits(kwargs_bits).is_none() {
+            let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "CellType takes no keyword arguments",
+                );
+            };
+            if unsafe { object_type_id(kwargs_ptr) } != TYPE_ID_DICT
+                || !unsafe { dict_order(kwargs_ptr) }.is_empty()
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "CellType takes no keyword arguments",
+                );
+            }
+        }
+        let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+        };
+        if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
+            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+        }
+        let Some((len, value_bits)) = (unsafe {
+            with_immutable_tuple_slice(args_ptr, |args| {
+                (
+                    args.len(),
+                    args.first().copied().unwrap_or_else(|| missing_bits(_py)),
+                )
+            })
+        }) else {
+            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+        };
+        if len > 1 {
+            let msg = format!("CellType expected at most 1 argument, got {len}");
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let ptr = crate::object::cells::alloc_cell(_py, value_bits);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_types_cell_contents_get(_descriptor_bits: u64, cell_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "expected cell");
+        };
+        let value = unsafe { crate::object::cells::cell_value_bits(ptr) };
+        if is_missing_bits(_py, value) {
+            return raise_exception::<_>(_py, "ValueError", "Cell is empty");
+        }
+        inc_ref_bits(_py, value);
+        value
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_types_cell_contents_set(
+    _descriptor_bits: u64,
+    cell_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "expected cell");
+        };
+        unsafe { crate::object::cells::cell_replace_value(_py, ptr, value_bits) };
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_types_cell_contents_delete(_descriptor_bits: u64, cell_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
+            return raise_exception::<_>(_py, "TypeError", "expected cell");
+        };
+        unsafe { crate::object::cells::cell_replace_value(_py, ptr, missing_bits(_py)) };
+        MoltObject::none().bits()
     })
 }
 

@@ -639,12 +639,7 @@ impl WasmBackend {
                 .copied()
                 .unwrap_or(TrampolineKind::Plain);
             let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
-            let poll_name = if is_task && !func_ir.name.ends_with("_poll") {
-                format!("{}_poll", func_ir.name)
-            } else {
-                func_ir.name.clone()
-            };
-            let target_name = if is_task { &poll_name } else { &func_ir.name };
+            let target_name = &func_ir.name;
             let target_func_index = *func_to_index
                 .get(target_name)
                 .unwrap_or_else(|| panic!("trampoline target missing for {target_name}"));
@@ -723,16 +718,6 @@ impl WasmBackend {
             }
         }
 
-        let closure_functions = default_trampoline_spec
-            .iter()
-            .filter_map(|(name, &(_arity, has_closure))| {
-                if has_closure {
-                    Some(name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
         let mut call_target_abi_returns_value = func_to_index
             .keys()
             .map(|name| (name.clone(), true))
@@ -752,7 +737,7 @@ impl WasmBackend {
             func_to_index,
             func_to_trampoline_idx,
             app_callable_resolver,
-            closure_functions,
+            positional_call_shapes: default_trampoline_spec.clone(),
             function_abi_returns_value: call_target_abi_returns_value,
             trampoline_entries,
         }

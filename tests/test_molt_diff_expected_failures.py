@@ -7,6 +7,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -18,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"
 
 
-def _load_diff_module():
+def _load_diff_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "molt_diff_module_under_test", SCRIPT_PATH
     )
@@ -28,6 +29,165 @@ def _load_diff_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _configure_fixture_cpython_runner(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cwd: Path,
+    tmp_path: Path,
+) -> None:
+    def run_from_fixture_cwd(
+        cmd: list[str], *, env: dict[str, str], timeout: float | None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            check=False,
+        )
+
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda _path: {})
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path / "diff-tmp")
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 30.0)
+    monkeypatch.setattr(
+        module, "_resolve_python_command", lambda _python: [sys.executable]
+    )
+    monkeypatch.setattr(module, "_run_subprocess", run_from_fixture_cwd)
+
+
+@pytest.mark.parametrize("script_reference", ["absolute", "relative"])
+@pytest.mark.parametrize("sibling_kind", ["module", "package"])
+def test_run_cpython_uses_script_directory_as_import_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    script_reference: str,
+    sibling_kind: str,
+) -> None:
+    module = _load_diff_module()
+    cwd = tmp_path / "cwd"
+    script_dir = tmp_path / "scripts"
+    cwd.mkdir()
+    script_dir.mkdir()
+
+    if sibling_kind == "module":
+        (script_dir / "reference_sibling.py").write_text(
+            "SOURCE = 'script-module'\n", encoding="utf-8"
+        )
+        cwd_shadow = cwd / "reference_sibling"
+        cwd_shadow.mkdir()
+        (cwd_shadow / "__init__.py").write_text(
+            "SOURCE = 'cwd-package'\n", encoding="utf-8"
+        )
+        expected_source = "script-module"
+    else:
+        script_sibling = script_dir / "reference_sibling"
+        script_sibling.mkdir()
+        (script_sibling / "__init__.py").write_text(
+            "SOURCE = 'script-package'\n", encoding="utf-8"
+        )
+        (cwd / "reference_sibling.py").write_text(
+            "SOURCE = 'cwd-module'\n", encoding="utf-8"
+        )
+        expected_source = "script-package"
+
+    script = script_dir / "case.py"
+    script.write_text(
+        "import __main__\n"
+        "import builtins\n"
+        "import pathlib\n"
+        "import sys\n"
+        "from importlib.machinery import SourceFileLoader\n"
+        "import reference_sibling\n"
+        "print(reference_sibling.SOURCE)\n"
+        "print(\n"
+        "    pathlib.Path(sys.path[0]).resolve()\n"
+        "    == pathlib.Path(__file__).parent.resolve()\n"
+        ")\n"
+        "print(__main__ is sys.modules['__main__'])\n"
+        "print(globals() is vars(__main__))\n"
+        "print(sys.argv[0])\n"
+        "print(len(sys.argv) == 1)\n"
+        "print(pathlib.Path(__file__).is_absolute())\n"
+        "print(\n"
+        "    __name__ == '__main__'\n"
+        "    and __package__ is None\n"
+        "    and __spec__ is None\n"
+        "    and isinstance(__loader__, SourceFileLoader)\n"
+        "    and __loader__.path == __file__\n"
+        "    and __cached__ is None\n"
+        "    and __builtins__ is builtins\n"
+        ")\n"
+        "print('_molt_diff_execute_script' not in globals())\n",
+        encoding="utf-8",
+    )
+    requested_path = (
+        str(script.resolve())
+        if script_reference == "absolute"
+        else os.path.relpath(script, cwd)
+    )
+
+    _configure_fixture_cpython_runner(module, monkeypatch, cwd=cwd, tmp_path=tmp_path)
+
+    stdout, stderr, returncode = module.run_cpython(requested_path, sys.executable)
+
+    assert returncode == 0, stderr
+    assert stderr == ""
+    assert stdout.splitlines() == [
+        expected_source,
+        "True",
+        "True",
+        "True",
+        requested_path,
+        "True",
+        "True",
+        "True",
+        "True",
+    ]
+
+
+def test_run_cpython_keeps_main_namespace_through_atexit_closures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_diff_module()
+    cwd = tmp_path / "cwd"
+    script_dir = tmp_path / "scripts"
+    cwd.mkdir()
+    script_dir.mkdir()
+    script = script_dir / "atexit_case.py"
+    script.write_text(
+        "import __main__\n"
+        "import atexit\n"
+        "import sys\n"
+        "def register(namespace, main_module):\n"
+        "    def report():\n"
+        "        current = sys.modules['__main__']\n"
+        "        print(\n"
+        "            'atexit',\n"
+        "            main_module is current,\n"
+        "            namespace is vars(current),\n"
+        "            report.__globals__ is namespace,\n"
+        "        )\n"
+        "    atexit.register(report)\n"
+        "register(globals(), __main__)\n"
+        "print('body', globals() is vars(sys.modules['__main__']))\n",
+        encoding="utf-8",
+    )
+    _configure_fixture_cpython_runner(module, monkeypatch, cwd=cwd, tmp_path=tmp_path)
+
+    stdout, stderr, returncode = module.run_cpython(str(script), sys.executable)
+
+    assert returncode == 0, stderr
+    assert stderr == ""
+    assert stdout.splitlines() == ["body True", "atexit True True True"]
 
 
 def test_diff_capabilities_prefers_explicit_diff_override_then_test_contract() -> None:

@@ -29,6 +29,10 @@ else:
     _MixinBase = object
 
 
+_ANNOTATION_NAMESPACE_CAPTURE = ".molt.annotation_namespace"
+_ANNOTATION_EXEC_MAP_CAPTURE = ".molt.annotation_exec_map"
+
+
 class TypeAnnotationMixin(_MixinBase):
     def _apply_explicit_hint(self, name: str, value: MoltValue) -> None:
         hint = self.explicit_type_hints.get(name)
@@ -270,6 +274,24 @@ class TypeAnnotationMixin(_MixinBase):
             return self._dict_key_hint(iterable)
         return self._container_elem_hint(iterable)
 
+    def _iteration_element_hint(
+        self, node: ast.For | ast.AsyncFor | ast.comprehension, iterable: MoltValue
+    ) -> str | None:
+        """Project compiler-analysis item authority; unknown facts fail closed."""
+
+        if self.python_binding_index is not None:
+            iteration = self.python_binding_index.iteration_fact(node)
+            if iteration is not None:
+                kind = iteration.element_result.kind
+                return (
+                    None
+                    if kind == "unknown"
+                    else "None"
+                    if kind == "NoneType"
+                    else kind
+                )
+        return self._iterable_element_hint(iterable)
+
     def _reduction_acc_numeric_hint(self, name: str, value: MoltValue) -> str | None:
         hint = self.boxed_local_hints.get(name) or value.type_hint
         if hint in {"int", "float"}:
@@ -449,10 +471,7 @@ class TypeAnnotationMixin(_MixinBase):
 
         placeholder = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[placeholder], result=cell))
-        idx = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=idx))
+        cell = self._emit_cell_new(placeholder)
         self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
         ann = MoltValue(self.next_var(), type_hint="dict")
         self.emit(MoltOp(kind="DICT_NEW", args=[], result=ann))
@@ -463,25 +482,11 @@ class TypeAnnotationMixin(_MixinBase):
                 result=MoltValue("none"),
             )
         )
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, ann],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(cell, ann)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, idx, existing],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(cell, existing)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        merged = MoltValue(self.next_var(), type_hint="dict")
-        self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=merged))
-        return merged
+        return self._emit_cell_get(cell, type_hint="dict")
 
     def _annotation_items_for_function(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -710,8 +715,9 @@ class TypeAnnotationMixin(_MixinBase):
                     Diagnostic.INTERNAL_INVARIANT,
                     "Class annotation namespace was not allocated at body entry",
                 )
-        # Deferred evaluators use the same lexical-cell custody as functions,
-        # lambdas, and comprehensions; namespace/maps are explicit extra captures.
+        # Deferred evaluators use the same named lexical-cell custody as every
+        # other callable. Compiler-only transports have stable non-source names
+        # so tuple position and co_freevars can never diverge.
         candidates = set(
             self._lexical_dependencies()
             .project(
@@ -722,15 +728,25 @@ class TypeAnnotationMixin(_MixinBase):
         )
         if exec_map_name and self.current_func_name != "molt_main":
             candidates.add(exec_map_name)
-        extra_cells = [
-            value for value in (namespace_cell, exec_map) if value is not None
-        ]
+        cell_captures: dict[str, MoltValue] = {}
+        if namespace_cell is not None:
+            cell_captures[_ANNOTATION_NAMESPACE_CAPTURE] = namespace_cell
+        if exec_map is not None:
+            cell_captures[_ANNOTATION_EXEC_MAP_CAPTURE] = self._emit_cell_new(exec_map)
+        candidates.update(cell_captures)
         free_vars_list, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(
                 candidates,
                 value_captures=self.annotation_type_params,
-                extra_cells=extra_cells,
+                cell_captures=cell_captures,
                 class_scope=class_scope,
+            )
+        )
+        cell_vars = tuple(
+            sorted(
+                self._collect_scope_cell_vars(
+                    tuple(expr for _name, expr, _exec_id in items), {"format"}
+                )
             )
         )
         func_hint = f"Func:{func_symbol}"
@@ -749,6 +765,7 @@ class TypeAnnotationMixin(_MixinBase):
             self.emit(MoltOp(kind="FUNC_NEW", args=[func_symbol, 1], result=func_val))
         self._emit_function_metadata(
             func_val,
+            code_symbol=func_symbol,
             name="__annotate__",
             qualname=self._annotate_qualname(),
             trace_lineno=None,
@@ -761,6 +778,8 @@ class TypeAnnotationMixin(_MixinBase):
             kw_default_exprs=[],
             docstring=None,
             module_override=module_override,
+            freevars=free_vars_list,
+            cellvars=cell_vars,
         )
 
         prev_func = self.current_func_name
@@ -790,18 +809,12 @@ class TypeAnnotationMixin(_MixinBase):
                 _MOLT_CLOSURE_PARAM, type_hint="tuple"
             )
         if namespace_cell is not None and class_scope is not None:
-            capture_index = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[len(free_vars_list)], result=capture_index)
-            )
-            captured_cell = MoltValue(self.next_var(), type_hint="list")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[self.compiler_bindings[_MOLT_CLOSURE_PARAM], capture_index],
-                    result=captured_cell,
+            captured_cell = self._load_free_var_cell(_ANNOTATION_NAMESPACE_CAPTURE)
+            if captured_cell is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    "Annotation namespace capture is missing from its closure",
                 )
-            )
             self._class_ns_stack = [
                 _ClassNsScope(
                     ns=None,
@@ -822,6 +835,8 @@ class TypeAnnotationMixin(_MixinBase):
         self.del_targets = set()
         self.unbound_check_names = set()
         format_val = self._parameter_value("format", type_hint="Any")
+        self.locals["format"] = format_val
+        self._prebox_scope_cell_vars(cell_vars)
         # Source annotations may independently capture or resolve "format".
         # Only the explicit parameter SSA owns the evaluator's argument zero.
         self._publish_python_frame_context()
@@ -837,22 +852,13 @@ class TypeAnnotationMixin(_MixinBase):
         supported_format = self._emit_compare_op(ast.Is(), comparison, false_val)
         exec_map_val: MoltValue | None = None
         if exec_map is not None:
-            capture_index = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="CONST",
-                    args=[len(free_vars_list) + int(namespace_cell is not None)],
-                    result=capture_index,
+            captured_exec_map = self._load_free_var_cell(_ANNOTATION_EXEC_MAP_CAPTURE)
+            if captured_exec_map is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    "Annotation execution-map capture is missing from its closure",
                 )
-            )
-            exec_map_val = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[self.compiler_bindings[_MOLT_CLOSURE_PARAM], capture_index],
-                    result=exec_map_val,
-                )
-            )
+            exec_map_val = self._emit_cell_get(captured_exec_map, type_hint="dict")
         elif exec_map_name is not None:
             exec_map_val = self.visit(ast.Name(id=exec_map_name, ctx=ast.Load()))
         missing_val = MoltValue(self.next_var(), type_hint="missing")

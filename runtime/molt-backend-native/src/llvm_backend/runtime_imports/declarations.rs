@@ -50,8 +50,8 @@ pub(crate) fn declare_fixed_runtime_function<'ctx>(
 ///
 /// Fixed imports are external linkage symbols resolved by the Molt runtime
 /// shared library or static archive. Their signature and optimization
-/// attributes live in `fixed::FIXED_RUNTIME_IMPORTS`; the conservative
-/// classified-import table is only for residual boxed fallback imports.
+/// attributes live in `fixed::FIXED_RUNTIME_IMPORTS`; generated boxed contracts
+/// and residual dedicated machine signatures supply on-demand declarations.
 #[cfg(feature = "llvm")]
 pub(crate) fn declare_runtime_functions<'ctx>(ctx: &'ctx Context, module: &Module<'ctx>) {
     fixed::declare_fixed_runtime_functions(ctx, module);

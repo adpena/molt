@@ -1,16 +1,15 @@
 use crate::builtins::functions::runtime_callable_target_ptr;
-use crate::object::layout::function_call_target_ptr;
+use crate::object::layout::{
+    CodeExecutionKind, code_execution_kind, function_call_target_ptr, function_code_bits,
+};
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, PyToken,
-    TYPE_ID_FUNCTION, TYPE_ID_TUPLE, ensure_function_code_bits, exception_pending,
-    exception_stack_baseline_get, exception_stack_baseline_set, frame_stack_pop,
-    frame_stack_push_function, function_arity, function_attr_bits, function_closure_bits,
-    function_fn_ptr, function_name_bits, function_trampoline_ptr, header_from_obj_ptr,
-    intern_static_name, is_truthy, molt_exception_clear, obj_from_bits, object_type_id,
-    profile_hit, raise_exception, recursion_guard_enter, recursion_guard_exit, runtime_state,
-    type_name,
+    CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, PyToken, TYPE_ID_CODE,
+    TYPE_ID_FUNCTION, TYPE_ID_TUPLE, exception_pending, exception_stack_baseline_get,
+    exception_stack_baseline_set, function_arity, function_attr_bits,
+    function_execution_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
+    header_from_obj_ptr, intern_static_name, molt_exception_clear, obj_from_bits, object_type_id,
+    profile_hit, raise_exception, runtime_state, type_name,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -331,7 +330,7 @@ unsafe fn trace_function_vec_call(_py: &PyToken<'_>, func_ptr: *mut u8, args: &[
     };
     let fn_ptr = unsafe { function_fn_ptr(func_ptr) };
     let tramp_ptr = unsafe { normalized_function_trampoline_ptr(func_ptr, fn_ptr) };
-    let closure_bits = unsafe { function_closure_bits(func_ptr) };
+    let closure_bits = unsafe { function_execution_closure_bits(func_ptr) };
     let arity = unsafe { function_arity(func_ptr) };
     eprintln!(
         "[molt call_function_vec] lane={lane} name={name} fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{tramp_ptr:x} closure_bits=0x{closure_bits:x} arity={arity} argc={}",
@@ -457,7 +456,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         #[cfg(target_arch = "wasm32")]
@@ -503,11 +502,14 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                 "[molt call_function_obj1] name={name} file={file} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} arity={arity}"
             );
         }
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -594,8 +596,6 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj1");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -612,26 +612,18 @@ unsafe fn function_needs_task_trampoline(_py: &PyToken<'_>, func_bits: u64) -> R
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return Ok(false);
         }
-        if let Some(cached) = function_task_trampoline_cached(func_ptr) {
-            return Ok(cached);
+        if let Some(kind) = function_code_execution_kind(func_ptr) {
+            return Ok(kind.requires_task_trampoline());
         }
-        let needed = refresh_function_task_trampoline_cache(_py, func_ptr);
-        if exception_pending(_py) {
-            Err(())
-        } else {
-            Ok(needed)
-        }
+        Ok(false)
     }
 }
 
-unsafe fn function_task_trampoline_cached(func_ptr: *mut u8) -> Option<bool> {
+#[inline]
+pub(crate) unsafe fn function_code_execution_kind(func_ptr: *mut u8) -> Option<CodeExecutionKind> {
     unsafe {
-        let header = header_from_obj_ptr(func_ptr);
-        let flags = (*header).load_metadata_flags();
-        if (flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN) == 0 {
-            return None;
-        }
-        Some((flags & HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED) != 0)
+        let code_ptr = obj_from_bits(function_code_bits(func_ptr)).as_ptr()?;
+        (object_type_id(code_ptr) == TYPE_ID_CODE).then(|| code_execution_kind(code_ptr))
     }
 }
 
@@ -644,24 +636,19 @@ pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool
     }
 }
 
-pub(crate) unsafe fn refresh_function_task_trampoline_cache(
-    _py: &PyToken<'_>,
-    func_ptr: *mut u8,
-) -> bool {
-    unsafe {
-        project_function_task_trampoline_cache(_py, func_ptr)
-            .unwrap_or_else(|| compute_function_task_trampoline_needed(_py, func_ptr))
-    }
-}
-
 /// Read canonical function metadata without interning, allocation, hashing
-/// callbacks, or rich equality. This is also the commit-time cache reader.
+/// callbacks, or rich equality.
 pub(crate) unsafe fn function_metadata_bits(
     py: &PyToken<'_>,
     func_ptr: *mut u8,
     name: &[u8],
 ) -> u64 {
     unsafe {
+        if let Some(bits) =
+            crate::object::layout::function_code_signature_metadata_bits(func_ptr, name)
+        {
+            return bits;
+        }
         let dictionary = crate::function_dict_bits(func_ptr);
         obj_from_bits(dictionary)
             .as_ptr()
@@ -670,15 +657,7 @@ pub(crate) unsafe fn function_metadata_bits(
     }
 }
 
-const TASK_METADATA_NAMES: [&[u8]; 3] = [
-    b"__molt_is_generator__",
-    b"__molt_is_coroutine__",
-    b"__molt_is_async_generator__",
-];
-
-/// Commit derived facts before displaced metadata can run a finalizer. Unknown
-/// task truth values invalidate the cache; their Python truth protocol remains
-/// a call-time operation, never part of publication.
+/// Commit derived facts before displaced metadata can run a finalizer.
 pub(crate) unsafe fn commit_function_metadata_change(
     py: &PyToken<'_>,
     func_ptr: *mut u8,
@@ -686,76 +665,22 @@ pub(crate) unsafe fn commit_function_metadata_change(
     user: bool,
 ) {
     unsafe {
-        if user && matches!(name, b"__defaults__" | b"__kwdefaults__") {
-            crate::object::layout::function_bump_defaults_version(func_ptr);
+        if user
+            && matches!(
+                name,
+                b"__defaults__"
+                    | b"__kwdefaults__"
+                    | b"__molt_arg_names__"
+                    | b"__molt_posonly__"
+                    | b"__molt_kwonly_names__"
+                    | b"__molt_vararg__"
+                    | b"__molt_varkw__"
+                    | b"__molt_bind_kind__"
+            )
+        {
+            crate::object::layout::bump_function_mutation_version(func_ptr);
         }
         crate::call::bind::refresh_function_requires_binder_flag(py, func_ptr);
-        let _ = project_function_task_trampoline_cache(py, func_ptr);
-    }
-}
-
-unsafe fn project_function_task_trampoline_cache(
-    py: &PyToken<'_>,
-    func_ptr: *mut u8,
-) -> Option<bool> {
-    unsafe {
-        let mut needed = Some(false);
-        for name in TASK_METADATA_NAMES {
-            let value = obj_from_bits(function_metadata_bits(py, func_ptr, name));
-            let truth = if value.is_none() {
-                Some(false)
-            } else if let Some(value) = value.as_bool() {
-                Some(value)
-            } else if let Some(value) = value.as_int() {
-                Some(value != 0)
-            } else if !value.is_ptr() {
-                value.as_float().map(|value| value != 0.0)
-            } else {
-                None
-            };
-            if truth != Some(false) {
-                needed = truth;
-                break;
-            }
-        }
-        let header = header_from_obj_ptr(func_ptr);
-        match needed {
-            Some(needed) => (*header).update_flags(
-                HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN
-                    | if needed {
-                        HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
-                    } else {
-                        0
-                    },
-                if needed {
-                    0
-                } else {
-                    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED
-                },
-            ),
-            None => (*header).fetch_and_flags(
-                !(HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN | HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED),
-            ),
-        };
-        needed
-    }
-}
-
-unsafe fn compute_function_task_trampoline_needed(_py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
-    unsafe {
-        for name in TASK_METADATA_NAMES {
-            let bits = function_metadata_bits(_py, func_ptr, name);
-            crate::inc_ref_bits(_py, bits);
-            let truth = is_truthy(_py, obj_from_bits(bits));
-            crate::dec_ref_bits(_py, bits);
-            if exception_pending(_py) {
-                return false;
-            }
-            if truth {
-                return true;
-            }
-        }
-        false
     }
 }
 
@@ -781,14 +706,17 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -912,8 +840,6 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
                 res
             );
         }
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -949,14 +875,17 @@ pub(crate) unsafe fn call_function_obj2(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1030,8 +959,6 @@ pub(crate) unsafe fn call_function_obj2(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj2");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1074,14 +1001,17 @@ pub(crate) unsafe fn call_function_obj3(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1145,8 +1075,6 @@ pub(crate) unsafe fn call_function_obj3(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj3");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1190,14 +1118,17 @@ pub(crate) unsafe fn call_function_obj4(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1263,8 +1194,6 @@ pub(crate) unsafe fn call_function_obj4(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj4");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1309,14 +1238,17 @@ unsafe fn call_function_obj5(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1402,8 +1334,6 @@ unsafe fn call_function_obj5(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj5");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1454,14 +1384,17 @@ unsafe fn call_function_obj6(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1559,8 +1492,6 @@ unsafe fn call_function_obj6(
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj6");
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1612,14 +1543,17 @@ unsafe fn call_function_obj7(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1724,8 +1658,6 @@ unsafe fn call_function_obj7(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1780,14 +1712,17 @@ unsafe fn call_function_obj8(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1898,8 +1833,6 @@ unsafe fn call_function_obj8(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -1955,14 +1888,17 @@ unsafe fn call_function_obj9(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2087,8 +2023,6 @@ unsafe fn call_function_obj9(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -2145,14 +2079,17 @@ unsafe fn call_function_obj10(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2303,8 +2240,6 @@ unsafe fn call_function_obj10(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -2362,14 +2297,17 @@ unsafe fn call_function_obj11(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2538,8 +2476,6 @@ unsafe fn call_function_obj11(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -2598,14 +2534,17 @@ unsafe fn call_function_obj12(
             return res;
         }
         let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2782,8 +2721,6 @@ unsafe fn call_function_obj12(
                 ) as u64
             }
         };
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -2869,12 +2806,15 @@ pub(crate) unsafe fn call_function_obj_trampoline(
         if tramp_ptr == 0 {
             return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
         }
-        let closure_bits = function_closure_bits(func_ptr);
-        let code_bits = ensure_function_code_bits(_py, func_ptr);
-        if !recursion_guard_enter() {
-            return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
-        }
-        frame_stack_push_function(_py, code_bits, func_ptr);
+        let closure_bits = function_execution_closure_bits(func_ptr);
+        let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
+            return crate::MoltObject::none().bits();
+        };
+        let Some(_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
+        else {
+            return crate::MoltObject::none().bits();
+        };
         #[cfg(target_arch = "wasm32")]
         if matches!(
             std::env::var("MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE")
@@ -2890,9 +2830,9 @@ pub(crate) unsafe fn call_function_obj_trampoline(
                 "<unnamed>".to_string()
             };
             eprintln!(
-                "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} task_trampoline={:?}",
+                "[molt call trampoline] name={name} fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} closure_bits={closure_bits} nargs={} execution_kind={:?}",
                 args.len(),
-                function_task_trampoline_cached(func_ptr),
+                function_code_execution_kind(func_ptr),
             );
         }
         let res = {
@@ -2949,8 +2889,6 @@ pub(crate) unsafe fn call_function_obj_trampoline(
         // owned result reference. A WASM-only retain here duplicated every
         // fresh heap result before CallArgs teardown and made trampoline
         // dispatch observably leak relative to fixed-arity and native calls.
-        frame_stack_pop(_py);
-        recursion_guard_exit();
         res
     }
 }
@@ -3112,6 +3050,90 @@ mod tests {
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn shared_code_execution_kind_ignores_public_marker_mutation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let name_bits = string_bits("code-task-kind");
+            let empty_tuple_ptr = alloc_tuple(_py, &[]);
+            assert!(!empty_tuple_ptr.is_null());
+            let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+            let code_ptr = crate::alloc_code_obj(
+                _py,
+                name_bits,
+                name_bits,
+                1,
+                MoltObject::none().bits(),
+                empty_tuple_bits,
+                empty_tuple_bits,
+                0,
+                0,
+                0,
+            );
+            assert!(!code_ptr.is_null());
+            let code_bits = MoltObject::from_ptr(code_ptr).bits();
+            let first_func = crate::alloc_function_obj(_py, 17, 0);
+            let second_func = crate::alloc_function_obj(_py, 17, 0);
+            assert!(!first_func.is_null() && !second_func.is_null());
+            let first_bits = MoltObject::from_ptr(first_func).bits();
+            let second_bits = MoltObject::from_ptr(second_func).bits();
+            unsafe {
+                assert!(crate::function_set_code_bits(_py, first_func, code_bits));
+                assert!(crate::function_set_code_bits(_py, second_func, code_bits));
+                assert_eq!(
+                    crate::object::layout::code_publish_execution_kind(
+                        code_ptr,
+                        crate::object::layout::CodeExecutionKind::Generator,
+                    ),
+                    Ok(())
+                );
+                assert_eq!(
+                    crate::object::layout::code_publish_execution_kind(
+                        code_ptr,
+                        crate::object::layout::CodeExecutionKind::Coroutine,
+                    ),
+                    Err(crate::object::layout::CodeExecutionKind::Generator)
+                );
+
+                let marker = b"__molt_is_generator__";
+                let set_result = crate::molt_set_attr_object(
+                    first_bits,
+                    marker.as_ptr(),
+                    marker.len() as u64,
+                    MoltObject::from_bool(true).bits(),
+                );
+                assert_eq!(set_result, MoltObject::none().bits());
+                assert!(!crate::exception_pending(_py));
+                assert_eq!(
+                    crate::object::layout::code_execution_kind(code_ptr),
+                    crate::object::layout::CodeExecutionKind::Generator,
+                );
+                assert_eq!(
+                    super::function_needs_task_trampoline(_py, second_bits),
+                    Ok(true)
+                );
+
+                let del_result =
+                    crate::molt_del_attr_object(first_bits, marker.as_ptr(), marker.len() as u64);
+                assert_eq!(del_result, MoltObject::none().bits());
+                assert!(!crate::exception_pending(_py));
+                assert_eq!(
+                    crate::object::layout::code_execution_kind(code_ptr),
+                    crate::object::layout::CodeExecutionKind::Generator,
+                );
+                assert_eq!(
+                    super::function_needs_task_trampoline(_py, second_bits),
+                    Ok(true)
+                );
+            }
+            dec_ref_bits(_py, first_bits);
+            dec_ref_bits(_py, second_bits);
+            dec_ref_bits(_py, code_bits);
+            dec_ref_bits(_py, empty_tuple_bits);
+            dec_ref_bits(_py, name_bits);
+        });
     }
 
     struct EnvGuard(&'static str);

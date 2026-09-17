@@ -228,7 +228,7 @@ callable_arity = 1
 index = 15
 runtime_name = "molt_types_cell_new"
 import_name = "types_cell_new"
-callable_arity = 1
+callable_arity = 3
 
 [[reserved_runtime_callable]]
 index = 16
@@ -872,6 +872,7 @@ type = 2
 [[import]]
 name = "bound_method_new"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "closure_load"
@@ -880,10 +881,6 @@ type = 3
 [[import]]
 name = "closure_store"
 type = 5
-
-[[import]]
-name = "fn_ptr_code_set"
-type = 3
 
 [[import]]
 name = "func_new"
@@ -928,6 +925,78 @@ name = "function_init_metadata_packed"
 type = 7
 runtime_name = "molt_function_init_metadata_packed"
 callable_arity = 4
+
+[[import]]
+name = "cell_new"
+type = 2
+runtime_name = "molt_cell_new"
+callable_arity = 1
+
+[[import]]
+name = "cell_get"
+type = 2
+runtime_name = "molt_cell_get"
+callable_arity = 1
+
+[[import]]
+name = "cell_set"
+type = 3
+runtime_name = "molt_cell_set"
+callable_arity = 2
+
+[[import]]
+name = "cell_eq"
+type = 3
+runtime_name = "molt_cell_eq"
+callable_arity = 2
+
+[[import]]
+name = "cell_ne"
+type = 3
+runtime_name = "molt_cell_ne"
+callable_arity = 2
+
+[[import]]
+name = "cell_lt"
+type = 3
+runtime_name = "molt_cell_lt"
+callable_arity = 2
+
+[[import]]
+name = "cell_le"
+type = 3
+runtime_name = "molt_cell_le"
+callable_arity = 2
+
+[[import]]
+name = "cell_gt"
+type = 3
+runtime_name = "molt_cell_gt"
+callable_arity = 2
+
+[[import]]
+name = "cell_ge"
+type = 3
+runtime_name = "molt_cell_ge"
+callable_arity = 2
+
+[[import]]
+name = "types_cell_contents_get"
+type = 3
+runtime_name = "molt_types_cell_contents_get"
+callable_arity = 2
+
+[[import]]
+name = "types_cell_contents_set"
+type = 5
+runtime_name = "molt_types_cell_contents_set"
+callable_arity = 3
+
+[[import]]
+name = "types_cell_contents_delete"
+type = 3
+runtime_name = "molt_types_cell_contents_delete"
+callable_arity = 2
 
 [[import]]
 name = "function_set_builtin"
@@ -987,10 +1056,15 @@ callable_arity = 0
 [[import]]
 name = "is_bound_method"
 type = 2
+boxed_call = true
 
 [[import]]
 name = "is_function_obj"
 type = 2
+
+[[import]]
+name = "function_direct_call_eligible"
+type = 5
 
 [[import]]
 name = "bridge_unavailable"
@@ -1484,7 +1558,9 @@ callable_arity = 9
 
 [[import]]
 name = "code_slot_set"
-type = 3
+type = 5
+runtime_name = "molt_code_slot_set"
+callable_arity = 3
 
 [[import]]
 name = "code_slots_init"
@@ -1493,6 +1569,18 @@ type = 2
 [[import]]
 name = "frame_locals_set"
 type = 2
+
+[[import]]
+name = "frame_invocation_enter"
+type = 2
+runtime_name = "molt_frame_invocation_enter"
+callable_arity = 1
+
+[[import]]
+name = "frame_invocation_exit"
+type = 2
+runtime_name = "molt_frame_invocation_exit"
+callable_arity = 1
 
 [[import]]
 name = "trace_enter_slot"
@@ -1547,6 +1635,7 @@ callable_arity = 5
 [[import]]
 name = "print_newline"
 type = 8
+boxed_call = true
 
 [[import]]
 name = "print_obj"
@@ -2138,6 +2227,7 @@ type = 3
 [[import]]
 name = "tuple_index"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "zip_builtin"
@@ -2465,6 +2555,7 @@ callable_arity = 0
 [[import]]
 name = "dataclass_get"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "dataclass_new"
@@ -2473,10 +2564,12 @@ type = 7
 [[import]]
 name = "dataclass_set"
 type = 5
+boxed_call = true
 
 [[import]]
 name = "dataclass_set_class"
 type = 3
+boxed_call = true
 
 [[import]]
 name = "chan_drop"
@@ -2847,20 +2940,40 @@ type = 2
 poll_table_slot = 10
 
 [[import]]
+name = "buffer2d_cols"
+type = 2
+runtime_name = "molt_buffer2d_cols"
+callable_arity = 1
+
+[[import]]
 name = "buffer2d_get"
 type = 5
+runtime_name = "molt_buffer2d_get"
+callable_arity = 3
 
 [[import]]
 name = "buffer2d_matmul"
 type = 3
+runtime_name = "molt_buffer2d_matmul"
+callable_arity = 2
 
 [[import]]
 name = "buffer2d_new"
 type = 5
+runtime_name = "molt_buffer2d_new"
+callable_arity = 3
+
+[[import]]
+name = "buffer2d_rows"
+type = 2
+runtime_name = "molt_buffer2d_rows"
+callable_arity = 1
 
 [[import]]
 name = "buffer2d_set"
 type = 7
+runtime_name = "molt_buffer2d_set"
+callable_arity = 4
 
 [[import]]
 name = "bytearray_count"
@@ -6328,7 +6441,7 @@ sink = "none"
 kind = "asyncgen_new"
 import_name = "asyncgen_new"
 args = ["local:0"]
-sink = "result_or_drop"
+sink = "owned_result_or_release"
 required_imports = [
   "asyncgen_hooks_get",
   "asyncgen_hooks_set",
@@ -6351,6 +6464,7 @@ required_imports = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 0
+boxed_call = true
 kinds = [
   "errno_constants",
   "promise_new",
@@ -6371,6 +6485,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 1
+boxed_call = true
 kinds = [
   "not",
   "id",
@@ -6420,6 +6535,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 2
+boxed_call = true
 kinds = [
   "is",
   "file_open",
@@ -6462,6 +6578,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 3
+boxed_call = true
 kinds = [
   "slice",
   "slice_new",
@@ -6481,6 +6598,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 4
+boxed_call = true
 kinds = [
   "list_index_range",
   "dict_pop",
@@ -6489,6 +6607,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "result_or_drop"
 arg_count = 2
+boxed_call = true
 kinds = [
   "callargs_push_pos",
   "callargs_expand_star",
@@ -6498,6 +6617,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 1
+boxed_call = true
 kinds = [
   "ord",
   "chr",
@@ -6518,6 +6638,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 2
+boxed_call = true
 kinds = [
   "ord_at",
   "string_join",
@@ -6546,6 +6667,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 3
+boxed_call = true
 kinds = [
   "string_split_field",
   "string_split_field_len",
@@ -6570,6 +6692,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 4
+boxed_call = true
 kinds = [
   "string_split_field_eq",
   "string_split_field_len_from_bounds",
@@ -6585,6 +6708,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 5
+boxed_call = true
 kinds = [
   "string_split_field_ord_at_bounds",
   "statistics_mean_slice",
@@ -6594,6 +6718,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 sink = "non_none_result_or_drop"
 arg_count = 6
+boxed_call = true
 kinds = [
   "bytes_find_slice",
   "bytearray_find_slice",

@@ -1,6 +1,8 @@
 use molt_obj_model::MoltObject;
 
+use crate::call::function::function_code_execution_kind;
 use crate::object::HEADER_FLAG_COROUTINE;
+use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs,
     alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1,
@@ -79,6 +81,18 @@ fn code_flags_from_attr(
         dec_ref_bits(_py, code_bits);
     }
     result
+}
+
+fn callable_execution_kind(obj_bits: u64) -> Option<CodeExecutionKind> {
+    let mut ptr = maybe_ptr_from_bits(obj_bits)?;
+    unsafe {
+        if object_type_id(ptr) == crate::TYPE_ID_BOUND_METHOD {
+            ptr = maybe_ptr_from_bits(crate::bound_method_func_bits(ptr))?;
+        }
+        (object_type_id(ptr) == TYPE_ID_FUNCTION)
+            .then(|| function_code_execution_kind(ptr))
+            .flatten()
+    }
 }
 
 fn state_string(_py: &crate::PyToken<'_>, value: &[u8]) -> u64 {
@@ -1196,14 +1210,6 @@ pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if marker {
-            return MoltObject::from_bool(true).bits();
-        }
-
         if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_OBJECT {
@@ -1215,30 +1221,17 @@ pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
             }
         }
 
-        let has_cr_code = match has_attr(_py, obj_bits, b"cr_code") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if !has_cr_code {
-            return MoltObject::from_bool(false).bits();
-        }
-        let has_cr_frame = match has_attr(_py, obj_bits, b"cr_frame") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        MoltObject::from_bool(has_cr_frame).bits()
+        // Public introspection attributes are not native coroutine identity.
+        // In particular, types._GeneratorWrapper deliberately exposes cr_*.
+        MoltObject::from_bool(false).bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if marker {
-            return MoltObject::from_bool(true).bits();
+        if let Some(kind) = callable_execution_kind(obj_bits) {
+            return MoltObject::from_bool(kind == CodeExecutionKind::Coroutine).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
             Ok(value) => value,
@@ -1251,12 +1244,8 @@ pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let marker = match attr_truthy(_py, obj_bits, b"__molt_is_async_generator__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if marker {
-            return MoltObject::from_bool(true).bits();
+        if let Some(kind) = callable_execution_kind(obj_bits) {
+            return MoltObject::from_bool(kind == CodeExecutionKind::AsyncGenerator).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
             Ok(value) => value,
@@ -1269,12 +1258,8 @@ pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let marker = match attr_truthy(_py, obj_bits, b"__molt_is_generator__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if marker {
-            return MoltObject::from_bool(true).bits();
+        if let Some(kind) = callable_execution_kind(obj_bits) {
+            return MoltObject::from_bool(kind == CodeExecutionKind::Generator).bits();
         }
         let flags = match code_flags_from_attr(_py, obj_bits, b"__code__") {
             Ok(value) => value,
@@ -1287,13 +1272,6 @@ pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inspect_isawaitable(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let marker = match attr_truthy(_py, obj_bits, b"__molt_is_coroutine__") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if marker {
-            return MoltObject::from_bool(true).bits();
-        }
         let has_await = match has_attr(_py, obj_bits, b"__await__") {
             Ok(value) => value,
             Err(err) => return err,
@@ -1424,4 +1402,35 @@ pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
         }
         state_string(_py, b"CORO_SUSPENDED")
     })
+}
+
+#[cfg(test)]
+mod coroutine_identity_tests {
+    use super::*;
+
+    #[test]
+    fn coroutine_shaped_public_attributes_do_not_make_a_native_coroutine() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let function = crate::alloc_function_obj(_py, 17, 0);
+            assert!(!function.is_null());
+            let bits = MoltObject::from_ptr(function).bits();
+            unsafe {
+                for name in [b"cr_code".as_slice(), b"cr_frame"] {
+                    assert!(crate::call::class_init::function_set_attr_name(
+                        _py,
+                        function,
+                        name,
+                        MoltObject::none().bits(),
+                    ));
+                }
+            }
+            assert_eq!(
+                obj_from_bits(molt_inspect_iscoroutine(bits)).as_bool(),
+                Some(false)
+            );
+            assert!(!exception_pending(_py));
+            dec_ref_bits(_py, bits);
+        });
+    }
 }

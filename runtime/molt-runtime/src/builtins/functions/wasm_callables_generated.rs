@@ -208,7 +208,7 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
         index: 15,
         runtime_name: "molt_types_cell_new",
         import_name: "types_cell_new",
-        arity: 1,
+        arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {

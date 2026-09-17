@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.wasm_linked_runner import _run_wasm_test_process
-from tests.wasm_harness import BASE_PREAMBLE, IMPORT_HELPERS
+from tests.wasm_harness import BASE_IMPORTS, BASE_PREAMBLE, IMPORT_HELPERS
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 from molt._wasm_abi_generated import wasm_runtime_import_name
 
@@ -179,6 +179,104 @@ def test_wasm_harness_exposes_class_merge_layout_import() -> None:
         "class_merge_layout: (classBits, offsetsBits, sizeBits) => {"
         in source.read_text()
     )
+
+
+def test_wasm_harness_task_construction_owns_kind_and_exact_pending_context(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for wasm harness test")
+    wasm_path = tmp_path / "empty.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    runner = tmp_path / "task_construction.js"
+    runner.write_text(
+        BASE_PREAMBLE
+        + "\nconst baseImports = {\n"
+        + BASE_IMPORTS
+        + "\n};\n"
+        + r"""
+const assert = require('node:assert/strict');
+memory = new WebAssembly.Memory({initial: 32});
+const globals = boxPtr({type: 'dict', entries: [], lookup: new Map()});
+const builtins = boxPtr({type: 'dict', entries: [], lookup: new Map()});
+const code = boxPtr({type: 'code', callableFnPtr: 17n});
+const context = {codeBits: code, globalsBits: globals, builtinsBits: builtins};
+const depth = pendingFrameInvocationPush(1, context);
+for (const kind of [TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TASK_KIND_COROUTINE]) {
+  const bits = baseImports.task_new(17n, 64n, kind);
+  const addr = ptrAddr(bits);
+  assert.equal(isGenerator(bits), kind === TASK_KIND_GENERATOR);
+  assert.deepEqual(taskFrameContexts.get(addr), context);
+  assert.equal(memView().getBigInt64(addr - HEADER_POLL_FN_OFFSET, true), 17n);
+  assert.equal(memView().getBigInt64(addr + 56, true), boxNone());
+  const nativeBits = baseImports.task_new(18n, 64n, kind);
+  assert.equal(taskFrameContexts.has(ptrAddr(nativeBits)), false);
+  const zeroTarget = baseImports.task_new(0n, 64n, kind);
+  assert.equal(taskFrameContexts.has(ptrAddr(zeroTarget)), false);
+}
+pendingFrameInvocationPop(depth);
+assert.equal(taskFrameContexts.has(ptrAddr(baseImports.task_new(17n, 64n, TASK_KIND_GENERATOR))), false);
+assert.equal(isGenerator(boxPtrAddr(allocRaw(64))), false);
+assert.equal(Object.hasOwn(baseImports, 'generator_new'), false);
+assert.throws(() => baseImports.task_new(17n, 8n, TASK_KIND_GENERATOR), /closure too small/);
+assert.throws(() => baseImports.task_new(17n, 64n, 99n), /unknown task kind/);
+assert.equal(pendingFrameInvocations.length, 0);
+console.log('task-construction-ok');
+"""
+    )
+    run = _run_wasm_test_process(
+        ["node", str(runner), str(wasm_path)],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "task-construction-ok"
+
+
+def test_wasm_harness_metadata_contract_rejects_unimplemented_cells(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for wasm harness test")
+    wasm_path = tmp_path / "empty.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00")
+    runner = tmp_path / "lexical_metadata.js"
+    runner.write_text(
+        BASE_PREAMBLE
+        + "\nconst baseImports = {\n"
+        + BASE_IMPORTS
+        + "\n};\n"
+        + r"""
+const assert = require('node:assert/strict');
+const fn = boxPtr({type: 'function', idx: 0, attrs: new Map()});
+const empty = tupleFromArray([]);
+const metadata = [...Array(11).fill(boxNone()), boxInt(0n), empty, empty];
+assert.throws(() => baseImports.func_new_closure(1n, 0n, 0n, empty), /lexical cells require the linked Molt runtime/);
+const publish = (items) => baseImports.function_init_metadata_packed(
+  fn, tupleFromArray(items), boxNone(), boxNone());
+assert.throws(() => publish(metadata.slice(0, 12)), /14 items/);
+assert.equal(getFunction(fn).attrs.size, 0);
+const invalid = metadata.slice();
+invalid[12] = tupleFromArray([boxInt(1n)]);
+assert.throws(() => publish(invalid), /tuples of str/);
+assert.equal(getFunction(fn).attrs.size, 0);
+for (const index of [12, 13]) {
+  const captures = metadata.slice();
+  captures[index] = tupleFromArray([boxPtr({type: 'str', value: 'value'})]);
+  assert.throws(() => publish(captures), /lexical cells require the linked Molt runtime/);
+  assert.equal(getFunction(fn).attrs.size, 0);
+}
+assert.equal(publish(metadata), boxNone());
+assert.equal(getFunction(fn).attrs.size, 11);
+console.log('lexical-metadata-ok');
+"""
+    )
+    run = _run_wasm_test_process(
+        ["node", str(runner), str(wasm_path)], cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "lexical-metadata-ok"
 
 
 def test_wasm_harness_exposes_string_split_field_imports() -> None:

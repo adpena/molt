@@ -175,6 +175,15 @@ class StatefulFunctionFramePlan:
     def task_kind(self) -> str:
         return stateful_function_task_kind(self.kind)
 
+    def callable_task_metadata(self, closure_size: int) -> dict[str, str | int]:
+        """Publish callable trampoline kind and the finalized frame byte size."""
+        callable_kind = {
+            FunctionKind.GENERATOR: "generator",
+            FunctionKind.ASYNC: "coroutine",
+            FunctionKind.ASYNC_GENERATOR: "async_generator",
+        }[self.kind]
+        return {"task_kind": callable_kind, "task_closure_size": closure_size}
+
     @property
     def result_type_hint(self) -> str:
         return stateful_function_result_type_hint(self.kind)

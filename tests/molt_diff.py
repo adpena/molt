@@ -2812,127 +2812,166 @@ def run_cpython(file_path, python_exe=sys.executable):
     env["TMP"] = str(cpython_tmp)
     env.update(_collect_env_overrides(file_path))
     bootstrap = """
-import importlib.machinery as _machinery
-import os as _os
-import runpy
-import sys
+def _molt_diff_execute_script():
+    import builtins as _builtins
+    import importlib.machinery as _machinery
+    import os as _os
+    import sys as _sys
 
-if "importlib_resources_" in sys.argv[1]:
-    # Keep zipfile available even when tests temporarily replace sys.path
-    # with synthetic roots that omit the host stdlib path.
-    import zipfile as _molt_diff_zipfile_preload  # noqa: F401
-    try:
-        from importlib.readers import MultiplexedPath as _MoltDiffMultiplexedPath
-    except Exception:
-        _MoltDiffMultiplexedPath = None
-    if _MoltDiffMultiplexedPath is not None and not hasattr(
-        _MoltDiffMultiplexedPath, "__fspath__"
-    ):
-        def _molt_diff_multiplexed_fspath(self):
-            paths = getattr(self, "_paths", None)
-            if isinstance(paths, (list, tuple)) and paths:
-                return str(paths[0])
-            return str(self)
-        _MoltDiffMultiplexedPath.__fspath__ = _molt_diff_multiplexed_fspath
+    _script_arg = _sys.argv[1]
+    _script_path = _os.path.abspath(_script_arg)
+    _script_dir = _os.path.dirname(_script_path)
+    # ``python -c`` makes the current working directory sys.path[0].  A
+    # directly executed script instead owns that slot with its containing
+    # directory, while argv[0] retains the spelling supplied by the caller.
+    if _sys.path:
+        _sys.path[0] = _script_dir
+    else:
+        _sys.path.insert(0, _script_dir)
+    _sys.argv[:] = [_script_arg, *_sys.argv[2:]]
 
-if "importlib_extension_exec_" in sys.argv[1]:
-    _orig_create_module = _machinery.ExtensionFileLoader.create_module
-    _orig_exec_module = _machinery.ExtensionFileLoader.exec_module
-
-    def _strip_ext(path):
-        for suffix in (".so", ".pyd", ".dll", ".dylib"):
-            if path.endswith(suffix):
-                return path[: -len(suffix)]
-        return None
-
-    def _strip_cpython_tag(stem):
-        marker = ".cpython-"
-        if marker in stem:
-            return stem.split(marker, 1)[0]
-        return stem
-
-    def _candidate_shim_paths(module_file):
-        out = []
-        if not module_file:
-            return out
-
-        def _append(candidate):
-            if candidate and candidate not in out:
-                out.append(candidate)
-
-        _append(f"{module_file}.molt.py")
-        _append(f"{module_file}.py")
-
-        stripped = _strip_ext(module_file)
-        if stripped:
-            _append(f"{stripped}.molt.py")
-            _append(f"{stripped}.py")
-            stripped_tag = _strip_cpython_tag(stripped)
-            if stripped_tag != stripped:
-                _append(f"{stripped_tag}.molt.py")
-                _append(f"{stripped_tag}.py")
-
-        dirname = _os.path.dirname(module_file)
-        basename = _os.path.basename(module_file)
-        base_noext = _strip_ext(basename) or basename
-        base_tag = _strip_cpython_tag(base_noext)
-
-        if dirname:
-            if base_tag.startswith("__init__"):
-                _append(_os.path.join(dirname, "__init__.molt.py"))
-                _append(_os.path.join(dirname, "__init__.py"))
-
-            if _os.path.basename(dirname) == "__pycache__":
-                parent = _os.path.dirname(dirname)
-                _append(_os.path.join(parent, f"{base_tag}.molt.py"))
-                _append(_os.path.join(parent, f"{base_tag}.py"))
-
-        return out
-
-    def _molt_diff_create_module(self, spec):
+    if "importlib_resources_" in _script_path:
+        # Keep zipfile available even when tests temporarily replace sys.path
+        # with synthetic roots that omit the host stdlib path.
+        import zipfile as _molt_diff_zipfile_preload  # noqa: F401
         try:
-            return _orig_create_module(self, spec)
-        except (ImportError, OSError, PermissionError):
+            from importlib.readers import MultiplexedPath as _MoltDiffMultiplexedPath
+        except Exception:
+            _MoltDiffMultiplexedPath = None
+        if _MoltDiffMultiplexedPath is not None and not hasattr(
+            _MoltDiffMultiplexedPath, "__fspath__"
+        ):
+            def _molt_diff_multiplexed_fspath(self):
+                paths = getattr(self, "_paths", None)
+                if isinstance(paths, (list, tuple)) and paths:
+                    return str(paths[0])
+                return str(self)
+            _MoltDiffMultiplexedPath.__fspath__ = _molt_diff_multiplexed_fspath
+
+    if "importlib_extension_exec_" in _script_path:
+        _orig_create_module = _machinery.ExtensionFileLoader.create_module
+        _orig_exec_module = _machinery.ExtensionFileLoader.exec_module
+
+        def _strip_ext(path):
+            for suffix in (".so", ".pyd", ".dll", ".dylib"):
+                if path.endswith(suffix):
+                    return path[: -len(suffix)]
             return None
 
-    def _molt_diff_exec_module(self, module):
-        module_file = getattr(module, "__file__", None)
-        if not module_file:
-            spec = getattr(module, "__spec__", None)
-            module_file = getattr(spec, "origin", None) if spec is not None else None
-        shim_path = None
-        for candidate in _candidate_shim_paths(module_file):
-            if _os.path.exists(candidate):
-                shim_path = candidate
-                break
-        shim_exists = bool(shim_path)
-        exec_failed = False
-        try:
-            _orig_exec_module(self, module)
-        except (ImportError, OSError, PermissionError):
-            exec_failed = True
-            if not shim_exists:
-                raise
-        if shim_exists:
-            with open(shim_path, "rb") as _shim_file:
-                _shim_src = _shim_file.read()
+        def _strip_cpython_tag(stem):
+            marker = ".cpython-"
+            if marker in stem:
+                return stem.split(marker, 1)[0]
+            return stem
+
+        def _candidate_shim_paths(module_file):
+            out = []
+            if not module_file:
+                return out
+
+            def _append(candidate):
+                if candidate and candidate not in out:
+                    out.append(candidate)
+
+            _append(f"{module_file}.molt.py")
+            _append(f"{module_file}.py")
+
+            stripped = _strip_ext(module_file)
+            if stripped:
+                _append(f"{stripped}.molt.py")
+                _append(f"{stripped}.py")
+                stripped_tag = _strip_cpython_tag(stripped)
+                if stripped_tag != stripped:
+                    _append(f"{stripped_tag}.molt.py")
+                    _append(f"{stripped_tag}.py")
+
+            dirname = _os.path.dirname(module_file)
+            basename = _os.path.basename(module_file)
+            base_noext = _strip_ext(basename) or basename
+            base_tag = _strip_cpython_tag(base_noext)
+
+            if dirname:
+                if base_tag.startswith("__init__"):
+                    _append(_os.path.join(dirname, "__init__.molt.py"))
+                    _append(_os.path.join(dirname, "__init__.py"))
+
+                if _os.path.basename(dirname) == "__pycache__":
+                    parent = _os.path.dirname(dirname)
+                    _append(_os.path.join(parent, f"{base_tag}.molt.py"))
+                    _append(_os.path.join(parent, f"{base_tag}.py"))
+
+            return out
+
+        def _molt_diff_create_module(self, spec):
             try:
-                _shim_code = compile(_shim_src, shim_path, "exec")
-            except SyntaxError:
-                _shim_text = _shim_src.decode("utf-8", "surrogateescape")
-                _shim_unescaped = bytes(_shim_text, "utf-8").decode("unicode_escape")
-                _shim_code = compile(_shim_unescaped, shim_path, "exec")
-            exec(_shim_code, module.__dict__, module.__dict__)
-        elif not exec_failed:
-            # Match Molt runtime behavior where extension execution without a
-            # loadable shim is treated as unavailable.
-            raise ImportError("extension execution unavailable")
-        return None
+                return _orig_create_module(self, spec)
+            except (ImportError, OSError, PermissionError):
+                return None
 
-    _machinery.ExtensionFileLoader.create_module = _molt_diff_create_module
-    _machinery.ExtensionFileLoader.exec_module = _molt_diff_exec_module
+        def _molt_diff_exec_module(self, module):
+            module_file = getattr(module, "__file__", None)
+            if not module_file:
+                spec = getattr(module, "__spec__", None)
+                module_file = (
+                    getattr(spec, "origin", None) if spec is not None else None
+                )
+            shim_path = None
+            for candidate in _candidate_shim_paths(module_file):
+                if _os.path.exists(candidate):
+                    shim_path = candidate
+                    break
+            shim_exists = bool(shim_path)
+            exec_failed = False
+            try:
+                _orig_exec_module(self, module)
+            except (ImportError, OSError, PermissionError):
+                exec_failed = True
+                if not shim_exists:
+                    raise
+            if shim_exists:
+                with open(shim_path, "rb") as _shim_file:
+                    _shim_src = _shim_file.read()
+                try:
+                    _shim_code = compile(_shim_src, shim_path, "exec")
+                except SyntaxError:
+                    _shim_text = _shim_src.decode("utf-8", "surrogateescape")
+                    _shim_unescaped = bytes(_shim_text, "utf-8").decode(
+                        "unicode_escape"
+                    )
+                    _shim_code = compile(_shim_unescaped, shim_path, "exec")
+                exec(_shim_code, module.__dict__, module.__dict__)
+            elif not exec_failed:
+                # Match Molt runtime behavior where extension execution without
+                # a loadable shim is treated as unavailable.
+                raise ImportError("extension execution unavailable")
+            return None
 
-runpy.run_path(sys.argv[1], run_name="__main__")
+        _machinery.ExtensionFileLoader.create_module = _molt_diff_create_module
+        _machinery.ExtensionFileLoader.exec_module = _molt_diff_exec_module
+
+    _script_loader = _machinery.SourceFileLoader("__main__", _script_path)
+    _script_code = compile(
+        _script_loader.get_data(_script_path), _script_path, "exec"
+    )
+    _main_globals = vars(_sys.modules["__main__"])
+    _main_globals.update(
+        __name__="__main__",
+        __file__=_script_path,
+        __cached__=None,
+        __doc__=None,
+        __loader__=_script_loader,
+        __package__=None,
+        __spec__=None,
+        __builtins__=_builtins,
+    )
+    # The helper frame retains everything needed to execute the script.  Drop
+    # the sole bootstrap global first so user globals and atexit callbacks see
+    # the same persistent __main__ namespace as direct CPython script entry.
+    del _main_globals["_molt_diff_execute_script"]
+    exec(_script_code, _main_globals, _main_globals)
+
+
+_molt_diff_execute_script()
 """
     timeout = _diff_timeout()
     try:

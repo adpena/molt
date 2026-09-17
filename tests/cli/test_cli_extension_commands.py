@@ -1853,6 +1853,7 @@ def test_extension_build_emits_public_exports_in_manifest(
             'binding = "direct_symbol"',
             'abi = "molt.object_call_v1"',
             'symbol = "molt_demoext_ndimage_distance_transform_edt"',
+            "arity = 1",
             'effects = ["read", "write"]',
             "deterministic = true",
         ],
@@ -1915,6 +1916,7 @@ def test_extension_build_emits_public_exports_in_manifest(
             "binding": "direct_symbol",
             "abi": "molt.object_call_v1",
             "symbol": "molt_demoext_ndimage_distance_transform_edt",
+            "arity": 1,
             "effects": ["read", "write"],
             "deterministic": True,
         }
@@ -3905,6 +3907,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
             'binding = "direct_symbol"',
             'abi = "molt.object_call_v1"',
             f'symbol = "{native_symbol}"',
+            "arity = 1",
             'effects = ["read"]',
             "deterministic = true",
         ],
@@ -4034,6 +4037,7 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
             "binding": "direct_symbol",
             "abi": "molt.object_call_v1",
             "symbol": native_symbol,
+            "arity": 1,
             "effects": ["read"],
             "deterministic": True,
         }
@@ -4231,6 +4235,7 @@ def test_extension_build_wasm_target_rejects_missing_direct_symbol(
             'binding = "direct_symbol"',
             'abi = "molt.object_call_v1"',
             f'symbol = "{native_symbol}"',
+            "arity = 1",
             "deterministic = true",
         ],
     )
@@ -7319,6 +7324,7 @@ def _adversarial_rooted_meson_plan(project_root: Path, root_kind: str) -> Path:
             'binding = "direct_symbol"\n'
             'abi = "molt.object_call_v1"\n'
             'symbol = "array__unique_hash"\n'
+            "arity = 1\n"
             'effects = ["read"]\n'
             "deterministic = true\n",
             encoding="utf-8",

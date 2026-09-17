@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import MoltValue
-
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
@@ -52,7 +50,6 @@ class SymbolNamingMixin(_MixinBase):
         while (
             symbol in self.func_symbol_names
             or symbol in self.reserved_func_symbols.values()
-            or symbol in self.reserved_external_func_symbols
             or f"{symbol}_poll" in self.funcs_map
         ):
             symbol = f"{self.module_prefix}{base}_{counter}"
@@ -73,7 +70,6 @@ class SymbolNamingMixin(_MixinBase):
             or f"{symbol}_poll" in self.funcs_map
             or symbol in self.func_symbol_names
             or symbol in self.reserved_func_symbols.values()
-            or symbol in self.reserved_external_func_symbols
         ):
             symbol = f"{self.module_prefix}{base}_{counter}"
             counter += 1
@@ -109,13 +105,6 @@ class SymbolNamingMixin(_MixinBase):
             self.func_code_ids[symbol] = code_id
             self.code_id_counter += 1
         return code_id
-
-    def _code_symbol_for_value(self, func_val: MoltValue) -> str | None:
-        hint = func_val.type_hint
-        if isinstance(hint, str):
-            if hint.startswith("Func:") or hint.startswith("ClosureFunc:"):
-                return hint.split(":", 1)[1]
-        return None
 
     def _qualname_prefix(self) -> str:
         if not self.qualname_stack:

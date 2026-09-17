@@ -20,8 +20,9 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES,
-    SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
+    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
+    SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
 )
 
 _NON_MODULE_PROVENANCE = "<non-module>"
@@ -155,7 +156,6 @@ class ImportLoweringMixin(_MixinBase):
         self.global_imported_module_provenance.pop(name, None)
         self.global_imported_names.pop(name, None)
         self.global_imported_attr_names.pop(name, None)
-        self.module_intrinsic_globals.pop(name, None)
         if attr_name is None:
             self.global_imported_modules[name] = module_name
             self.global_imported_module_provenance[name] = frozenset((module_name,))
@@ -266,7 +266,15 @@ class ImportLoweringMixin(_MixinBase):
             )
         ):
             return next(iter(symbols)), 0
-        return None, SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        requirements = 0
+        for module in protected_modules:
+            symbol, bits = self._runtime_qualified_callable_requirement(
+                module, attr_name
+            )
+            requirements |= bits
+            if symbol is not None:
+                requirements |= SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS[symbol]
+        return None, requirements
 
     def _begin_module_provenance_flow(
         self, *, record_exception_prefixes: bool
@@ -319,7 +327,7 @@ class ImportLoweringMixin(_MixinBase):
         if symbol is not None:
             return symbol, 0
         if qualified in SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES:
-            return None, SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+            return None, SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS
         return None, 0
 
     def _runtime_qualified_callable_metadata(
@@ -544,13 +552,6 @@ class ImportLoweringMixin(_MixinBase):
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    # Modules whose API calls are lowered directly to IR ops by the frontend.
-    # ``import molt_buffer`` etc. are no-ops: the module object is never used
-    # at runtime because every ``molt_buffer.new()`` / ``molt_msgpack.parse()``
-    # call is already emitted as specialised IR (BUFFER2D_NEW, MSGPACK_PARSE, …).
-    _STUB_IMPORT_MODULES: frozenset[str] = frozenset(
-        {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
-    )
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
         {"builtins", "_molt_importer"}
     )

@@ -98,6 +98,36 @@ Modules may be:
   only under their exact source/AST/catalog custody, established after ordinary
   closure admission. Neither graph presence nor a profile grants dynamic import
   permission. One scan-mode projection serves discovery and protocol detection.
+- Static branch and import pruning requires a canonical binding fact at the
+  expression's execution point. A preceding import, arbitrary-Python callback,
+  or reference release can populate a module binding and run its finalizer when
+  a later store replaces it; that finalizer can rewrite the newly stored value.
+  Such a guard or dynamic-import argument is unknown, regardless of a lexical
+  literal assignment: its guarded body remains in executable closure and its
+  dynamic import stays under source/AST/catalog custody. Tests interpret graph
+  inclusion as an executable possibility and exclusion only as proven deadness,
+  never as a normal-path prediction.
+- Dynamic relative-import discovery retains lexical candidates separately from
+  semantic import edges. Only classified unknown package/spec/name anchors may
+  defer to runtime custody; unrelated resolution errors still fail closed, and
+  foreign globals or explicit package arguments never acquire lexical fallback
+  semantics. The complete scan record carries the runtime-anchor requirement
+  through precomputed scans, persisted caches, and graph merges. Custody reaches
+  a fixed point over every discovered owner, preserving admitted module names
+  (including aliases), original resolution roots, fresh AST identity, and
+  full-depth scans. This source custody is target-independent: native/WASM
+  registry rows and source-backend dispatch retain the same finite roots.
+  Source admission is not runtime capability admission. Backends still reject
+  operations whose generated semantic requirements they cannot implement,
+  before source/artifact publication; catalog custody does not grant Rust/Luau
+  a relative-import transaction, object model, or exception protocol.
+  `IMPORT_PROTOCOL` in `op_kinds.toml` owns import opcode spellings, execution
+  intrinsics and first-class callable acquisition requirements. Object/cache
+  support does not imply this capability. Rust/Luau/MLIR do not advertise it;
+  their retained import operations fail target admission, not a late unknown-
+  module error or a synthetic `sys` dictionary. Native/WASM/LLVM use the shared
+  runtime protocol. Source-backend admission currently examines all retained IR
+  functions; source-catalog closure alone is not a successful-build receipt.
 - Build-time resolution and build-time admission are separate. Explicit
   external roots (`MOLT_MODULE_ROOTS`, `--lib-path`, respected `PYTHONPATH`, and
   auto site-packages) make modules resolvable, but only direct entry imports

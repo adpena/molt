@@ -5,7 +5,9 @@ use crate::wasm::WasmBackend;
 use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
+use crate::wasm_abi::GEN_CONTROL_SIZE;
 use crate::wasm_table::WasmCallableTableTarget;
+use crate::wasm_values::emit_boxed_none;
 
 const TASK_LOCAL: u32 = 3;
 const BASE_LOCAL: u32 = 4;
@@ -28,7 +30,12 @@ pub(super) fn emit_task_trampoline(
     closure_size: i64,
 ) {
     let layout = WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind);
-    layout.validate_closure_size(closure_size, arity, has_closure);
+    task_kind.constructor_layout().validate_closure_size(
+        closure_size,
+        arity,
+        has_closure,
+        GEN_CONTROL_SIZE,
+    );
 
     let import_ids = &backend.import_ids;
     let table_relocations = &mut backend.table_relocations;
@@ -44,6 +51,14 @@ pub(super) fn emit_task_trampoline(
     );
     func.instruction(&Instruction::LocalSet(TASK_LOCAL));
 
+    func.instruction(&Instruction::LocalGet(TASK_LOCAL));
+    emit_boxed_none(func);
+    func.instruction(&Instruction::I64Eq);
+    func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+    func.instruction(&Instruction::LocalGet(TASK_LOCAL));
+    func.instruction(&Instruction::Return);
+    func.instruction(&Instruction::End);
+
     emit_payload_slots(
         backend,
         func,
@@ -52,7 +67,13 @@ pub(super) fn emit_task_trampoline(
         arity,
         has_closure,
     );
-    layout.emit_completion_result(func, &backend.import_ids, reloc_enabled, TASK_LOCAL);
+    layout.emit_completion_result(
+        func,
+        &backend.import_ids,
+        reloc_enabled,
+        TASK_LOCAL,
+        VAL_LOCAL,
+    );
     // NOTE: no `Instruction::End` here — the shared tail in trampoline_emit.rs
     // is the single function-body `End` authority for every TrampolineBehavior.
     // A second End here made task trampoline bodies malformed ("operators

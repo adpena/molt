@@ -1052,6 +1052,7 @@ fn is_unhashable_type(type_id: u32) -> bool {
     matches!(
         type_id,
         TYPE_ID_LIST
+            | crate::TYPE_ID_CELL
             | TYPE_ID_DICT
             | TYPE_ID_SET
             | TYPE_ID_BYTEARRAY

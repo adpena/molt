@@ -48,8 +48,6 @@ mod object_proofs {
     const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
     const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
     const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
-    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
-    const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
     const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
     const HEADER_FLAG_INTERNED: u32 = 1 << 17;
     const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
@@ -68,7 +66,7 @@ mod object_proofs {
     const ALL_TYPE_IDS: &[u32] = &ALL_HEAP_TYPE_IDS;
 
     /// All header flags as a static array for bit-independence checks.
-    const ALL_FLAGS: [u32; 30] = [
+    const ALL_FLAGS: [u32; 28] = [
         HEADER_FLAG_HAS_PTRS,
         HEADER_FLAG_GEN_RUNNING,
         HEADER_FLAG_GEN_STARTED,
@@ -81,8 +79,6 @@ mod object_proofs {
         HEADER_FLAG_TASK_DONE,
         HEADER_FLAG_TRACEBACK_SUPPRESSED,
         HEADER_FLAG_COROUTINE,
-        HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-        HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
         HEADER_FLAG_IMMORTAL,
         HEADER_FLAG_FINALIZER_RAN,
         HEADER_FLAG_INTERNED,

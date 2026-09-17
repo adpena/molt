@@ -19,6 +19,7 @@ pub mod process_diagnostics;
 pub mod python_builtin_callables_generated;
 pub mod python_effects_generated;
 pub mod repr;
+pub mod runtime_boxed_abi_generated;
 pub mod runtime_callable_symbols;
 pub mod simple_verify;
 pub mod stdlib_module_symbols;

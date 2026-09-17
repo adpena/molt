@@ -30,9 +30,7 @@ impl SimpleBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
-        module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
-        emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
@@ -110,9 +108,7 @@ impl SimpleBackend {
             task_kinds,
             task_closure_sizes,
             defined_functions,
-            module_known_functions,
             closure_functions,
-            emit_traces,
             leaf_functions,
             known_function_arities,
             function_has_ret,
@@ -142,9 +138,7 @@ impl SimpleBackend {
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
-        module_known_functions: &BTreeSet<String>,
         closure_functions: &BTreeSet<String>,
-        emit_traces: bool,
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
@@ -775,7 +769,9 @@ impl SimpleBackend {
         }
 
         // Initialize frame custody before any fallible literal constructor can
-        // branch to the shared return. Frame entry itself remains at its IR op.
+        // branch to the shared return. A leading function-frame entry is emitted
+        // immediately below; module frames retain their IR-positioned binding
+        // prologue because their trace_enter_slot is not the leading op.
         let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
         let owned_frame_entered = has_frame_slot.then(|| {
             let entered = builder.declare_var(types::I8);
@@ -783,6 +779,20 @@ impl SimpleBackend {
             builder.def_var(entered, inactive);
             entered
         });
+        let leading_frame_code_id = func_ir
+            .ops
+            .first()
+            .filter(|op| op.kind == "trace_enter_slot")
+            .map(|op| op.value.unwrap_or(0));
+        if let (Some(entered), Some(code_id)) = (owned_frame_entered, leading_frame_code_id) {
+            emit_owned_execution_frame_enter(
+                entered,
+                code_id,
+                &mut self.module,
+                &mut self.import_ids,
+                &mut builder,
+            );
+        }
 
         // ── Heap-literal prologue hoisting ──────────────────────────────
         //
@@ -814,11 +824,11 @@ impl SimpleBackend {
             },
         );
 
-        // Semantic execution-frame ownership is separate from full call tracing. The
-        // frontend emits code-slot-backed trace_enter_slot/trace_exit markers
-        // for every Python frame; native codegen lowers the enter marker at its
-        // IR position so module code can initialize code slots first, then pops
-        // exactly once in the unified return block.
+        // Semantic execution-frame ownership is separate from full call tracing.
+        // Leading function markers enter before the allocating literal prologue;
+        // non-leading module markers stay at their IR position so module code can
+        // bind its code/globals slot first. Both pop exactly once in the unified
+        // return block.
         let label_transport_plans: BTreeMap<i64, BlockTransportPlan> = if stateful {
             // Stateful live-across-suspend values have frame custody, not a
             // simultaneously-live SSA predecessor. Their state-label ABI is a
@@ -1556,6 +1566,7 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         owned_frame_entered,
+                        leading_frame_code_id.is_some(),
                         has_frame_slot,
                         is_block_filled,
                         rc_authority,
@@ -1570,6 +1581,7 @@ impl SimpleBackend {
                         task_kinds,
                         task_closure_sizes,
                         defined_functions,
+                        known_function_arities,
                         function_has_ret,
                         &mut self.trampoline_ids,
                         &mut self.declared_func_arities,
@@ -1620,7 +1632,6 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         func_ir.name.as_str(),
-                        emit_traces,
                         master_return_block,
                         returns_value,
                         rc_authority,
@@ -1635,7 +1646,6 @@ impl SimpleBackend {
                         &first_defined_at,
                         &last_use,
                         &alias_roots,
-                        module_known_functions,
                         closure_functions,
                         leaf_functions,
                         &local_closure_envs,

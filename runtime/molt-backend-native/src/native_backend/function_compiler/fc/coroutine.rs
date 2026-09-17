@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW};
+use molt_tir::trampolines::TaskConstructorLayout;
 
 /// Single-source kind authority for [`handle_coroutine_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -952,23 +953,27 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             builder.ins().call(local_callee, &[]);
         }
         "call_async" => {
-            let Some(poll_func_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
-            };
-            if !poll_func_name.ends_with("_poll") {
-                panic!(
-                    "call_async target '{poll_func_name}' is not a poll function; expected *_poll"
-                );
-            }
+            let out_name = op
+                .out
+                .as_ref()
+                .expect("call_async requires an owned result");
+            let poll_func_name = op.s_value.as_ref().expect("call_async target missing");
             let args = op.args.as_deref();
             let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
-            let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
+            let layout = TaskConstructorLayout::for_call_async();
+            let closure_size =
+                layout.required_closure_size(payload_len, false, GENERATOR_CONTROL_BYTES);
+            let size = builder.ins().iconst(types::I64, closure_size);
             let mut poll_sig = module.make_signature();
             poll_sig.params.push(AbiParam::new(types::I64));
             poll_sig.returns.push(AbiParam::new(types::I64));
             let poll_func_id = module
                 .declare_function(poll_func_name, Linkage::Import, &poll_sig)
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "call_async target `{poll_func_name}` must have ABI (i64) -> i64: {error}"
+                    )
+                });
             let poll_func_ref = module.declare_func_in_func(poll_func_id, builder.func);
             let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
@@ -978,14 +983,19 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 MOLT_TASK_NEW,
             );
             let task_local = module.declare_func_in_func(task_callee, builder.func);
-            let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);
+            let kind_val = builder.ins().iconst(
+                types::I64,
+                crate::native_task_runtime_kind_bits(layout.runtime_kind()),
+            );
             let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
             let obj = builder.inst_results(call)[0];
-            let obj_ptr = unbox_ptr_value(&mut *builder, obj, nbc);
 
             if let Some(arg_names) = args
                 && !arg_names.is_empty()
             {
+                let tracking_origin = builder.current_block();
+                let initialized = begin_task_initialization(builder, sealed_blocks, obj);
+                let obj_ptr = unbox_ptr_value(&mut *builder, obj, nbc);
                 for (idx, arg_name) in arg_names.iter().enumerate() {
                     let val = var_get_boxed_overflow_safe(
                         &mut *module,
@@ -1003,10 +1013,16 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         .store(MemFlagsData::trusted(), *val, obj_ptr, (idx * 8) as i32);
                     emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
                 }
+                jump_block(builder, initialized, &[]);
+                switch_to_block_materialized(builder, initialized);
+                seal_block_once(builder, sealed_blocks, initialized);
+                carry_internal_cfg_tracking(
+                    tracking_origin,
+                    initialized,
+                    block_tracked_obj,
+                    block_tracked_ptr,
+                );
             }
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
             def_var_named(&mut *builder, vars, out_name, obj);
         }
         _ => unreachable!("non-coroutine op routed to handle_coroutine_op"),

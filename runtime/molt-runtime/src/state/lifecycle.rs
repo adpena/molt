@@ -335,7 +335,6 @@ fn clear_runtime_callback_roots(py: &PyToken<'_>, state: &RuntimeState) -> bool 
     changed |= attributes_clear_runtime_state(py, state);
     changed |= clear_special_cache(py, state);
     changed |= clear_code_slots(py, state);
-    changed |= clear_fn_ptr_code_map(py, state);
     changed |= clear_asyncgen_hooks(py, state);
     changed |= clear_asyncgen_locals(py, state);
     changed |= functools_clear_runtime_state(py, state);
@@ -447,21 +446,6 @@ fn clear_dict_subclass_storage(_py: &PyToken<'_>, state: &RuntimeState) -> bool 
     changed
 }
 
-fn clear_fn_ptr_code_map(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    let drained: Vec<u64> = {
-        let mut guard = state.fn_ptr_code.lock().unwrap();
-        guard.drain().map(|(_key, bits)| bits).collect()
-    };
-    let changed = !drained.is_empty();
-    for bits in drained {
-        if bits != 0 {
-            dec_ref_bits(_py, bits);
-        }
-    }
-    changed
-}
-
 fn clear_async_hang_probe(state: &RuntimeState) {
     if let Some(Some(probe)) = state.async_hang_probe.get()
         && let Ok(mut guard) = probe.pending_counts.lock()
@@ -491,6 +475,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     let frames = FRAME_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
+    let pending_namespaces = crate::builtins::frames::take_pending_namespaces_for_teardown();
     let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
         let _ = std::mem::take(&mut *stack.borrow_mut());
     });
@@ -519,8 +504,11 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |=
-        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !generators.is_empty();
+    changed |= !contexts.is_empty()
+        || !frames.is_empty()
+        || !active.is_empty()
+        || !generators.is_empty()
+        || !pending_namespaces.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
@@ -529,6 +517,9 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     }
     for frame in frames {
         frame.release(_py);
+    }
+    for bits in pending_namespaces {
+        dec_ref_bits(_py, bits);
     }
     for stack in generators.into_values() {
         for bits in stack {
@@ -549,14 +540,14 @@ fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     };
     let mut detached = Vec::with_capacity(slots.len());
     for slot in slots {
-        let bits = slot.swap(0, AtomicOrdering::AcqRel);
-        if bits != 0 {
-            detached.push(bits);
+        let binding = slot.take(_py);
+        if binding.code_bits != 0 || binding.globals_bits != 0 {
+            detached.push(binding);
         }
     }
     let changed = !detached.is_empty();
-    for bits in detached {
-        dec_ref_bits(_py, bits);
+    for binding in detached {
+        binding.release(_py);
     }
     changed
 }

@@ -9,6 +9,7 @@ It must never import from molt.frontend.__init__ or any mixin (cycle break).
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
     # TYPE_CHECKING only: there is no runtime import cycle back into __init__.
     from molt.frontend import SimpleTIRGenerator
+    from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
 
 # ---------------------------------------------------------------------------
 # Inline cache (IC) site index allocator
@@ -57,6 +59,18 @@ def _next_ic_index() -> int:
 class MoltValue:
     name: str
     type_hint: str = "Unknown"
+    # Concrete runtime class identity proven by the operation that produced
+    # this value.  Unlike ``type_hint``, this may authorize fixed-layout access.
+    exact_class: str | None = None
+    # Exact identity is a temporal fact.  A callback or other invalidating
+    # boundary advances the generator token, making already-held values stale.
+    exact_class_token: int | None = None
+
+
+@dataclass(frozen=True)
+class ExactClassFact:
+    class_id: str
+    token: int
 
 
 class AsyncFrameSlotRole(StrEnum):
@@ -1488,11 +1502,41 @@ class ClassInfo(TypedDict, total=False):
     heap_kind: str | None
 
 
+class SourceModulePublication(TypedDict):
+    """Backend-assembly facts owned by the source module-init prologue."""
+
+    module_name: str
+    module_value: str
+    failure_label: int
+
+
+def parse_source_module_publication(payload: object) -> SourceModulePublication:
+    """Validate the assembly-only identity and frame publication boundary."""
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"module_name", "module_value", "failure_label"}
+        or not isinstance(payload.get("module_name"), str)
+        or not payload.get("module_name")
+        or not isinstance(payload.get("module_value"), str)
+        or not payload.get("module_value")
+        or not isinstance(payload.get("failure_label"), int)
+        or isinstance(payload.get("failure_label"), bool)
+    ):
+        raise ValueError("missing canonical source-module publication metadata")
+    return SourceModulePublication(
+        module_name=payload["module_name"],
+        module_value=payload["module_value"],
+        failure_label=payload["failure_label"],
+    )
+
+
 class FuncInfo(TypedDict):
     params: list[str]
     param_types: list[str]  # type hints from annotations ("int", "float", "Any", ...)
     return_hint: str | None
     ops: list[MoltOp]
+    stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
+    source_module_publication: NotRequired[SourceModulePublication]
 
 
 class _TrackedOpsList(list[MoltOp]):

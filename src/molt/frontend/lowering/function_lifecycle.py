@@ -16,6 +16,7 @@ from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
+    from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
 
 if TYPE_CHECKING:
     _MixinBase = _GeneratorProtocol
@@ -289,6 +290,7 @@ class FunctionLifecycleMixin(_MixinBase):
         needs_return_slot: bool = False,
         has_exception_handlers: bool = True,
         python_first_arg: str | MoltValue | None = None,
+        stateful_frame_plan: StatefulFunctionFramePlan | None = None,
     ) -> None:
         if name not in self.funcs_map:
             self.funcs_map[name] = FuncInfo(
@@ -302,6 +304,14 @@ class FunctionLifecycleMixin(_MixinBase):
             self.funcs_map[name]["param_types"] = param_types or []
             self.funcs_map[name].setdefault("return_hint", None)
             self.funcs_map[name]["ops"].clear()
+        if stateful_frame_plan is None:
+            self.funcs_map[name].pop("stateful_frame_plan", None)
+        else:
+            if stateful_frame_plan.poll_symbol != name:
+                raise ValueError(
+                    "stateful frame plan must belong to the exact function target"
+                )
+            self.funcs_map[name]["stateful_frame_plan"] = stateful_frame_plan
         self.current_func_name = name
         self.current_ops = self.funcs_map[name]["ops"]
         self._reset_local_binding_state(
@@ -433,12 +443,9 @@ class FunctionLifecycleMixin(_MixinBase):
         if not self.is_async():
             return
         self.return_label = self.next_label()
-        self.return_slot_index = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=self.return_slot_index))
         init = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
-        self.return_slot = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[init], result=self.return_slot))
+        self.return_slot = self._emit_cell_new(init)
 
     def _store_return_slot_for_stateful(self) -> None:
         if not self.is_async() or self.return_slot is None:
@@ -457,7 +464,7 @@ class FunctionLifecycleMixin(_MixinBase):
         if self.return_slot is None:
             return None
         if self.is_async() and self.return_slot_offset is not None:
-            slot_val = MoltValue(self.next_var(), type_hint="list")
+            slot_val = MoltValue(self.next_var(), type_hint="cell")
             self.emit(
                 MoltOp(
                     kind="LOAD_CLOSURE",
@@ -467,18 +474,6 @@ class FunctionLifecycleMixin(_MixinBase):
             )
             return slot_val
         return self.return_slot
-
-    def _load_return_slot_index(self) -> MoltValue:
-        if self.is_async():
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            return idx
-        idx = self.return_slot_index
-        if idx is None:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            self.return_slot_index = idx
-        return idx
 
     def _emit_return_value(self, value: MoltValue) -> None:
         exit_baseline_now = self.return_slot is None or self.return_label is None
@@ -497,14 +492,7 @@ class FunctionLifecycleMixin(_MixinBase):
                 self._emit_boxed_locals_cleanup()
             self._emit_normal_return_terminator(value)
             return
-        idx = self._load_return_slot_index()
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[slot, idx, value],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(slot, value)
         self._emit_plain_local_scope_exit_boundaries()
         if self.current_func_name != "molt_main":
             self._emit_boxed_locals_cleanup()
@@ -522,9 +510,7 @@ class FunctionLifecycleMixin(_MixinBase):
         slot = self._load_return_slot()
         if slot is None:
             return
-        res = MoltValue(self.next_var())
-        idx = self._load_return_slot_index()
-        self.emit(MoltOp(kind="INDEX", args=[slot, idx], result=res))
+        res = self._emit_cell_get(slot)
         self._emit_normal_return_terminator(res)
 
     def _emit_normal_return_terminator(self, value: MoltValue) -> None:
@@ -556,16 +542,8 @@ class FunctionLifecycleMixin(_MixinBase):
         for name, cell in self.boxed_locals.items():
             if name in skip:
                 continue
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
             missing = self._emit_missing_value()
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, idx, missing],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, missing)
 
     def _emit_restore_exception_stack_depth(
         self, *, exit_baseline: bool = True

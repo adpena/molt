@@ -104,7 +104,7 @@ impl LuauBackend {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_func_attr_set({obj}, {attr_name}, {value}) else molt_set_attr({obj}, {attr_name}, {value}) end"));
+                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_set({obj}, {attr_name}, {value}) else molt_set_attr({obj}, {attr_name}, {value}) end"));
                 }
             }
             "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
@@ -114,7 +114,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let value = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_func_attr_set({obj}, \"{escaped}\", {value}) else molt_set_attr({obj}, \"{escaped}\", {value}) end"));
+                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_set({obj}, \"{escaped}\", {value}) else molt_set_attr({obj}, \"{escaped}\", {value}) end"));
                 }
             }
             "del_attr_name" => {
@@ -122,7 +122,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_func_attr_del({obj}, {attr_name}) else molt_del_attr({obj}, {attr_name}) end"));
+                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_del({obj}, {attr_name}) else molt_del_attr({obj}, {attr_name}) end"));
                 }
             }
             "del_attr_generic_obj" | "del_attr_generic_ptr" => {
@@ -131,7 +131,7 @@ impl LuauBackend {
                 let attr = escape_luau_string(attr);
                 if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
-                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_func_attr_del({obj}, \"{attr}\") else molt_del_attr({obj}, \"{attr}\") end"));
+                    self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_del({obj}, \"{attr}\") else molt_del_attr({obj}, \"{attr}\") end"));
                 }
             }
 

@@ -10,7 +10,6 @@ from typing import (
 
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
-    BUILTIN_TYPE_TAGS,
     MOLT_DIRECT_CALL_BIND_ALWAYS,
     MOLT_DIRECT_CALLS,
     MOLT_REEXPORT_FUNCTIONS,
@@ -255,37 +254,6 @@ class CallNamedDispatchMixin(_MixinBase):
             return res
         return CALL_NOT_HANDLED
 
-    def _try_emit_guarded_module_global_native_callable_import(
-        self,
-        node: ast.Call,
-        *,
-        func_id: str,
-        imported_from: str | None,
-    ) -> Any:
-        if imported_from is None:
-            return CALL_NOT_HANDLED
-        normalized = self._normalize_allowlist_module(imported_from)
-        target_module = normalized or imported_from
-        original_attr = self._imported_attr_name(func_id)
-        if original_attr is None:
-            return CALL_NOT_HANDLED
-        if self._native_callable_export(target_module, original_attr) is None:
-            return CALL_NOT_HANDLED
-
-        # A conditional module-level import stores through the module dict, so a
-        # later bare-name call must still observe NameError if the import never
-        # executed. The native callable export remains the call authority; the
-        # module-global load is a guard, not a reason to fall back to CALL_BIND.
-        self._emit_global_get(func_id)
-        lowered = self._try_emit_native_callable_export_call(
-            target_module,
-            original_attr,
-            node,
-        )
-        if lowered is not None:
-            return lowered
-        return CALL_NOT_HANDLED
-
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any:
         if isinstance(node.func, ast.Name):
             func_id = node.func.id
@@ -297,12 +265,7 @@ class CallNamedDispatchMixin(_MixinBase):
             ):
                 imported_binding = self.global_imported_names.get(func_id)
             imported_from = imported_binding
-            intrinsic_global_symbol = self.module_intrinsic_globals.get(func_id)
             target_info = self.locals.get(func_id)
-            if target_info is None and intrinsic_global_symbol is not None:
-                target_info = MoltValue(
-                    func_id, type_hint=f"Func:{intrinsic_global_symbol}"
-                )
             if target_info is None:
                 target_info = self.globals.get(func_id)
             is_local = func_id in self.locals or func_id in self.boxed_locals
@@ -406,15 +369,6 @@ class CallNamedDispatchMixin(_MixinBase):
                 self.current_func_name == "molt_main"
                 and func_id in self.module_global_mutations
             ):
-                guarded_native = (
-                    self._try_emit_guarded_module_global_native_callable_import(
-                        node,
-                        func_id=func_id,
-                        imported_from=imported_from,
-                    )
-                )
-                if guarded_native is not CALL_NOT_HANDLED:
-                    return guarded_native
                 callee = self._emit_global_get(func_id)
                 callargs = self._emit_call_args_builder(node)
                 res = MoltValue(self.next_var(), type_hint="Any")
@@ -525,11 +479,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     )
                 callee = self._emit_builtin_function("vars")
                 res = MoltValue(self.next_var(), type_hint="dict")
-                exact_class = (
-                    self.exact_locals.get(node.args[0].id)
-                    if isinstance(node.args[0], ast.Name)
-                    else None
+                receiver_name = (
+                    node.args[0].id if isinstance(node.args[0], ast.Name) else None
                 )
+                exact_class = self._exact_class_for_value(obj, receiver_name)
                 requirement_bits = self._runtime_protected_attribute_requirement_bits(
                     obj,
                     "__dict__",
@@ -598,33 +551,42 @@ class CallNamedDispatchMixin(_MixinBase):
                         Diagnostic.CALL_SIGNATURE,
                         "getattr expects object and name",
                     )
+                default = None
+                if len(node.args) == 3:
+                    default = self.visit(node.args[2])
+                    if default is None:
+                        default = MoltValue(self.next_var(), type_hint="None")
+                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=default))
                 res_hint = "Any"
                 name_lit = None
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
                 ):
                     name_lit = node.args[1].value
-                receiver_exact_class = (
-                    self.exact_locals.get(node.args[0].id)
-                    if isinstance(node.args[0], ast.Name)
-                    else None
+                receiver_name = (
+                    node.args[0].id if isinstance(node.args[0], ast.Name) else None
                 )
+                receiver_exact_class = self._exact_class_for_value(obj, receiver_name)
                 receiver_module_name = (
                     self._imported_module_binding_target(node.args[0].id)
                     if isinstance(node.args[0], ast.Name)
                     else None
                 )
-                if name_lit and obj.type_hint in self.classes:
-                    class_info = self.classes[obj.type_hint]
-                    if not class_info.get("dynamic"):
-                        field_map = class_info.get("fields", {})
+                if name_lit and receiver_exact_class is not None:
+                    exact_info = self.classes.get(receiver_exact_class)
+                    if exact_info and not exact_info.get("dynamic"):
+                        field_map = exact_info.get("fields", {})
                         if name_lit in field_map:
-                            if class_info.get("dataclass"):
+                            exact_dataclass_field = self._exact_dataclass_field(
+                                obj, receiver_name, name_lit
+                            )
+                            if exact_dataclass_field is not None:
+                                _, field_offset = exact_dataclass_field
                                 idx_val = MoltValue(self.next_var(), type_hint="int")
                                 self.emit(
                                     MoltOp(
                                         kind="CONST",
-                                        args=[field_map[name_lit]],
+                                        args=[field_offset],
                                         result=idx_val,
                                     )
                                 )
@@ -637,20 +599,12 @@ class CallNamedDispatchMixin(_MixinBase):
                                     )
                                 )
                                 return res
-                            else:
-                                obj_name = None
-                                assume_exact = False
-                                if isinstance(node.args[0], ast.Name):
-                                    obj_name = node.args[0].id
-                                    assume_exact = (
-                                        self.exact_locals.get(obj_name) == obj.type_hint
-                                    )
+                            if not exact_info.get("dataclass"):
                                 return self._emit_guarded_getattr(
                                     obj,
                                     name_lit,
-                                    obj.type_hint,
-                                    assume_exact=assume_exact,
-                                    obj_name=obj_name,
+                                    receiver_exact_class,
+                                    obj_name=receiver_name,
                                 )
                 if name_lit:
                     class_name = None
@@ -671,11 +625,10 @@ class CallNamedDispatchMixin(_MixinBase):
                             elif descriptor == "staticmethod":
                                 res_hint = method_info["func"].type_hint
                 res = MoltValue(self.next_var(), type_hint=res_hint)
-                if len(node.args) == 3:
-                    default = self.visit(node.args[2])
-                    if default is None:
-                        default = MoltValue(self.next_var(), type_hint="None")
-                        self.emit(MoltOp(kind="CONST_NONE", args=[], result=default))
+                if default is not None:
+                    receiver_exact_class = self._exact_class_for_value(
+                        obj, receiver_name
+                    )
                     self._emit_getattr_name_default(
                         obj,
                         name,
@@ -715,86 +668,20 @@ class CallNamedDispatchMixin(_MixinBase):
                     node.args[1].value, str
                 ):
                     attr_name = node.args[1].value
-                if attr_name:
-                    obj_name = None
-                    exact_class = None
-                    if isinstance(node.args[0], ast.Name):
-                        obj_name = node.args[0].id
-                        exact_class = self.exact_locals.get(obj_name)
-                    if exact_class is not None:
-                        self._record_instance_attr_mutation(exact_class, attr_name)
-                    elif obj.type_hint in self.classes:
-                        self._record_instance_attr_mutation(obj.type_hint, attr_name)
-                if (
-                    isinstance(node.args[1], ast.Constant)
-                    and isinstance(node.args[1].value, str)
-                    and obj.type_hint in self.classes
-                ):
-                    attr_name = node.args[1].value
-                    class_info = self.classes[obj.type_hint]
-                    if not class_info.get("dynamic"):
-                        field_map = class_info.get("fields", {})
-                        if attr_name in field_map:
-                            if class_info.get("dataclass"):
-                                idx_val = MoltValue(self.next_var(), type_hint="int")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CONST",
-                                        args=[field_map[attr_name]],
-                                        result=idx_val,
-                                    )
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="DATACLASS_SET",
-                                        args=[obj, idx_val, val],
-                                        result=MoltValue("none"),
-                                    )
-                                )
-                                res = MoltValue(self.next_var(), type_hint="None")
-                                self.emit(
-                                    MoltOp(kind="CONST_NONE", args=[], result=res)
-                                )
-                            else:
-                                res = MoltValue(self.next_var(), type_hint="None")
-                                if self._class_attr_is_data_descriptor(
-                                    obj.type_hint, attr_name
-                                ):
-                                    self.emit(
-                                        MoltOp(
-                                            kind="SETATTR_GENERIC_PTR",
-                                            args=[obj, attr_name, val],
-                                            result=MoltValue("none"),
-                                        )
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CONST_NONE",
-                                            args=[],
-                                            result=res,
-                                        )
-                                    )
-                                else:
-                                    assume_exact = (
-                                        exact_class is not None
-                                        and exact_class == obj.type_hint
-                                    )
-                                    self._emit_guarded_setattr(
-                                        obj,
-                                        attr_name,
-                                        val,
-                                        obj.type_hint,
-                                        obj_name=obj_name,
-                                        assume_exact=assume_exact,
-                                    )
-                                    self.emit(
-                                        MoltOp(
-                                            kind="CONST_NONE",
-                                            args=[],
-                                            result=res,
-                                        )
-                                    )
-                            return res
+                if attr_name is not None:
+                    obj_name = (
+                        node.args[0].id if isinstance(node.args[0], ast.Name) else None
+                    )
+                    self._emit_attribute_store(
+                        obj,
+                        node.args[0],
+                        obj_name,
+                        attr_name,
+                        val,
+                    )
+                    res = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
+                    return res
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
                     MoltOp(
@@ -821,9 +708,10 @@ class CallNamedDispatchMixin(_MixinBase):
                     node.args[1].value, str
                 ):
                     attr_name = node.args[1].value
-                    exact_class = None
-                    if isinstance(node.args[0], ast.Name):
-                        exact_class = self.exact_locals.get(node.args[0].id)
+                    receiver_name = (
+                        node.args[0].id if isinstance(node.args[0], ast.Name) else None
+                    )
+                    exact_class = self._exact_class_for_value(obj, receiver_name)
                     if exact_class is not None:
                         self._record_instance_attr_mutation(exact_class, attr_name)
                     elif obj.type_hint in self.classes:
@@ -1627,130 +1515,17 @@ class CallNamedDispatchMixin(_MixinBase):
                             else:
                                 class_ref = self._emit_global_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
-                    new_method = class_info.get("methods", {}).get("__new__")
-                    if new_method is None:
-                        for base_name in class_info.get("mro", [])[1:]:
-                            base_info = self.classes.get(base_name)
-                            if base_info and base_info.get("methods", {}).get(
-                                "__new__"
-                            ):
-                                new_method = base_info["methods"]["__new__"]
-                                break
-                    if needs_bind or new_method is not None:
-                        callargs = self._emit_call_args_builder(node)
-                        res = MoltValue(self.next_var(), type_hint="exception")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[class_ref, callargs],
-                                result=res,
-                            )
+                    # Exception __init__ is a mutable Python descriptor too.
+                    # Runtime class construction owns allocation and binding.
+                    callargs = self._emit_call_args_builder(node)
+                    res = MoltValue(self.next_var(), type_hint="exception")
+                    self.emit(
+                        MoltOp(
+                            kind="CALL_BIND",
+                            args=[class_ref, callargs],
+                            result=res,
                         )
-                        return res
-                    args = self._emit_call_args(node.args)
-                    res = self._emit_exception_new_from_class(class_ref, args)
-                    init_method = class_info.get("methods", {}).get("__init__")
-                    if init_method is None:
-                        for base_name in class_info.get("mro", [])[1:]:
-                            base_info = self.classes.get(base_name)
-                            if base_info and base_info.get("methods", {}).get(
-                                "__init__"
-                            ):
-                                init_method = base_info["methods"]["__init__"]
-                                break
-                    if init_method is not None:
-                        init_func = init_method["func"]
-                        target_name = init_func.type_hint.split(":", 1)[1]
-                        init_args = [res] + args
-                        if init_method.get("has_closure"):
-                            # A closure __init__ (e.g. a bare `super()` body
-                            # captures the implicit `__class__` cell) compiles
-                            # with the cell as its leading parameter; a
-                            # bare-name CALL would omit the cell argument and
-                            # mis-match the symbol arity (LLVM verifier
-                            # rejects; Cranelift only tolerates it when the
-                            # cell is never read). Same invariant as the
-                            # method-call fold: closure targets never get the
-                            # direct symbol CALL — route through the bound
-                            # path, which threads the cell via the function
-                            # object.
-                            init_func_val = self._emit_class_method_func(
-                                class_ref, "__init__"
-                            )
-                            bound_init = MoltValue(self.next_var(), type_hint="method")
-                            self.emit(
-                                MoltOp(
-                                    kind="BOUND_METHOD_NEW",
-                                    args=[init_func_val, res],
-                                    result=bound_init,
-                                )
-                            )
-                            callargs = self._emit_call_args_builder(node)
-                            init_res = MoltValue(self.next_var(), type_hint="Any")
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[bound_init, callargs],
-                                    result=init_res,
-                                )
-                            )
-                            return res
-                        func_obj = None
-                        param_count = init_method.get("param_count")
-                        defaults = init_method.get("defaults", [])
-                        kwonly_count = init_method.get("kwonly_count")
-                        positional_limit = None
-                        if param_count is not None and isinstance(kwonly_count, int):
-                            positional_limit = param_count - kwonly_count
-                        if param_count is not None:
-                            missing = param_count - len(init_args)
-                            # Load __init__ whenever a trailing default is filled:
-                            # a const default needs the version stamp for the
-                            # `__defaults__`-mutation deopt guard, a non-const
-                            # default needs the live read.
-                            if 0 < missing <= len(defaults):
-                                func_obj = self._emit_class_method_func(
-                                    class_ref, "__init__"
-                                )
-                        init_args = self._apply_default_specs(
-                            param_count,
-                            defaults,
-                            init_args,
-                            node,
-                            call_name=f"{class_id}.__init__",
-                            func_obj=func_obj,
-                            positional_limit=positional_limit,
-                        )
-                        if init_args is None:
-                            init_func_val = self._emit_class_method_func(
-                                class_ref, "__init__"
-                            )
-                            bound_init = MoltValue(self.next_var(), type_hint="method")
-                            self.emit(
-                                MoltOp(
-                                    kind="BOUND_METHOD_NEW",
-                                    args=[init_func_val, res],
-                                    result=bound_init,
-                                )
-                            )
-                            callargs = self._emit_call_args_builder(node)
-                            init_res = MoltValue(self.next_var(), type_hint="Any")
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[bound_init, callargs],
-                                    result=init_res,
-                                )
-                            )
-                            return res
-                        init_res = MoltValue(self.next_var(), type_hint="Any")
-                        self.emit(
-                            MoltOp(
-                                kind="CALL",
-                                args=[target_name] + init_args,
-                                result=init_res,
-                            )
-                        )
+                    )
                     return res
                 if class_info.get("dataclass"):
                     static_dataclass = self._try_emit_static_dataclass_constructor(
@@ -1760,6 +1535,7 @@ class CallNamedDispatchMixin(_MixinBase):
                         class_ref,
                     )
                     if static_dataclass is not None:
+                        self._stamp_exact_class(static_dataclass, class_id)
                         return static_dataclass
                     field_order = class_info["field_order"]
                     name_val = MoltValue(self.next_var(), type_hint="str")
@@ -1836,7 +1612,10 @@ class CallNamedDispatchMixin(_MixinBase):
                             result=init_res,
                         )
                     )
-                    return res
+                    # User initialization can run arbitrary callbacks, including
+                    # a supported ``self.__class__`` reassignment.  The allocation
+                    # result was exact when produced; the post-callback value is not.
+                    return MoltValue(res.name, type_hint="Any")
                 _, new_returns_any = self._class_new_policy(class_id, class_info)
 
                 # Phase-1-sibling class-instantiation fold.
@@ -1893,6 +1672,7 @@ class CallNamedDispatchMixin(_MixinBase):
                                 metadata={"class_size_bytes": class_size_bytes},
                             )
                         )
+                        self._stamp_exact_class(res, class_id)
                         return res
                     if (
                         init_info is not None
@@ -1927,8 +1707,7 @@ class CallNamedDispatchMixin(_MixinBase):
                                         expected_positional = param_count - 1
                                         if len(node.args) == expected_positional:
                                             res = MoltValue(
-                                                self.next_var(),
-                                                type_hint=class_id,
+                                                self.next_var(), type_hint=class_id
                                             )
                                             # See sibling site above: payload
                                             # size in bytes carried via
@@ -1949,6 +1728,8 @@ class CallNamedDispatchMixin(_MixinBase):
                                                     },
                                                 )
                                             )
+                                            self._stamp_exact_class(res, class_id)
+                                            allocation_token = self.exact_class_token
                                             init_args = [
                                                 self.visit(a) for a in node.args
                                             ]
@@ -1972,6 +1753,8 @@ class CallNamedDispatchMixin(_MixinBase):
                                                 if (
                                                     init_assigns is not None
                                                     and inline_params is not None
+                                                    and self.exact_class_token
+                                                    == allocation_token
                                                     and self._try_inline_init_assigns(
                                                         init_assigns,
                                                         inline_params,
@@ -1979,6 +1762,9 @@ class CallNamedDispatchMixin(_MixinBase):
                                                         init_args,
                                                     )
                                                 ):
+                                                    self._stamp_exact_class(
+                                                        res, class_id
+                                                    )
                                                     return res
                                                 init_res = MoltValue(
                                                     self.next_var(),
@@ -1992,7 +1778,13 @@ class CallNamedDispatchMixin(_MixinBase):
                                                         result=init_res,
                                                     )
                                                 )
-                                                return res
+                                                # A non-inlined __init__ is an
+                                                # arbitrary callback boundary and
+                                                # can invalidate class identity.
+                                                return MoltValue(
+                                                    res.name,
+                                                    type_hint="Any",
+                                                )
 
                 callargs = self._emit_call_args_builder(node)
                 res_hint = "Any" if new_returns_any else class_id
@@ -2024,89 +1816,46 @@ class CallNamedDispatchMixin(_MixinBase):
             if stateful_result is not None:
                 return stateful_result
             if target_info and str(target_info.type_hint).startswith("BoundMethod:"):
+                callee = target_info
+                if (
+                    self.current_func_name != "molt_main"
+                    and func_id not in self.locals
+                    and func_id not in self.async_locals
+                ):
+                    callee = self._emit_module_attr_get(func_id)
                 res_hint = "Any"
-                class_name = "Unknown"
-                method_name = "method"
-                method_info = None
-                return_hint = None
-                parts = target_info.type_hint.split(":", 2)
-                if len(parts) == 3:
-                    class_name = parts[1]
-                    method_name = parts[2]
-                    method_info = (
-                        self.classes.get(class_name, {})
-                        .get("methods", {})
-                        .get(method_name)
-                    )
-                    if method_info:
-                        return_hint = method_info["return_hint"]
-                    # Propagate builtin return types (int/float/bool/str/etc),
-                    # not just user classes — otherwise method-call results in
-                    # tight loops fall back to a NaN-boxed accumulator and the
-                    # downstream lane inference forces float arithmetic.
-                    if return_hint and (
-                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-                    ):
-                        res_hint = return_hint
                 if needs_bind:
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(
                         MoltOp(
                             kind="CALL_BIND",
-                            args=[target_info, callargs],
+                            args=[callee, callargs],
                             result=res,
                         )
                     )
                     return res
                 args = self._emit_call_args(node.args)
-                if method_info:
-                    func_obj = None
-                    param_count = method_info.get("param_count")
-                    defaults = method_info.get("defaults", [])
-                    kwonly_count = method_info.get("kwonly_count")
-                    positional_limit = None
-                    if param_count is not None and isinstance(kwonly_count, int):
-                        positional_limit = param_count - kwonly_count
-                    if param_count is not None:
-                        missing = param_count - (len(args) + 1)
-                        # Load the bound method's function whenever a trailing
-                        # default is filled: a const default needs the version
-                        # stamp for the `__defaults__`-mutation deopt guard, a
-                        # non-const default needs the live read.
-                        if 0 < missing <= len(defaults):
-                            func_obj = self._emit_bound_method_func(target_info)
-                    args = self._apply_default_specs(
-                        param_count,
-                        defaults,
-                        args,
-                        node,
-                        call_name=f"{class_name}.{method_name}",
-                        func_obj=func_obj,
-                        implicit_self=True,
-                        positional_limit=positional_limit,
-                    )
-                    if args is None:
-                        callargs = self._emit_call_args_builder(node)
-                        res = MoltValue(self.next_var(), type_hint=res_hint)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[target_info, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
                 res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(
-                    MoltOp(kind="CALL_METHOD", args=[target_info] + args, result=res)
-                )
+                self.emit(MoltOp(kind="CALL_METHOD", args=[callee] + args, result=res))
                 return res
 
             if target_info and str(target_info.type_hint).startswith("Func:"):
                 target_name = target_info.type_hint.split(":")[1]
                 intrinsic_target = _intrinsic_arity_exact(target_name) is not None
-                res_hint = self._function_result_hint(target_name)
+                res_hint = (
+                    self._function_result_hint(target_name)
+                    if intrinsic_target
+                    else "Any"
+                )
+                callee = target_info
+                if (
+                    not intrinsic_target
+                    and self.current_func_name != "molt_main"
+                    and func_id not in self.locals
+                    and func_id not in self.async_locals
+                ):
+                    callee = self._emit_module_attr_get(func_id)
                 direct_ok = intrinsic_target or target_name in self.func_default_specs
                 if not direct_ok:
                     func_name = self.func_symbol_names.get(target_name)
@@ -2116,13 +1865,6 @@ class CallNamedDispatchMixin(_MixinBase):
                         direct_ok = True
                 if needs_bind or not direct_ok:
                     callargs = self._emit_call_args_builder(node)
-                    callee = target_info
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        callee = self._emit_module_attr_get(func_id)
                     res = MoltValue(self.next_var(), type_hint=res_hint)
                     self.emit(
                         MoltOp(
@@ -2132,45 +1874,15 @@ class CallNamedDispatchMixin(_MixinBase):
                         )
                     )
                     return res
-                args, func_obj = self._emit_direct_call_args_for_symbol(
-                    target_name, node
-                )
-                if args is None:
-                    callargs = self._emit_call_args_builder(node)
-                    callee = target_info
-                    if (
-                        self.current_func_name != "molt_main"
-                        and func_id not in self.locals
-                        and func_id not in self.async_locals
-                    ):
-                        callee = self._emit_module_attr_get(func_id)
-                    res = MoltValue(self.next_var(), type_hint=res_hint)
-                    self.emit(
-                        MoltOp(
-                            kind="CALL_BIND",
-                            args=[callee, callargs],
-                            result=res,
-                        )
-                    )
-                    return res
+                # The target hint may be stale. Pass only supplied arguments;
+                # runtime callable admission and binding own defaults/shape.
+                args = self._emit_call_args(node.args)
                 res = MoltValue(self.next_var(), type_hint=res_hint)
-                if (
-                    intrinsic_target
-                    or self.is_async()
-                    or (
-                        isinstance(node.func, ast.Name)
-                        and node.func.id in self.stable_module_funcs
-                    )
-                ):
+                if intrinsic_target:
                     self.emit(
                         MoltOp(kind="CALL", args=[target_name] + args, result=res)
                     )
                 else:
-                    callee = func_obj or self.visit(node.func)
-                    if callee is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_TARGET, "Unsupported call target"
-                        )
                     self.emit(
                         MoltOp(
                             kind="CALL_GUARDED",
@@ -2202,7 +1914,7 @@ class CallNamedDispatchMixin(_MixinBase):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("Func:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
-                        res_hint = self._function_result_hint(func_symbol)
+                        res_hint = "Any"
                         if func_symbol not in self.func_default_specs:
                             res = MoltValue(self.next_var(), type_hint=res_hint)
                             callargs = self._emit_call_args_builder(node)
@@ -2214,25 +1926,12 @@ class CallNamedDispatchMixin(_MixinBase):
                                 )
                             )
                             return res
-                        args, func_obj = self._emit_direct_call_args_for_symbol(
-                            func_symbol, node, func_obj=callee
-                        )
-                        if args is None:
-                            callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint=res_hint)
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[callee, callargs],
-                                    result=res,
-                                )
-                            )
-                            return res
+                        args = self._emit_call_args(node.args)
                         res = MoltValue(self.next_var(), type_hint=res_hint)
                         self.emit(
                             MoltOp(
                                 kind="CALL_GUARDED",
-                                args=[func_obj or callee] + args,
+                                args=[callee] + args,
                                 result=res,
                                 metadata={"target": func_symbol},
                             )
@@ -2242,7 +1941,7 @@ class CallNamedDispatchMixin(_MixinBase):
                         callee.type_hint, str
                     ) and callee.type_hint.startswith("ClosureFunc:"):
                         func_symbol = callee.type_hint.split(":", 1)[1]
-                        res_hint = self._function_result_hint(func_symbol)
+                        res_hint = "Any"
                         if func_symbol not in self.func_default_specs:
                             res = MoltValue(self.next_var(), type_hint=res_hint)
                             callargs = self._emit_call_args_builder(node)
@@ -2254,20 +1953,7 @@ class CallNamedDispatchMixin(_MixinBase):
                                 )
                             )
                             return res
-                        args, _ = self._emit_direct_call_args_for_symbol(
-                            func_symbol, node, func_obj=callee
-                        )
-                        if args is None:
-                            callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint=res_hint)
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[callee, callargs],
-                                    result=res,
-                                )
-                            )
-                            return res
+                        args = self._emit_call_args(node.args)
                         res = MoltValue(self.next_var(), type_hint=res_hint)
                         self.emit(
                             MoltOp(
@@ -2294,21 +1980,6 @@ class CallNamedDispatchMixin(_MixinBase):
                             )
                             return res
                     args = self._emit_call_args(node.args)
-                    if imported_from:
-                        args = self._apply_direct_call_defaults(
-                            imported_from, func_id, args, node
-                        )
-                        if args is None:
-                            callargs = self._emit_call_args_builder(node)
-                            res = MoltValue(self.next_var(), type_hint="Any")
-                            self.emit(
-                                MoltOp(
-                                    kind="CALL_BIND",
-                                    args=[callee, callargs],
-                                    result=res,
-                                )
-                            )
-                            return res
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
@@ -2355,7 +2026,7 @@ class CallNamedDispatchMixin(_MixinBase):
             if imported_from is None:
                 callee = self.visit(node.func)
                 if callee is not None:
-                    return self._emit_dynamic_call(node, callee, needs_bind)
+                    return self._emit_dynamic_call(node, callee)
 
             suggestion = self._call_allowlist_suggestion(func_id, imported_from)
             if suggestion:

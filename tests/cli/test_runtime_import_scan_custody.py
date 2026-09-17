@@ -9,15 +9,27 @@ from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.models import (
     ImportScanMode,
     _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
 from molt.cli.module_import_scanner import (
+    _DynamicRelativeImportDiscovery,
     _collect_import_star_modules,
     _collect_imports,
+    _collect_imports_for_graph,
+    _sealed_import_modules,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.compiler_analysis.python_binding_flow import python_ast_digest
-from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+from molt.compiler_analysis.python_imports import (
+    ModuleImportContext,
+    ModuleImportState,
+    StaticImportRequest,
+    StaticMetadataValue,
+    UnresolvedStaticImportError,
+    UNKNOWN_VALUE,
+    _PythonAstDigestAdmission,
+)
 
 
 def _custody(
@@ -136,6 +148,176 @@ def test_custodied_scan_does_not_populate_strict_memory_cache(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    ("body", "expected_candidate"),
+    [
+        ("from . import child\n", "pkg.child"),
+        (
+            "__import__('child', globals(), locals(), (), 1)\n",
+            "pkg.child",
+        ),
+        (
+            "import importlib\nimportlib.import_module('.child', __package__)\n",
+            "pkg.child",
+        ),
+    ],
+)
+def test_graph_projection_keeps_dynamic_relative_candidates_out_of_semantics(
+    body: str,
+    expected_candidate: str,
+) -> None:
+    tree = ast.parse("__package__ = choose_package()\n" + body)
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _collect_imports(tree, "pkg.entry")
+
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+
+    assert projection.requires_runtime_package_anchor
+    assert expected_candidate in projection.dynamic_relative_import_candidates
+    assert expected_candidate not in projection.imports
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "__import__('child', foreign_globals, None, (), 1)\n",
+        "import importlib\nimportlib.import_module('.child', foreign_package)\n",
+    ],
+)
+def test_graph_projection_never_uses_lexical_package_for_foreign_metadata(
+    body: str,
+) -> None:
+    tree = ast.parse("__package__ = choose_package()\n" + body)
+
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "pkg.child" not in projection.imports
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "__import__('child', {'__package__': 'foreign'}, None, (), 1)\n",
+        "import importlib\nimportlib.import_module('.child', 'foreign')\n",
+    ],
+)
+def test_foreign_relative_metadata_remains_semantic_not_lexical(body: str) -> None:
+    projection = _collect_imports_for_graph(ast.parse(body), "pkg.entry")
+
+    assert not projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "foreign.child" in projection.imports
+
+
+def test_graph_projection_does_not_hide_non_anchor_resolution_errors() -> None:
+    top = StaticMetadataValue.known("top")
+    module_name = StaticMetadataValue.known("pkg.entry")
+    contexts = (
+        ModuleImportContext(
+            "pkg.entry",
+            False,
+            ModuleImportState(UNKNOWN_VALUE, UNKNOWN_VALUE, module_name, False),
+        ),
+        ModuleImportContext(
+            "pkg.entry",
+            False,
+            ModuleImportState(top, top, module_name, False),
+        ),
+    )
+
+    with pytest.raises(UnresolvedStaticImportError, match="beyond_top"):
+        _sealed_import_modules(
+            StaticImportRequest.statement("", level=2, fromlist=("child",)),
+            contexts,
+            dynamic_relative_import_discovery=_DynamicRelativeImportDiscovery(),
+        )
+
+
+def test_graph_and_strict_scan_caches_are_distinct_and_ast_digest_keyed(
+    tmp_path: Path,
+) -> None:
+    owner = tmp_path / "entry.py"
+    owner.write_text("pass\n", encoding="utf-8")
+    cache = _ModuleResolutionCache()
+    tree = ast.parse("__package__ = choose_package()\nfrom . import first\n")
+
+    first_projection = cache.collect_graph_imports(
+        owner,
+        tree,
+        collector=_collect_imports_for_graph,
+        module_name="pkg.entry",
+    )
+    imported = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    imported.names[0].name = "second"
+    second_projection = cache.collect_graph_imports(
+        owner,
+        tree,
+        collector=_collect_imports_for_graph,
+        module_name="pkg.entry",
+    )
+
+    assert "pkg.first" in first_projection.dynamic_relative_import_candidates
+    assert "pkg.second" in second_projection.dynamic_relative_import_candidates
+    assert first_projection != second_projection
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        cache.collect_imports(
+            owner,
+            tree,
+            collector=_collect_imports,
+            module_name="pkg.entry",
+        )
+
+
+def test_custody_seed_preserves_alias_names_for_one_shared_source(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
+
+    owner = (tmp_path / "shared.py").resolve()
+    owner.write_text("__package__ = choose_package()\nfrom . import child\n")
+    first_child = (tmp_path / "first_child.py").resolve()
+    second_child = (tmp_path / "second_child.py").resolve()
+    first_child.write_text("pass\n")
+    second_child.write_text("pass\n")
+    tree = ast.parse(owner.read_text(encoding="utf-8"))
+    custody = _RuntimeImportScanCustody(
+        owners=(("first.owner", owner), ("second.owner", owner)),
+        catalog=(
+            ("first.owner", owner),
+            ("first.child", first_child),
+            ("second.owner", owner),
+            ("second.child", second_child),
+        ),
+        owner_ast_digests=(
+            ("first.owner", python_ast_digest(tree)),
+            ("second.owner", python_ast_digest(tree)),
+        ),
+    )
+    authority = _ModuleGraphScanAuthority(
+        tuple(
+            _ModuleSourceScanAuthority(name, path, "full", False)
+            for name, path in custody.catalog
+        )
+    )
+
+    result = _discover_module_graph_from_paths(
+        (owner, owner),
+        [tmp_path],
+        [tmp_path],
+        tmp_path,
+        None,
+        set(),
+        full_scan_roots=True,
+        runtime_import_custody=custody,
+        enclosing_scan_authority=authority,
+    )
+
+    assert result.graph["first.owner"] == owner
+    assert result.graph["second.owner"] == owner
+
+
+@pytest.mark.parametrize(
     "scope,message",
     [
         ("partial", "full-depth owner scans"),
@@ -216,6 +398,75 @@ def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:
         )
     )
 
+    projection = _collect_imports_for_graph(tree, "importlib.machinery")
+    assert projection.requires_runtime_package_anchor
+    assert "importlib.util" in projection.dynamic_relative_import_candidates
+    assert "importlib.util" not in projection.imports
+
+
+def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -> None:
+    stdlib = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    owner = stdlib / "asyncio" / "__init__.py"
+    tree = ast.parse(owner.read_text(encoding="utf-8"))
+
+    projection = _collect_imports_for_graph(
+        tree,
+        "asyncio",
+        is_package=True,
+        import_scan_mode="module_init",
+    )
+
+    assert projection.requires_runtime_package_anchor
+    assert "ssl" in projection.imports
+    assert "asyncio.exceptions" in projection.dynamic_relative_import_candidates
+    assert "asyncio.exceptions" not in projection.imports
+
+
+def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_graph import _prepare_entry_module_graph
+
+    entry = tmp_path / "entry.py"
+    entry.write_text("import asyncio\nimport importlib.machinery\n", encoding="utf-8")
+    stdlib = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    reasons: dict[str, set[str]] = {}
+
+    prepared, error = _prepare_entry_module_graph(
+        source_path=entry,
+        entry_module="entry",
+        module_roots=[tmp_path],
+        stdlib_root=stdlib,
+        project_root=None,
+        entry_tree=ast.parse(entry.read_text(encoding="utf-8")),
+        diagnostics_enabled=False,
+        module_reasons=reasons,
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None and prepared is not None
+    custody = prepared.runtime_import_scan_custody
+    assert custody is not None
+    assert (
+        custody.owners_by_module["asyncio"]
+        == (stdlib / "asyncio" / "__init__.py").resolve()
+    )
+    assert (
+        custody.owners_by_module["importlib.machinery"]
+        == (stdlib / "importlib" / "machinery.py").resolve()
+    )
+    assert (
+        prepared.scan_authority.mode_for("asyncio", prepared.module_graph["asyncio"])
+        == "full"
+    )
+    assert (
+        prepared.scan_authority.mode_for(
+            "importlib.machinery", prepared.module_graph["importlib.machinery"]
+        )
+        == "full"
+    )
+
 
 def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
     tmp_path: Path,
@@ -241,6 +492,27 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
     with pytest.raises(ValueError, match="source AST changed"):
         _collect_imports(
             substituted_tree,
+            "pkg.entry",
+            source_path=owner,
+            runtime_import_custody=custody,
+        )
+    admitted_tree = ast.parse(owner.read_text(encoding="utf-8"))
+    admission = _PythonAstDigestAdmission(admitted_tree)
+    with pytest.raises(ValueError, match="different tree"):
+        _collect_imports(
+            substituted_tree,
+            "pkg.entry",
+            source_path=owner,
+            runtime_import_custody=custody,
+            ast_digest_admission=admission,
+        )
+    imported = next(
+        node for node in ast.walk(admitted_tree) if isinstance(node, ast.ImportFrom)
+    )
+    imported.names[0].name = "mutated"
+    with pytest.raises(ValueError, match="source AST changed"):
+        _collect_imports(
+            admitted_tree,
             "pkg.entry",
             source_path=owner,
             runtime_import_custody=custody,
@@ -349,7 +621,9 @@ def test_print_graph_import_plan_and_full_frontend_share_runtime_custody(
 @pytest.mark.parametrize("mode", ["module_init", "module_init_static_helpers"])
 @pytest.mark.parametrize("consumer", ["imports", "stars", "cache", "loader"])
 def test_every_owner_scan_entry_rejects_incomplete_depth(
-    tmp_path: Path, mode: ImportScanMode, consumer: str,
+    tmp_path: Path,
+    mode: ImportScanMode,
+    consumer: str,
 ) -> None:
     from molt.cli.module_graph_discovery import _load_module_import_scan
 
@@ -357,19 +631,38 @@ def test_every_owner_scan_entry_rejects_incomplete_depth(
     tree = ast.parse(owner.read_text(encoding="utf-8"))
     with pytest.raises(ValueError, match="full-depth owner scans"):
         if consumer == "imports":
-            _collect_imports(tree, "pkg.entry", import_scan_mode=mode,
-                             runtime_import_custody=custody, source_path=owner)
+            _collect_imports(
+                tree,
+                "pkg.entry",
+                import_scan_mode=mode,
+                runtime_import_custody=custody,
+                source_path=owner,
+            )
         elif consumer == "stars":
-            _collect_import_star_modules(tree, "pkg.entry", import_scan_mode=mode,
-                                          runtime_import_custody=custody, source_path=owner)
+            _collect_import_star_modules(
+                tree,
+                "pkg.entry",
+                import_scan_mode=mode,
+                runtime_import_custody=custody,
+                source_path=owner,
+            )
         elif consumer == "cache":
             _ModuleResolutionCache().collect_imports(
-                owner, tree, collector=_collect_imports, module_name="pkg.entry",
-                import_scan_mode=mode, runtime_import_custody=custody,
+                owner,
+                tree,
+                collector=_collect_imports,
+                module_name="pkg.entry",
+                import_scan_mode=mode,
+                runtime_import_custody=custody,
             )
         else:
             _load_module_import_scan(
-                owner, module_name="pkg.entry", is_package=False, import_scan_mode=mode,
-                resolution_cache=_ModuleResolutionCache(), project_root=None,
-                tree=tree, runtime_import_custody=custody,
+                owner,
+                module_name="pkg.entry",
+                is_package=False,
+                import_scan_mode=mode,
+                resolution_cache=_ModuleResolutionCache(),
+                project_root=None,
+                tree=tree,
+                runtime_import_custody=custody,
             )

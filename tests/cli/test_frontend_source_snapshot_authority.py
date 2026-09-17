@@ -26,6 +26,7 @@ from molt.cli.models import (
     _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
+from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_binding_flow import python_ast_digest
 
 
@@ -360,6 +361,49 @@ def test_cold_discovery_produces_complete_scan_once(
     assert counts == {"reads": 1, "writes": 1}
 
 
+def test_complete_cold_scan_hashes_one_exact_ast_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, compiler_sources: Path
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("__all__ = ('child',)\n", encoding="utf-8")
+    (package / "child.py").write_text("VALUE = 1\n", encoding="utf-8")
+    executed = tmp_path / "loaded.py"
+    executed.write_text("VALUE = 2\n", encoding="utf-8")
+    source = tmp_path / "entry.py"
+    source.write_text(
+        "from pkg import *\n"
+        "from importlib.util import spec_from_file_location\n"
+        "spec_from_file_location('loaded', 'loaded.py')\n",
+        encoding="utf-8",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    digest = python_binding_flow.python_ast_digest
+    digested_trees: list[ast.AST] = []
+
+    def record_digest(tree: ast.AST) -> str:
+        digested_trees.append(tree)
+        return digest(tree)
+
+    monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
+    loaded = discovery._load_module_import_scan(
+        source,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        roots=[tmp_path],
+        stdlib_root=stdlib,
+        stdlib_allowlist=set(),
+    )
+
+    assert "pkg.child" in loaded.scan.imports
+    assert loaded.scan.source_executions == (("loaded", executed.resolve()),)
+    assert len(digested_trees) == 1
+
+
 def test_malformed_execution_projection_rejects_entire_scan(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, compiler_sources: Path
 ) -> None:
@@ -386,8 +430,8 @@ def test_malformed_execution_projection_rejects_entire_scan(
             scans._read_persisted_import_scan_record(tmp_path, source, **options)
             is None
         )
-        assert scans._read_persisted_import_scan(tmp_path, source, **options) is None
     assert not hasattr(scans, "_read_persisted_source_executions")
+    assert not hasattr(scans, "_read_persisted_import_scan")
     assert not hasattr(scans, "_read_persisted_import_scan_payload")
 
 
@@ -415,7 +459,6 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         "_read_persisted_module_graph",
         "_write_persisted_module_graph",
         "_read_persisted_import_scan_record",
-        "_read_persisted_import_scan",
         "_write_persisted_import_scan",
     ):
         monkeypatch.setattr(scans, name, forbidden)
@@ -511,7 +554,6 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
 
     for name in (
         "_read_persisted_import_scan_record",
-        "_read_persisted_import_scan",
         "_write_persisted_import_scan",
     ):
         monkeypatch.setattr(scans, name, forbidden)
@@ -542,12 +584,18 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
         import_admission_policy=policy,
         precomputed_scans_by_path={
             owner: discovery._bind_precomputed_module_import_scan(
-                owner, module_name="owner", import_scan_mode="full",
-                scan=_CompleteImportScan((), ((execution.module_name, execution.source_path),)),
+                owner,
+                module_name="owner",
+                import_scan_mode="full",
+                scan=_CompleteImportScan(
+                    (), ((execution.module_name, execution.source_path),)
+                ),
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),
             target: discovery._bind_precomputed_module_import_scan(
-                target, module_name="target", import_scan_mode="module_init",
+                target,
+                module_name="target",
+                import_scan_mode="module_init",
                 scan=_CompleteImportScan((), ()),
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),

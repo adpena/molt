@@ -605,7 +605,9 @@ impl SimpleIrRuntimeRequirements {
     pub const EXECUTION_FRAME: Self = Self(1 << 13);
     pub const FRAME_INTROSPECTION: Self = Self(1 << 14);
     pub const PENDING_CALL_EVAL_BREAKER: Self = Self(1 << 15);
-    pub const ALL: Self = Self(65535);
+    pub const IMPORT_PROTOCOL: Self = Self(1 << 16);
+    pub const LEXICAL_CELLS: Self = Self(1 << 17);
+    pub const ALL: Self = Self(262143);
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -622,7 +624,7 @@ impl SimpleIrRuntimeRequirements {
         self.0
     }
     pub const fn from_bits(bits: SimpleIrRuntimeRequirementBits) -> Option<Self> {
-        if bits & !65535 == 0 {
+        if bits & !262143 == 0 {
             Some(Self(bits))
         } else {
             None
@@ -668,6 +670,8 @@ pub const FRAME_INTROSPECTION_REQUIREMENT_REASON: &str =
     "operation requires exact Python-visible frame objects, locals, globals, and tracing state";
 pub const PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON: &str =
     "operation requires the target runtime's pending-call and eval-breaker polling boundary";
+pub const IMPORT_PROTOCOL_REQUIREMENT_REASON: &str = "operation requires Python import dispatch, module initialization, and transactional package resolution";
+pub const LEXICAL_CELLS_REQUIREMENT_REASON: &str = "operation requires shared mutable lexical cells, empty-cell state, and exact closure transport";
 
 pub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS: &[SimpleIrRuntimeRequirementDescriptor] = &[
     SimpleIrRuntimeRequirementDescriptor {
@@ -734,6 +738,14 @@ pub const SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS: &[SimpleIrRuntimeRequirement
         requirement: SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER,
         reason: PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON,
     },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::IMPORT_PROTOCOL,
+        reason: IMPORT_PROTOCOL_REQUIREMENT_REASON,
+    },
+    SimpleIrRuntimeRequirementDescriptor {
+        requirement: SimpleIrRuntimeRequirements::LEXICAL_CELLS,
+        reason: LEXICAL_CELLS_REQUIREMENT_REASON,
+    },
 ];
 
 /// Stable external spelling for a target kind.
@@ -755,12 +767,12 @@ pub fn simpleir_target_runtime_requirements(
     target: super::target_info::TargetKind,
 ) -> SimpleIrRuntimeRequirements {
     match target {
-        super::target_info::TargetKind::Llvm => SimpleIrRuntimeRequirements(65535),
+        super::target_info::TargetKind::Llvm => SimpleIrRuntimeRequirements(262143),
         super::target_info::TargetKind::Luau => SimpleIrRuntimeRequirements(11239),
         super::target_info::TargetKind::Mlir => SimpleIrRuntimeRequirements(0),
-        super::target_info::TargetKind::NativeCranelift => SimpleIrRuntimeRequirements(65535),
+        super::target_info::TargetKind::NativeCranelift => SimpleIrRuntimeRequirements(262143),
         super::target_info::TargetKind::Rust => SimpleIrRuntimeRequirements(0),
-        super::target_info::TargetKind::Wasm => SimpleIrRuntimeRequirements(65535),
+        super::target_info::TargetKind::Wasm => SimpleIrRuntimeRequirements(262143),
     }
 }
 
@@ -770,6 +782,7 @@ pub fn simpleir_target_runtime_requirements(
 pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntimeRequirements> {
     match kind {
         "ABS"
+        | "BINDING_ALIAS"
         | "BYTEARRAY_FILL_RANGE"
         | "CHECK_EXCEPTION"
         | "CONST_ELLIPSIS"
@@ -884,9 +897,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "gpu_block_id"
         | "gpu_grid_dim"
         | "gpu_thread_id"
-        | "import"
-        | "import_from"
-        | "import_name"
         | "index_set"
         | "inplace_add"
         | "inplace_mul"
@@ -980,7 +990,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "alloc_class_static"
         | "alloc_class_trusted"
         | "alloc_instance"
-        | "alloc_task"
         | "any"
         | "bound_method_new"
         | "build_dict"
@@ -990,6 +999,8 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "builtin_reversed"
         | "builtin_sorted"
         | "builtin_type"
+        | "callargs_new"
+        | "callargs_push_pos"
         | "class_apply_set_name"
         | "class_layout_field_count"
         | "class_layout_slot_count"
@@ -1022,7 +1033,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "frozenset_add"
         | "frozenset_new"
         | "func_new"
-        | "func_new_closure"
         | "get_attr"
         | "get_attr_generic_obj"
         | "get_attr_generic_ptr"
@@ -1058,8 +1068,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "module_get_attr"
         | "module_get_global"
         | "module_get_name"
-        | "module_import"
-        | "module_import_from"
         | "module_load_cached"
         | "module_new"
         | "module_set_attr"
@@ -1109,8 +1117,40 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "call_indirect" | "call_internal" | "call_method" | "cast_float" | "cast_str" | "chr"
         | "float" | "float_from_obj" | "len" | "ord" | "ord_at" | "print" | "repr_from_obj"
         | "str" | "str_from_obj" => Some(SimpleIrRuntimeRequirements(512)),
-        "chan_recv_yield" | "chan_send_yield" | "state_label" | "state_switch"
-        | "state_transition" | "state_yield" => Some(SimpleIrRuntimeRequirements(1024)),
+        "callargs_expand_kwstar" | "callargs_push_kw" => Some(SimpleIrRuntimeRequirements(576)),
+        "callargs_expand_star" => Some(SimpleIrRuntimeRequirements(608)),
+        "alloc_task"
+        | "asyncgen_locals_register"
+        | "block_on"
+        | "call_async"
+        | "cancel_current"
+        | "cancel_token_cancel"
+        | "cancel_token_clone"
+        | "cancel_token_drop"
+        | "cancel_token_get_current"
+        | "cancel_token_is_cancelled"
+        | "cancel_token_new"
+        | "cancel_token_set_current"
+        | "cancelled"
+        | "chan_drop"
+        | "chan_new"
+        | "chan_recv_yield"
+        | "chan_send_yield"
+        | "future_cancel"
+        | "future_cancel_clear"
+        | "future_cancel_msg"
+        | "gen_locals_register"
+        | "is_native_awaitable"
+        | "promise_new"
+        | "promise_set_exception"
+        | "promise_set_result"
+        | "spawn"
+        | "state_label"
+        | "state_switch"
+        | "state_transition"
+        | "state_yield"
+        | "task_register_token_owned"
+        | "thread_submit" => Some(SimpleIrRuntimeRequirements(1024)),
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
         "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
             Some(SimpleIrRuntimeRequirements(4096))
@@ -1120,6 +1160,12 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         }
         "getframe" => Some(SimpleIrRuntimeRequirements(16384)),
         "async_work_poll" => Some(SimpleIrRuntimeRequirements(32772)),
+        "import" | "import_from" | "import_name" | "module_import_star" => {
+            Some(SimpleIrRuntimeRequirements(65536))
+        }
+        "module_import" | "module_import_from" => Some(SimpleIrRuntimeRequirements(65600)),
+        "function_closure_bits" => Some(SimpleIrRuntimeRequirements(131072)),
+        "func_new_closure" => Some(SimpleIrRuntimeRequirements(131136)),
         _ => None,
     }
 }
@@ -1128,14 +1174,47 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
 #[inline]
 pub fn simpleir_runtime_symbol_requirements_table(symbol: &str) -> SimpleIrRuntimeRequirements {
     match symbol {
+        "molt_cell_eq" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_ge" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_get" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_gt" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_le" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_lt" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_ne" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_new" => SimpleIrRuntimeRequirements(131072),
+        "molt_cell_set" => SimpleIrRuntimeRequirements(131072),
         "molt_frame_context_set" => SimpleIrRuntimeRequirements(8192),
+        "molt_func_new_closure" => SimpleIrRuntimeRequirements(131072),
+        "molt_function_closure_bits" => SimpleIrRuntimeRequirements(131072),
         "molt_getframe" => SimpleIrRuntimeRequirements(16384),
+        "molt_importlib_extension_loader_exec_module" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_module" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_optional" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_or_fallback" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_required" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_transaction" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_load_module_from_spec" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_load_module_shim" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_reload" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_sourcefileloader_exec_module" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_sourceless_loader_exec_module" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_zip_source_loader_exec_module" => SimpleIrRuntimeRequirements(65536),
         "molt_inspect_currentframe" => SimpleIrRuntimeRequirements(16384),
+        "molt_module_ensure" => SimpleIrRuntimeRequirements(65536),
+        "molt_module_import" => SimpleIrRuntimeRequirements(65536),
+        "molt_module_import_from" => SimpleIrRuntimeRequirements(65536),
+        "molt_module_import_star" => SimpleIrRuntimeRequirements(65536),
+        "molt_runpy_run_module" => SimpleIrRuntimeRequirements(65536),
+        "molt_runpy_run_path" => SimpleIrRuntimeRequirements(65536),
         "molt_super_from_frame" => SimpleIrRuntimeRequirements(8192),
         "molt_sys_getprofile" => SimpleIrRuntimeRequirements(16384),
         "molt_sys_gettrace" => SimpleIrRuntimeRequirements(16384),
         "molt_sys_setprofile" => SimpleIrRuntimeRequirements(16384),
         "molt_sys_settrace" => SimpleIrRuntimeRequirements(16384),
+        "molt_types_cell_contents_delete" => SimpleIrRuntimeRequirements(131072),
+        "molt_types_cell_contents_get" => SimpleIrRuntimeRequirements(131072),
+        "molt_types_cell_contents_set" => SimpleIrRuntimeRequirements(131072),
+        "molt_types_cell_new" => SimpleIrRuntimeRequirements(131072),
         _ => SimpleIrRuntimeRequirements::NONE,
     }
 }
@@ -1144,7 +1223,12 @@ pub fn simpleir_runtime_symbol_requirements_table(symbol: &str) -> SimpleIrRunti
 #[inline]
 pub fn simpleir_qualified_callable_runtime_symbol(qualified: &str) -> Option<&'static str> {
     match qualified {
+        "builtins.__import__" => Some("molt_importlib_import_transaction"),
+        "importlib.import_module" => Some("molt_importlib_import_module"),
+        "importlib.reload" => Some("molt_importlib_reload"),
         "inspect.currentframe" => Some("molt_inspect_currentframe"),
+        "runpy.run_module" => Some("molt_runpy_run_module"),
+        "runpy.run_path" => Some("molt_runpy_run_path"),
         "sys._getframe" => Some("molt_getframe"),
         "sys.getprofile" => Some("molt_sys_getprofile"),
         "sys.gettrace" => Some("molt_sys_gettrace"),
@@ -1863,7 +1947,6 @@ pub fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
             | "file_open"
             | "file_read"
             | "file_write"
-            | "fn_ptr_code_set"
             | "frame_locals_set"
             | "frozenset_add"
             | "func_new"
@@ -2648,6 +2731,12 @@ pub fn simpleir_kind_is_async_work_poll(kind: &str) -> bool {
 #[inline]
 pub fn simpleir_kind_may_carry_async_work_poll_marker(kind: &str) -> bool {
     matches!(kind, "exception_finally_pending_observer")
+}
+
+/// Luau operations requiring a proven canonical ordered mapping operand.
+#[inline]
+pub fn simpleir_kind_requires_luau_ordered_mapping(kind: &str) -> bool {
+    matches!(kind, "callargs_expand_kwstar")
 }
 
 /// Whether successful completion of this first-class opcode is a Python

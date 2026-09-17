@@ -194,10 +194,10 @@ impl RustBackend {
             "module_cache_get" | "module_load_cached" => self.emit_op_module_cache_get(op),
             "module_cache_set" => self.emit_op_module_cache_set(op),
             "module_cache_del" => self.emit_op_module_cache_del(op),
-            "module_import" => self.emit_op_module_import(op),
-            "module_get_attr" | "module_import_from" | "module_get_name" => {
-                self.emit_op_module_get_attr(op)
+            "module_import" | "module_import_from" | "module_import_star" => {
+                self.emit_unsupported_op(op, "requires the Python import protocol")
             }
+            "module_get_attr" | "module_get_name" => self.emit_op_module_get_attr(op),
             "module_set_attr" => self.emit_op_module_set_attr(op),
             "nop" | "comment" | "debug_label" | "line" | "type_assert" => self.emit_op_nop(op),
             "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "bridge_unavailable" => {

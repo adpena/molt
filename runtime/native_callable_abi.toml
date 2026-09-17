@@ -1,9 +1,10 @@
-schema_version = 1
+schema_version = 2
 
 [[abi]]
 name = "object_call_v1"
 token = "molt.object_call_v1"
 lowering = "object_values"
+python_callable = true
 browser_params = ["molt.value..."]
 browser_result = "molt.value"
 wasm_params = ["i64..."]
@@ -15,6 +16,7 @@ native_results = ["molt_value"]
 name = "object_callargs_v1"
 token = "molt.object_callargs_v1"
 lowering = "object_callargs"
+python_callable = true
 fixed_arity = 1
 browser_params = ["molt.callargs"]
 browser_result = "molt.value"
@@ -27,6 +29,7 @@ native_results = ["molt_value"]
 name = "forward_f32_v1"
 token = "molt.forward_f32_v1"
 lowering = "forward_f32"
+python_callable = true
 fixed_arity = 1
 browser_params = ["bytes.float32"]
 browser_result = "bytes.float32"
@@ -39,6 +42,7 @@ native_results = ["i32"]
 name = "pyinit_module_v1"
 token = "molt.pyinit_module_v1"
 lowering = "pyinit_module"
+python_callable = false
 fixed_arity = 0
 browser_params = []
 browser_result = "molt.pyobject_ptr"

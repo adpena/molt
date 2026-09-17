@@ -134,6 +134,84 @@ fn fixed_runtime_imports_do_not_overlap_conservative_fallbacks() {
 }
 
 #[test]
+fn buffer_shape_accessors_return_boxed_integers() {
+    let ctx = Context::create();
+    let module = ctx.create_module("test_buffer_shape");
+    for name in ["molt_buffer2d_rows", "molt_buffer2d_cols"] {
+        assert_eq!(
+            runtime_import_return_abi(name, 1),
+            Some(RuntimeReturnAbi::I64)
+        );
+        assert_eq!(runtime_import_return_abi(name, 2), None);
+        let signature = RuntimeImportSignature {
+            name,
+            param_count: 1,
+            return_abi: RuntimeReturnAbi::I64,
+        };
+        let function = declare_conservative_runtime_function(
+            &ctx,
+            &module,
+            name,
+            runtime_function_type(&ctx, signature),
+        );
+        assert_eq!(function.count_params(), 1);
+        assert_eq!(
+            function
+                .get_type()
+                .get_return_type()
+                .unwrap()
+                .into_int_type()
+                .get_bit_width(),
+            64,
+        );
+    }
+}
+
+#[test]
+fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
+    use molt_ir::runtime_boxed_abi_generated::{RUNTIME_BOXED_ABIS, RuntimeBoxedReturn};
+
+    for abi in RUNTIME_BOXED_ABIS {
+        let result = match abi.result {
+            RuntimeBoxedReturn::OwnedValue => RuntimeReturnAbi::I64,
+            RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
+        };
+        assert_eq!(
+            runtime_import_return_abi(abi.symbol, abi.arity),
+            Some(result),
+            "{}",
+            abi.symbol
+        );
+        assert!(
+            !CONSERVATIVE_RUNTIME_IMPORTS
+                .iter()
+                .any(|sig| sig.name == abi.symbol),
+            "{} duplicates the generated boxed ABI authority",
+            abi.symbol
+        );
+    }
+}
+
+#[test]
+fn raw_integer_carriers_do_not_authorize_boxed_calls() {
+    use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
+
+    for (symbol, arity) in [
+        ("molt_int_from_i64", 1),
+        ("molt_int_as_i64", 1),
+        ("molt_is_truthy", 1),
+        ("molt_obj_get_state", 1),
+        ("molt_object_field_get_ptr", 2),
+    ] {
+        assert!(
+            runtime_import_return_abi(symbol, arity).is_some(),
+            "{symbol}"
+        );
+        assert!(runtime_boxed_abi(symbol, arity).is_none(), "{symbol}");
+    }
+}
+
+#[test]
 fn field_accessor_runtime_import_family_has_one_conservative_abi() {
     for (name, param_count) in [
         ("molt_object_field_get", 2),
@@ -322,13 +400,12 @@ fn function_and_code_runtime_functions_are_declared() {
         ("molt_func_new_builtin_named", 4),
         ("molt_func_new_closure", 4),
         ("molt_code_new", 9),
-        ("molt_code_slot_set", 2),
+        ("molt_code_slot_set", 3),
         ("molt_code_slots_init", 1),
         ("molt_trace_enter_slot", 1),
         ("molt_trace_exit", 0),
         ("molt_frame_locals_set", 1),
         ("molt_trace_set_line", 1),
-        ("molt_fn_ptr_code_set", 2),
         ("molt_function_defaults_version", 1),
     ] {
         let func = module

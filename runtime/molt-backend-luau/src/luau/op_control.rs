@@ -3,7 +3,7 @@ use super::*;
 impl LuauBackend {
     pub(super) fn emit_control_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
-            "label" | "state_label" => {
+            "label" => {
                 if let Some(id) = op.value {
                     self.emit_line(&format!("::label_{id}::"));
                 } else if let Some(ref s) = op.s_value {

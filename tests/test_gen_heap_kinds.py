@@ -40,11 +40,12 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 258) if value not in (205, 231)]
+    assert dense == [value for value in range(200, 259) if value not in (205, 231)]
+    assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
     assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
-    assert kinds[-1]["name"] == "NATIVE_DESCRIPTOR"
+    assert kinds[-1]["name"] == "CELL"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
@@ -58,6 +59,7 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
     ]
     assert {row["name"]: row["acyclic_capability"] for row in capability_holders} == {
         "RANGE": "int_triplet",
+        "BUFFER2D": "int_cells",
         "CODE": "code_metadata",
     }
     assert {
@@ -72,6 +74,7 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
         "step": "int",
     }
     assert by_name["CODE"]["acyclic_slots"] == dict(_gen().ACYCLIC_SLOT_SCHEMAS["CODE"])
+    assert by_name["BUFFER2D"]["acyclic_slots"] == {"cell": "int"}
 
 
 def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -> None:
@@ -81,7 +84,9 @@ def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -
     table.write_text(source.replace("id = 206", "id = 205", 1), encoding="utf-8")
     with pytest.raises(ValueError, match="never be reused"):
         gen.load_table(table)
-    table.write_text(source.replace("retired_ids = [205, 231]", "retired_ids = []"), encoding="utf-8")
+    table.write_text(
+        source.replace("retired_ids = [205, 231]", "retired_ids = []"), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="allocated ABI domain"):
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
@@ -94,9 +99,7 @@ def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -
 
 def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
     by_name = {row["name"]: row for row in _gen().load_table()}
-    allowed = {
-        name for name, row in by_name.items() if row["weakref"] == "allow"
-    }
+    allowed = {name for name, row in by_name.items() if row["weakref"] == "allow"}
     assert allowed == {
         "MEMORYVIEW",
         "FUNCTION",
@@ -133,7 +136,9 @@ def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
     assert "!crate::is_builtin_class_bits(_py, class_bits)" in supports
     assert "class_slots_info(_py, class_ptr)" in supports
     assert ".is_none_or(|info| info.allows_weakref)" in supports
-    assert supports.rstrip().endswith("policy == crate::object::HeapWeakrefPolicy::Allow")
+    assert supports.rstrip().endswith(
+        "policy == crate::object::HeapWeakrefPolicy::Allow"
+    )
 
 
 def test_cycle_policy_models_cpython_dynamic_container_tracking() -> None:
@@ -152,9 +157,9 @@ def test_every_kind_gets_one_generated_direct_lifecycle_handler() -> None:
     gen = _gen()
     kinds = gen.load_table()
     rendered = gen.render_runtime(kinds)
-    handler_body = rendered.split(
-        "pub(crate) const fn heap_lifecycle_handler", 1
-    )[1].split("pub(crate) const fn heap_kind_uses_object_layout", 1)[0]
+    handler_body = rendered.split("pub(crate) const fn heap_lifecycle_handler", 1)[
+        1
+    ].split("pub(crate) const fn heap_kind_uses_object_layout", 1)[0]
     assert handler_body.count("=> Some(HeapLifecycleHandler::") == len(kinds)
     for row in kinds:
         variant = gen._variant(str(row["name"]).lower())
@@ -182,15 +187,15 @@ def test_every_kind_gets_one_generated_direct_lifecycle_handler() -> None:
 
 def test_runtime_visit_and_clear_dispatch_are_exhaustive_without_wildcards() -> None:
     gen = _gen()
-    source = (
-        ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
     visit = source.split("pub(crate) unsafe fn visit_owned_values", 1)[1].split(
         "pub(crate) unsafe fn visit_owned_edges", 1
     )[0]
-    clear = source.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[1].split(
-        "pub(crate) unsafe fn detach_terminal_owned_edges", 1
-    )[0]
+    clear = source.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[
+        1
+    ].split("pub(crate) unsafe fn detach_terminal_owned_edges", 1)[0]
     for row in gen.load_table():
         variant = f"HeapLifecycleHandler::{gen._variant(str(row['name']).lower())}"
         assert variant in visit, f"visit dispatch omits {row['name']}"
@@ -216,9 +221,7 @@ def test_gc_deleted_legacy_type_id_traverse_and_clear_switches() -> None:
 
 
 def test_gc_reentrancy_is_runtime_owned_and_free_thread_fails_before_snapshot() -> None:
-    gc = (ROOT / "runtime/molt-runtime/src/object/gc.rs").read_text(
-        encoding="utf-8"
-    )
+    gc = (ROOT / "runtime/molt-runtime/src/object/gc.rs").read_text(encoding="utf-8")
     state = (ROOT / "runtime/molt-runtime/src/state/runtime_state.rs").read_text(
         encoding="utf-8"
     )
@@ -238,7 +241,11 @@ def test_gc_reentrancy_is_runtime_owned_and_free_thread_fails_before_snapshot() 
 
 @pytest.mark.parametrize(
     ("kind", "projection"),
-    [("DICT", "dict_dynamic"), ("TUPLE", "tuple_dynamic"), ("FOREIGN", "foreign_dynamic")],
+    [
+        ("DICT", "dict_dynamic"),
+        ("TUPLE", "tuple_dynamic"),
+        ("FOREIGN", "foreign_dynamic"),
+    ],
 )
 def test_dynamic_tracking_requires_explicit_projection(
     tmp_path: Path, kind: str, projection: str
@@ -309,7 +316,9 @@ def test_no_manual_heap_policy_or_shape_authority_survives() -> None:
     for path in (runtime / "molt-runtime/src").rglob("*.rs"):
         if path.name == "heap_kinds_generated.rs":
             continue
-        production = path.read_text(encoding="utf-8").split("#[cfg(test)]\nmod tests {", 1)[0]
+        production = path.read_text(encoding="utf-8").split(
+            "#[cfg(test)]\nmod tests {", 1
+        )[0]
         if "heap_kind_descriptor(" in production:
             descriptor_consumers.append(path.relative_to(ROOT).as_posix())
     assert descriptor_consumers == [], (
@@ -323,18 +332,20 @@ def test_every_generated_object_shape_has_visit_clear_and_terminal_dispatch() ->
     source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
         encoding="utf-8"
     )
-    generated = (ROOT / "runtime/molt-runtime-core/src/heap_kinds_generated.rs").read_text(
-        encoding="utf-8"
-    )
+    generated = (
+        ROOT / "runtime/molt-runtime-core/src/heap_kinds_generated.rs"
+    ).read_text(encoding="utf-8")
     visit = source.split("pub(crate) unsafe fn object_shape_visit_owned_edges", 1)[
         1
     ].split("pub(crate) unsafe fn object_shape_clear_cycle_edges", 1)[0]
-    clear = source.split("pub(crate) unsafe fn object_shape_clear_cycle_edges", 1)[1].split(
-        "pub(crate) unsafe fn dec_ref_ptr", 1
-    )[0]
+    clear = source.split("pub(crate) unsafe fn object_shape_clear_cycle_edges", 1)[
+        1
+    ].split("pub(crate) unsafe fn dec_ref_ptr", 1)[0]
     for row in gen.load_object_shapes():
         variant = f"ObjectShapeId::{gen._variant(str(row['name']).lower())}"
-        assert generated.count(variant) >= 2, f"generated projections omit {row['name']}"
+        assert generated.count(variant) >= 2, (
+            f"generated projections omit {row['name']}"
+        )
     assert "object_shape_lifecycle_family(shape)" in visit
     assert "object_shape_lifecycle_family(shape)" in clear
     assert "DetachedResource::Functools" in clear
@@ -344,12 +355,10 @@ def test_every_generated_object_shape_has_visit_clear_and_terminal_dispatch() ->
 
 
 def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
-    lifecycle = (
-        ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs"
-    ).read_text(encoding="utf-8")
-    gc = (ROOT / "runtime/molt-runtime/src/object/gc.rs").read_text(
+    lifecycle = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
         encoding="utf-8"
     )
+    gc = (ROOT / "runtime/molt-runtime/src/object/gc.rs").read_text(encoding="utf-8")
     generator_clear = lifecycle.split("unsafe fn detach_generator_owned_edges", 1)[
         1
     ].split("pub(crate) unsafe fn clear_cycle_edges", 1)[0]
@@ -391,9 +400,9 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
 
 
 def test_gc_clear_handlers_are_detach_only_until_sink_release() -> None:
-    lifecycle = (
-        ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    lifecycle = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
     clear = lifecycle.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[1]
     for forbidden in (
         "dec_ref_bits(",
@@ -433,9 +442,9 @@ def test_terminal_dealloc_has_one_detach_authority_and_no_release_switch() -> No
     source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
         encoding="utf-8"
     )
-    terminal = source.split("let (terminal_edge_count, terminal_resource_count) =", 1)[1].split(
-        "release_ptr(ptr);", 1
-    )[0]
+    terminal = source.split("let (terminal_edge_count, terminal_resource_count) =", 1)[
+        1
+    ].split("release_ptr(ptr);", 1)[0]
     assert "terminal_detach_capacity(py, ptr)" in terminal
     assert "detach_terminal_owned_edges(py, ptr" in terminal
     assert terminal.index("detach_terminal_owned_edges") < terminal.index(
@@ -516,7 +525,9 @@ def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     assert "native_handle_new<T: NativeHandleNoMoltEdges>" in native
 
 
-def test_generator_rejects_missing_or_unknown_acyclic_capability(tmp_path: Path) -> None:
+def test_generator_rejects_missing_or_unknown_acyclic_capability(
+    tmp_path: Path,
+) -> None:
     gen = _gen()
     source = gen.TABLE.read_text(encoding="utf-8").replace(
         'acyclic_capability = "int_triplet"\n',
@@ -549,22 +560,24 @@ def test_generator_rejects_missing_or_unknown_acyclic_capability(tmp_path: Path)
         gen.load_table(table)
 
 
-def test_canonical_heap_cache_is_runtime_owned_and_has_no_losing_candidate_lane() -> None:
+def test_canonical_heap_cache_is_runtime_owned_and_has_no_losing_candidate_lane() -> (
+    None
+):
     builders = (ROOT / "runtime/molt-runtime/src/object/builders.rs").read_text(
         encoding="utf-8"
     )
     runtime_state_source = (
         ROOT / "runtime/molt-runtime/src/state/runtime_state.rs"
     ).read_text(encoding="utf-8")
-    classifier = (
-        ROOT / "runtime/molt-runtime/src/object/string_intern.rs"
-    ).read_text(encoding="utf-8")
+    classifier = (ROOT / "runtime/molt-runtime/src/object/string_intern.rs").read_text(
+        encoding="utf-8"
+    )
     sys_ext = (ROOT / "runtime/molt-runtime/src/builtins/sys_ext.rs").read_text(
         encoding="utf-8"
     )
-    lifecycle = (
-        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    lifecycle = (ROOT / "runtime/molt-runtime/src/state/lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert "pub(crate) struct CanonicalObjectCache" in builders
     assert "canonical_objects: CanonicalObjectCache" in runtime_state_source
@@ -619,7 +632,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     )
 
     assert builders.count("alloc_object_zeroed_unpublished_with_aux(") >= 2
-    assert "pub extern \"C\" fn molt_object_publish_initialized" in builders
+    assert 'pub extern "C" fn molt_object_publish_initialized' in builders
     unpublished_allocator = allocator.split(
         "fn alloc_object_zeroed_with_aux_policy", 1
     )[1].split("pub(crate) fn alloc_object(", 1)[0]
@@ -652,4 +665,7 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     # Rust and Luau allocate their own fully initialized value/table
     # representations; they never observe the native unpublished pointer ABI.
     assert '"build_list" | "list_new" | "alloc" => self.emit_op_build_list(op)' in rust
-    assert '"alloc" | "alloc_task" =>' in luau
+    assert '"alloc" =>' in luau
+    # Suspended-task allocation is rejected before Luau emission; it is not
+    # another spelling for a fully initialized ordinary table.
+    assert '"alloc_task"' not in luau

@@ -209,7 +209,7 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
         .filter(|func| !func.is_extern)
         .map(|func| func.name.clone())
         .collect();
-    callable_metadata.merge(molt_tir::trampolines::CallableMetadata::from_definitions(
+    callable_metadata.merge(molt_tir::trampolines::CallableMetadata::from_functions(
         functions,
     ));
     let closure_functions = callable_metadata
@@ -375,7 +375,7 @@ pub(in crate::native_backend::simple_backend) fn merge_closure_functions(
 /// union rationale as [`merge_closure_functions`]: the module context's map is
 /// not guaranteed to contain a name defined only in this batch, and the
 /// trampoline-kind decision at a `func_new`/call site must see this batch's own
-/// task functions. Local entries take precedence on the (rare) key overlap.
+/// task functions. Overlapping immutable facts must agree.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn merge_task_kinds(
     module_context: Option<&NativeBackendModuleContext>,
@@ -384,7 +384,11 @@ pub(in crate::native_backend::simple_backend) fn merge_task_kinds(
     let mut merged = module_context
         .map(|context| context.task_kinds.clone())
         .unwrap_or_default();
-    merged.extend(local_task_kinds);
+    molt_tir::trampolines::merge_callable_facts(
+        &mut merged,
+        local_task_kinds,
+        "callable task kind",
+    );
     merged
 }
 
@@ -398,7 +402,11 @@ pub(in crate::native_backend::simple_backend) fn merge_task_closure_sizes(
     let mut merged = module_context
         .map(|context| context.task_closure_sizes.clone())
         .unwrap_or_default();
-    merged.extend(local_task_closure_sizes);
+    molt_tir::trampolines::merge_callable_facts(
+        &mut merged,
+        local_task_closure_sizes,
+        "callable closure size",
+    );
     merged
 }
 

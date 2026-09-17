@@ -38,6 +38,26 @@ pub(crate) fn recursion_guard_exit() {
     }
 }
 
+/// Rust call boundaries must release recursion custody on every return path.
+pub(crate) struct RecursionGuard;
+
+impl RecursionGuard {
+    pub(crate) fn enter(py: &crate::PyToken<'_>) -> Option<Self> {
+        if recursion_guard_enter() {
+            Some(Self)
+        } else {
+            crate::raise_exception::<u64>(py, "RecursionError", "maximum recursion depth exceeded");
+            None
+        }
+    }
+}
+
+impl Drop for RecursionGuard {
+    fn drop(&mut self) {
+        recursion_guard_exit();
+    }
+}
+
 /// Fast-path enter: single atomic fetch_add, no TLS.
 #[inline(always)]
 pub(crate) fn recursion_guard_enter_fast() -> bool {

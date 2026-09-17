@@ -295,6 +295,54 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_function_init_metadata_packed",
             crate::molt_function_init_metadata_packed as *const (),
         )),
+        "molt_cell_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_new",
+            crate::molt_cell_new as *const (),
+        )),
+        "molt_cell_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_get",
+            crate::molt_cell_get as *const (),
+        )),
+        "molt_cell_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_set",
+            crate::molt_cell_set as *const (),
+        )),
+        "molt_cell_eq" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_eq",
+            crate::molt_cell_eq as *const (),
+        )),
+        "molt_cell_ne" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_ne",
+            crate::molt_cell_ne as *const (),
+        )),
+        "molt_cell_lt" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_lt",
+            crate::molt_cell_lt as *const (),
+        )),
+        "molt_cell_le" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_le",
+            crate::molt_cell_le as *const (),
+        )),
+        "molt_cell_gt" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_gt",
+            crate::molt_cell_gt as *const (),
+        )),
+        "molt_cell_ge" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_cell_ge",
+            crate::molt_cell_ge as *const (),
+        )),
+        "molt_types_cell_contents_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_types_cell_contents_get",
+            crate::molt_types_cell_contents_get as *const (),
+        )),
+        "molt_types_cell_contents_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_types_cell_contents_set",
+            crate::molt_types_cell_contents_set as *const (),
+        )),
+        "molt_types_cell_contents_delete" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_types_cell_contents_delete",
+            crate::molt_types_cell_contents_delete as *const (),
+        )),
         "molt_function_set_builtin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_function_set_builtin",
             crate::molt_function_set_builtin as *const (),
@@ -450,6 +498,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_trace_exit" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_trace_exit",
             crate::molt_trace_exit as *const (),
+        )),
+        "molt_frame_invocation_enter" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_frame_invocation_enter",
+            crate::molt_frame_invocation_enter as *const (),
+        )),
+        "molt_frame_invocation_exit" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_frame_invocation_exit",
+            crate::molt_frame_invocation_exit as *const (),
         )),
         "molt_trace_set_line" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_trace_set_line",

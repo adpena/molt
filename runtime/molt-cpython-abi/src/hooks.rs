@@ -9,8 +9,11 @@
 //!
 //! ## Handle encoding
 //!
-//! All `u64` parameters and return values are raw `MoltObject` bit patterns
-//! (QNAN-boxed). `0` is reserved for "null / not found / error".
+//! Value handles carry raw `MoltObject` bit patterns (QNAN-boxed), including
+//! `0` for float +0.0. Typed handle results distinguish success, absence, and
+//! failure by status, never by successful payload bits. Individual pointer-only
+//! allocation hooks and optional container arguments document their own null
+//! sentinels; those contracts do not apply to arbitrary value results.
 
 use std::sync::OnceLock;
 
@@ -41,12 +44,22 @@ pub const EXCEPTION_SNAPSHOT_TRACEBACK: u32 = 1 << 3;
 pub const EXCEPTION_SNAPSHOT_CONTEXT: u32 = 1 << 4;
 pub const EXCEPTION_SNAPSHOT_CAUSE: u32 = 1 << 5;
 pub const EXCEPTION_TYPED_MAX_FIELDS: usize = molt_lang_obj_model::MAX_EXCEPTION_TYPED_FIELDS;
+pub const EXCEPTION_BASE_FIELD_MASKS: [u32; 6] = [
+    EXCEPTION_SNAPSHOT_DICT,
+    EXCEPTION_SNAPSHOT_ARGS,
+    EXCEPTION_SNAPSHOT_NOTES,
+    EXCEPTION_SNAPSHOT_TRACEBACK,
+    EXCEPTION_SNAPSHOT_CONTEXT,
+    EXCEPTION_SNAPSHOT_CAUSE,
+];
 
 /// One atomic runtime/ABI transaction for the complete physical exception
 /// layout. Base handles use `present_mask`; typed handles use field-order bits
 /// in `typed_present_mask` and `typed_handles`. A capture owns one reference
 /// to each present handle; a commit borrows every handle. Scalar typed fields
-/// travel separately. `os_error_written == -1` is CPython's missing
+/// travel separately. Presence is determined only by the masks: a present
+/// object handle may be zero (float +0.0). Absent payload slots must be zero.
+/// `os_error_written == -1` is CPython's missing
 /// `BlockingIOError.characters_written` sentinel.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -90,6 +103,105 @@ impl Default for ExceptionSnapshot {
     }
 }
 
+impl ExceptionSnapshot {
+    fn base_payloads(&self) -> [u64; 6] {
+        [
+            self.dict,
+            self.args,
+            self.notes,
+            self.traceback,
+            self.context,
+            self.cause,
+        ]
+    }
+
+    pub fn base_fields(&self) -> [Option<u64>; 6] {
+        let payloads = self.base_payloads();
+        std::array::from_fn(|index| {
+            (self.present_mask & EXCEPTION_BASE_FIELD_MASKS[index] != 0).then_some(payloads[index])
+        })
+    }
+
+    pub fn typed_fields(&self) -> [Option<u64>; EXCEPTION_TYPED_MAX_FIELDS] {
+        std::array::from_fn(|index| {
+            (self.typed_present_mask & (1u32 << index) != 0).then_some(self.typed_handles[index])
+        })
+    }
+
+    /// One occurrence per owned edge, including aliases and boxed zero values.
+    pub fn present_handles(&self) -> impl Iterator<Item = u64> {
+        self.base_fields()
+            .into_iter()
+            .chain(self.typed_fields())
+            .flatten()
+    }
+
+    /// Shared structural admission for both directions of the ABI transaction.
+    /// Runtime object types and the receiving exception's identity are checked
+    /// by the runtime before mutation; no payload bits imply object presence.
+    pub fn validated_layout(
+        &self,
+        expected: Option<molt_lang_obj_model::ExceptionLayoutKind>,
+    ) -> Option<molt_lang_obj_model::ExceptionLayoutKind> {
+        use molt_lang_obj_model::{ExceptionFieldStorage, ExceptionLayoutKind};
+
+        let kind = ExceptionLayoutKind::from_u8(self.layout_kind)?;
+        if expected.is_some_and(|expected| expected != kind)
+            || self._reserved != [0; 3]
+            || self.suppress_context > 1
+        {
+            return None;
+        }
+        let known_base = EXCEPTION_BASE_FIELD_MASKS.into_iter().fold(0, |a, b| a | b);
+        if self.present_mask & !known_base != 0
+            || self.present_mask & EXCEPTION_SNAPSHOT_ARGS == 0
+            || self
+                .base_payloads()
+                .into_iter()
+                .zip(EXCEPTION_BASE_FIELD_MASKS)
+                .any(|(bits, mask)| self.present_mask & mask == 0 && bits != 0)
+        {
+            return None;
+        }
+        let policies = kind.field_policies();
+        let known_typed = if policies.len() == u32::BITS as usize {
+            u32::MAX
+        } else {
+            (1u32 << policies.len()) - 1
+        };
+        if self.typed_present_mask & !known_typed != 0
+            || self.typed_handles[policies.len()..]
+                .iter()
+                .any(|bits| *bits != 0)
+        {
+            return None;
+        }
+        for (index, policy) in policies.iter().enumerate() {
+            let present = self.typed_present_mask & (1u32 << index) != 0;
+            let bits = self.typed_handles[index];
+            match policy.storage {
+                ExceptionFieldStorage::Object | ExceptionFieldStorage::RuntimeMessage => {
+                    if !present && bits != 0 {
+                        return None;
+                    }
+                }
+                ExceptionFieldStorage::PySsize if present || bits != 0 => return None,
+                ExceptionFieldStorage::PySsize => {}
+            }
+        }
+        match kind {
+            ExceptionLayoutKind::Unicode if self.os_error_written == -1 => {}
+            ExceptionLayoutKind::OSError if self.unicode_start == 0 && self.unicode_end == 0 => {}
+            ExceptionLayoutKind::Unicode | ExceptionLayoutKind::OSError => return None,
+            _ if self.unicode_start == 0
+                && self.unicode_end == 0
+                && self.os_error_written == -1 => {}
+            _ => return None,
+        }
+        Some(kind)
+    }
+}
+
 pub enum DecodedHandleResult {
     Ok(u64),
     Missing,
@@ -98,9 +210,6 @@ pub enum DecodedHandleResult {
 
 impl OwnedHandleResult {
     pub const fn ok(bits: u64) -> Self {
-        if bits == 0 {
-            return Self::error();
-        }
         Self {
             status: HANDLE_RESULT_OK,
             _reserved: 0,
@@ -122,19 +231,12 @@ impl OwnedHandleResult {
         }
     }
     pub const fn decode(self) -> DecodedHandleResult {
-        match self.status {
-            HANDLE_RESULT_OK if self.bits != 0 => DecodedHandleResult::Ok(self.bits),
-            HANDLE_RESULT_MISSING if self.bits == 0 => DecodedHandleResult::Missing,
-            _ => DecodedHandleResult::Error,
-        }
+        decode_handle_result(self.status, self.bits)
     }
 }
 
 impl BorrowedHandleResult {
     pub const fn ok(bits: u64) -> Self {
-        if bits == 0 {
-            return Self::error();
-        }
         Self {
             status: HANDLE_RESULT_OK,
             _reserved: 0,
@@ -156,10 +258,89 @@ impl BorrowedHandleResult {
         }
     }
     pub const fn decode(self) -> DecodedHandleResult {
-        match self.status {
-            HANDLE_RESULT_OK if self.bits != 0 => DecodedHandleResult::Ok(self.bits),
-            HANDLE_RESULT_MISSING if self.bits == 0 => DecodedHandleResult::Missing,
-            _ => DecodedHandleResult::Error,
+        decode_handle_result(self.status, self.bits)
+    }
+}
+
+const fn decode_handle_result(status: i32, bits: u64) -> DecodedHandleResult {
+    match status {
+        HANDLE_RESULT_OK => DecodedHandleResult::Ok(bits),
+        HANDLE_RESULT_MISSING if bits == 0 => DecodedHandleResult::Missing,
+        _ => DecodedHandleResult::Error,
+    }
+}
+
+#[cfg(test)]
+mod handle_result_tests {
+    use super::*;
+
+    #[test]
+    fn test_owned_result_status_preserves_zero_and_other_value_bits() {
+        for bits in [
+            0,
+            (-0.0f64).to_bits(),
+            1.5f64.to_bits(),
+            molt_lang_obj_model::MoltObject::none().bits(),
+        ] {
+            assert!(matches!(
+                OwnedHandleResult::ok(bits).decode(),
+                DecodedHandleResult::Ok(value) if value == bits
+            ));
+        }
+        assert!(matches!(
+            OwnedHandleResult::missing().decode(),
+            DecodedHandleResult::Missing
+        ));
+        assert!(matches!(
+            OwnedHandleResult::error().decode(),
+            DecodedHandleResult::Error
+        ));
+    }
+
+    #[test]
+    fn test_borrowed_result_status_preserves_zero_and_other_value_bits() {
+        for bits in [
+            0,
+            (-0.0f64).to_bits(),
+            1.5f64.to_bits(),
+            molt_lang_obj_model::MoltObject::none().bits(),
+        ] {
+            assert!(matches!(
+                BorrowedHandleResult::ok(bits).decode(),
+                DecodedHandleResult::Ok(value) if value == bits
+            ));
+        }
+        assert!(matches!(
+            BorrowedHandleResult::missing().decode(),
+            DecodedHandleResult::Missing
+        ));
+        assert!(matches!(
+            BorrowedHandleResult::error().decode(),
+            DecodedHandleResult::Error
+        ));
+    }
+
+    #[test]
+    fn test_handle_result_invalid_status_or_missing_payload_fails_closed() {
+        for (status, bits) in [
+            (HANDLE_RESULT_MISSING, 1),
+            (HANDLE_RESULT_ERROR, 0),
+            (HANDLE_RESULT_ERROR, 1),
+            (2, 0),
+            (2, 1),
+        ] {
+            let owned = OwnedHandleResult {
+                status,
+                _reserved: 0,
+                bits,
+            };
+            let borrowed = BorrowedHandleResult {
+                status,
+                _reserved: 0,
+                bits,
+            };
+            assert!(matches!(owned.decode(), DecodedHandleResult::Error));
+            assert!(matches!(borrowed.decode(), DecodedHandleResult::Error));
         }
     }
 }
@@ -294,13 +475,13 @@ pub struct RuntimeHooks {
     ) -> std::os::raw::c_int,
     /// Return the number of items in a list.
     pub list_len: unsafe extern "C" fn(bits: u64) -> usize,
-    /// Return the bits of item `i` in the list, or 0 if out of range.
+    /// Return a borrowed item, or `Missing` if out of range.
     pub list_item: unsafe extern "C" fn(bits: u64, i: usize) -> BorrowedHandleResult,
-    /// Store `val_bits` at index `i` of the list, writing the previous occupant's
-    /// bits into `*out_old`. Returns 1 on success, 0 when `i` is out of range or
-    /// `list_bits` is not a list. Backs the indexed `PyList_SetItem`/`SET_ITEM`
+    /// Store `val_bits` at index `i`, returning the previous owned occupant in
+    /// `Ok(bits)`, or `Error` for an invalid receiver, index, or failed store.
+    /// Backs the indexed `PyList_SetItem`/`SET_ITEM`
     /// store: CPython stores directly (`Py_SETREF`), stealing the new reference
-    /// and releasing the old — the ABI releases `*out_old` and honors the steal.
+    /// and releasing the old — the ABI releases the old result and honors the steal.
     pub list_set:
         unsafe extern "C" fn(list_bits: u64, i: usize, val_bits: u64) -> OwnedHandleResult,
     /// Insert `item_bits` before (clamped) index `where_` in the list, shifting
@@ -330,13 +511,13 @@ pub struct RuntimeHooks {
         future_pointers: *const *mut crate::abi_types::PyObject,
         future_len: usize,
     ) -> std::os::raw::c_int,
-    /// Allocate a tuple of exactly `n` uninitialized slots. A zero handle is
-    /// the only uninitialized sentinel; finalized tuples never contain it.
+    /// Allocate a tuple of exactly `n` uninitialized slots containing the
+    /// canonical runtime Missing singleton, never a valid float-zero value.
     pub alloc_tuple: unsafe extern "C" fn(n: usize) -> u64,
     /// Set the fixed slot `i` of an open, uniquely-owned tuple. `exact_pointer`
     /// is the physical object whose reference was stolen by PyTuple_SetItem.
     /// The hook never grows the tuple. `Missing` is the successful transition
-    /// from an uninitialized zero slot; `Ok(bits)` replaces an initialized
+    /// from an uninitialized slot; `Ok(bits)` replaces an initialized
     /// slot and transfers its old runtime edge; `Error` is failure.
     pub tuple_set: unsafe extern "C" fn(
         bits: u64,
@@ -346,14 +527,14 @@ pub struct RuntimeHooks {
     ) -> OwnedHandleResult,
     /// Return the number of items in a tuple.
     pub tuple_len: unsafe extern "C" fn(bits: u64) -> usize,
-    /// Return the bits of item `i` in the tuple, or 0 if out of range.
+    /// Return a borrowed item, or `Missing` for an uninitialized/out-of-range slot.
     pub tuple_item: unsafe extern "C" fn(bits: u64, i: usize) -> BorrowedHandleResult,
     /// Allocate an empty dict. Returns handle bits.
     pub alloc_dict: unsafe extern "C" fn() -> u64,
     /// Insert or overwrite a key→value pair in the dict.
     pub dict_set:
         unsafe extern "C" fn(dict_bits: u64, key_bits: u64, val_bits: u64) -> std::os::raw::c_int,
-    /// Lookup `key_bits` in the dict. Returns 0 if not found.
+    /// Look up `key_bits` in the dict. Returns `Missing` if not found.
     pub dict_get: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult,
     /// Delete `key_bits` from the dict. Returns 0 on success, -1 on failure.
     pub dict_del: unsafe extern "C" fn(dict_bits: u64, key_bits: u64) -> std::os::raw::c_int,
@@ -382,12 +563,12 @@ pub struct RuntimeHooks {
         unsafe extern "C" fn(bits: u64, out_view: *mut MoltBufferView) -> std::os::raw::c_int,
     /// Release a typed strided buffer export previously acquired from the runtime.
     pub buffer_release: unsafe extern "C" fn(view: *mut MoltBufferView) -> std::os::raw::c_int,
-    /// Return obj.name using the runtime object model. Returns 0 when absent or unavailable.
+    /// Return owned obj.name using the runtime object model, or an explicit failure status.
     pub object_get_attr: unsafe extern "C" fn(obj_bits: u64, name_bits: u64) -> OwnedHandleResult,
     /// Set obj.name using the runtime object model. Returns 0 on success, -1 on failure.
     pub object_set_attr:
         unsafe extern "C" fn(obj_bits: u64, name_bits: u64, value_bits: u64) -> std::os::raw::c_int,
-    /// Return format(obj, spec) using the runtime object model. Returns 0 on error.
+    /// Return owned format(obj, spec), or `Error` with a pending exception.
     pub object_format: unsafe extern "C" fn(obj_bits: u64, spec_bits: u64) -> OwnedHandleResult,
     /// Format an `f64` as CPython's `repr(float)` / `str(float)` using the
     /// runtime's single float-format authority (`object::float_repr`). Writes
@@ -460,6 +641,11 @@ pub struct RuntimeHooks {
     pub module_state_remove: unsafe extern "C" fn(module_def_ptr: usize) -> std::os::raw::c_int,
     /// Register a `PyCFunction`-style C function pointer (`meth_addr`) as a
     /// callable Molt function.  `flags` follows CPython's `METH_*` bitmask.
+    /// `self_bits` and `defining_class_bits` are borrowed; the callable retains
+    /// both as traced edges. The defining class is required for `METH_METHOD`
+    /// and must be canonical None for every other convention.
+    /// `self_is_null` distinguishes an absent C receiver from Python None or
+    /// any other legitimate boxed value (including floating-point zero).
     /// `name_data[..name_len]` is the function's `__name__`.  Returns the bits
     /// of the resulting owned Molt callable. Zero without an exception means
     /// the convention is unsupported; zero with an exception is a construction
@@ -468,6 +654,8 @@ pub struct RuntimeHooks {
         meth_addr: u64,
         flags: std::os::raw::c_int,
         self_bits: u64,
+        self_is_null: bool,
+        defining_class_bits: u64,
         name_data: *const u8,
         name_len: usize,
     ) -> u64,
@@ -488,18 +676,18 @@ pub struct RuntimeHooks {
     // exception raising all live in `molt-lang-runtime`. The ABI MUST NOT
     // reimplement arithmetic (that silently wraps at 64 bits and masks the
     // exceptions CPython raises). These hooks route `PyNumber_*` straight to
-    // that authority. Each returns result handle bits, or `0` with a pending
-    // runtime exception on error (the ABI turns `0` into a NULL PyObject*).
+    // that authority. Each returns an owned value on success or an explicit
+    // error status with a pending exception. A successful zero is float +0.0.
     /// Binary numeric op. `op` is a [`NumberBinaryOp`] discriminant. Returns
-    /// result bits, or 0 with a pending exception on error.
+    /// an owned result, or `Error` with a pending exception.
     pub number_binary_op:
         unsafe extern "C" fn(op: u32, a_bits: u64, b_bits: u64) -> OwnedHandleResult,
     /// Unary numeric op. `op` is a [`NumberUnaryOp`] discriminant. Returns
-    /// result bits, or 0 with a pending exception on error.
+    /// an owned result, or `Error` with a pending exception.
     pub number_unary_op: unsafe extern "C" fn(op: u32, a_bits: u64) -> OwnedHandleResult,
-    /// Ternary power `pow(base, exp, modulus)`. When `mod_bits` is `0` or None,
-    /// computes two-argument `base ** exp`. Returns result bits, or 0 with a
-    /// pending exception on error.
+    /// Ternary power `pow(base, exp, modulus)`. Only canonical None selects
+    /// two-argument `base ** exp`; zero bits are the present float +0.0.
+    /// Returns an owned result, or `Error` with a pending exception.
     pub number_power:
         unsafe extern "C" fn(a_bits: u64, b_bits: u64, mod_bits: u64) -> OwnedHandleResult,
     // ── Mapping protocol (PyDict_*) ───────────────────────────────────────────
@@ -554,8 +742,8 @@ pub struct RuntimeHooks {
     // "'<proxy-type>' object is not callable".
     /// Call a Molt callable. `args_bits` is a Molt tuple handle of positional
     /// arguments (0 = no positional args); `kwargs_bits` is a Molt dict handle
-    /// (0 = no keyword args). Returns the result handle bits, or 0 with the
-    /// error left in the runtime pending-exception state.
+    /// (0 = no keyword args). Returns an owned result, or `Error` with the
+    /// exception left in the runtime pending-exception state.
     pub object_call: unsafe extern "C" fn(
         callable_bits: u64,
         args_bits: u64,
@@ -886,37 +1074,27 @@ pub fn hooks() -> Option<&'static RuntimeHooks> {
     RUNTIME_HOOKS.get()
 }
 
+/// Select callable ownership before construction. A registered producer's
+/// failure is never permission to construct an unrelated ABI-only callable.
+#[inline]
+pub(crate) fn cfunction_registration_available() -> bool {
+    hooks().is_some_and(|runtime| {
+        !std::ptr::fn_addr_eq(runtime.register_c_function, STUB_HOOKS.register_c_function)
+    })
+}
+
 /// Whether the registered runtime owns managed tuple construction. Before
 /// runtime initialization (and in intentionally partial ABI fixtures), exact
 /// C tuples use their native `PyTupleObject` allocation authority instead.
 #[inline]
 pub(crate) fn managed_tuple_construction_available() -> bool {
     hooks().is_some_and(|runtime| {
-        !std::ptr::fn_addr_eq(
-            runtime.alloc_tuple,
-            stub_alloc_tuple as unsafe extern "C" fn(usize) -> u64,
-        ) && !std::ptr::fn_addr_eq(
-            runtime.tuple_set,
-            stub_tuple_set
-                as unsafe extern "C" fn(
-                    u64,
-                    usize,
-                    u64,
-                    *mut crate::abi_types::PyObject,
-                ) -> OwnedHandleResult,
-        ) && !std::ptr::fn_addr_eq(
-            runtime.tuple_len,
-            stub_tuple_len as unsafe extern "C" fn(u64) -> usize,
-        ) && !std::ptr::fn_addr_eq(
-            runtime.tuple_item,
-            stub_tuple_item as unsafe extern "C" fn(u64, usize) -> BorrowedHandleResult,
-        ) && !std::ptr::fn_addr_eq(
-            runtime.ref_count,
-            stub_ref_count as unsafe extern "C" fn(u64) -> usize,
-        ) && !std::ptr::fn_addr_eq(
-            runtime.classify_heap,
-            stub_classify_heap as unsafe extern "C" fn(u64) -> u8,
-        )
+        !std::ptr::fn_addr_eq(runtime.alloc_tuple, STUB_HOOKS.alloc_tuple)
+            && !std::ptr::fn_addr_eq(runtime.tuple_set, STUB_HOOKS.tuple_set)
+            && !std::ptr::fn_addr_eq(runtime.tuple_len, STUB_HOOKS.tuple_len)
+            && !std::ptr::fn_addr_eq(runtime.tuple_item, STUB_HOOKS.tuple_item)
+            && !std::ptr::fn_addr_eq(runtime.ref_count, STUB_HOOKS.ref_count)
+            && !std::ptr::fn_addr_eq(runtime.classify_heap, STUB_HOOKS.classify_heap)
     })
 }
 
@@ -1215,6 +1393,8 @@ unsafe extern "C" fn stub_register_c_function(
     _meth: u64,
     _flags: std::os::raw::c_int,
     _self_bits: u64,
+    _self_is_null: bool,
+    _defining_class_bits: u64,
     _data: *const u8,
     _len: usize,
 ) -> u64 {

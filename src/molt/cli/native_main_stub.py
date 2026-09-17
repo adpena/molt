@@ -173,7 +173,7 @@ extern void molt_dec_ref_obj(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern long molt_get_attr_generic(void* obj, const char* attr, long len);
+extern unsigned long long molt_get_attr_generic(void* obj, const char* attr, unsigned long long len);
 
 static int molt_env_enabled(const char* name) {
 #ifdef _WIN32
