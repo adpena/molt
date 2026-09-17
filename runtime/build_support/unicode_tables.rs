@@ -10,6 +10,12 @@ struct UnicodeTables {
     numeric_ranges: Vec<(u32, u32)>,
     space_ranges: Vec<(u32, u32)>,
     printable_ranges: Vec<(u32, u32)>,
+    alpha_ranges: Vec<(u32, u32)>,
+    lower_ranges: Vec<(u32, u32)>,
+    upper_ranges: Vec<(u32, u32)>,
+    title_ranges: Vec<(u32, u32)>,
+    identifier_start_ranges: Vec<(u32, u32)>,
+    identifier_continue_ranges: Vec<(u32, u32)>,
     titlecase_entries: Vec<(u32, String)>,
 }
 
@@ -59,6 +65,12 @@ fn collect_unicode_tables(build_python: &str, consumer: &str) -> UnicodeTables {
         numeric_ranges: Vec::new(),
         space_ranges: Vec::new(),
         printable_ranges: Vec::new(),
+        alpha_ranges: Vec::new(),
+        lower_ranges: Vec::new(),
+        upper_ranges: Vec::new(),
+        title_ranges: Vec::new(),
+        identifier_start_ranges: Vec::new(),
+        identifier_continue_ranges: Vec::new(),
         titlecase_entries: Vec::new(),
     };
     let mut current_section = "";
@@ -106,6 +118,12 @@ fn collect_unicode_tables(build_python: &str, consumer: &str) -> UnicodeTables {
             "numeric" => tables.numeric_ranges.push((lo, hi)),
             "space" => tables.space_ranges.push((lo, hi)),
             "printable" => tables.printable_ranges.push((lo, hi)),
+            "alpha" => tables.alpha_ranges.push((lo, hi)),
+            "lower" => tables.lower_ranges.push((lo, hi)),
+            "upper" => tables.upper_ranges.push((lo, hi)),
+            "title" => tables.title_ranges.push((lo, hi)),
+            "identifier_start" => tables.identifier_start_ranges.push((lo, hi)),
+            "identifier_continue" => tables.identifier_continue_ranges.push((lo, hi)),
             _ => {}
         }
     }
@@ -119,6 +137,12 @@ impl UnicodeTables {
             || self.numeric_ranges.is_empty()
             || self.space_ranges.is_empty()
             || self.printable_ranges.is_empty()
+            || self.alpha_ranges.is_empty()
+            || self.lower_ranges.is_empty()
+            || self.upper_ranges.is_empty()
+            || self.title_ranges.is_empty()
+            || self.identifier_start_ranges.is_empty()
+            || self.identifier_continue_ranges.is_empty()
         {
             panic!(
                 "build Python `{build_python}` {consumer} unicode generation returned incomplete range tables"
@@ -168,6 +192,24 @@ fn write_unicode_range_modules(out_dir: &Path, tables: &UnicodeTables) {
         &tables.version,
         &tables.printable_ranges,
     );
+    for (name, ranges) in [
+        ("alpha", &tables.alpha_ranges),
+        ("lower", &tables.lower_ranges),
+        ("upper", &tables.upper_ranges),
+        ("title", &tables.title_ranges),
+        ("identifier_start", &tables.identifier_start_ranges),
+        ("identifier_continue", &tables.identifier_continue_ranges),
+    ] {
+        let symbol = name.to_ascii_uppercase();
+        write_unicode_range_module(
+            out_dir,
+            &format!("unicode_{name}_ranges.rs"),
+            &format!("UNICODE_{symbol}_VERSION"),
+            &format!("UNICODE_{symbol}_RANGES"),
+            &tables.version,
+            ranges,
+        );
+    }
 }
 
 fn write_unicode_range_module(
@@ -223,7 +265,10 @@ fn write_unicode_titlecase_module(
 const UNICODE_TABLE_SCRIPT: &str = r#"
 import unicodedata
 
-KEYS = ("digit", "decimal", "numeric", "space", "printable")
+KEYS = (
+    "digit", "decimal", "numeric", "space", "printable", "alpha", "lower",
+    "upper", "title", "identifier_start", "identifier_continue",
+)
 ranges = {key: [] for key in KEYS}
 active = {key: None for key in KEYS}
 titlecase_map = []
@@ -237,23 +282,21 @@ def flush_key(key):
 for code in range(0x110000):
     ch = chr(code)
     states = {}
-    try:
-        unicodedata.digit(ch)
-        states["digit"] = True
-    except ValueError:
-        states["digit"] = False
-    try:
-        unicodedata.decimal(ch)
-        states["decimal"] = True
-    except ValueError:
-        states["decimal"] = False
-    try:
-        unicodedata.numeric(ch)
-        states["numeric"] = True
-    except ValueError:
-        states["numeric"] = False
+    states["digit"] = ch.isdigit()
+    states["decimal"] = ch.isdecimal()
+    states["numeric"] = ch.isnumeric()
     states["space"] = ch.isspace()
     states["printable"] = ch.isprintable()
+    # These properties must follow the selected CPython Unicode version, not
+    # the Rust toolchain's independently versioned Unicode tables. Python's
+    # alphabetic property excludes Other_Alphabetic combining marks; its cased
+    # property is Lowercase | Uppercase | General_Category=Titlecase_Letter.
+    states["alpha"] = ch.isalpha()
+    states["lower"] = ch.islower()
+    states["upper"] = ch.isupper()
+    states["title"] = unicodedata.category(ch) == "Lt"
+    states["identifier_start"] = ch.isidentifier()
+    states["identifier_continue"] = ("a" + ch).isidentifier()
     title = ch.title()
     upper = ch.upper()
     if title != upper:

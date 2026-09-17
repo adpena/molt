@@ -193,6 +193,51 @@ pub(crate) mod unicode_printable_table {
     }
 }
 
+/// Scalar classification follows the same selected CPython Unicode authority
+/// as digits, whitespace, and printability, including non-scalar surrogates.
+pub(crate) mod unicode_classification_table {
+    include!(concat!(env!("OUT_DIR"), "/unicode_alpha_ranges.rs"));
+    include!(concat!(env!("OUT_DIR"), "/unicode_lower_ranges.rs"));
+    include!(concat!(env!("OUT_DIR"), "/unicode_upper_ranges.rs"));
+    include!(concat!(env!("OUT_DIR"), "/unicode_title_ranges.rs"));
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/unicode_identifier_start_ranges.rs"
+    ));
+    include!(concat!(
+        env!("OUT_DIR"),
+        "/unicode_identifier_continue_ranges.rs"
+    ));
+
+    pub(crate) fn is_alpha(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_ALPHA_RANGES, code)
+    }
+
+    pub(crate) fn is_lower(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_LOWER_RANGES, code)
+    }
+
+    pub(crate) fn is_upper(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_UPPER_RANGES, code)
+    }
+
+    pub(crate) fn is_title(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_TITLE_RANGES, code)
+    }
+
+    pub(crate) fn is_cased(code: u32) -> bool {
+        is_lower(code) || is_upper(code) || is_title(code)
+    }
+
+    pub(crate) fn is_identifier_start(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_IDENTIFIER_START_RANGES, code)
+    }
+
+    pub(crate) fn is_identifier_continue(code: u32) -> bool {
+        super::unicode_range_contains(UNICODE_IDENTIFIER_CONTINUE_RANGES, code)
+    }
+}
+
 pub(crate) mod unicode_titlecase_table {
     include!(concat!(env!("OUT_DIR"), "/unicode_titlecase_map.rs"));
 

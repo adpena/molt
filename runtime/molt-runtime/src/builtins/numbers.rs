@@ -714,8 +714,12 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
                 }
                 let res_obj = obj_from_bits(res_bits);
                 if let Some(value) = index_bigint_integral_bits(res_bits) {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
+                    let exact = builtin_int_bits_for_gil() == Some(type_of_bits(_py, res_bits));
+                    let accepted =
+                        exact || warn_numeric_subclass_result(_py, "__index__", "int", res_bits);
+                    dec_ref_bits(_py, res_bits);
+                    if !accepted {
+                        return None;
                     }
                     return Some(value);
                 }
@@ -736,6 +740,132 @@ pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str)
     None
 }
 
+fn warn_numeric_subclass_result(
+    py: &PyToken<'_>,
+    protocol: &str,
+    expected: &str,
+    result_bits: u64,
+) -> bool {
+    let actual = class_name_for_error(type_of_bits(py, result_bits));
+    let message = format!(
+        "{protocol} returned non-{expected} (type {actual}).  The ability to return an instance of a strict subclass of {expected} is deprecated, and may be removed in a future version of Python."
+    );
+    crate::builtins::warnings_ext::emit_deprecation_warning(py, &message)
+}
+
+fn integer_as_double(py: &PyToken<'_>, value: &BigInt) -> Option<f64> {
+    // num_bigint may return Some(infinity), not just None, on overflow.
+    if let Some(value) = value.to_f64().filter(|value| value.is_finite()) {
+        return Some(value);
+    }
+    raise_exception::<()>(py, "OverflowError", "int too large to convert to float");
+    None
+}
+
+/// Shared numeric protocol used by the float constructor after its exact-float
+/// identity fast path. No text parsing and no instance-attribute lookup occurs.
+/// A missing numeric protocol returns None without an exception, permitting
+/// the constructor's text parser; every protocol failure returns None with its
+/// original pending exception. Int subclasses must reach __float__ before any
+/// integral payload extraction. Float subclasses likewise reach their slot here.
+pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<f64> {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = as_float_extended(obj) {
+        return Some(value);
+    }
+    if let Some(value) = obj.as_int() {
+        return Some(value as f64);
+    }
+    if let Some(value) = obj.as_bool() {
+        return Some(if value { 1.0 } else { 0.0 });
+    }
+    if let Some(ptr) = bigint_ptr_from_bits(bits) {
+        return integer_as_double(py, unsafe { bigint_ref(ptr) });
+    }
+    if let Some(call_bits) =
+        unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__float__") }
+    {
+        let result = unsafe { call_callable0(py, call_bits) };
+        dec_ref_bits(py, call_bits);
+        if exception_pending(py) {
+            dec_ref_bits(py, result);
+            return None;
+        }
+        let result_obj = obj_from_bits(result);
+        if let Some(value) = as_float_extended(result_obj) {
+            dec_ref_bits(py, result);
+            return Some(value);
+        }
+        let owner = class_name_for_error(type_of_bits(py, bits));
+        if let Some(payload) = float_subclass_value_bits_raw(result)
+            && let Some(value) = as_float_extended(obj_from_bits(payload))
+        {
+            let accepted =
+                warn_numeric_subclass_result(py, &format!("{owner}.__float__"), "float", result);
+            // The returned object remains owned through warning callbacks.
+            dec_ref_bits(py, result);
+            return accepted.then_some(value);
+        }
+        let actual = class_name_for_error(type_of_bits(py, result));
+        dec_ref_bits(py, result);
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!("{owner}.__float__ returned non-float (type {actual})"),
+        );
+        return None;
+    }
+    if exception_pending(py) {
+        return None;
+    }
+    // The integral protocol already owns strict result admission, subclass
+    // warnings, and callback exception preservation. Its payload path also
+    // implements inherited int.__float__ without consulting int.__index__.
+    if let Some(value) = index_bigint_integral_bits(bits) {
+        return integer_as_double(py, &value);
+    }
+    let has_index = unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") };
+    if exception_pending(py) || !has_index {
+        return None;
+    }
+    let message = format!(
+        "must be real number, not {}",
+        class_name_for_error(type_of_bits(py, bits))
+    );
+    let value = index_bigint_from_obj(py, bits, &message)?;
+    integer_as_double(py, &value)
+}
+
+/// PyFloat_AsDouble-style numeric conversion. An existing float or float
+/// subclass is read directly, ignoring an overridden __float__. Other values
+/// use type-level __float__, then __index__; text is never parsed. None always
+/// means a pending exception, including callback/warning errors and integer
+/// overflow. Float infinity and NaN remain valid values.
+pub(crate) fn float_as_double(py: &PyToken<'_>, bits: u64) -> Option<f64> {
+    if let Some(value) = as_float_extended(obj_from_bits(bits)) {
+        return Some(value);
+    }
+    if let Some(payload) = float_subclass_value_bits_raw(bits)
+        && let Some(value) = as_float_extended(obj_from_bits(payload))
+    {
+        return Some(value);
+    }
+    if let Some(value) = float_from_number_protocol(py, bits) {
+        return Some(value);
+    }
+    if !exception_pending(py) {
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "must be real number, not {}",
+                class_name_for_error(type_of_bits(py, bits))
+            ),
+        );
+    }
+    None
+}
+
 #[inline]
 pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
     // Handle both inline floats (non-NaN) and heap-allocated NaN floats.
@@ -752,4 +882,258 @@ pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
         return as_float_extended(obj_from_bits(bits));
     }
     None
+}
+
+#[cfg(test)]
+mod float_conversion_tests {
+    use super::*;
+    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FLOAT_CALLS: AtomicU64 = AtomicU64::new(0);
+    static INDEX_CALLS: AtomicU64 = AtomicU64::new(0);
+    static RESULT: AtomicU64 = AtomicU64::new(0);
+    static RAISE: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn float_conversion_callback(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
+            if RAISE.load(Ordering::SeqCst) != 0 {
+                return raise_exception::<_>(py, "RuntimeError", "float protocol failure");
+            }
+            let result = RESULT.load(Ordering::SeqCst);
+            inc_ref_bits(py, result);
+            result
+        })
+    }
+
+    extern "C" fn index_conversion_callback(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
+            if RAISE.load(Ordering::SeqCst) != 0 {
+                return raise_exception::<_>(py, "LookupError", "index protocol failure");
+            }
+            let result = RESULT.load(Ordering::SeqCst);
+            inc_ref_bits(py, result);
+            result
+        })
+    }
+
+    fn conversion_class(py: &PyToken<'_>, base: u64, float: bool, index: bool) -> u64 {
+        let name = attr_name_bits_from_bytes(py, b"FloatConversionContract").unwrap();
+        let class = crate::molt_class_new(name);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base(class, base);
+        let methods: [(&[u8], bool, extern "C" fn(u64) -> u64, &str); 2] = [
+            (
+                b"__float__",
+                float,
+                float_conversion_callback,
+                "float_conversion_callback",
+            ),
+            (
+                b"__index__",
+                index,
+                index_conversion_callback,
+                "index_conversion_callback",
+            ),
+        ];
+        for (name, enabled, method, symbol) in methods {
+            if !enabled {
+                continue;
+            }
+            let name = attr_name_bits_from_bytes(py, name).unwrap();
+            let function =
+                alloc_runtime_function_obj(py, runtime_fn_addr(symbol, method as *const ()), 1);
+            assert!(!function.is_null());
+            let function = MoltObject::from_ptr(function).bits();
+            crate::molt_set_attr_name(class, name, function);
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, function);
+        }
+        unsafe {
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
+                .unwrap();
+        }
+        assert!(!exception_pending(py));
+        class
+    }
+
+    fn plain_instance(py: &PyToken<'_>, class: u64) -> u64 {
+        let ptr = obj_from_bits(class).as_ptr().unwrap();
+        let size = unsafe { crate::object::layout::class_cached_layout_size(ptr).unwrap() };
+        let instance = crate::object::builders::alloc_class_instance(py, size, class);
+        unsafe {
+            crate::object::gc::gc_publish_initialized(
+                py,
+                obj_from_bits(instance).as_ptr().unwrap(),
+            );
+        }
+        instance
+    }
+
+    fn reset_callbacks(result: u64, raise: bool) {
+        RESULT.store(result, Ordering::SeqCst);
+        RAISE.store(u64::from(raise), Ordering::SeqCst);
+        FLOAT_CALLS.store(0, Ordering::SeqCst);
+        INDEX_CALLS.store(0, Ordering::SeqCst);
+    }
+
+    fn assert_error(py: &PyToken<'_>, kind: &str, message: &str) {
+        assert!(exception_pending(py));
+        let error = crate::builtins::exceptions::molt_exception_last_pending();
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            py, error, kind
+        ));
+        let text = crate::builtins::exceptions::exception_materialized_message_bits(
+            py,
+            obj_from_bits(error).as_ptr().unwrap(),
+        );
+        assert_eq!(string_obj_to_owned(obj_from_bits(text)).unwrap(), message);
+        clear_exception(py);
+        dec_ref_bits(py, error);
+    }
+
+    #[test]
+    fn float_conversion_contract_constructor_and_as_double_subclass_policies() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = conversion_class(py, builtin_classes(py).float, true, false);
+            let value = crate::molt_float_new(class, MoltObject::from_float(1.25).bits());
+            assert!(!exception_pending(py));
+            reset_callbacks(MoltObject::from_float(2.5).bits(), false);
+            assert_eq!(float_as_double(py, value), Some(1.25));
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
+            let constructed = crate::molt_float_from_obj(value);
+            assert_eq!(as_float_extended(obj_from_bits(constructed)), Some(2.5));
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+            let from_number = crate::molt_float_from_number(builtin_classes(py).float, value);
+            assert_eq!(as_float_extended(obj_from_bits(from_number)), Some(1.25));
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+            for bits in [constructed, from_number, value, class] {
+                dec_ref_bits(py, bits);
+            }
+
+            let class = conversion_class(py, builtin_classes(py).int, true, true);
+            let value =
+                crate::molt_int_new(class, MoltObject::from_int(1).bits(), missing_bits(py));
+            assert!(!exception_pending(py));
+            reset_callbacks(MoltObject::from_float(3.5).bits(), false);
+            assert_eq!(float_as_double(py, value), Some(3.5));
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, class);
+        });
+    }
+
+    #[test]
+    fn float_conversion_contract_protocol_order_errors_and_integer_overflow() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = conversion_class(py, builtin_classes(py).object, true, true);
+            let value = plain_instance(py, class);
+            reset_callbacks(MoltObject::from_int(4).bits(), true);
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(py, "RuntimeError", "float protocol failure");
+            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+            reset_callbacks(MoltObject::from_int(4).bits(), false);
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(
+                py,
+                "TypeError",
+                "FloatConversionContract.__float__ returned non-float (type int)",
+            );
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, class);
+
+            let class = conversion_class(py, builtin_classes(py).object, false, true);
+            let value = plain_instance(py, class);
+            reset_callbacks(MoltObject::from_float(1.5).bits(), false);
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(py, "TypeError", "__index__ returned non-int (type float)");
+            reset_callbacks(MoltObject::from_int(4).bits(), true);
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(py, "LookupError", "index protocol failure");
+            let huge = bigint_bits(py, BigInt::from(1u8) << 4096usize);
+            reset_callbacks(huge, false);
+            for input in [huge, value] {
+                assert_eq!(float_as_double(py, input), None);
+                assert_error(py, "OverflowError", "int too large to convert to float");
+            }
+            for bits in [huge, value, class] {
+                dec_ref_bits(py, bits);
+            }
+            for number in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+                let value = crate::object::ops::float_result_bits(py, number);
+                let converted = float_as_double(py, value).unwrap();
+                assert!(converted == number || (converted.is_nan() && number.is_nan()));
+                dec_ref_bits(py, value);
+            }
+        });
+    }
+
+    #[test]
+    fn float_conversion_contract_strict_subclass_warnings_can_raise() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            struct ResetWarnings;
+            impl Drop for ResetWarnings {
+                fn drop(&mut self) {
+                    crate::molt_warnings_resetwarnings();
+                }
+            }
+            let _reset = ResetWarnings;
+            crate::molt_warnings_resetwarnings();
+            let category = crate::builtins::exceptions::exception_type_bits_from_name(
+                py,
+                "DeprecationWarning",
+            );
+            let float_class = conversion_class(py, builtin_classes(py).float, false, false);
+            let returned = crate::molt_float_new(float_class, MoltObject::from_float(4.25).bits());
+            let class = conversion_class(py, builtin_classes(py).object, true, false);
+            let value = plain_instance(py, class);
+            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
+            crate::molt_warnings_simplefilter(
+                ignore,
+                category,
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            reset_callbacks(returned, false);
+            assert_eq!(float_as_double(py, value), Some(4.25));
+            assert!(!exception_pending(py));
+            let error = attr_name_bits_from_bytes(py, b"error").unwrap();
+            crate::molt_warnings_simplefilter(
+                error,
+                category,
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(
+                py,
+                "DeprecationWarning",
+                "FloatConversionContract.__float__ returned non-float (type FloatConversionContract).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
+            );
+            for bits in [returned, float_class, value, class, ignore, error] {
+                dec_ref_bits(py, bits);
+            }
+
+            let class = conversion_class(py, builtin_classes(py).object, false, true);
+            let value = plain_instance(py, class);
+            reset_callbacks(MoltObject::from_bool(true).bits(), false);
+            assert_eq!(float_as_double(py, value), None);
+            assert_error(
+                py,
+                "DeprecationWarning",
+                "__index__ returned non-int (type bool).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+            );
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, class);
+        });
+    }
 }

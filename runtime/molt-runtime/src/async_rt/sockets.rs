@@ -190,52 +190,38 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     Err("send expects bytes-like object".to_string())
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(crate) fn iter_values_from_bits(
-    _py: &PyToken<'_>,
+#[cfg(any(test, molt_has_net_io, target_arch = "wasm32"))]
+pub(crate) fn iter_values_from_bits<'a, 'py>(
+    _py: &'a PyToken<'py>,
     iterable_bits: u64,
-) -> Result<Vec<u64>, u64> {
-    let iter_bits = crate::molt_iter(iterable_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let mut out: Vec<u64> = Vec::new();
-    loop {
-        let pair_bits = crate::molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "RuntimeError",
-                    "iterator protocol violation",
-                ));
-            }
+) -> Result<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>, u64> {
+    // The shared unboxed iterator authority owns the iterator and each item,
+    // including unwind after a later __next__ callback fails. Socket consumers
+    // must not reconstruct its boxed-pair protocol or return borrowed values.
+    let values = crate::object::iterable::collect(
+        _py,
+        iterable_bits,
+        crate::object::iterable::LengthHint::Skip,
+    )
+    .ok_or_else(|| MoltObject::none().bits())?;
+    let Some(owned) = crate::object::backing::tracked_vec_box_from_slice(&values, values.len())
+    else {
+        for bits in values {
+            dec_ref_bits(_py, bits);
         }
-        let Some(pair) = (unsafe {
-            crate::object::seq_access::snapshot(
-                _py,
-                pair_ptr,
-                "iterator pair snapshot allocation failed",
-            )
-        }) else {
-            return Err(MoltObject::none().bits());
-        };
-        if pair.len() < 2 {
-            return Err(raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "iterator protocol violation",
-            ));
-        }
-        if is_truthy(_py, obj_from_bits(pair[1])) {
-            break;
-        }
-        out.push(pair[0]);
-    }
-    Ok(out)
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "socket iterable snapshot allocation failed",
+        ));
+    };
+    // Transfer, rather than duplicate, the collected references. Dropping the
+    // temporary Vec only frees its scalar storage; the snapshot owns each item.
+    Ok(
+        crate::object::seq_access::PinnedSequenceSnapshot::from_owned_values(_py, unsafe {
+            crate::object::backing::tracked_vec_box_from_raw(owned)
+        }),
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -353,3 +339,165 @@ pub use io_ops::*;
 mod ops;
 #[cfg(molt_has_net_io)]
 pub use ops::*;
+
+#[cfg(test)]
+mod iterable_ownership_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    static ITEM: AtomicU64 = AtomicU64::new(0);
+    static SOURCE: AtomicU64 = AtomicU64::new(0);
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static FAIL: AtomicBool = AtomicBool::new(false);
+
+    fn refcount(bits: u64) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap())).ref_count_snapshot()
+        }
+    }
+
+    extern "C" fn yield_then_mutate_source() -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let item = ITEM.load(Ordering::Relaxed);
+            if CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
+                inc_ref_bits(py, item);
+                return item;
+            }
+            crate::molt_list_clear(SOURCE.load(Ordering::Relaxed));
+            // Local test reference plus the collected item survive the later
+            // callback dropping the original source's edge.
+            assert!(refcount(item) >= 2);
+            if FAIL.load(Ordering::Relaxed) {
+                raise_exception::<u64>(py, "LookupError", "injected socket iterator failure")
+            } else {
+                MoltObject::from_int(777).bits()
+            }
+        })
+    }
+
+    #[test]
+    fn buffer_export_contract_socket_iterable_pins_items_and_unwinds_callback_failure() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for fail in [false, true] {
+                let item = MoltObject::from_ptr(alloc_bytearray(py, b"payload")).bits();
+                let source = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
+                let callback = crate::object::builders::alloc_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        yield_then_mutate_source as *const (),
+                    ),
+                    0,
+                );
+                assert!(!callback.is_null());
+                unsafe {
+                    crate::object::layout::function_set_call_target_ptr(
+                        callback,
+                        yield_then_mutate_source as *const (),
+                    );
+                }
+                let callback = MoltObject::from_ptr(callback).bits();
+                let iterator =
+                    crate::molt_iter_sentinel(callback, MoltObject::from_int(777).bits());
+                assert!(!exception_pending(py));
+                ITEM.store(item, Ordering::Relaxed);
+                SOURCE.store(source, Ordering::Relaxed);
+                CALLS.store(0, Ordering::Relaxed);
+                FAIL.store(fail, Ordering::Relaxed);
+                let iterator_refs = refcount(iterator);
+                let values = iter_values_from_bits(py, iterator);
+                assert_eq!(CALLS.load(Ordering::Relaxed), 2);
+                assert_eq!(
+                    refcount(iterator),
+                    iterator_refs,
+                    "iterator owner must be balanced"
+                );
+                assert!(
+                    unsafe {
+                        crate::object::layout::call_iter_cached_tuple(
+                            obj_from_bits(iterator).as_ptr().unwrap(),
+                        )
+                    }
+                    .is_null()
+                );
+                if fail {
+                    assert!(values.is_err());
+                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "LookupError"
+                    ));
+                    clear_exception(py);
+                    dec_ref_bits(py, error);
+                    assert_eq!(
+                        refcount(item),
+                        1,
+                        "yielded item must unwind on a later failure"
+                    );
+                } else {
+                    let values = values.expect("owned socket iterable");
+                    assert_eq!(&*values, &[item]);
+                    assert_eq!(refcount(item), 2, "snapshot owns exactly one item edge");
+                    dec_ref_bits(py, source);
+                    assert_eq!(
+                        unsafe {
+                            bytes_like_slice_raw(obj_from_bits(values[0]).as_ptr().unwrap())
+                                .unwrap()
+                        },
+                        b"payload"
+                    );
+                    drop(values);
+                    assert_eq!(refcount(item), 1, "snapshot drop must release its item");
+                }
+                if fail {
+                    dec_ref_bits(py, source);
+                }
+                for bits in [iterator, callback, item] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(!exception_pending(py));
+            }
+            ITEM.store(0, Ordering::Relaxed);
+            SOURCE.store(0, Ordering::Relaxed);
+        });
+    }
+
+    #[test]
+    fn buffer_export_contract_socket_iterable_snapshot_allocation_failure_unwinds() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+            let item = MoltObject::from_ptr(alloc_bytearray(py, b"payload")).bits();
+            let source = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
+            let iterator = crate::molt_iter(source);
+            assert!(!exception_pending(py));
+            let iterator_refs = refcount(iterator);
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            let values = iter_values_from_bits(py, iterator);
+            set_tracker(Box::new(UnlimitedTracker));
+            assert!(values.is_err());
+            clear_exception(py);
+            assert_eq!(refcount(iterator), iterator_refs);
+            assert_eq!(
+                refcount(source),
+                1,
+                "exhaustion releases the iterator target"
+            );
+            assert_eq!(
+                refcount(item),
+                2,
+                "failed snapshot releases collected item refs"
+            );
+            crate::molt_list_clear(source);
+            assert_eq!(refcount(item), 1);
+            for bits in [iterator, source, item] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
+}

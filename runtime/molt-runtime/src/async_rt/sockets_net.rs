@@ -2079,8 +2079,8 @@ pub unsafe extern "C" fn molt_socket_send_fds(
                 Err(bits) => return bits,
             };
             let mut raw_fds: Vec<i32> = Vec::with_capacity(fd_values.len());
-            for fd_bits in &fd_values {
-                match to_i64(obj_from_bits(*fd_bits)) {
+            for &fd_bits in fd_values.iter() {
+                match to_i64(obj_from_bits(fd_bits)) {
                     Some(v) => raw_fds.push(v as i32),
                     None => {
                         return raise_exception::<u64>(
@@ -2204,10 +2204,14 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
                 return bits;
             }
         };
-        for entry_bits in &anc_entries {
-            let Some(entry_ptr) = obj_from_bits(*entry_bits).as_ptr() else {
+        for &entry_bits in anc_entries.iter() {
+            let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
                 continue;
             };
+            let entry_type = unsafe { object_type_id(entry_ptr) };
+            if entry_type != TYPE_ID_TUPLE && entry_type != TYPE_ID_LIST {
+                continue;
+            }
             let Some(entry_parts) = (unsafe {
                 crate::object::seq_access::snapshot(
                     _py,
@@ -2258,16 +2262,13 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
             return MoltObject::none().bits();
         }
         let fds_list_bits = MoltObject::from_ptr(fds_list_ptr).bits();
-        inc_ref_bits(_py, data_bits);
-        inc_ref_bits(_py, msg_flags_bits);
-        inc_ref_bits(_py, address_bits);
         let out = alloc_tuple(
             _py,
             &[data_bits, fds_list_bits, msg_flags_bits, address_bits],
         );
         dec_ref_bits(_py, result_bits);
+        dec_ref_bits(_py, fds_list_bits);
         if out.is_null() {
-            dec_ref_bits(_py, fds_list_bits);
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(out).bits()

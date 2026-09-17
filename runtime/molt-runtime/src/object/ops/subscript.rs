@@ -191,7 +191,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             )
                             .unwrap_or(false)
                         {
-                            let val = memoryview_read_scalar_at(_py, data.cast_const(), 0, fmt);
+                            let val = memoryview_read_scalar_at(_py, ptr, 0, fmt);
                             return val.unwrap_or_else(|| MoltObject::none().bits());
                         }
                         return raise_exception::<_>(
@@ -265,6 +265,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             ) else {
                                 return MoltObject::none().bits();
                             };
+                            if memoryview_released(ptr) {
+                                return raise_released_memoryview(_py);
+                            }
                             let mut i = idx;
                             let dim_len = shape[dim];
                             let dim_len_i64 = dim_len as i64;
@@ -280,7 +283,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
                             return MoltObject::none().bits();
                         };
-                        let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
+                        let val = memoryview_read_scalar_at(_py, ptr, pos, fmt);
                         return val.unwrap_or_else(|| MoltObject::none().bits());
                     }
                     if let Some(slice_ptr) = key.as_ptr()
@@ -297,6 +300,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             Err(err) => return slice_error(_py, err),
                         };
                         let base_offset = memoryview_offset(ptr);
+                        if memoryview_released(ptr) {
+                            return raise_released_memoryview(_py);
+                        }
                         let base_stride = strides[0];
                         let itemsize = memoryview_itemsize(ptr);
                         let new_len = range_len_i64(start as i64, stop as i64, step as i64);
@@ -335,7 +341,8 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             memoryview_format_bits(ptr),
                             new_shape,
                             new_strides,
-                        );
+                        )
+                        .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
                         let out_ptr = match storage {
                             Some(storage) => alloc_memoryview_from_storage(_py, storage),
                             None => std::ptr::null_mut(),
@@ -359,6 +366,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     ) else {
                         return MoltObject::none().bits();
                     };
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     let len = shape[0] as i64;
                     let mut i = idx;
                     if i < 0 {
@@ -374,7 +384,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
                         return MoltObject::none().bits();
                     };
-                    let val = memoryview_read_scalar_at(_py, data.cast_const(), pos, fmt);
+                    let val = memoryview_read_scalar_at(_py, ptr, pos, fmt);
                     return val.unwrap_or_else(|| MoltObject::none().bits());
                 }
                 if type_id == TYPE_ID_STRING
@@ -384,6 +394,15 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
+                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
+                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
+                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py, start_obj, stop_obj, step_obj,
+                        ) {
+                            Ok(slice) => slice,
+                            Err(err) => return slice_error(_py, err),
+                        };
                         let bytes = if type_id == TYPE_ID_STRING {
                             std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr))
                         } else {
@@ -394,15 +413,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         } else {
                             bytes.len() as isize
                         };
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
-                        ) {
-                            Ok(vals) => vals,
-                            Err(err) => return slice_error(_py, err),
-                        };
+                        let (start, stop, step) = slice.adjust(len);
                         let out_ptr = if step == 1 {
                             let s = start as usize;
                             let e = stop as usize;
@@ -1140,12 +1151,11 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let len = bytes_len(ptr) as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                         let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                         let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py, start_obj, stop_obj, step_obj,
                         ) {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
@@ -1154,17 +1164,61 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             Some(bytes) => bytes,
                             None => return MoltObject::none().bits(),
                         };
-                        let elems = bytearray_vec(ptr);
+                        // CPython recurses after materializing non-bytearray
+                        // inputs (and self-assignment); slice coercions run a
+                        // second time in that case, after RHS callbacks.
+                        let source_is_distinct_bytearray =
+                            obj_from_bits(val_bits).as_ptr().is_some_and(|source| {
+                                source != ptr && object_type_id(source) == TYPE_ID_BYTEARRAY
+                            });
+                        let slice = if source_is_distinct_bytearray {
+                            slice
+                        } else {
+                            match crate::object::ops_sys::DecodedSlice::decode(
+                                _py, start_obj, stop_obj, step_obj,
+                            ) {
+                                Ok(slice) => slice,
+                                Err(err) => return slice_error(_py, err),
+                            }
+                        };
+                        let len = bytearray_len(ptr);
+                        let (start, stop, step) = slice.adjust(len as isize);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
                             if s > e {
                                 e = s;
                             }
-                            elems.splice(s..e, src_bytes.iter().copied());
+                            let Some(new_len) = (len - (e - s)).checked_add(src_bytes.len()) else {
+                                return raise_exception::<_>(
+                                    _py,
+                                    "MemoryError",
+                                    "bytearray allocation failed",
+                                );
+                            };
+                            if crate::object::buffer_exports::bytearray_mutate(
+                                _py,
+                                ptr,
+                                new_len,
+                                |elems| {
+                                    elems.splice(s..e, src_bytes.iter().copied());
+                                },
+                            )
+                            .is_none()
+                            {
+                                return MoltObject::none().bits();
+                            }
                             return obj_bits;
                         }
                         let indices = collect_slice_indices(start, stop, step);
+                        if src_bytes.is_empty() {
+                            if !crate::object::buffer_exports::bytearray_remove_indices(
+                                _py, ptr, &indices,
+                            ) {
+                                return MoltObject::none().bits();
+                            }
+                            return obj_bits;
+                        }
                         if indices.len() != src_bytes.len() {
                             return raise_exception::<_>(
                                 _py,
@@ -1176,14 +1230,20 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 ),
                             );
                         }
-                        for (idx, byte) in indices.iter().zip(src_bytes.iter()) {
-                            elems[*idx] = *byte;
-                        }
+                        crate::object::buffer_exports::bytearray_mutate(_py, ptr, len, |elems| {
+                            for (idx, byte) in indices.iter().zip(src_bytes.iter()) {
+                                elems[*idx] = *byte;
+                            }
+                        });
                         return obj_bits;
                     }
                     // `__index__`-only key coercion (see `molt_index`): a float
                     // key raises TypeError, it is not truncated.
                     let Some(idx) = sequence_index_i64(_py, key_bits, "bytearray") else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray)
+                    else {
                         return MoltObject::none().bits();
                     };
                     let len = bytes_len(ptr) as i64;
@@ -1198,10 +1258,6 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             "bytearray index out of range",
                         );
                     }
-                    let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray)
-                    else {
-                        return MoltObject::none().bits();
-                    };
                     let elems = bytearray_vec(ptr);
                     elems[i as usize] = byte;
                     return obj_bits;
@@ -1237,7 +1293,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             )
                             .unwrap_or(false)
                         {
-                            let ok = memoryview_write_scalar_at(_py, data, 0, fmt, val_bits);
+                            let ok = memoryview_write_scalar_at(_py, ptr, 0, fmt, val_bits);
                             if ok.is_none() {
                                 return MoltObject::none().bits();
                             }
@@ -1314,6 +1370,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             ) else {
                                 return MoltObject::none().bits();
                             };
+                            if memoryview_released(ptr) {
+                                return raise_released_memoryview(_py);
+                            }
                             let mut i = idx;
                             let dim_len = shape[dim];
                             let dim_len_i64 = dim_len as i64;
@@ -1329,7 +1388,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
                             return MoltObject::none().bits();
                         };
-                        let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
+                        let ok = memoryview_write_scalar_at(_py, ptr, pos, fmt, val_bits);
                         if ok.is_none() {
                             return MoltObject::none().bits();
                         }
@@ -1357,6 +1416,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                         };
                         let indices = collect_slice_indices(start, stop, step);
                         let elem_count = indices.len();
+                        if memoryview_released(ptr) {
+                            return raise_released_memoryview(_py);
+                        }
                         let val_obj = obj_from_bits(val_bits);
                         let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
                             let src_type = object_type_id(src_ptr);
@@ -1460,6 +1522,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     ) else {
                         return MoltObject::none().bits();
                     };
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     let len = shape[0] as i64;
                     let mut i = idx;
                     if i < 0 {
@@ -1475,7 +1540,7 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
                         return MoltObject::none().bits();
                     };
-                    let ok = memoryview_write_scalar_at(_py, data, pos, fmt, val_bits);
+                    let ok = memoryview_write_scalar_at(_py, ptr, pos, fmt, val_bits);
                     if ok.is_none() {
                         return MoltObject::none().bits();
                     }
@@ -1653,35 +1718,42 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let len = bytes_len(ptr) as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                         let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                         let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
+                        let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                            _py, start_obj, stop_obj, step_obj,
                         ) {
                             Ok(vals) => vals,
                             Err(err) => return slice_error(_py, err),
                         };
-                        let elems = bytearray_vec(ptr);
+                        let len = bytearray_len(ptr);
+                        let (start, stop, step) = slice.adjust(len as isize);
                         if step == 1 {
                             let s = start as usize;
                             let mut e = stop as usize;
                             if s > e {
                                 e = s;
                             }
-                            elems.drain(s..e);
+                            if crate::object::buffer_exports::bytearray_mutate(
+                                _py,
+                                ptr,
+                                len - (e - s),
+                                |elems| {
+                                    elems.drain(s..e);
+                                },
+                            )
+                            .is_none()
+                            {
+                                return MoltObject::none().bits();
+                            }
                             return obj_bits;
                         }
                         let indices = collect_slice_indices(start, stop, step);
-                        if step > 0 {
-                            for &idx in indices.iter().rev() {
-                                elems.remove(idx);
-                            }
-                        } else {
-                            for &idx in indices.iter() {
-                                elems.remove(idx);
-                            }
+                        if !crate::object::buffer_exports::bytearray_remove_indices(
+                            _py, ptr, &indices,
+                        ) {
+                            return MoltObject::none().bits();
                         }
                         return obj_bits;
                     }
@@ -1702,8 +1774,16 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             "bytearray index out of range",
                         );
                     }
-                    let elems = bytearray_vec(ptr);
-                    elems.remove(i as usize);
+                    if crate::object::buffer_exports::bytearray_mutate(
+                        _py,
+                        ptr,
+                        len as usize - 1,
+                        |elems| elems.remove(i as usize),
+                    )
+                    .is_none()
+                    {
+                        return MoltObject::none().bits();
+                    }
                     return obj_bits;
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {

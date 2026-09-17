@@ -12,7 +12,7 @@ pub(super) fn collect_sendmsg_payload(
 ) -> Result<Vec<Vec<u8>>, u64> {
     let values = iter_values_from_bits(_py, buffers_bits)?;
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(values.len());
-    for value_bits in values {
+    for &value_bits in values.iter() {
         let send_data = match send_data_from_bits(value_bits) {
             Ok(val) => val,
             Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
@@ -68,7 +68,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
     }
     let entries = iter_values_from_bits(_py, ancdata_bits)?;
     let mut out: Vec<AncillaryItem> = Vec::with_capacity(entries.len());
-    for entry_bits in entries {
+    for &entry_bits in entries.iter() {
         let Some(entry_ptr) = maybe_ptr_from_bits(entry_bits) else {
             return Err(raise_exception::<u64>(
                 _py,
@@ -336,24 +336,13 @@ pub(super) fn build_recvmsg_result_with_anc(
 }
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(super) struct RecvmsgIntoTarget {
-    ptr: *mut u8,
-    len: usize,
-    is_memoryview: bool,
-}
+use crate::object::buffer_exports::ScopedWritableBuffer;
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-impl RecvmsgIntoTarget {
-    pub(super) fn len(&self) -> usize {
-        self.len
-    }
-}
-
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(super) fn collect_recvmsg_into_targets(
-    _py: &PyToken<'_>,
+pub(super) fn collect_recvmsg_into_targets<'a, 'py>(
+    _py: &'a PyToken<'py>,
     buffers_bits: u64,
-) -> Result<Vec<RecvmsgIntoTarget>, u64> {
+) -> Result<Vec<ScopedWritableBuffer<'a, 'py>>, u64> {
     let values = iter_values_from_bits(_py, buffers_bits)?;
     if values.is_empty() {
         return Err(raise_exception::<u64>(
@@ -362,85 +351,115 @@ pub(super) fn collect_recvmsg_into_targets(
             "recvmsg_into() requires at least one buffer",
         ));
     }
-    let mut out: Vec<RecvmsgIntoTarget> = Vec::with_capacity(values.len());
-    for value_bits in values {
-        let Some(ptr) = maybe_ptr_from_bits(value_bits) else {
-            return Err(raise_exception::<u64>(
+    let mut out = Vec::with_capacity(values.len());
+    for &value_bits in values.iter() {
+        out.push(ScopedWritableBuffer::new(_py, value_bits).map_err(|err| {
+            err.raise(
                 _py,
-                "TypeError",
                 "recvmsg_into() argument must be an iterable of writable buffers",
-            ));
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTEARRAY {
-                out.push(RecvmsgIntoTarget {
-                    ptr,
-                    len: bytearray_len(ptr),
-                    is_memoryview: false,
-                });
-                continue;
-            }
-            if type_id == TYPE_ID_MEMORYVIEW {
-                if memoryview_released(ptr) {
-                    return Err(raise_released_memoryview(_py));
-                }
-                if memoryview_readonly(ptr) {
-                    return Err(raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "recvmsg_into() argument must be writable buffers",
-                    ));
-                }
-                out.push(RecvmsgIntoTarget {
-                    ptr,
-                    len: memoryview_len(ptr),
-                    is_memoryview: true,
-                });
-                continue;
-            }
-        }
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "recvmsg_into() argument must be an iterable of writable buffers",
-        ));
+            )
+        })?);
     }
     Ok(out)
 }
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(super) fn write_recvmsg_into_targets(
-    _py: &PyToken<'_>,
-    targets: &[RecvmsgIntoTarget],
-    data: &[u8],
-) -> Result<(), u64> {
+pub(super) fn write_recvmsg_into_targets(targets: &[ScopedWritableBuffer<'_, '_>], data: &[u8]) {
     let mut offset = 0usize;
     for target in targets {
         if offset >= data.len() {
             break;
         }
-        let count = (data.len() - offset).min(target.len);
+        let count = (data.len() - offset).min(target.len());
         if count == 0 {
             continue;
         }
-        let chunk = &data[offset..offset + count];
-        if target.is_memoryview {
-            if unsafe { memoryview_released(target.ptr) } {
-                return Err(raise_released_memoryview(_py));
-            }
-            if let Some(slice) = unsafe { memoryview_bytes_slice_mut(target.ptr) } {
-                let n = chunk.len().min(slice.len());
-                slice[..n].copy_from_slice(&chunk[..n]);
-            } else if let Err(msg) = unsafe { memoryview_write_bytes(target.ptr, chunk) } {
-                return Err(raise_exception::<u64>(_py, "TypeError", &msg));
-            }
-        } else {
-            let dst = unsafe { bytearray_vec(target.ptr) };
-            let n = chunk.len().min(dst.len());
-            dst[..n].copy_from_slice(&chunk[..n]);
+        // Admission already established a pinned contiguous byte destination.
+        // No callbacks or waits occur while this immediate copy is in flight.
+        unsafe {
+            std::ptr::copy(data.as_ptr().add(offset), target.as_mut_ptr(), count);
         }
         offset += count;
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn refcount(bits: u64) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap())).ref_count_snapshot()
+        }
+    }
+
+    #[test]
+    fn buffer_export_contract_ancillary_consumers_release_iterable_items() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = MoltObject::from_ptr(alloc_bytearray(py, b"payload")).bits();
+            let buffers = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
+            let before = refcount(item);
+            let payload = collect_sendmsg_payload(py, buffers).expect("send payload");
+            assert_eq!(payload, vec![b"payload".to_vec()]);
+            assert_eq!(refcount(item), before);
+            assert_eq!(refcount(buffers), 1);
+
+            let entry = MoltObject::from_ptr(alloc_tuple(
+                py,
+                &[
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(2).bits(),
+                    item,
+                ],
+            ))
+            .bits();
+            let ancillary = MoltObject::from_ptr(alloc_list(py, &[entry])).bits();
+            let before = refcount(item);
+            assert_eq!(
+                parse_sendmsg_ancillary_items(py, ancillary).expect("ancillary"),
+                vec![(1, 2, b"payload".to_vec())]
+            );
+            assert_eq!(refcount(item), before);
+            assert_eq!(refcount(entry), 2);
+            assert_eq!(refcount(ancillary), 1);
+            for bits in [ancillary, entry] {
+                dec_ref_bits(py, bits);
+            }
+
+            let invalid =
+                MoltObject::from_ptr(alloc_list(py, &[item, MoltObject::from_int(1).bits()]))
+                    .bits();
+            let before = refcount(item);
+            assert!(collect_sendmsg_payload(py, invalid).is_err());
+            clear_exception(py);
+            assert_eq!(refcount(item), before);
+            assert!(collect_recvmsg_into_targets(py, invalid).is_err());
+            clear_exception(py);
+            assert_eq!(refcount(item), before);
+            assert!(!unsafe {
+                crate::object::buffer_exports::bytearray_is_exported(
+                    obj_from_bits(item).as_ptr().unwrap(),
+                )
+            });
+            dec_ref_bits(py, invalid);
+
+            let targets = collect_recvmsg_into_targets(py, buffers).expect("receive targets");
+            assert_eq!(targets[0].len(), 7);
+            assert_eq!(
+                refcount(item),
+                3,
+                "local + source-list + one receive export"
+            );
+            dec_ref_bits(py, buffers);
+            dec_ref_bits(py, item);
+            write_recvmsg_into_targets(&targets, b"changed");
+            assert_eq!(
+                unsafe { std::slice::from_raw_parts(targets[0].as_mut_ptr(), targets[0].len()) },
+                b"changed"
+            );
+            drop(targets);
+            assert!(!exception_pending(py));
+        });
+    }
 }

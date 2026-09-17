@@ -1,9 +1,9 @@
 use super::*;
 
-pub(super) unsafe fn memory_backend_vec_from_bits(
+pub(super) unsafe fn memory_backend_ptr_from_bits(
     _py: &PyToken<'_>,
     mem_bits: u64,
-) -> Result<&'static mut Vec<u8>, u64> {
+) -> Result<*mut u8, u64> {
     unsafe {
         if mem_bits == 0 || obj_from_bits(mem_bits).is_none() {
             return Err(raise_exception::<_>(
@@ -26,15 +26,8 @@ pub(super) unsafe fn memory_backend_vec_from_bits(
                 "memory backend is not bytearray",
             ));
         }
-        Ok(bytearray_vec(ptr))
+        Ok(ptr)
     }
-}
-
-pub(super) unsafe fn memory_backend_vec(
-    _py: &PyToken<'_>,
-    handle: &mut MoltFileHandle,
-) -> Result<&'static mut Vec<u8>, u64> {
-    unsafe { memory_backend_vec_from_bits(_py, memory_backend_bits(handle)) }
 }
 
 pub(super) unsafe fn memory_backend_vec_ref_from_bits(
@@ -137,26 +130,36 @@ pub(crate) unsafe fn collect_bytes_like(_py: &PyToken<'_>, bits: u64) -> Result<
     }
 }
 
+/// Copy into an admitted destination which may alias a memory backend. Callers
+/// retain its allocation and must not hold Rust references to either byte span
+/// during the copy. Only the OS-file branch creates a temporary mutable slice.
 pub(super) unsafe fn backend_read_bytes(
     _py: &PyToken<'_>,
     mem_bits: u64,
     backend: &mut MoltFileBackend,
-    buf: &mut [u8],
+    destination: *mut u8,
+    capacity: usize,
 ) -> Result<usize, u64> {
     unsafe {
         match backend {
-            MoltFileBackend::File(file) => match file.read(buf) {
-                Ok(n) => Ok(n),
-                Err(_) => Err(raise_exception::<_>(_py, "OSError", "read failed")),
-            },
+            MoltFileBackend::File(file) => {
+                match file.read(std::slice::from_raw_parts_mut(destination, capacity)) {
+                    Ok(n) => Ok(n),
+                    Err(_) => Err(raise_exception::<_>(_py, "OSError", "read failed")),
+                }
+            }
             MoltFileBackend::Memory(mem) => {
-                let data = memory_backend_vec_ref_from_bits(_py, mem_bits)?;
-                if mem.pos >= data.len() {
+                let (data, len) = {
+                    let bytes = memory_backend_vec_ref_from_bits(_py, mem_bits)?;
+                    (bytes.as_ptr(), bytes.len())
+                };
+                if mem.pos >= len {
                     return Ok(0);
                 }
-                let available = data.len().saturating_sub(mem.pos);
-                let n = available.min(buf.len());
-                buf[..n].copy_from_slice(&data[mem.pos..mem.pos + n]);
+                let n = (len - mem.pos).min(capacity);
+                // BytesIO.readinto accepts its own exported buffer, including
+                // overlapping slices. memmove semantics are required here.
+                std::ptr::copy(data.add(mem.pos), destination, n);
                 mem.pos = mem.pos.saturating_add(n);
                 Ok(n)
             }
@@ -213,15 +216,21 @@ pub(super) unsafe fn backend_write_bytes(
                 Err(_) => Err(raise_exception::<_>(_py, "OSError", "write failed")),
             },
             MoltFileBackend::Memory(mem) => {
-                let data = memory_backend_vec_from_bits(_py, mem_bits)?;
-                if mem.pos > data.len() {
-                    data.resize(mem.pos, 0);
-                }
-                let end = mem.pos.saturating_add(bytes.len());
-                if end > data.len() {
-                    data.resize(end, 0);
-                }
-                data[mem.pos..end].copy_from_slice(bytes);
+                let ptr = memory_backend_ptr_from_bits(_py, mem_bits)?;
+                crate::object::buffer_exports::bytearray_require_unexported(_py, ptr)?;
+                let end = mem.pos.checked_add(bytes.len()).ok_or_else(|| {
+                    raise_exception::<u64>(
+                        _py,
+                        "OverflowError",
+                        "write position exceeds the active address space",
+                    )
+                })?;
+                let new_len = bytearray_len(ptr).max(end);
+                crate::object::buffer_exports::bytearray_mutate(_py, ptr, new_len, |data| {
+                    data.resize(new_len, 0);
+                    data[mem.pos..end].copy_from_slice(bytes);
+                })
+                .ok_or_else(|| MoltObject::none().bits())?;
                 mem.pos = end;
                 Ok(bytes.len())
             }
@@ -318,7 +327,8 @@ pub(super) unsafe fn backend_truncate(
                 Err(_) => Err(raise_exception::<_>(_py, "OSError", "truncate failed")),
             },
             MoltFileBackend::Memory(mem) => {
-                let data = memory_backend_vec(_py, handle)?;
+                let ptr = memory_backend_ptr_from_bits(_py, memory_backend_bits(handle))?;
+                crate::object::buffer_exports::bytearray_require_unexported(_py, ptr)?;
                 let size_usize = usize::try_from(size).map_err(|_| {
                     raise_exception::<u64>(
                         _py,
@@ -326,13 +336,12 @@ pub(super) unsafe fn backend_truncate(
                         "truncate size exceeds the active address space",
                     )
                 })?;
-                if size_usize < data.len() {
-                    data.truncate(size_usize);
-                } else if size_usize > data.len() {
+                crate::object::buffer_exports::bytearray_mutate(_py, ptr, size_usize, |data| {
                     data.resize(size_usize, 0);
-                }
-                if mem.pos > data.len() {
-                    mem.pos = data.len();
+                })
+                .ok_or_else(|| MoltObject::none().bits())?;
+                if mem.pos > size_usize {
+                    mem.pos = size_usize;
                 }
                 Ok(())
             }
@@ -417,16 +426,27 @@ pub(super) unsafe fn flush_write_buffer(
             return Ok(());
         }
         let bytes = handle.write_buf.clone();
-        handle.write_buf.clear();
         let mut written = 0usize;
         while written < bytes.len() {
-            let n =
-                backend_write_bytes(_py, memory_backend_bits(handle), backend, &bytes[written..])?;
+            let n = match backend_write_bytes(
+                _py,
+                memory_backend_bits(handle),
+                backend,
+                &bytes[written..],
+            ) {
+                Ok(n) => n,
+                Err(bits) => {
+                    handle.write_buf.drain(..written);
+                    return Err(bits);
+                }
+            };
             if n == 0 {
+                handle.write_buf.drain(..written);
                 return Err(raise_exception::<_>(_py, "OSError", "write failed"));
             }
             written += n;
         }
+        handle.write_buf.clear();
         backend_flush(_py, backend)?;
         Ok(())
     }
@@ -476,7 +496,8 @@ pub(super) unsafe fn buffered_read_bytes(
                             _py,
                             memory_backend_bits(handle),
                             backend,
-                            &mut tmp[..to_read],
+                            tmp.as_mut_ptr(),
+                            to_read,
                         )?;
                         if n == 0 {
                             at_eof = true;
@@ -487,8 +508,13 @@ pub(super) unsafe fn buffered_read_bytes(
                     }
                 }
                 None => loop {
-                    let n =
-                        backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut tmp)?;
+                    let n = backend_read_bytes(
+                        _py,
+                        memory_backend_bits(handle),
+                        backend,
+                        tmp.as_mut_ptr(),
+                        tmp.len(),
+                    )?;
                     if n == 0 {
                         at_eof = true;
                         break;
@@ -532,7 +558,13 @@ pub(super) unsafe fn buffered_read_bytes(
             let buf_size = handle.buffer_size.max(1) as usize;
             let mut buf = std::mem::take(&mut handle.read_buf);
             buf.resize(buf_size, 0);
-            let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
+            let n = backend_read_bytes(
+                _py,
+                memory_backend_bits(handle),
+                backend,
+                buf.as_mut_ptr(),
+                buf.len(),
+            )?;
             if n == 0 {
                 at_eof = true;
                 handle.read_buf = buf;
@@ -551,10 +583,10 @@ pub(super) unsafe fn buffered_read_into(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
     backend: &mut MoltFileBackend,
-    buf: &mut [u8],
+    buf: &crate::object::buffer_exports::ScopedWritableBuffer<'_, '_>,
 ) -> Result<usize, u64> {
     unsafe {
-        if buf.is_empty() {
+        if buf.len() == 0 {
             return Ok(0);
         }
         if !handle.write_buf.is_empty() {
@@ -566,7 +598,7 @@ pub(super) unsafe fn buffered_read_into(
             let take = avail.min(buf.len());
             let start = handle.read_pos;
             let end = start + take;
-            buf[..take].copy_from_slice(&handle.read_buf[start..end]);
+            std::ptr::copy(handle.read_buf.as_ptr().add(start), buf.as_mut_ptr(), take);
             handle.read_pos = end;
             if handle.read_pos >= handle.read_buf.len() {
                 clear_read_buffer(handle);
@@ -580,7 +612,8 @@ pub(super) unsafe fn buffered_read_into(
             _py,
             memory_backend_bits(handle),
             backend,
-            &mut buf[written..],
+            buf.as_mut_ptr().add(written),
+            buf.len() - written,
         )?;
         written += n;
         Ok(written)
@@ -623,7 +656,13 @@ pub(super) unsafe fn file_read1_bytes(
             return Ok((Vec::new(), false));
         }
         let mut buf = vec![0u8; read_size];
-        let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
+        let n = backend_read_bytes(
+            _py,
+            memory_backend_bits(handle),
+            backend,
+            buf.as_mut_ptr(),
+            buf.len(),
+        )?;
         buf.truncate(n);
         Ok((buf, n == 0))
     }
@@ -647,7 +686,13 @@ pub(super) unsafe fn handle_read_byte(
                 let buf_size = handle.buffer_size.max(1) as usize;
                 let mut buf = std::mem::take(&mut handle.read_buf);
                 buf.resize(buf_size, 0);
-                let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
+                let n = backend_read_bytes(
+                    _py,
+                    memory_backend_bits(handle),
+                    backend,
+                    buf.as_mut_ptr(),
+                    buf.len(),
+                )?;
                 if n == 0 {
                     handle.read_buf = buf;
                     clear_read_buffer(handle);
@@ -668,7 +713,13 @@ pub(super) unsafe fn handle_read_byte(
             Ok(Some(byte))
         } else {
             let mut buf = [0u8; 1];
-            let n = backend_read_bytes(_py, memory_backend_bits(handle), backend, &mut buf)?;
+            let n = backend_read_bytes(
+                _py,
+                memory_backend_bits(handle),
+                backend,
+                buf.as_mut_ptr(),
+                buf.len(),
+            )?;
             if n == 0 { Ok(None) } else { Ok(Some(buf[0])) }
         }
     }

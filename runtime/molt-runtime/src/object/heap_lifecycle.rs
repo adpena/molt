@@ -501,6 +501,9 @@ pub(crate) unsafe fn visit_owned_values(
             }
             HeapLifecycleHandler::Memoryview => {
                 visit_bits(super::memoryview_owner_bits(ptr), visit);
+                if super::memoryview_base_bits(ptr) != super::memoryview_owner_bits(ptr) {
+                    visit_bits(super::memoryview_base_bits(ptr), visit);
+                }
                 visit_bits(super::memoryview_format_bits(ptr), visit);
             }
             HeapLifecycleHandler::Function => {
@@ -1190,10 +1193,9 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             }
             HeapLifecycleHandler::Memoryview => {
                 let view = super::memoryview_ptr(ptr);
-                sink.detach_if_heap(std::mem::replace(
-                    &mut (*view).owner_bits,
-                    MoltObject::none().bits(),
-                ));
+                let (owner, base) = super::buffer_exports::detach_memoryview_owner(ptr);
+                sink.detach_if_heap(owner);
+                sink.detach_if_heap(base);
                 sink.detach_if_heap(std::mem::replace(
                     &mut (*view).format_bits,
                     MoltObject::none().bits(),

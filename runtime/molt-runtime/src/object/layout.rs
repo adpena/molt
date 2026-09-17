@@ -587,10 +587,12 @@ pub(crate) unsafe fn bytearray_vec_ptr(ptr: *mut u8) -> *mut Vec<u8> {
     unsafe { *(ptr as *mut *mut Vec<u8>) }
 }
 
-pub(crate) unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut Vec<u8> {
+/// Same-size byte access only. Length/capacity changes must enter the counted
+/// export admission in `buffer_exports::bytearray_mutate`.
+pub(crate) unsafe fn bytearray_vec(ptr: *mut u8) -> &'static mut [u8] {
     unsafe {
         let vec_ptr = bytearray_vec_ptr(ptr);
-        &mut *vec_ptr
+        (*vec_ptr).as_mut_slice()
     }
 }
 

@@ -107,6 +107,24 @@ govern `strip`/`lstrip`/`rstrip` and `isspace`, including custom surrogate trim
 characters. Text ASCII SIMD classification includes Python's U+001C..U+001F;
 bytes/bytearray classification does not. Scalar/vector agreement is checked
 against the generated table, not Rust's independent whitespace definition.
+All string predicates share descriptor admission and WTF-8 scalar traversal.
+Alphabetic, cased/titlecase and identifier properties are generated from the
+selected CPython authority alongside numeric, whitespace and printable tables;
+Rust Unicode properties and case-conversion allocations are not classification
+authorities. Lone surrogates are ordinary uncased/nonprintable code points, not
+a reason to reject the surrounding string. `string_predicate_protocol.py`
+owns the replayable classifier/subclass/receiver corpus. Host reference output
+or table generation alone does not prove compiled native/WASM parity.
+
+Numeric float conversion has one type-level protocol authority: `__float__`,
+then `__index__`, with callback exceptions and strict-subclass warnings retained.
+The constructor honors subclass overrides and separately admits text parsing;
+numeric consumers (`%f`, memoryview packing and version-gated `float.from_number`)
+use an existing float-subclass payload before invoking protocols and never parse
+text. Integer overflow remains distinct from an actual floating infinity.
+Memoryview packing alone translates numeric TypeError/OverflowError to its
+format-specific TypeError/ValueError; boolean packing preserves callback errors.
+`float_protocol.py` owns the cross-consumer differential corpus.
 
 Private helper names do not confer compiler privileges. In particular,
 `_load_optional_intrinsic` is an ordinary Python callable: assignments evaluate

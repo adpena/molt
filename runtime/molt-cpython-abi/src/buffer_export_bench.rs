@@ -399,7 +399,7 @@ fn buffer_export_timing_profile() {
     println!("\n=== Py_buffer export→release profile (N={N}/variant) ===");
     println!(
         "post-distill: FillInfo = 0 allocs; memoryview = 1 alloc of {} B (object, storage embedded); \
-         GetBuffer internal = 32 B + 16 B/dim",
+         GetBuffer internal = compact owner/base header plus shape/stride tail",
         std::mem::size_of::<PyMemoryViewObject>()
     );
 

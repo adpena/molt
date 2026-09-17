@@ -141,10 +141,10 @@ Status legend:
 ### 2.8 Buffer Protocol
 | Symbol | Semantics | Status | Notes |
 | --- | --- | --- | --- |
-| `PyObject_GetBuffer` | Export buffer | Partial | Header shim maps to runtime-owned `molt_buffer_acquire`; `Py_buffer` embeds the acquired `MoltBufferView` and mirrors shape/strides/format from that single descriptor. |
-| `PyBuffer_Release` | Release buffer | Partial | Buffer release uses the typed descriptor ownership marker: runtime-acquired descriptors call `molt_buffer_release`; raw `PyBuffer_FillInfo` descriptors drop only local descriptor storage and the exporter reference. |
-| `PyBuffer_FillInfo` | Fill buffer view | Partial | `Py_buffer` fields are projected from the same typed descriptor used by `PyObject_GetBuffer`; raw-memory descriptors are marked non-runtime-owned. |
-| `PyObject_CheckBuffer` | Buffer support probe | Partial | Header shim probes through `PyObject_GetBuffer`/`PyBuffer_Release` and clears probe errors. |
+| `PyObject_GetBuffer` | Export buffer | Partial | Native export routes through runtime-owned `molt_buffer_acquire`; the public header embeds its descriptor while compiled ABI publishes compact owner/base and shape/stride/format storage. Foreign exporters route through their buffer slot. |
+| `PyBuffer_Release` | Release buffer | Partial | Compiled ABI dispatches by exporter identity: native exports retain compact owner/base release state and call `molt_buffer_release`; foreign exports invoke their release slot without inspecting private cookies. Public-header exports retain the full descriptor. A view without an exporter owns no release obligation. |
+| `PyBuffer_FillInfo` | Fill buffer view | Partial | Fills public raw-memory descriptor fields and retains a supplied exporter; does not acquire a runtime buffer lease. |
+| `PyObject_CheckBuffer` | Buffer support probe | Partial | Compiled ABI uses a side-effect-free exporter/slot query. The public header still performs an acquire/release probe; parity between those surfaces is incomplete. |
 
 ### 2.9 Bytes & Bytearray
 | Symbol | Semantics | Status | Notes |

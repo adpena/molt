@@ -10,7 +10,6 @@ fn string_strip_impl(
     left: bool,
     right: bool,
 ) -> u64 {
-    let hay = obj_from_bits(hay_bits);
     let chars = obj_from_bits(chars_bits);
     let method = match (left, right) {
         (true, true) => "strip",
@@ -18,18 +17,8 @@ fn string_strip_impl(
         (false, true) => "rstrip",
         _ => unreachable!(),
     };
-    let Some(hay_ptr) = hay
-        .as_ptr()
-        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
-    else {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            &format!(
-                "descriptor '{method}' for 'str' objects doesn't apply to a '{}' object",
-                type_name(_py, hay)
-            ),
-        );
+    let Some(hay_ptr) = validate_string_receiver(_py, hay_bits, method) else {
+        return MoltObject::none().bits();
     };
     unsafe {
         let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));

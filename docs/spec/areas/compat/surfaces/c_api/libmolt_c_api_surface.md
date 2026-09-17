@@ -117,6 +117,40 @@ lower bound cannot be revalidated on import. `readonly` is a canonical u32
 boolean: `0` means writable, `1` means read-only, and every other value fails
 descriptor admission.
 
+Buffer acquisition owns an export lifetime, not merely an object reference.
+Mutable backing storage must not resize while any live view or C buffer lease
+exports it. Derived views retain the storage owner independently: releasing a
+parent view does not invalidate a slice, cast, clone or readonly derivative.
+Explicit release is idempotent but refuses while that view itself has active C
+exports. Normal destruction and GC use the same release accounting. A descriptor
+with distinct `owner` and `base` retains both identities without conflating the
+storage lease with the Python-visible base object.
+
+Bytearray permits same-length edits under export; BytesIO uses its stricter
+contract and rejects writes (including empty writes), truncate and close while
+exported. Failed flush/close must preserve pending bytes and leave the object
+retryable. Native and WASM I/O consumers use the same ownership authority.
+Writable simple-buffer consumers admit C-contiguous typed, shaped and scalar
+storage by byte capacity, not element count; noncontiguous destinations are
+rejected instead of copied through a strided fallback. BytesIO `readinto` permits
+overlapping exports of its own storage and uses overlap-safe copying without
+simultaneous mutable/immutable Rust byte-slice references.
+
+Contiguous borrowing, arbitrary-stride gathering and scalar writes share validated shape,
+signed extent and backing identity. A bounds failure cannot be retried through
+an unchecked copying path. Scalar assignment completes Python conversion before
+borrowing writable bytes, then revalidates the view (including release by the
+conversion callback). These are implementation contracts, not certification of
+every Python-version, platform, package or release matrix cell.
+
+Scalar write admission rejects released/readonly views before running conversion.
+Numeric packing translates conversion `TypeError` to the format-specific type
+diagnostic and `OverflowError` to its value diagnostic; boolean truth testing
+preserves the original exception. Buffer C-API contiguity and cached memoryview
+flags are distinct CPython surfaces: an empty rank-one strided view can report
+`c_contiguous == False` while `PyBuffer_IsContiguous` returns true. Do not use
+one of those observations as a proxy for the other.
+
 ### 4.8 Types + Modules
 - `molt_type_ready`
 - `molt_module_create`, `molt_module_import`, `molt_module_get_dict`

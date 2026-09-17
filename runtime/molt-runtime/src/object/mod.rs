@@ -35,6 +35,7 @@ pub(crate) mod accessors;
 pub(crate) mod aux_header;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
+pub(crate) mod buffer_exports;
 pub(crate) mod builders;
 pub(crate) mod cells;
 pub(crate) mod class_storage;
@@ -274,16 +275,23 @@ fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
             if vec_ptr.is_null() {
                 return;
             }
-            let data = unsafe { &mut *vec_ptr };
-            if mem.pos > data.len() {
-                data.resize(mem.pos, 0);
+            let Some(end) = mem.pos.checked_add(bytes.len()) else {
+                return;
+            };
+            let new_len = unsafe { (*vec_ptr).len() }.max(end);
+            if unsafe { buffer_exports::bytearray_is_exported(mem_ptr) } {
+                return;
             }
-            let end = mem.pos.saturating_add(bytes.len());
-            if end > data.len() {
-                data.resize(end, 0);
+            if unsafe {
+                buffer_exports::bytearray_try_mutate(mem_ptr, new_len, |data| {
+                    data.resize(new_len, 0);
+                    data[mem.pos..end].copy_from_slice(&bytes);
+                })
             }
-            data[mem.pos..end].copy_from_slice(&bytes);
-            mem.pos = end;
+            .is_ok()
+            {
+                mem.pos = end;
+            }
         }
         MoltFileBackend::Text(_) => {}
     }
@@ -886,6 +894,7 @@ pub(crate) struct MemoryView {
     pub(crate) format_bits: u64,
     pub(crate) shape_ptr: *mut Vec<isize>,
     pub(crate) strides_ptr: *mut Vec<isize>,
+    pub(crate) exports: buffer_exports::BufferExports,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3083,12 +3092,6 @@ pub(crate) unsafe fn memoryview_ndim(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn memoryview_released(ptr: *mut u8) -> bool {
     unsafe { (*memoryview_ptr(ptr)).released != 0 }
-}
-
-pub(crate) unsafe fn memoryview_mark_released(ptr: *mut u8) {
-    unsafe {
-        (*memoryview_ptr(ptr)).released = 1;
-    }
 }
 
 pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {

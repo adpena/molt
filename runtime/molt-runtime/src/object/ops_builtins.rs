@@ -3119,15 +3119,17 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     return MoltObject::from_ptr(out).bits();
                 }
                 if type_id == TYPE_ID_BYTEARRAY {
+                    let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                        _py,
+                        start_obj,
+                        end_obj,
+                        MoltObject::none(),
+                    ) {
+                        Ok(slice) => slice,
+                        Err(err) => return slice_error(_py, err),
+                    };
                     let len = bytes_len(ptr) as isize;
-                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
-                        Ok(v) => v,
-                        Err(err) => return slice_error(_py, err),
-                    };
-                    let end = match decode_slice_bound(_py, end_obj, len, len) {
-                        Ok(v) => v,
-                        Err(err) => return slice_error(_py, err),
-                    };
+                    let (start, end, _) = slice.adjust(len);
                     if end < start {
                         let out = alloc_bytearray(_py, &[]);
                         if out.is_null() {
@@ -3156,6 +3158,9 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                         Ok(v) => v,
                         Err(err) => return slice_error(_py, err),
                     };
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
                     if end < start {
                         let stride = memoryview_stride(ptr);
                         let data = memoryview_data(ptr);
@@ -3163,12 +3168,13 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                             data,
                             memoryview_readonly(ptr),
                             memoryview_itemsize(ptr),
-                            0,
+                            memoryview_offset(ptr),
                             memoryview_base_bits(ptr),
                             memoryview_format_bits(ptr),
                             vec![0],
                             vec![stride],
-                        );
+                        )
+                        .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
                         let out_ptr = match storage {
                             Some(storage) => alloc_memoryview_from_storage(_py, storage),
                             None => std::ptr::null_mut(),
@@ -3187,18 +3193,26 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     let data = if new_len == 0 {
                         base_data
                     } else {
-                        base_data.add(byte_offset as usize)
+                        base_data.offset(byte_offset)
+                    };
+                    let Some(offset) = memoryview_offset(ptr).checked_add(if new_len == 0 {
+                        0
+                    } else {
+                        byte_offset
+                    }) else {
+                        return MoltObject::none().bits();
                     };
                     let storage = TypedStridedStorage::new(
                         data,
                         memoryview_readonly(ptr),
                         memoryview_itemsize(ptr),
-                        0,
+                        offset,
                         memoryview_base_bits(ptr),
                         memoryview_format_bits(ptr),
                         vec![new_len as isize],
                         vec![stride],
-                    );
+                    )
+                    .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
                     let out_ptr = match storage {
                         Some(storage) => alloc_memoryview_from_storage(_py, storage),
                         None => std::ptr::null_mut(),
