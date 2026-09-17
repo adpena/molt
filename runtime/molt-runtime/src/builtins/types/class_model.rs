@@ -132,9 +132,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
             return false;
         };
         if let Some(cell_bits) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
-            let cell_ptr = obj_from_bits(cell_bits).as_ptr().filter(|ptr| unsafe {
-                object_type_id(*ptr) == TYPE_ID_LIST && crate::list_len(*ptr) == 1
-            });
+            let cell_ptr = crate::object::cells::cell_ptr_from_bits(cell_bits);
             let Some(cell_ptr) = cell_ptr else {
                 dec_ref_bits(_py, key_bits);
                 let type_repr_bits = crate::molt_repr_builtin(type_of_bits(_py, cell_bits));
@@ -155,10 +153,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
                 let _ = raise_exception::<u64>(_py, "TypeError", &message);
                 return false;
             };
-            if unsafe { !crate::object::list_mutation::replace_one(_py, cell_ptr, 0, value) } {
-                dec_ref_bits(_py, key_bits);
-                return false;
-            }
+            unsafe { crate::object::cells::cell_replace_value(_py, cell_ptr, value) };
             unsafe { dict_del_in_place(_py, dict_ptr, key_bits) };
         }
         dec_ref_bits(_py, key_bits);

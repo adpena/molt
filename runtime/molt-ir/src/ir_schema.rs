@@ -272,6 +272,34 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
+    if matches!(op.kind.as_str(), "func_new" | "func_new_closure") {
+        match (op.task_kind.as_deref(), op.task_closure_size) {
+            (None, None) => {}
+            (Some("generator" | "coroutine" | "async_generator"), Some(size)) if size >= 0 => {}
+            (Some(kind), Some(_))
+                if !matches!(kind, "generator" | "coroutine" | "async_generator") =>
+            {
+                return Err(format!(
+                    "op `{}` has unsupported callable task_kind `{kind}`",
+                    op.kind
+                ));
+            }
+            (Some(_), Some(size)) => {
+                return Err(format!(
+                    "op `{}` has negative task_closure_size `{size}`",
+                    op.kind
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "op `{}` must carry task_kind and task_closure_size together",
+                    op.kind
+                ));
+            }
+        }
+    } else if op.task_closure_size.is_some() {
+        return Err(format!("op `{}` cannot carry task_closure_size", op.kind));
+    }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }

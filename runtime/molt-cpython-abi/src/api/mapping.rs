@@ -1,7 +1,7 @@
 //! Mapping API — PyDict_*.
 
 use crate::abi_types::{Py_ssize_t, PyDictProxyObject, PyObject};
-use crate::bridge::GLOBAL_BRIDGE;
+use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks::hooks_or_stubs;
 #[cfg(test)]
 use molt_lang_obj_model::MoltObject;
@@ -88,98 +88,59 @@ pub unsafe extern "C" fn PyDict_SetItem(
             return -1;
         }
     };
-    let (key_bits, key_owned_local) = match bridge.observed_handle_for_pyobj(key) {
-        Some(b) => (b.bits(), false),
-        None => match unsafe { bridge.molt_value_for_pyobj(key) } {
-            // A genuine C-extension object key (numpy uses a builtin dtype/DType
-            // singleton — a pure C `PyArray_Descr` — as the key when registering
-            // its descriptor maps right after readying the DType classes): give it
-            // the same first-class `TYPE_ID_FOREIGN` custody the value path below
-            // already mints, instead of dropping the key. The wrapper is cached by
-            // C-pointer identity (`foreign_wrapper_for`), so a later insert/lookup
-            // with the same singleton pointer resolves to the same handle.
-            Some(b) => (b, true),
-            None => {
-                // The dict receiver already resolved, so we hold a well-formed
-                // dict — a `PyDict_SetItem` key is a real object the extension
-                // constructed or a canonical runtime data symbol, safe to classify
-                // (`describe_*` guards null + resolves exception singletons by
-                // address before any deref). Reaching here means no foreign wrapper
-                // could be minted (runtime hooks not installed); fail loud with an
-                // honest exception rather than a contentless -1.
-                let detail = format!("unresolved key @ {:p}: {}", key, unsafe {
-                    crate::abi_types::describe_unresolved_pyobject(key)
-                });
-                crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
-                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyDict_SetItem: key is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                return -1;
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        // The dict receiver already resolved, so we hold a well-formed dict —
+        // fail loud rather than returning a contentless -1 when the key cannot
+        // cross into the runtime. A failed observation of a known object is not
+        // retried as a foreign value by RuntimeValue.
+        let detail = format!("unresolved key @ {:p}: {}", key, unsafe {
+            crate::abi_types::describe_unresolved_pyobject(key)
+        });
+        crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyDict_SetItem: key is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-        },
+        }
+        return -1;
     };
-    let (val_bits, val_owned_local) = match bridge.observed_handle_for_pyobj(value) {
-        Some(b) => (b.bits(), false),
-        None => match unsafe { bridge.molt_value_for_pyobj(value) } {
-            // A genuine C-extension object value (a numpy dtype instance): give
-            // it a first-class `TYPE_ID_FOREIGN` wrapper so it can be stored in
-            // the Molt dict, instead of failing "unresolved value".
-            Some(b) => (b, true),
-            None => {
-                let detail = format!("unresolved value: {}", unsafe {
-                    crate::abi_types::describe_unresolved_pyobject(value)
-                });
-                crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
-                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyDict_SetItem: value is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                if key_owned_local {
-                    unsafe { (hooks_or_stubs().dec_ref)(key_bits) };
-                }
-                return -1;
+    let Some(value_value) = (unsafe { RuntimeValue::acquire_edge(value) }) else {
+        let detail = format!("unresolved value: {}", unsafe {
+            crate::abi_types::describe_unresolved_pyobject(value)
+        });
+        crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyDict_SetItem: value is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-        },
+        }
+        return -1;
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.dict_set)(dict_bits, key_bits, val_bits) };
+    let rc = unsafe { (h.dict_set)(dict_bits, key_value.bits(), value_value.bits()) };
     let had_error = crate::api::errors::transfer_runtime_pending_to_current();
-    let pending = had_error
-        .then(crate::api::errors::take_current_error)
-        .flatten();
-    if key_owned_local {
-        unsafe { (h.dec_ref)(key_bits) };
-    }
-    if val_owned_local {
-        unsafe { (h.dec_ref)(val_bits) };
-    }
-    drop(crate::api::errors::take_current_error());
-    if let Some(pending) = pending {
-        crate::api::errors::restore_current_error_exact(pending);
-    }
+    drop(key_value);
+    drop(value_value);
     // CPython contract: the dict takes its OWN strong references to key and
-    // value (PyDict_SetItem does not steal). The bridge equivalent anchors the
-    // key/value proxies so the extension's balancing `Py_DECREF` of its
-    // temporaries cannot sever the pointer↔handle mapping while the object
-    // stays reachable from the runtime dict. Without this, numpy's
+    // value (PyDict_SetItem does not steal). The runtime dict edges and
+    // canonical ABI views jointly retain identity while either side can still
+    // observe an entry. Without that custody, numpy's
     // `npy_cpu_dispatch_tracer_init` pattern — `PyDict_New()` →
     // `PyDict_SetItemString(mod_dict, …)` → `Py_DECREF(reg_dict)` → cache the
     // borrowed pointer — left `cpu_dispatch_registry` unresolvable and every
     // later `PyDict_SetItemString(registry, "argmin"/"argmax", …)` failed
-    // "unresolved dict". Entries removed on the Molt side keep their anchor (a
-    // small header) — a deliberate CPython-semantics trade the raw-registry
-    // bridging already makes.
+    // "unresolved dict". Runtime mutation and ABI-view retirement now share
+    // that lifecycle authority rather than retaining a permanent proxy anchor.
     match (rc == 0, had_error) {
         (true, false) => 0,
         (false, true) => -1,
@@ -516,26 +477,7 @@ pub unsafe extern "C" fn molt_dictproxy_dealloc(op: *mut PyObject) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_GetItem(op: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
-    if op.is_null() || key.is_null() {
-        return ptr::null_mut();
-    }
-    let bridge = &*GLOBAL_BRIDGE;
-    let dict_bits = match bridge.molt_handle_for_pyobj(op) {
-        Some(b) => b.bits(),
-        None => return ptr::null_mut(),
-    };
-    let key_bits = match bridge.observed_handle_for_pyobj(key) {
-        Some(b) => b.bits(),
-        None => return ptr::null_mut(),
-    };
-    let h = hooks_or_stubs();
-    let result = unsafe {
-        GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.dict_get)(dict_bits, key_bits))
-    };
-    if result.is_null() {
-        crate::api::errors::clear_all_pending_errors();
-    }
-    result
+    crate::api::errors::with_preserved_error(|| unsafe { PyDict_GetItemWithError(op, key) })
 }
 
 /// Like [`PyDict_GetItem`] but does NOT suppress errors: a non-dict receiver
@@ -552,23 +494,15 @@ pub unsafe extern "C" fn PyDict_GetItemWithError(
         return ptr::null_mut();
     }
     let dict_bits = resolve_native_dict(op).expect("validated native dict");
-    let (key_bits, key_owned) = match GLOBAL_BRIDGE.observed_handle_for_pyobj(key) {
-        Some(value) => (value.bits(), false),
-        None => match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) } {
-            Some(bits) => (bits, true),
-            None => {
-                let _ = crate::api::errors::transfer_runtime_pending_to_current();
-                return ptr::null_mut();
-            }
-        },
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        let _ = crate::api::errors::transfer_runtime_pending_to_current();
+        return ptr::null_mut();
     };
     let h = hooks_or_stubs();
     let result = unsafe {
-        GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.dict_get)(dict_bits, key_bits))
+        GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.dict_get)(dict_bits, key_value.bits()))
     };
-    if key_owned {
-        unsafe { (h.dec_ref)(key_bits) };
-    }
+    drop(key_value);
     result
 }
 
@@ -752,31 +686,16 @@ pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -
             return -1;
         }
     };
-    let (key_bits, key_owned) = match GLOBAL_BRIDGE.observed_handle_for_pyobj(key) {
-        Some(value) => (value.bits(), false),
-        None => match unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) } {
-            Some(bits) => (bits, true),
-            None => {
-                if !crate::api::errors::transfer_runtime_pending_to_current() {
-                    unsafe { crate::api::errors::PyErr_BadInternalCall() };
-                }
-                return -1;
-            }
-        },
+    let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
+        if !crate::api::errors::transfer_runtime_pending_to_current() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        }
+        return -1;
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.dict_del)(dict_bits, key_bits) };
+    let rc = unsafe { (h.dict_del)(dict_bits, key_value.bits()) };
     let had_error = crate::api::errors::transfer_runtime_pending_to_current();
-    let pending = had_error
-        .then(crate::api::errors::take_current_error)
-        .flatten();
-    if key_owned {
-        unsafe { (h.dec_ref)(key_bits) };
-    }
-    drop(crate::api::errors::take_current_error());
-    if let Some(pending) = pending {
-        crate::api::errors::restore_current_error_exact(pending);
-    }
+    drop(key_value);
     if rc != 0 {
         // dict_del returns -1 for a missing key; CPython raises KeyError(key).
         // Only synthesize one if the runtime did not already set an exception.

@@ -51,6 +51,8 @@ unsafe extern "C" fn fake_register_c_function(
     _meth: u64,
     _flags: c_int,
     _self_bits: u64,
+    _self_is_null: bool,
+    _defining_class_bits: u64,
     _data: *const u8,
     _len: usize,
 ) -> u64 {

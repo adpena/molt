@@ -21,6 +21,11 @@ KNOWN_NATIVE_CALLABLE_ABIS: Final[frozenset[str]] = frozenset(NATIVE_CALLABLE_AB
 NATIVE_CALLABLE_ABI_CHOICES: Final = ", ".join(NATIVE_CALLABLE_ABIS)
 
 
+NATIVE_CALLABLE_PYTHON_EXPORT_ABI_CHOICES: Final = (
+    "molt.object_call_v1, molt.object_callargs_v1, molt.forward_f32_v1"
+)
+
+
 class _NativeCallableBrowserSignature(TypedDict):
     params: list[str]
     result: str
@@ -60,6 +65,20 @@ _NATIVE_CALLABLE_CALLARGS_ABIS: Final[frozenset[str]] = frozenset(
     }
 )
 
+_NATIVE_CALLABLE_PYTHON_EXPORT_ABIS: Final[frozenset[str]] = frozenset(
+    {
+        NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+        NATIVE_CALLABLE_ABI_OBJECT_CALLARGS_V1,
+        NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
+    }
+)
+
+_NATIVE_CALLABLE_EXPLICIT_EXPORT_ARITY_ABIS: Final[frozenset[str]] = frozenset(
+    {
+        NATIVE_CALLABLE_ABI_OBJECT_CALL_V1,
+    }
+)
+
 _NATIVE_CALLABLE_DIRECT_SYMBOL_ABIS: Final[frozenset[str]] = frozenset(
     {
         NATIVE_CALLABLE_ABI_FORWARD_F32_V1,
@@ -81,6 +100,10 @@ def native_callable_abi_choices() -> str:
     return NATIVE_CALLABLE_ABI_CHOICES
 
 
+def native_callable_python_export_abi_choices() -> str:
+    return NATIVE_CALLABLE_PYTHON_EXPORT_ABI_CHOICES
+
+
 def native_callable_browser_signature(abi: str) -> dict[str, object]:
     signature = _NATIVE_CALLABLE_BROWSER_SIGNATURES[abi]
     return {"params": list(signature["params"]), "result": signature["result"]}
@@ -92,6 +115,14 @@ def native_callable_fixed_arity(abi: str) -> int | None:
 
 def native_callable_uses_callargs(abi: str) -> bool:
     return abi in _NATIVE_CALLABLE_CALLARGS_ABIS
+
+
+def native_callable_is_python_export(abi: str) -> bool:
+    return abi in _NATIVE_CALLABLE_PYTHON_EXPORT_ABIS
+
+
+def native_callable_requires_explicit_export_arity(abi: str) -> bool:
+    return abi in _NATIVE_CALLABLE_EXPLICIT_EXPORT_ARITY_ABIS
 
 
 def native_callable_requires_direct_symbol_binding(abi: str) -> bool:

@@ -70,6 +70,15 @@ Unknown kinds are silently skipped for forward compatibility.
 The frontend may also emit `borrowed_params` (list of param names eligible for
 Perceus-style borrow elision), but the backend does not require it.
 
+Before CLI assembly, source initializers carry `source_module_publication` with
+the canonical `module_name`, SSA `module_value`, and integer `failure_label`.
+Exactly one `frame_locals_set` operation owns the
+`source_module_publication_boundary` marker. These assembly-only facts survive
+frontend caching and chunking; assembly validates module identity independently
+of the mangled linkage symbol, inserts native callable publication at that
+boundary, then strips both fields before executable SimpleIR is emitted. A
+symbol collision is not permission to merge different Python modules.
+
 ---
 
 ## OpIR
@@ -83,6 +92,9 @@ so absent fields deserialize to `None`/default.
 | `value`           | `i64?`     | `null`  | Integer immediate (const value, label target, field offset, code_id) |
 | `f_value`         | `f64?`     | `null`  | Float immediate. Non-finite encoded as strings: `"NaN"`, `"Infinity"`, `"-Infinity"` |
 | `s_value`         | `string?`  | `null`  | String immediate (string literal, call target name, attribute name) |
+| `runtime_requirement_bits` | `u32` | `0` | Explicit generated target requirements, admitted only on declared carrier operations |
+| `runtime_symbol` | `string?` | `null` | Canonical callable symbol on generated module-acquisition carriers; not an attribute spelling |
+| `builtin_name` | `string?` | `null` | Canonical runtime callable identity paired with the builtin name operand |
 | `bytes`           | `u8[]?`    | `null`  | Raw byte array (for `const_bytes`, surrogate-containing `const_str`) |
 | `var`             | `string?`  | `null`  | Variable name reference (used by store/load patterns)          |
 | `args`            | `string[]?`| `null`  | Operand value names (SSA references)                           |
@@ -90,12 +102,13 @@ so absent fields deserialize to `None`/default.
 | `fast_int`        | `bool?`    | `null`  | Hint: operands are known integers, use unboxed fast path       |
 | `fast_float`      | `bool?`    | `null`  | Hint: operands are known floats, use unboxed fast path         |
 | `stack_eligible`  | `bool?`    | `null`  | Hint: result can be stack-allocated                            |
-| `task_kind`       | `string?`  | `null`  | Async task classification                                      |
+| `task_kind`       | `string?`  | `null`  | Physical task classification on `alloc_task`; callable trampoline kind on `func_new` / `func_new_closure` |
+| `task_closure_size` | `int?` | `null` | Nonnegative payload byte size paired with callable task kind; constructor fact, never a mutable Python attribute |
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |
 | `type_hint`       | `string?`  | `null`  | Type annotation from source                                    |
 | `ic_index`        | `i64?`     | `null`  | Inline cache site index for `get_attr_generic_ptr`. Transmitted inside a nested `metadata` object in JSON: `{"metadata": {"ic_index": N}}` |
 | `native_callable_export` | `string?` | `null` | Qualified native callable export name on `invoke_ffi`, e.g. `scipy.ndimage.distance_transform_edt` |
-| `native_callable_binding` | `string?` | `null` | Callable export binding mode on `invoke_ffi`: `module_attr` or `direct_symbol` |
+| `native_callable_binding` | `string?` | `null` | Native binding mode on `invoke_ffi`; public callable wrappers and internal bootstrap calls use `direct_symbol` |
 | `native_callable_symbol` | `string?` | `null` | Required direct native symbol when `native_callable_binding` is `direct_symbol` |
 | `native_callable_abi` | `string?` | `null` | ABI contract token for the native callable export |
 
@@ -110,6 +123,18 @@ The backend enforces the representation and shape constraints in this section
 while constructing `SimpleIR` from JSON, NDJSON, and serde-backed binary
 formats. The stricter internal validator also checks value-use ordering where
 the legacy transport surface has already been normalized into SSA values.
+
+Runtime semantic admission composes the generated operation requirements with
+canonical callable symbols. The generated call-target roles distinguish actual
+direct invocation (`call`, `call_internal`) from opaque callable operands and
+guard hints. Direct invocations require the symbol's execution semantics;
+`builtin_func`, `func_new`, and `func_new_closure` require target support for the
+acquired callable without claiming the symbol has already executed. In
+particular, acquiring a frame-aware callable does not require an entered frame.
+Canonical `runtime_symbol` and `builtin_name` metadata add the same requirements.
+String literals, opaque call hints, and FFI lane names do not establish runtime
+symbol identity. The source of these roles and requirements is
+`runtime/molt-ir/src/tir/op_kinds.toml`, consumed through `OpIR` admission.
 
 - `param_types`, when present, must have the same length as `params`.
 - `fast_int` and `fast_float` cannot both be `true` on the same op.
@@ -126,20 +151,42 @@ the legacy transport surface has already been normalized into SSA values.
   proved owner lifetime. Explicit raw `stack_alloc` is also rejected by target
   admission. `object_new_bound_stack` is retired and rejected before emission;
   class allocation uses the owned heap contract on every supported target.
-- Native callable export fields are valid only on `invoke_ffi`. A native
-  callable export must carry `native_callable_export`,
-  `native_callable_binding`, and `native_callable_abi`; binding must be either
-  `module_attr` or `direct_symbol`; `direct_symbol` also requires
-  `native_callable_symbol`. `native_callable_abi` must be declared by the
-  canonical `runtime/native_callable_abi.toml` registry; Python and Rust
-  consumers and the browser host use its checked-in generated projections
-  rather than maintaining their own token, signature, binding, or arity tables.
-  Native callable identity lives only in those metadata fields; `invoke_ffi.args`
-  must be present and contains ABI payload values, not a synthesized Python
-  callee. For a fixed-arity ABI, its length must equal the registry's payload
-  arity plus one real callable-handle operand for `module_attr`; a
-  `direct_symbol` call has payload operands only. SimpleIR and TIR both enforce
-  that generated arity contract before native or WASM code generation.
+- Native callable export fields are valid only on `invoke_ffi`. A direct-symbol
+  invocation must carry `native_callable_export`, `native_callable_binding`,
+  `native_callable_abi`, and `native_callable_symbol`; its binding is
+  `direct_symbol`. `native_callable_abi` must be declared by the canonical
+  `runtime/native_callable_abi.toml` registry; Python and Rust consumers and the
+  browser host use its checked-in generated projections rather than maintaining
+  their own token, signature, binding, or arity tables. `invoke_ffi.args`
+  contains ABI payload values only and never encodes Python callable identity.
+  Direct ABI payload operands are borrowed by the callee and the result is an
+  owned value returned to the wrapper. Builders assembled for a borrowed
+  callargs payload therefore remain wrapper-owned and are explicitly released
+  once on both successful dispatch and every post-allocation failure path.
+  For a fixed-arity ABI, its length equals the registry payload arity; a
+  variadic public export carries an admitted manifest arity. SimpleIR and TIR
+  both enforce that generated arity contract before native or WASM code
+  generation.
+
+  User call sites never lower a public native callable export directly to
+  `invoke_ffi`. A `direct_symbol` export is published as an ordinary generated
+  Python function object, and that wrapper body is the sole owner of its
+  direct-symbol `invoke_ffi`; ordinary call dispatch therefore preserves
+  rebinding while a captured import retains the original wrapper object. A
+  `module_attr` export publishes or resolves the real provider callable and uses
+  the same ordinary dispatch, so it emits no native-export `invoke_ffi` at the
+  user call site. Public callable-export metadata is separate from the internal
+  `molt.pyinit_module_v1` bootstrap contract, which is not a Python callable
+  export.
+
+  When a source module also declares native exports, its existing initializer
+  remains authoritative. The frontend records a typed publication boundary,
+  canonical module value, and active exception-cleanup edge; assembly consumes
+  those facts to publish before the source body executes. Source code can then
+  capture or replace the published callable normally. Assembly-only publication
+  metadata is removed before backend IR emission. Competing extension or alias
+  initializers fail closed rather than replacing a source initializer.
+
   Backends must fail closed if executable ABI dispatch for the declared export
   is absent. WASM currently executes `direct_symbol`
   `molt.object_call_v1` and `molt.object_callargs_v1` through a native import
@@ -285,7 +332,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `call_internal`   | `s_value` (target), `args`, `value` (code_id), `out` | Internal (non-exported) call |
 | `call_indirect`   | `args` [callable, ...positional], `out`  | Indirect call via function pointer  |
 | `call_func`       | `args` [callable, ...positional], `out`  | Generic function call               |
-| `call_guarded`    | `s_value` (target), `args`, `out`        | Guarded call (deopt on type change) |
+| `call_guarded`    | `s_value` (target), `args`, `out`        | Actual callable followed by unbound Python arguments; direct call only after shared shape and target admission, otherwise runtime binding |
 | `call_bind`       | `args`, `out`                            | Partial application / bind          |
 | `call_method`     | `args`, `out`                            | Method call                         |
 | `invoke_ffi`      | `args`, `out`, optional `s_value` (lane), optional native callable export fields | Foreign function or native package ABI invocation |
@@ -296,8 +343,11 @@ Comparisons accept optional `fast_int` / `fast_float`.
 ```json
 {"kind": "call", "s_value": "molt_init___main__", "args": ["v0"], "value": 1, "out": "v3"}
 {"kind": "call_indirect", "args": ["v5", "v6", "v7"], "out": "v8"}
-{"kind": "invoke_ffi", "args": ["v9", "v10"], "out": "v11", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.object_call_v1"}
+{"kind": "invoke_ffi", "args": ["p0", "p1"], "out": "v0", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.object_call_v1"}
 ```
+
+The `invoke_ffi` example is the generated direct-symbol wrapper body, not the
+user call site that invokes that wrapper as a normal Python callable.
 
 ### Exception Handling
 
@@ -487,13 +537,12 @@ All use the standard `args` + `out` pattern.
 
 | kind                      | Fields used                              | Description                    |
 |---------------------------|------------------------------------------|--------------------------------|
-| `func_new`                | `s_value` (name), `value` (arity), `out` | Create function object         |
-| `func_new_closure`        | `s_value`, `value`, `args` [closure], `out` | Create closure              |
+| `func_new`                | `s_value` (name), `value` (arity), `out`, optional paired `task_kind` / `task_closure_size` | Create function object |
+| `func_new_closure`        | `s_value`, `value`, `args` [closure], `out`, optional paired `task_kind` / `task_closure_size` | Create closure |
 | `builtin_func`            | `s_value` (name), `value` (arity), `out` | Reference to built-in function |
 | `code_new`                | `args`, `out`                            | Create code object             |
-| `code_slot_set`           | `value` (code_id), `args` [code_obj]     | Register code in slot table    |
+| `code_slot_set`           | `value` (code_id), `args` [code_obj, globals_dict] | Bind owned code and lexical namespace in slot table |
 | `code_slots_init`         | `value` (count)                          | Initialize code slot table     |
-| `fn_ptr_code_set`         | `s_value` (func), `args` [code]          | Associate code with fn ptr     |
 | `classmethod_new`         | `args`, `out`                            | Wrap as classmethod            |
 | `staticmethod_new`        | `args`, `out`                            | Wrap as staticmethod           |
 | `property_new`            | `args`, `out`                            | Create property descriptor     |
@@ -617,6 +666,40 @@ All use the standard `args` + `out` pattern.
 | `taq_ingest_line`   | `args`, `out`         | TAQ data ingestion               |
 | `state_block_start` | --                    | State machine block start        |
 | `state_block_end`   | --                    | State machine block end          |
+
+Codec and buffer operations act on runtime values; they do not make Python
+module names compiler syntax. `molt_json`, `molt_msgpack`, `molt_cbor`, and
+`molt_buffer` are ordinary source packages with real import bindings and module
+identity. Their functions use the generated intrinsic registry. Direct, aliased,
+captured, and rebound calls share normal callable dispatch. Compiler transport
+codec selection does not change `molt_json.parse` semantics. Runtime-active
+packages require their declared intrinsics; a missing intrinsic must propagate
+its diagnostic, never select a CPython reference implementation. AST spelling alone
+cannot justify codec substitution or replacing a buffer loop and its destination
+with a newly allocated matrix.
+
+`molt_buffer.Buffer2D` is the public object for every call shape. Its native
+storage owns dimensions and uses tracked packed `i64` cells until an integer or
+arithmetic result requires canonical boxed integers. Promotion must preserve
+existing cells and roll back on allocation failure; matrix multiplication must
+never wrap. The wrapper reads native dimensions instead of maintaining a second
+shape authority. Dimensions, indices, and values use the integer/index protocol;
+dimensions are nonnegative and bounded by the target's sequence-size limit.
+The CPython reference uses the same flat cell cardinality and explicit shape,
+not row objects. Zero-cardinality shapes preserve either dimension without
+dimension-sized allocation or iteration, including matrix products. Constructor
+replacement publishes the new shape and storage only after allocation succeeds.
+Public matrix multiplication uses the same live dimension/accessor protocol on
+CPython and compiled targets, including subclass and instance/class overrides.
+The raw `buffer2d_matmul` primitive does not authorize bypassing that protocol;
+its operands are storage objects, not proof of public wrapper behavior.
+Negative indices are normalized before access; slices are rejected. Value
+conversion precedes row conversion/bounds checking, which precedes column
+conversion/bounds checking. Index callback exceptions propagate unchanged.
+Module-level `set` returns the
+same public buffer; the instance method returns `None`. Index callbacks finish
+before borrowing mutable native storage, including reentrant callbacks that
+promote that same buffer.
 
 ---
 

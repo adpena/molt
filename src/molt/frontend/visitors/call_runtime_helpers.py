@@ -9,7 +9,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    BUILTIN_TYPE_TAGS,
     FormatParseState,
     MoltOp,
     MoltValue,
@@ -202,11 +201,8 @@ class CallRuntimeHelperMixin(_MixinBase):
             cell = self._load_free_var_cell(name)
             if cell is None:
                 continue
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
             hint = self.free_var_hints.get(name, "Any")
-            value = MoltValue(self.next_var(), type_hint=hint)
-            self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=value))
+            value = self._emit_cell_get(cell, type_hint=hint)
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
             self.emit(
@@ -344,43 +340,6 @@ class CallRuntimeHelperMixin(_MixinBase):
         )
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
 
-    def _static_expr_type_hint_without_emitting(self, expr: ast.expr) -> str | None:
-        if isinstance(expr, ast.List):
-            return "list"
-        if isinstance(expr, ast.Tuple):
-            return "tuple"
-        if isinstance(expr, ast.Dict):
-            return "dict"
-        if isinstance(expr, ast.Set):
-            return "set"
-        if isinstance(expr, ast.Constant):
-            if isinstance(expr.value, str):
-                return "str"
-            if isinstance(expr.value, bytes):
-                return "bytes"
-            if isinstance(expr.value, bool):
-                return "bool"
-            if isinstance(expr.value, int):
-                return "int"
-            if isinstance(expr.value, float):
-                return "float"
-            if expr.value is None:
-                return "None"
-        if not isinstance(expr, ast.Name):
-            return None
-        if self.is_async() and expr.id in self.async_public_hints:
-            return self.async_public_hints[expr.id]
-        boxed_hint = self.boxed_local_hints.get(expr.id)
-        if boxed_hint is not None:
-            return boxed_hint
-        local_val = self.locals.get(expr.id)
-        if local_val is not None:
-            return local_val.type_hint
-        global_val = self.globals.get(expr.id)
-        if global_val is not None:
-            return global_val.type_hint
-        return None
-
     @staticmethod
     def _call_needs_bind(node: ast.Call) -> bool:
         if node.keywords:
@@ -506,9 +465,9 @@ class CallRuntimeHelperMixin(_MixinBase):
     def _builtin_str_single_object_arg(self, node: ast.AST) -> ast.AST | None:
         if not isinstance(node, ast.Call):
             return None
-        if not (isinstance(node.func, ast.Name) and node.func.id == "str"):
+        if self._specializable_builtin_name(node) != "str":
             return None
-        if len(node.args) > 1:
+        if len(node.args) + len(node.keywords) != 1:
             return None
         kw_object: ast.AST | None = None
         for keyword in node.keywords:
@@ -578,86 +537,47 @@ class CallRuntimeHelperMixin(_MixinBase):
             kwargs[key] = value
         return self._emit_format_tokens(tokens, args, kwargs)
 
-    def _emit_dynamic_call(
-        self, node: ast.Call, callee: MoltValue, needs_bind: bool
-    ) -> MoltValue:
+    def _emit_dynamic_call(self, node: ast.Call, callee: MoltValue) -> MoltValue:
         res_hint = "Any"
-        if callee.type_hint.startswith("BoundMethod:"):
-            parts = callee.type_hint.split(":", 2)
-            if len(parts) == 3:
-                class_name = parts[1]
-                method_name = parts[2]
-                method_info = (
-                    self.classes.get(class_name, {}).get("methods", {}).get(method_name)
-                )
-                if method_info:
-                    return_hint = method_info["return_hint"]
-                    # Builtin scalar/container return types must propagate as
-                    # type hints — without this, method calls returning `int`
-                    # become type-erased `Any`, which forces the lane-inference
-                    # pass to fall back to a NaN-boxed (effectively float-coerced)
-                    # accumulator in tight loops like
-                    # `total += obj.compute(i)`.
-                    if return_hint and (
-                        return_hint in self.classes or return_hint in BUILTIN_TYPE_TAGS
-                    ):
-                        res_hint = return_hint
-        if needs_bind:
+        index = self.python_binding_index
+        fact = index.call_fact(node) if index is not None else None
+        if (
+            index is not None
+            and fact is not None
+            and fact.exact_builtin_name() is not None
+        ):
+            kind = index.expression_result(node).kind
+            if kind != "unknown":
+                # Identity authorizes only the normal-result fact here. The
+                # real callable, argument evaluation and cleanup remain intact.
+                res_hint = "None" if kind == "NoneType" else kind
+        if self._call_needs_bind(node):
             callargs = self._emit_call_args_builder(node)
             res = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
             return res
-        if callee.type_hint.startswith("BoundMethod:"):
-            args = self._emit_call_args(node.args)
-            res = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="CALL_METHOD", args=[callee] + args, result=res))
-            return res
         if callee.type_hint.startswith("Func:"):
             func_symbol = callee.type_hint.split(":", 1)[1]
-            args, _ = self._emit_direct_call_args_for_symbol(
-                func_symbol, node, func_obj=callee
-            )
-            if args is None:
-                callargs = self._emit_call_args_builder(node)
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(
-                    MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res)
-                )
-                return res
-            func_name = self.func_symbol_names.get(func_symbol)
-            if func_name and func_name in self.globals:
-                # Devirtualized call: check if callee is the expected function,
-                # then call directly by symbol.  Falls back to INVOKE_FFI if
-                # the identity check fails (e.g. function was rebound).
-                #
-                # Both branches write to the same output variable (`res`)
-                # so the result is available after END_IF without an
-                # intermediate list cell.  The old res_cell + STORE_INDEX
-                # pattern broke in WASM because CHECK_EXCEPTION between
-                # CALL and STORE_INDEX could skip the store, leaving None.
-                expected = self._emit_module_attr_get(func_name)
-                matches = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="IS", args=[callee, expected], result=matches))
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self.emit(MoltOp(kind="IF", args=[matches], result=MoltValue("none")))
-                self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                self.emit(
-                    MoltOp(
-                        kind="INVOKE_FFI",
-                        args=[callee] + args,
-                        result=res,
-                    )
-                )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                return res
+            args = self._emit_call_args(node.args)
             res = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="CALL", args=[func_symbol] + args, result=res))
+            # A code-symbol hint is not a namespace or callable-identity proof.
+            # Reuse guarded object dispatch so its fast path also transports the
+            # exact function context; a second globals lookup can be rebound too.
+            self.emit(
+                MoltOp(
+                    kind="CALL_GUARDED",
+                    args=[callee] + args,
+                    result=res,
+                    metadata={"target": func_symbol},
+                )
+            )
             return res
-        callargs = self._emit_call_args_builder(node)
+        # Positional object dispatch already owns callable admission and live
+        # defaults, including bound-method self. Only keyword/starred syntax
+        # requires a callargs builder, never a lexical hint or caller override.
+        args = self._emit_call_args(node.args)
         res = MoltValue(self.next_var(), type_hint=res_hint)
-        self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
+        self.emit(MoltOp(kind="CALL_FUNC", args=[callee, *args], result=res))
         return res
 
     def _lower_statistics_slice_call(

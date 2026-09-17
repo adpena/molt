@@ -638,8 +638,8 @@ class SerializationBasicOpsMixin(_MixinBase):
             # bool/str).  Without this, `total += obj.method(i)`
             # in a tight loop falls through to the catch-all
             # NaN-boxed accumulator and silently coerces to float.
-            # The frontend already populates `op.result.type_hint`
-            # from the method's `return_hint`; this serialises it.
+            # Only producer-proven result hints may select this lane; Python
+            # return annotations are not result proofs.
             result_hint = op.result.type_hint
             if result_hint and result_hint != "Any":
                 entry["type_hint"] = result_hint
@@ -698,27 +698,39 @@ class SerializationBasicOpsMixin(_MixinBase):
             if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
                 entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "FUNC_NEW":
-            func_name, arity = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "func_new",
-                    "s_value": func_name,
-                    "value": arity,
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FUNC_NEW_CLOSURE":
-            func_name, arity, closure = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "func_new_closure",
-                    "s_value": func_name,
-                    "value": arity,
-                    "args": [closure.name],
-                    "out": op.result.name,
-                }
-            )
+        elif op.kind in {"FUNC_NEW", "FUNC_NEW_CLOSURE"}:
+            func_name, arity = op.args[:2]
+            entry = {
+                "kind": op.kind.lower(),
+                "s_value": func_name,
+                "value": arity,
+                "out": op.result.name,
+            }
+            if op.kind == "FUNC_NEW_CLOSURE":
+                entry["args"] = [op.args[2].name]
+            metadata = op.metadata or {}
+            if "task_kind" in metadata or "task_closure_size" in metadata:
+                task_kind = metadata.get("task_kind")
+                task_closure_size = metadata.get("task_closure_size")
+                if not isinstance(task_kind, str) or task_kind not in {
+                    "generator",
+                    "coroutine",
+                    "async_generator",
+                }:
+                    raise ValueError(
+                        "function task definition requires a valid task_kind"
+                    )
+                if (
+                    not isinstance(task_closure_size, int)
+                    or isinstance(task_closure_size, bool)
+                    or task_closure_size < 0
+                ):
+                    raise ValueError(
+                        "function task definition requires non-negative task_closure_size bytes"
+                    )
+                entry["task_kind"] = task_kind
+                entry["task_closure_size"] = task_closure_size
+            ctx.json_ops.append(entry)
         elif op.kind == "CODE_NEW":
             ctx.json_ops.append(
                 {
@@ -731,20 +743,12 @@ class SerializationBasicOpsMixin(_MixinBase):
             code_id = 0
             if op.metadata and "code_id" in op.metadata:
                 code_id = int(op.metadata["code_id"])
+            code_val, globals_dict = op.args
             ctx.json_ops.append(
                 {
                     "kind": "code_slot_set",
                     "value": code_id,
-                    "args": [op.args[0].name],
-                }
-            )
-        elif op.kind == "FN_PTR_CODE_SET":
-            func_name, code_val = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "fn_ptr_code_set",
-                    "s_value": func_name,
-                    "args": [code_val.name],
+                    "args": [code_val.name, globals_dict.name],
                 }
             )
         elif op.kind == "ASYNCGEN_LOCALS_REGISTER":

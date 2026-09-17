@@ -32,6 +32,7 @@ OUT_RUNTIME_CALLABLES_RS = (
 OUT_PYTHON_BUILTIN_CALLABLES_RS = (
     ROOT / "runtime/molt-ir/src/python_builtin_callables_generated.rs"
 )
+OUT_RUNTIME_BOXED_ABI_RS = ROOT / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
 OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS = (
     ROOT / "runtime/molt-backend-native/src/exception_observer_abi.rs"
 )

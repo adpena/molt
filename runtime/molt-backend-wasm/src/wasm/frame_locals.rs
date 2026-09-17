@@ -91,14 +91,6 @@ impl WasmFrameLocals {
         self.slots.get(name)
     }
 
-    pub(in crate::wasm) fn contains_key<Q>(&self, name: &Q) -> bool
-    where
-        String: Borrow<Q>,
-        Q: Ord + ?Sized,
-    {
-        self.slots.contains_key(name)
-    }
-
     pub(in crate::wasm) fn local_kind(&self, name: &str) -> Option<WasmFrameLocalKind> {
         self.name_kinds.get(name).copied()
     }

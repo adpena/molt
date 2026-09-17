@@ -1,6 +1,323 @@
 use super::*;
 
 #[test]
+fn direct_runtime_calls_use_classified_boxed_abi() {
+    for (symbol, arity) in [
+        ("molt_cell_new", 1),
+        ("molt_cell_get", 1),
+        ("molt_cell_set", 2),
+        ("molt_abs_builtin", 1),
+        ("molt_math_sin", 1),
+        ("molt_cell_eq", 2),
+        ("molt_chan_new", 1),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("runtime_call".into(), vec![], TirType::DynBox);
+        let raw = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, 7));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![raw; arity],
+            results: vec![result],
+            attrs: [
+                ("_original_kind".into(), AttrValue::Str("call".into())),
+                ("s_value".into(), AttrValue::Str(symbol.into())),
+            ]
+            .into_iter()
+            .collect(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let lowered = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .expect("classified runtime call ABI");
+        let ir = lowered.print_to_string().to_string();
+        assert!(ir.contains(&format!("call i64 @{symbol}(")), "{ir}");
+        assert!(
+            !ir.contains(&format!("@{symbol}(i64 7")),
+            "raw integer must be boxed: {ir}"
+        );
+        assert!(!ir.contains("@molt_call_bind"), "{ir}");
+    }
+}
+
+#[test]
+fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
+    for (symbol, arity) in [("molt_spawn", 1), ("molt_print_newline", 0)] {
+        for with_result in [false, true] {
+            let ctx = Context::create();
+            let backend = make_backend(&ctx);
+            let mut func = TirFunction::new("void_runtime_call".into(), vec![], TirType::DynBox);
+            let arg = func.fresh_value();
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_none_def(arg));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![arg; arity],
+                results: if with_result { vec![result] } else { vec![] },
+                attrs: [
+                    ("_original_kind".into(), AttrValue::Str("call".into())),
+                    ("s_value".into(), AttrValue::Str(symbol.into())),
+                ]
+                .into_iter()
+                .collect(),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return { values: vec![arg] };
+            if with_result {
+                let error = try_lower_tir_to_llvm(&func, &backend).expect_err("void call result");
+                assert_lowering_error_contains(&error, "has result values");
+            } else {
+                let lowered = lower_tir_to_llvm(&func, &backend);
+                let ir = lowered.print_to_string().to_string();
+                assert!(ir.contains(&format!("call void @{symbol}(")), "{ir}");
+                backend.module.verify().expect("void boxed call ABI");
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_runtime_calls_reject_unclassified_arity_and_internal_target() {
+    for (symbol, kind, arity) in [
+        ("molt_cell_new", "call", 2),
+        ("molt_unknown_cell", "call", 1),
+        ("molt_cell_get", "call_internal", 1),
+        ("molt_int_from_i64", "call", 1),
+        ("molt_int_as_i64", "call", 1),
+        ("molt_is_truthy", "call", 1),
+        ("molt_obj_get_state", "call", 1),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("invalid_runtime_call".into(), vec![], TirType::DynBox);
+        let arg = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(arg));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![arg; arity],
+            results: vec![result],
+            attrs: [
+                ("_original_kind".into(), AttrValue::Str(kind.into())),
+                ("s_value".into(), AttrValue::Str(symbol.into())),
+            ]
+            .into_iter()
+            .collect(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let error = try_lower_tir_to_llvm(&func, &backend).expect_err("unknown ABI must fail");
+        assert_lowering_error_contains(&error, "no exact native linkage ABI");
+    }
+}
+
+#[test]
+fn boxed_runtime_calls_retire_unbound_owned_results() {
+    for (opcode, kind) in [(OpCode::Call, "call"), (OpCode::Copy, "cell_new")] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend
+            .runtime_callable_symbols
+            .insert("molt_cell_new".into());
+        let mut func = TirFunction::new("discard_runtime_result".into(), vec![], TirType::DynBox);
+        let arg = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(arg));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![arg],
+            results: vec![],
+            attrs: [
+                ("_original_kind".into(), AttrValue::Str(kind.into())),
+                ("s_value".into(), AttrValue::Str("molt_cell_new".into())),
+            ]
+            .into_iter()
+            .collect(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![arg] };
+        let lowered = lower_tir_to_llvm(&func, &backend);
+        let ir = lowered.print_to_string().to_string();
+        assert!(ir.contains("call i64 @molt_cell_new("), "{ir}");
+        assert!(
+            ir.contains("call void @molt_dec_ref_obj(i64 %molt_cell_new)"),
+            "{ir}"
+        );
+        backend
+            .module
+            .verify()
+            .expect("discarded boxed result ownership");
+    }
+}
+
+#[test]
+fn callable_dispatch_retires_only_discarded_owned_results() {
+    for (opcode, kind, argc, result_name) in [
+        (OpCode::Call, "call_func", 1, "call_func_or_bind_phi"),
+        (OpCode::Call, "call_function", 1, "call_func_or_bind_phi"),
+        (OpCode::Call, "call_bind", 2, "molt_call_bind_ic"),
+        (OpCode::Call, "call_indirect", 2, "molt_call_indirect_ic"),
+        (OpCode::Call, "call_guarded", 1, "call_func"),
+        (OpCode::Call, "call", 1, "call_result"),
+        (OpCode::CallMethod, "call_method", 1, "call_method_bind"),
+        (
+            OpCode::CallMethodIc,
+            "call_method_ic",
+            1,
+            "molt_call_method_ic0",
+        ),
+        (
+            OpCode::CallSuperMethodIc,
+            "call_super_method_ic",
+            2,
+            "molt_call_super_method_ic0",
+        ),
+        (OpCode::CallBuiltin, "call_builtin", 2, "call_builtin"),
+        (OpCode::CallBuiltin, "named_builtin", 1, "call_builtin"),
+        (OpCode::CallBuiltin, "range_new", 3, "range_new"),
+    ] {
+        for bound in [false, true] {
+            let ctx = Context::create();
+            let backend = make_backend(&ctx);
+            let mut func = TirFunction::new("call_result_owner".into(), vec![], TirType::DynBox);
+            let input = func.fresh_value();
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_none_def(input));
+            let mut attrs = AttrDict::from([
+                (
+                    "_original_kind".into(),
+                    AttrValue::Str(
+                        if kind == "named_builtin" {
+                            "call_builtin"
+                        } else {
+                            kind
+                        }
+                        .into(),
+                    ),
+                ),
+                ("method".into(), AttrValue::Str("m".into())),
+            ]);
+            if kind == "named_builtin" {
+                attrs.insert("name".into(), AttrValue::Str("len".into()));
+            }
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![input; argc],
+                results: if bound { vec![result] } else { vec![] },
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![if bound { result } else { input }],
+            };
+            let ir = try_lower_tir_to_llvm(&func, &backend)
+                .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+                .print_to_string()
+                .to_string();
+            backend
+                .module
+                .verify()
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
+            let release = format!("call void @molt_dec_ref_obj(i64 %{result_name})");
+            assert_eq!(
+                ir.matches(&release).count(),
+                usize::from(!bound),
+                "{kind}, bound={bound}: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars() {
+    for kind in ["call", "call_internal"] {
+        for return_type in [
+            None,
+            Some(TirType::DynBox),
+            Some(TirType::Str),
+            Some(TirType::BigInt),
+            Some(TirType::I64),
+            Some(TirType::F64),
+            Some(TirType::Bool),
+            Some(TirType::None),
+        ] {
+            for bound in [false, true] {
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                backend.function_linkage_abis.insert(
+                    "compiled_result_target".into(),
+                    test_native_linkage_abi(vec![], return_type.clone()),
+                );
+                let mut func =
+                    TirFunction::new("compiled_result_owner".into(), vec![], TirType::DynBox);
+                let input = func.fresh_value();
+                let result = func.fresh_value();
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops.push(const_none_def(input));
+                entry.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Call,
+                    operands: vec![],
+                    results: if bound { vec![result] } else { vec![] },
+                    attrs: AttrDict::from([
+                        ("_original_kind".into(), AttrValue::Str(kind.into())),
+                        (
+                            "s_value".into(),
+                            AttrValue::Str("compiled_result_target".into()),
+                        ),
+                    ]),
+                    source_span: None,
+                });
+                entry.terminator = Terminator::Return {
+                    values: vec![if bound { result } else { input }],
+                };
+                let ir = try_lower_tir_to_llvm(&func, &backend)
+                    .unwrap_or_else(|error| {
+                        panic!("{kind}, {return_type:?}: {:?}", error.diagnostics())
+                    })
+                    .print_to_string()
+                    .to_string();
+                backend
+                    .module
+                    .verify()
+                    .unwrap_or_else(|error| panic!("{kind}, {return_type:?}: {error}"));
+                let owned = return_type.as_ref().is_some_and(|ty| !ty.is_unboxed());
+                assert_eq!(
+                    ir.matches("call void @molt_dec_ref_obj(i64 %direct_call)")
+                        .count(),
+                    usize::from(owned && !bound),
+                    "{kind}, {return_type:?}, bound={bound}: {ir}",
+                );
+                if !bound {
+                    assert!(
+                        !ir.contains("@molt_int_from_i64("),
+                        "discarded scalar must not allocate: {ir}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
     for (opcode, preserved, dict) in [
         (OpCode::BuildDict, None, true),

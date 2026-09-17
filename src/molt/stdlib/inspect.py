@@ -7,6 +7,7 @@ Pure-forwarding shims eliminated per MOL-215 where argument signatures permit.
 from __future__ import annotations
 
 from typing import Any
+from functools import partial as _partial
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -43,6 +44,7 @@ __all__ = [
     "iscoroutinefunction",
     "isasyncgenfunction",
     "isgeneratorfunction",
+    "markcoroutinefunction",
     "signature",
 ]
 
@@ -72,6 +74,7 @@ _molt_currentframe = _require_intrinsic("molt_inspect_currentframe")
 _molt_getdoc = _require_intrinsic("molt_inspect_getdoc")
 _molt_getmembers = _require_intrinsic("molt_inspect_getmembers")
 _molt_isfunction = _require_intrinsic("molt_inspect_isfunction")
+_molt_is_bound_method = _require_intrinsic("molt_is_bound_method")
 _molt_isclass = _require_intrinsic("molt_inspect_isclass")
 _molt_ismodule = _require_intrinsic("molt_inspect_ismodule")
 _molt_iscoroutine = _require_intrinsic("molt_inspect_iscoroutine")
@@ -84,6 +87,21 @@ _molt_getasyncgenstate = _require_intrinsic("molt_inspect_getasyncgenstate")
 _molt_getcoroutinestate = _require_intrinsic("molt_inspect_getcoroutinestate")
 _molt_getgeneratorlocals = _require_intrinsic("molt_gen_locals")
 _molt_getasyncgenlocals = _require_intrinsic("molt_asyncgen_locals")
+
+# This explicit opt-in protocol is not the compiled code's execution kind.
+# Identity (not truthiness) prevents arbitrary user attributes from opting in.
+_is_coroutine_mark = object()
+_partial_type = type(_partial(bool))
+
+
+def _unwrap_callable_kind(obj):
+    while True:
+        if _molt_is_bound_method(obj):
+            obj = obj.__func__
+        elif isinstance(obj, _partial_type):
+            obj = obj.func
+        else:
+            return obj
 
 
 def cleandoc(doc):
@@ -119,15 +137,24 @@ def iscoroutine(obj):
 
 
 def iscoroutinefunction(obj):
-    return _molt_iscoroutinefunction(obj)
+    obj = _unwrap_callable_kind(obj)
+    return _molt_iscoroutinefunction(obj) or (
+        getattr(obj, "_is_coroutine_marker", None) is _is_coroutine_mark
+    )
+
+
+def markcoroutinefunction(func):
+    func = getattr(func, "__func__", func)
+    func._is_coroutine_marker = _is_coroutine_mark
+    return func
 
 
 def isasyncgenfunction(obj):
-    return _molt_isasyncgenfunction(obj)
+    return _molt_isasyncgenfunction(_unwrap_callable_kind(obj))
 
 
 def isgeneratorfunction(obj):
-    return _molt_isgeneratorfunction(obj)
+    return _molt_isgeneratorfunction(_unwrap_callable_kind(obj))
 
 
 def isawaitable(obj):

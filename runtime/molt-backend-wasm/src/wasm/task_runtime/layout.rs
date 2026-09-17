@@ -1,7 +1,9 @@
 use super::payload::emit_register_cancel_token;
+use molt_tir::trampolines::{
+    TaskCompletion, TaskConstructorLayout, TaskRuntimeKind, TrampolineTaskKind,
+};
 use wasm_encoder::{Function, Instruction, ValType};
 
-use crate::TrampolineTaskKind;
 use crate::wasm_abi::{
     GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, WasmRuntimeImport,
 };
@@ -10,49 +12,35 @@ use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::{WasmCallableTableTarget, WasmTableRelocations};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WasmTaskCompletion {
-    ReturnTask,
-    RegisterCancelToken,
-    WrapAsyncGen,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::wasm) struct WasmTaskRuntimeLayout {
-    diagnostic_name: &'static str,
     runtime_task_kind: i64,
     payload_base_offset: i32,
-    completion: WasmTaskCompletion,
+    completion: TaskCompletion,
 }
 
 impl WasmTaskRuntimeLayout {
     pub(in crate::wasm) fn for_alloc_task_kind(task_kind: Option<&str>) -> Self {
-        match task_kind.unwrap_or("future") {
-            "generator" => Self::generator(),
-            "future" => Self::future(),
-            "coroutine" => Self::coroutine(),
-            other => panic!("unknown task kind: {other}"),
-        }
+        Self::from_constructor_layout(TaskConstructorLayout::for_alloc_kind(task_kind))
     }
 
     pub(in crate::wasm) fn for_call_async() -> Self {
-        Self {
-            diagnostic_name: "async call",
-            runtime_task_kind: TASK_KIND_FUTURE,
-            payload_base_offset: 0,
-            completion: WasmTaskCompletion::ReturnTask,
-        }
+        Self::from_constructor_layout(TaskConstructorLayout::for_call_async())
     }
 
     pub(in crate::wasm) fn for_trampoline_task_kind(kind: TrampolineTaskKind) -> Self {
-        match kind {
-            TrampolineTaskKind::Generator => Self::generator(),
-            TrampolineTaskKind::Coroutine => Self::coroutine(),
-            TrampolineTaskKind::AsyncGen => Self {
-                diagnostic_name: "async generator",
-                runtime_task_kind: TASK_KIND_GENERATOR,
-                payload_base_offset: GEN_CONTROL_SIZE,
-                completion: WasmTaskCompletion::WrapAsyncGen,
-            },
+        Self::from_constructor_layout(kind.constructor_layout())
+    }
+
+    fn from_constructor_layout(layout: TaskConstructorLayout) -> Self {
+        let runtime_task_kind = match layout.runtime_kind() {
+            TaskRuntimeKind::Future => TASK_KIND_FUTURE,
+            TaskRuntimeKind::Generator => TASK_KIND_GENERATOR,
+            TaskRuntimeKind::Coroutine => TASK_KIND_COROUTINE,
+        };
+        Self {
+            runtime_task_kind,
+            payload_base_offset: layout.payload_base_offset(GEN_CONTROL_SIZE),
+            completion: layout.completion(),
         }
     }
 
@@ -64,38 +52,12 @@ impl WasmTaskRuntimeLayout {
         self.payload_base_offset
     }
 
-    pub(in crate::wasm) fn diagnostic_name(self) -> &'static str {
-        self.diagnostic_name
-    }
-
     pub(in crate::wasm) fn registers_cancel_token(self) -> bool {
-        matches!(self.completion, WasmTaskCompletion::RegisterCancelToken)
+        matches!(self.completion, TaskCompletion::RegisterCancelToken)
     }
 
     pub(in crate::wasm) fn needs_alloc_resolve(self, has_payload_args: bool) -> bool {
         has_payload_args
-    }
-
-    pub(in crate::wasm) fn validate_closure_size(
-        self,
-        closure_size: i64,
-        arity: usize,
-        has_closure: bool,
-    ) {
-        if closure_size < 0 {
-            panic!(
-                "{} closure size must be non-negative",
-                self.diagnostic_name()
-            );
-        }
-        let payload_slots = arity + usize::from(has_closure);
-        let needed = i64::from(self.payload_base_offset()) + (payload_slots as i64) * 8;
-        if closure_size < needed {
-            panic!(
-                "{} closure size too small for trampoline",
-                self.diagnostic_name()
-            );
-        }
     }
 
     pub(in crate::wasm) fn trampoline_local_types(self) -> [ValType; 4] {
@@ -132,50 +94,32 @@ impl WasmTaskRuntimeLayout {
         import_ids: &TrackedImportIds,
         reloc_enabled: bool,
         task_local: u32,
+        result_local: u32,
     ) {
         match self.completion {
-            WasmTaskCompletion::ReturnTask => {
+            TaskCompletion::ReturnTask => {
                 func.instruction(&Instruction::LocalGet(task_local));
             }
-            WasmTaskCompletion::RegisterCancelToken => {
+            TaskCompletion::RegisterCancelToken => {
                 emit_register_cancel_token(func, import_ids, reloc_enabled, task_local);
                 func.instruction(&Instruction::LocalGet(task_local));
             }
-            WasmTaskCompletion::WrapAsyncGen => {
+            TaskCompletion::WrapAsyncGen => {
                 func.instruction(&Instruction::LocalGet(task_local));
                 emit_call(
                     func,
                     reloc_enabled,
                     import_ids[WasmRuntimeImport::AsyncgenNew],
                 );
+                func.instruction(&Instruction::LocalSet(result_local));
+                func.instruction(&Instruction::LocalGet(task_local));
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[WasmRuntimeImport::DecRefObj],
+                );
+                func.instruction(&Instruction::LocalGet(result_local));
             }
-        }
-    }
-
-    fn future() -> Self {
-        Self {
-            diagnostic_name: "future",
-            runtime_task_kind: TASK_KIND_FUTURE,
-            payload_base_offset: 0,
-            completion: WasmTaskCompletion::RegisterCancelToken,
-        }
-    }
-
-    fn generator() -> Self {
-        Self {
-            diagnostic_name: "generator",
-            runtime_task_kind: TASK_KIND_GENERATOR,
-            payload_base_offset: GEN_CONTROL_SIZE,
-            completion: WasmTaskCompletion::ReturnTask,
-        }
-    }
-
-    fn coroutine() -> Self {
-        Self {
-            diagnostic_name: "coroutine",
-            runtime_task_kind: TASK_KIND_COROUTINE,
-            payload_base_offset: 0,
-            completion: WasmTaskCompletion::RegisterCancelToken,
         }
     }
 }

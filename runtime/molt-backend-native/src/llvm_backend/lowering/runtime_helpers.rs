@@ -1,62 +1,56 @@
 use super::*;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    /// Lower an unhandled preserved SimpleIR op (`Copy` with `_original_kind`)
-    /// as the runtime call `molt_<kind>(boxed operands...)`, the same entry the
-    /// SimpleIR-consuming backends dispatch to. Returns `false` (declining) when
-    /// `molt_<kind>` is not a defined runtime intrinsic for the active profile —
-    /// the op then hits the `Copy` fail-loud guard, which refuses to emit wrong
-    /// code. The operand→arg mapping is positional (each operand a NaN-boxed
-    /// i64), matching the runtime ABI for these `extern "C"` conversion/operator
-    /// functions; the boxed return value is bound to the result when present.
-    ///
-    /// Covers BOTH value-producing and RESULT-LESS preserved ops. Result-less
-    /// side effects (`print_newline`, `set_update`/`set_discard`/…,
-    /// `dict_str_int_inc`/`dict_update`/…, `list_extend`/…) are emitted purely
-    /// for their effect: the native handlers call `molt_<kind>` and bind the
-    /// return only when the op carries an `out` var, exactly as we do here.
-    /// Without the result-less path these ops fell to the `Copy` "1+ operands,
-    /// 0 results → no-op" branch and were SILENTLY DROPPED (a missing newline, a
-    /// set/dict mutation that never happened) — the same passthrough bug class as
-    /// the value-producing ops, just manifesting as a dropped side effect rather
-    /// than a wrong result. Ops needing a non-positional / non-boxed operand
-    /// convention (unboxed pointer, compile-time string, function address) are
-    /// claimed by their dedicated `match` arms BEFORE this generic fallback, so
-    /// only the positional-boxed kinds reach here.
-    /// `PRESERVED_VOID_RUNTIME_OPS` is checked before the default `molt_<kind>`
-    /// i64-return ABI so result-less void calls are declared with the real C ABI.
+    /// Lower a preserved operation through its admitted runtime boxed-call ABI.
+    /// Both bound and discarded calls execute: owned results are bound or
+    /// released, while void calls produce no value. Generated semantic facts,
+    /// not symbol spelling or i64 carriers, authorize this route. Dedicated
+    /// raw/mixed-ABI operations are handled before this dispatch; an unclassified
+    /// runtime symbol fails closed instead of borrowing operand-zero semantics.
     pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
-        if let Some((symbol, arity)) = preserved_void_runtime_call_abi(kind) {
-            if op.operands.len() != arity || !op.results.is_empty() {
-                return false;
-            }
-            if !self.backend.runtime_callable_symbols.contains(symbol) {
-                return false;
-            }
-            let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
-                .operands
-                .iter()
-                .map(|&id| self.materialize_dynbox_operand(id).into())
-                .collect();
-            let func = self.ensure_runtime_void_fn(symbol, arity);
-            self.backend
-                .builder
-                .build_call(func, &arg_bits, symbol)
-                .unwrap();
-            return true;
-        }
-
         let symbol = format!("molt_{kind}");
         if !self.backend.runtime_callable_symbols.contains(&symbol) {
             return false;
         }
-        let Some(return_abi) = runtime_import_return_abi(&symbol, op.operands.len()) else {
+        let Some(abi) = runtime_boxed_abi(&symbol, op.operands.len()) else {
             self.record_fatal(format!(
                 "preserved SimpleIR op `{kind}` maps to runtime symbol `{symbol}`, \
-                 but that symbol has no LLVM ABI classification"
+                 but that symbol has no positional boxed-value ABI classification"
             ));
             return true;
         };
+        self.emit_boxed_runtime_call(op, abi);
+        true
+    }
+
+    /// Emit a classified positional boxed ABI call for either a direct runtime
+    /// CALL or a preserved operation. Both routes share boxing and return rules.
+    pub(super) fn emit_boxed_runtime_call(&mut self, op: &TirOp, abi: &RuntimeBoxedAbi) {
+        let symbol = abi.symbol;
+        if op.operands.len() != abi.arity {
+            self.record_fatal(format!(
+                "boxed runtime symbol `{symbol}` has mismatched arity"
+            ));
+            return;
+        }
+        let return_abi = match abi.result {
+            RuntimeBoxedReturn::OwnedValue => RuntimeReturnAbi::I64,
+            RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
+        };
+        // Keep declaration custody distinct from value semantics. Dedicated
+        // raw/mixed lowering may use the same machine-signature authority.
+        if runtime_import_return_abi(symbol, abi.arity) != Some(return_abi) {
+            self.record_fatal(format!(
+                "boxed runtime symbol `{symbol}` has no matching LLVM machine ABI"
+            ));
+            return;
+        }
+        if op.results.len() > 1 {
+            self.record_fatal(format!(
+                "boxed runtime symbol `{symbol}` has multiple result values"
+            ));
+            return;
+        }
         let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
             .operands
             .iter()
@@ -66,34 +60,46 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             RuntimeReturnAbi::Void => {
                 if !op.results.is_empty() {
                     self.record_fatal(format!(
-                        "preserved SimpleIR op `{kind}` maps to void runtime symbol `{symbol}` but has result values"
+                        "call to void runtime symbol `{symbol}` has result values"
                     ));
-                    return true;
+                    return;
                 }
-                let func = self.ensure_runtime_void_fn(&symbol, op.operands.len());
+                let func = self.ensure_runtime_void_fn(symbol, op.operands.len());
                 self.backend
                     .builder
-                    .build_call(func, &arg_bits, &symbol)
+                    .build_call(func, &arg_bits, symbol)
                     .unwrap();
             }
             RuntimeReturnAbi::I64 => {
-                let func = self.ensure_runtime_i64_fn(&symbol, op.operands.len());
+                let func = self.ensure_runtime_i64_fn(symbol, op.operands.len());
                 let result = self
                     .backend
                     .builder
-                    .build_call(func, &arg_bits, &symbol)
+                    .build_call(func, &arg_bits, symbol)
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                // Bind the boxed return only when the op produces a value; a result-less
-                // op was emitted purely for its side effect.
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                // The boxed-call contract transfers an owned result. A call
+                // without an SSA result still has to retire that ownership.
+                self.bind_owned_runtime_result(op, result);
             }
         }
-        true
+    }
+
+    /// Bind a transferred object owner, or retire it when the op discards it.
+    /// Dedicated mixed-ABI calls use this only after establishing ownership;
+    /// a borrowed runtime result must be explicitly retained first.
+    pub(super) fn bind_owned_runtime_result(&mut self, op: &TirOp, result: BasicValueEnum<'ctx>) {
+        if let Some(&result_id) = op.results.first() {
+            self.values.insert(result_id, result);
+            self.value_types.insert(result_id, TirType::DynBox);
+        } else {
+            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(release, &[result.into()], "")
+                .unwrap();
+        }
     }
 
     pub(super) fn emit_call_bind_runtime(

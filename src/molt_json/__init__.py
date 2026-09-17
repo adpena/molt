@@ -6,12 +6,13 @@ import json
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _intrinsics import runtime_active as _runtime_active
 
-try:
+if _runtime_active():
     _MOLT_JSON_PARSE_SCALAR_OBJ = _require_intrinsic(
         "molt_json_parse_scalar_obj", globals()
     )
-except RuntimeError:
+else:
     _MOLT_JSON_PARSE_SCALAR_OBJ = None
 
 

@@ -397,7 +397,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                         "field"
                     };
                     dec_ref_bits(_py, val);
-                    return attr_error(_py, "dataclass", name) as u64;
+                    return attr_error(_py, "dataclass", name);
                 }
                 return val;
             }

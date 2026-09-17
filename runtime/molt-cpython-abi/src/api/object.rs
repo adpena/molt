@@ -6,11 +6,10 @@
 //! to reasonable defaults.
 
 use crate::abi_types::{
-    _PyErr_StackItem, METH_FASTCALL, METH_KEYWORDS, METH_METHOD, METH_NOARGS, METH_O, METH_VARARGS,
-    Py_False, Py_None, Py_TPFLAGS_HAVE_VECTORCALL, Py_True, Py_ssize_t, PyCFunction,
-    PyCFunctionFast, PyCFunctionFastWithKeywords, PyCFunctionObject, PyCFunctionWithKeywords,
-    PyCodeObject, PyFrameObject, PyGenericAliasObject, PyInterpreterState, PyMethodDef,
-    PyMethodObject, PyMutex, PyObject, PyThreadState, PyTypeObject, PyVectorcallFunc,
+    _PyErr_StackItem, Py_False, Py_None, Py_TPFLAGS_HAVE_VECTORCALL, Py_True, Py_ssize_t,
+    PyCFunction, PyCFunctionObject, PyCodeObject, PyFrameObject, PyGenericAliasObject,
+    PyInterpreterState, PyMethodDef, PyMethodObject, PyMutex, PyObject, PyThreadState,
+    PyTypeObject, PyVectorcallFunc,
 };
 use crate::bridge::{GLOBAL_BRIDGE, resolved_molt_handle};
 use crate::hooks::hooks_or_stubs;
@@ -1619,6 +1618,7 @@ unsafe fn foreign_set_item(o: *mut PyObject, key: *mut PyObject, v: *mut PyObjec
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) -> *mut PyObject {
     if o.is_null() || key.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     // ── Molt-native fast path (dict/list/tuple lanes — ordering unchanged) ──
@@ -1631,93 +1631,44 @@ pub unsafe extern "C" fn PyObject_GetItem(o: *mut PyObject, key: *mut PyObject) 
         let obj = o_bits.decode();
         if obj.is_ptr() {
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
-            // Dict: use dict_get
+            // Mapping owns conversion, lookup status and temporary custody.
+            // Generic subscription differs only by its new-result reference
+            // and KeyError on a genuine miss.
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
-                if let Some(key_bits) = key_bits {
-                    let val_result = unsafe { (h.dict_get)(o_bits.bits(), key_bits) };
-                    if matches!(
-                        val_result.decode(),
-                        crate::hooks::DecodedHandleResult::Missing
-                    ) {
-                        // Dict miss: CPython `dict_subscript` raises `KeyError`
-                        // with the key as its argument (Objects/dictobject.c).
-                        // The prior bare NULL stranded any C caller relying on
-                        // the set-exception contract.
+                let value = unsafe { crate::api::mapping::PyDict_GetItemWithError(o, key) };
+                if value.is_null() {
+                    if !crate::api::errors::transfer_runtime_pending_to_current() {
                         unsafe {
                             crate::api::errors::PyErr_SetObject(
-                                (&raw mut crate::abi_types::PyExc_KeyError)
-                                    .cast::<crate::abi_types::PyObject>(),
+                                (&raw mut crate::abi_types::PyExc_KeyError).cast(),
                                 key,
                             );
                         }
+                    }
+                } else {
+                    unsafe { crate::api::refcount::Py_INCREF(value) };
+                }
+                return value;
+            }
+            // Sequence indexing shares the exact physical result identity and
+            // new-reference contract with the public sequence API.
+            if tag == crate::abi_types::MoltTypeTag::List as u8
+                || tag == crate::abi_types::MoltTypeTag::Tuple as u8
+            {
+                let Some(key_value) = (unsafe { crate::bridge::RuntimeValue::acquire(key) }) else {
+                    return ptr::null_mut();
+                };
+                if let Some(idx) = MoltObject::from_bits(key_value.bits()).as_int() {
+                    let Ok(idx) = Py_ssize_t::try_from(idx) else {
+                        unsafe {
+                            crate::api::errors::PyErr_SetString(
+                                (&raw mut crate::abi_types::PyExc_IndexError).cast(),
+                                c"cannot fit 'int' into an index-sized integer".as_ptr(),
+                            );
+                        }
                         return ptr::null_mut();
-                    }
-                    return unsafe { GLOBAL_BRIDGE.borrowed_result_to_new_pyobj(val_result) };
-                }
-                // Foreign key into a native dict: fall to the generic slot path.
-            }
-            // List: use list_item with int key
-            if tag == crate::abi_types::MoltTypeTag::List as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
-                if let Some(key_bits) = key_bits {
-                    let key_obj = MoltObject::from_bits(key_bits);
-                    if let Some(idx) = key_obj.as_int() {
-                        let len = unsafe { (h.list_len)(o_bits.bits()) };
-                        let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
-                        if actual_idx < 0 || actual_idx >= len as i64 {
-                            // CPython list indexing raises IndexError, not NULL.
-                            unsafe {
-                                crate::api::errors::PyErr_SetString(
-                                    (&raw mut crate::abi_types::PyExc_IndexError)
-                                        .cast::<crate::abi_types::PyObject>(),
-                                    c"list index out of range".as_ptr(),
-                                );
-                            }
-                            return ptr::null_mut();
-                        }
-                        let Some(pointer) = GLOBAL_BRIDGE
-                            .list_view_item_pointer(o_bits.bits(), actual_idx as usize)
-                        else {
-                            unsafe {
-                                crate::api::errors::PyErr_SetString(
-                                    (&raw mut crate::abi_types::PyExc_SystemError)
-                                        .cast::<crate::abi_types::PyObject>(),
-                                    c"list projection item unavailable".as_ptr(),
-                                );
-                            }
-                            return ptr::null_mut();
-                        };
-                        unsafe { crate::api::refcount::Py_INCREF(pointer) };
-                        return pointer;
-                    }
-                }
-            }
-            // Tuple: use tuple_item with int key
-            if tag == crate::abi_types::MoltTypeTag::Tuple as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
-                if let Some(key_bits) = key_bits {
-                    let key_obj = MoltObject::from_bits(key_bits);
-                    if let Some(idx) = key_obj.as_int() {
-                        let len = unsafe { (h.tuple_len)(o_bits.bits()) };
-                        let actual_idx = if idx < 0 { len as i64 + idx } else { idx };
-                        if actual_idx < 0 || actual_idx >= len as i64 {
-                            unsafe {
-                                crate::api::errors::PyErr_SetString(
-                                    (&raw mut crate::abi_types::PyExc_IndexError)
-                                        .cast::<crate::abi_types::PyObject>(),
-                                    c"tuple index out of range".as_ptr(),
-                                );
-                            }
-                            return ptr::null_mut();
-                        }
-                        return unsafe {
-                            GLOBAL_BRIDGE.borrowed_result_to_new_pyobj((h.tuple_item)(
-                                o_bits.bits(),
-                                actual_idx as usize,
-                            ))
-                        };
-                    }
+                    };
+                    return unsafe { crate::api::abstract_sequence::PySequence_GetItem(o, idx) };
                 }
             }
         }
@@ -1733,6 +1684,7 @@ pub unsafe extern "C" fn PyObject_SetItem(
     v: *mut PyObject,
 ) -> c_int {
     if o.is_null() || key.is_null() || v.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     // ── Molt-native fast path (dict lane — ordering unchanged). A bridge miss
@@ -1744,14 +1696,7 @@ pub unsafe extern "C" fn PyObject_SetItem(
         if obj.is_ptr() {
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let bridge2 = &*GLOBAL_BRIDGE;
-                let key_bits = unsafe { bridge2.molt_value_for_pyobj(key) };
-                let val_bits = unsafe { bridge2.molt_value_for_pyobj(v) };
-                if let (Some(key_bits), Some(val_bits)) = (key_bits, val_bits) {
-                    unsafe { (h.dict_set)(o_bits.bits(), key_bits, val_bits) };
-                    return 0;
-                }
-                // Foreign key/value into a native dict: fall to the slot path.
+                return unsafe { crate::api::mapping::PyDict_SetItem(o, key, v) };
             }
         }
     }
@@ -1762,6 +1707,7 @@ pub unsafe extern "C" fn PyObject_SetItem(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_DelItem(o: *mut PyObject, key: *mut PyObject) -> c_int {
     if o.is_null() || key.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
     // ── Native dict fast path: real deletion via the runtime dict authority.
@@ -1773,13 +1719,7 @@ pub unsafe extern "C" fn PyObject_DelItem(o: *mut PyObject, key: *mut PyObject) 
         if obj.is_ptr() {
             let tag = unsafe { (h.classify_heap)(o_bits.bits()) };
             if tag == crate::abi_types::MoltTypeTag::Dict as u8 {
-                let key_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(key) };
-                if let Some(key_bits) = key_bits {
-                    // dict_del removes the entry and returns -1 (KeyError set by
-                    // the runtime) if absent.
-                    return unsafe { (h.dict_del)(o_bits.bits(), key_bits) };
-                }
-                // Foreign key into a native dict: fall to the slot path.
+                return unsafe { crate::api::mapping::PyDict_DelItem(o, key) };
             }
         }
     }
@@ -2295,7 +2235,7 @@ unsafe fn call_bridged_callable(
 ) -> *mut PyObject {
     // Set when the args tuple was marshaled from a C-layout tuple: the fresh
     // Molt tuple is owned here and released after the call.
-    let mut owned_args_bits: Option<u64> = None;
+    let mut owned_args = None;
     let args_bits = if args.is_null() {
         0
     } else {
@@ -2309,7 +2249,7 @@ unsafe fn call_bridged_callable(
             // (bridge proxies, singletons, or raw-registered opaque tokens).
             None => match unsafe { molt_tuple_bits_from_c_tuple(args) } {
                 Some(bits) => {
-                    owned_args_bits = Some(bits);
+                    owned_args = Some(unsafe { crate::bridge::RuntimeValue::from_owned(bits) });
                     bits
                 }
                 None => {
@@ -2359,17 +2299,14 @@ unsafe fn call_bridged_callable(
     };
     let h = hooks_or_stubs();
     let result_bits = unsafe { (h.object_call)(callable_bits, args_bits, kwargs_bits) };
-    if let Some(bits) = owned_args_bits {
-        unsafe { (h.dec_ref)(bits) };
-    }
+    drop(owned_args);
     unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result_bits) }
 }
 
 /// Marshal a C-layout tuple (`PyTupleObject` minted by the shim's
 /// `PyTuple_New`/`PyTuple_Pack`) into a fresh, owned Molt tuple handle. Every
-/// item must resolve through the bridge by identity — bridge proxies, static
-/// singletons, or raw-registered opaque tokens (the established
-/// container-crossing representation for extension-owned C objects). Returns
+/// item uses the shared semantic crossing custody — borrowed canonical values
+/// or a temporary owned foreign wrapper. Returns
 /// `None` (caller fails loudly) when `args` has no C tuple layout or an item
 /// does not resolve.
 pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option<u64> {
@@ -2380,65 +2317,41 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
     }
     let n = len as usize;
     let items = unsafe { crate::api::sequences::tuple_items_ptr(tuple) };
-    let mut item_bits = Vec::new();
-    if item_bits.try_reserve_exact(n).is_err() {
+    let mut values = Vec::new();
+    if values.try_reserve_exact(n).is_err() {
         unsafe { crate::api::errors::PyErr_NoMemory() };
         return None;
     }
-    {
-        let bridge = &*GLOBAL_BRIDGE;
-        for i in 0..n {
-            let item = unsafe { *items.add(i) };
-            if item.is_null() {
-                for bits in item_bits.drain(..) {
-                    unsafe { (hooks_or_stubs().dec_ref)(bits) };
-                }
-                return None;
-            }
-            // Cross each argument INTO Molt as a first-class value: bridge
-            // proxies / singletons resolve to their Molt handle, and a genuine
-            // C-extension object gets a `TYPE_ID_FOREIGN` wrapper so the callee
-            // can `getattr`/call it. Each is an owned reference the fresh Molt
-            // tuple takes ownership of (released when the tuple is dropped).
-            let Some(bits) = (unsafe { bridge.molt_value_for_pyobj(item) }) else {
-                for bits in item_bits.drain(..) {
-                    unsafe { (hooks_or_stubs().dec_ref)(bits) };
-                }
-                return None;
-            };
-            item_bits.push(bits);
-        }
+    for i in 0..n {
+        let value = unsafe { crate::bridge::RuntimeValue::acquire(*items.add(i)) }?;
+        values.push(value);
     }
     let h = hooks_or_stubs();
     let tuple_bits = unsafe { (h.alloc_tuple)(n) };
     if tuple_bits == 0 {
-        for bits in item_bits.drain(..) {
-            unsafe { (h.dec_ref)(bits) };
+        if !crate::api::errors::transfer_runtime_pending_to_current() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
         }
         return None;
     }
-    for i in 0..item_bits.len() {
-        let bits = item_bits[i];
+    let tuple_owner = unsafe { crate::bridge::RuntimeValue::from_owned(tuple_bits) };
+    for (i, value) in values.iter().enumerate() {
         let pointer = unsafe { *items.add(i) };
-        match unsafe { (h.tuple_set)(tuple_bits, i, bits, pointer) }.decode() {
-            crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => unsafe {
-                (h.dec_ref)(old_bits)
-            },
+        match unsafe { (h.tuple_set)(tuple_bits, i, value.bits(), pointer) }.decode() {
+            crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => {
+                drop(unsafe { crate::bridge::RuntimeValue::from_owned(old_bits) });
+            }
             crate::hooks::DecodedHandleResult::Ok(_)
             | crate::hooks::DecodedHandleResult::Missing => {}
             crate::hooks::DecodedHandleResult::Error => {
-                for bits in item_bits.drain(..) {
-                    unsafe { (h.dec_ref)(bits) };
+                if !crate::api::errors::transfer_runtime_pending_to_current() {
+                    unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 }
-                unsafe { (h.dec_ref)(tuple_bits) };
                 return None;
             }
         }
     }
-    for bits in item_bits.drain(..) {
-        unsafe { (h.dec_ref)(bits) };
-    }
-    Some(tuple_bits)
+    Some(tuple_owner.into_owned_bits())
 }
 
 #[unsafe(no_mangle)]
@@ -2623,6 +2536,7 @@ fn vectorcall_nargs(nargsf: usize) -> isize {
 
 unsafe fn tuple_from_vectorcall_args(args: *mut *mut PyObject, nargs: isize) -> *mut PyObject {
     if nargs < 0 || (nargs > 0 && args.is_null()) {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     let items = if nargs == 0 {
@@ -2684,8 +2598,20 @@ pub unsafe extern "C" fn PyVectorcall_Function(
 /// NULL without setting one, raise `SystemError` so a C caller's canonical
 /// `res == NULL && PyErr_Occurred()` check is honoured instead of stranding on a
 /// bare NULL (a `SystemError: NULL result without error` / wrong-answer crash).
+/// A non-NULL result with a pending exception is released and replaced with a
+/// SystemError carrying the original exception as context.
 unsafe fn check_vectorcall_result(callable: *mut PyObject, result: *mut PyObject) -> *mut PyObject {
-    if result.is_null() && !exception_already_pending() {
+    let pending = crate::api::errors::transfer_runtime_pending_to_current();
+    if !result.is_null() && pending {
+        unsafe {
+            crate::api::errors::release_preserving_error(&[result]);
+            crate::api::errors::replace_current_with_system_error(
+                "native callable returned a result with an exception set",
+            );
+        }
+        return ptr::null_mut();
+    }
+    if result.is_null() && !pending {
         let type_name = unsafe { type_name_lossy(callable) };
         crate::capi_trace::record_silent_failure("PyObject_Vectorcall", Some(&type_name));
         let message = format!(
@@ -2704,102 +2630,143 @@ unsafe fn check_vectorcall_result(callable: *mut PyObject, result: *mut PyObject
     result
 }
 
-/// Flatten a positional args array (`args[0..nargs]`, borrowed) plus a non-empty
-/// `kwargs` dict into a single vectorcall stack + a `kwnames` tuple, then invoke
-/// `func`. Mirrors CPython `_PyStack_UnpackDict` + the trailing `func(...)`:
-/// the stack reserves one slot at the front so `PY_VECTORCALL_ARGUMENTS_OFFSET`
-/// is set and the callee may borrow `args[-1]` as `self` scratch.
-unsafe fn vectorcall_with_kwargs_dict(
-    func: PyVectorcallFunc,
-    callable: *mut PyObject,
+/// Borrow a validated complete vectorcall span. The caller supplies its extent
+/// by contract; checked arithmetic prevents manufacturing an oversized slice.
+unsafe fn vectorcall_argument_span<'a>(
     args: *mut *mut PyObject,
-    nargs: isize,
-    kwargs: *mut PyObject,
-) -> *mut PyObject {
-    let nkw = unsafe { crate::api::mapping::PyDict_Size(kwargs) };
-    if nkw < 0 {
-        return ptr::null_mut();
-    }
-    let kwnames = unsafe { crate::api::sequences::PyTuple_New(nkw) };
-    if kwnames.is_null() {
-        return ptr::null_mut();
-    }
-    // Layout: [reserved][pos0..pos_{nargs-1}][kwval0..kwval_{nkw-1}].
-    let mut stack: Vec<*mut PyObject> =
-        Vec::with_capacity(1 + nargs.max(0) as usize + nkw as usize);
-    stack.push(ptr::null_mut());
-    for i in 0..nargs {
-        stack.push(unsafe { *args.add(i as usize) });
-    }
-    let mut pos: Py_ssize_t = 0;
-    let mut key: *mut PyObject = ptr::null_mut();
-    let mut value: *mut PyObject = ptr::null_mut();
-    let mut idx: isize = 0;
-    while unsafe {
-        crate::api::mapping::PyDict_Next(kwargs, &raw mut pos, &raw mut key, &raw mut value)
-    } != 0
-    {
-        // `PyTuple_SetItem` steals a ref; `PyDict_Next` hands back a borrowed key.
-        unsafe { crate::api::refcount::Py_INCREF(key) };
-        if unsafe { crate::api::sequences::PyTuple_SetItem(kwnames, idx, key) } != 0 {
-            unsafe { crate::api::refcount::Py_DECREF(kwnames) };
-            return ptr::null_mut();
-        }
-        stack.push(value);
-        idx += 1;
-    }
-    // Args pointer starts AFTER the reserved slot; ARGUMENTS_OFFSET signals it.
-    let args_ptr = unsafe { stack.as_ptr().add(1) } as *mut *mut PyObject;
-    let result = unsafe {
-        func(
-            callable,
-            args_ptr,
-            (nargs as usize) | PY_VECTORCALL_ARGUMENTS_OFFSET,
-            kwnames,
-        )
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> Option<&'a [*mut PyObject]> {
+    let positional = vectorcall_nargs(nargsf) as usize;
+    let keywords = unsafe { crate::api::cfunction::keyword_count(kwnames) }?;
+    let Some(total) = positional.checked_add(keywords) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return None;
     };
-    unsafe { crate::api::refcount::Py_DECREF(kwnames) };
-    // `stack` (and thus the reserved slot the callee may have written) stays live
-    // until here — do not drop it before `func` returns.
-    unsafe { check_vectorcall_result(callable, result) }
+    if total > isize::MAX as usize / std::mem::size_of::<*mut PyObject>()
+        || ((total != 0 || nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET != 0) && args.is_null())
+    {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return None;
+    }
+    Some(if args.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, total) }
+    })
 }
 
-/// CPython 3.12 `_PyVectorcall_Call` (`Objects/call.c`): invoke `func` from a
-/// positional-args tuple + optional `kwargs` dict. The no-keyword fast path
-/// passes the tuple's items with a plain `nargs` (NO `ARGUMENTS_OFFSET`); the
-/// keyword path flattens the dict via `vectorcall_with_kwargs_dict`. Never
-/// re-enters `PyObject_Call`, so it cannot recurse through `tp_call`.
+/// Own the flattened dict values across reentry: the callee may clear or mutate
+/// the original kwargs dict. Slot zero is borrowed scratch, never an owned edge.
+struct VectorcallOwnedArgs {
+    stack: Vec<*mut PyObject>,
+    keys: Vec<*mut PyObject>,
+    names: *mut PyObject,
+}
+
+impl Drop for VectorcallOwnedArgs {
+    fn drop(&mut self) {
+        unsafe {
+            crate::api::errors::release_preserving_error(&self.stack[1..]);
+            crate::api::errors::release_preserving_error(&self.keys);
+            crate::api::errors::release_preserving_error(&[self.names]);
+        }
+    }
+}
+
+/// Flatten tuple/dict input into the canonical borrowed vectorcall carrier.
+/// Both generic calls and direct C-function tp_call slots use this adapter.
 unsafe fn vectorcall_call_with_tuple(
     func: PyVectorcallFunc,
     callable: *mut PyObject,
     args_tuple: *mut PyObject,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
-    let nargs = if args_tuple.is_null() {
+    let Some(positional) = (unsafe { tuple_arg_vec(args_tuple) }) else {
+        return ptr::null_mut();
+    };
+    unsafe { vectorcall_with_kwargs_dict(func, callable, &positional, positional.len(), kwargs) }
+}
+
+unsafe fn vectorcall_with_kwargs_dict(
+    func: PyVectorcallFunc,
+    callable: *mut PyObject,
+    positional: &[*mut PyObject],
+    nargsf: usize,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    let keywords = if kwargs.is_null() {
         0
     } else {
-        unsafe { crate::api::sequences::PyTuple_Size(args_tuple) }.max(0)
+        let count = unsafe { crate::api::mapping::PyDict_Size(kwargs) };
+        if count < 0 {
+            return ptr::null_mut();
+        }
+        count as usize
     };
-    // Collect the tuple's items (borrowed) into a flat stack — CPython uses the
-    // zero-copy `_PyTuple_ITEMS`; a `Vec` is correct for molt's dual-path
-    // (ABI-layout and bridge-managed) tuples and is bounded by this frame.
-    let mut pos_args: Vec<*mut PyObject> = Vec::with_capacity(nargs as usize);
-    for i in 0..nargs {
-        pos_args.push(unsafe { crate::api::sequences::PyTuple_GetItem(args_tuple, i) });
-    }
-    let has_kwargs = !kwargs.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwargs) } > 0;
-    if !has_kwargs {
+    if keywords == 0 {
         let result = unsafe {
             func(
                 callable,
-                pos_args.as_mut_ptr(),
-                nargs as usize,
+                positional.as_ptr().cast_mut(),
+                nargsf,
                 ptr::null_mut(),
             )
         };
         return unsafe { check_vectorcall_result(callable, result) };
     }
-    unsafe { vectorcall_with_kwargs_dict(func, callable, pos_args.as_mut_ptr(), nargs, kwargs) }
+    let mut packed = VectorcallOwnedArgs {
+        stack: Vec::with_capacity(1 + positional.len() + keywords),
+        keys: Vec::with_capacity(keywords),
+        names: ptr::null_mut(),
+    };
+    packed.stack.push(ptr::null_mut());
+    for &value in positional {
+        unsafe { crate::api::refcount::Py_INCREF(value) };
+        packed.stack.push(value);
+    }
+    let (mut pos, mut key, mut value) = (0, ptr::null_mut(), ptr::null_mut());
+    while unsafe {
+        crate::api::mapping::PyDict_Next(kwargs, &raw mut pos, &raw mut key, &raw mut value)
+    } != 0
+    {
+        if key.is_null() || value.is_null() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return ptr::null_mut();
+        }
+        if unsafe { crate::api::strings::PyUnicode_Check(key) } == 0 {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                    c"keywords must be strings".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        unsafe {
+            crate::api::refcount::Py_INCREF(key);
+            crate::api::refcount::Py_INCREF(value);
+        }
+        packed.keys.push(key);
+        packed.stack.push(value);
+    }
+    if packed.keys.len() != keywords {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    packed.names = unsafe { crate::api::sequences::native_call_args(&packed.keys) };
+    if packed.names.is_null() {
+        return ptr::null_mut();
+    }
+    let result = unsafe {
+        func(
+            callable,
+            packed.stack.as_mut_ptr().add(1),
+            positional.len() | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            packed.names,
+        )
+    };
+    unsafe { check_vectorcall_result(callable, result) }
 }
 
 #[unsafe(no_mangle)]
@@ -2839,42 +2806,20 @@ unsafe fn vectorcall_tpcall_fallback(
     nargsf: usize,
     kwnames: *mut PyObject,
 ) -> *mut PyObject {
-    let nargs = vectorcall_nargs(nargsf);
-    let argstuple = unsafe { tuple_from_vectorcall_args(args, nargs) };
-    if argstuple.is_null() {
+    let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
         return ptr::null_mut();
-    }
-    let mut kwdict: *mut PyObject = ptr::null_mut();
-    if !kwnames.is_null() {
-        let nkw = unsafe { crate::api::sequences::PyTuple_Size(kwnames) };
-        if nkw > 0 {
-            kwdict = unsafe { crate::api::mapping::PyDict_New() };
-            if kwdict.is_null() {
-                unsafe { crate::api::refcount::Py_DECREF(argstuple) };
-                return ptr::null_mut();
-            }
-            for i in 0..nkw {
-                let name = unsafe { crate::api::sequences::PyTuple_GetItem(kwnames, i) };
-                let value = unsafe { *args.add((nargs + i) as usize) };
-                if name.is_null()
-                    || value.is_null()
-                    || unsafe { crate::api::mapping::PyDict_SetItem(kwdict, name, value) } != 0
-                {
-                    unsafe {
-                        crate::api::refcount::Py_DECREF(argstuple);
-                        crate::api::refcount::Py_DECREF(kwdict);
-                    }
-                    return ptr::null_mut();
-                }
-            }
-        }
-    }
-    let result = unsafe { PyObject_Call(callable, argstuple, kwdict) };
-    unsafe { crate::api::refcount::Py_DECREF(argstuple) };
-    if !kwdict.is_null() {
-        unsafe { crate::api::refcount::Py_DECREF(kwdict) };
-    }
-    result
+    };
+    let Some(packed) = (unsafe {
+        crate::api::cfunction::TupleDictArguments::from_vector(
+            values,
+            vectorcall_nargs(nargsf) as usize,
+            kwnames,
+        )
+    }) else {
+        return ptr::null_mut();
+    };
+    let result = unsafe { PyObject_Call(callable, packed.tuple, packed.dict) };
+    unsafe { check_vectorcall_result(callable, result) }
 }
 
 #[unsafe(no_mangle)]
@@ -2903,20 +2848,18 @@ pub unsafe extern "C" fn PyObject_VectorcallDict(
     // the `_PyObject_MakeTpCall` tuple/dict fallback.
     let nargs = vectorcall_nargs(nargsf);
     if let Some(func) = unsafe { vectorcall_function(callable) } {
-        let has_kwargs =
-            !kwargs.is_null() && unsafe { crate::api::mapping::PyDict_Size(kwargs) } > 0;
-        if !has_kwargs {
-            let result = unsafe { func(callable, args, nargsf, ptr::null_mut()) };
-            return unsafe { check_vectorcall_result(callable, result) };
-        }
-        return unsafe { vectorcall_with_kwargs_dict(func, callable, args, nargs, kwargs) };
+        let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, ptr::null_mut()) })
+        else {
+            return ptr::null_mut();
+        };
+        return unsafe { vectorcall_with_kwargs_dict(func, callable, values, nargsf, kwargs) };
     }
     let argstuple = unsafe { tuple_from_vectorcall_args(args, nargs) };
     if argstuple.is_null() {
         return ptr::null_mut();
     }
     let result = unsafe { PyObject_Call(callable, argstuple, kwargs) };
-    unsafe { crate::api::refcount::Py_DECREF(argstuple) };
+    unsafe { crate::api::errors::release_preserving_error(&[argstuple]) };
     result
 }
 
@@ -2993,7 +2936,7 @@ pub unsafe extern "C" fn PyObject_VectorcallMethod(
             kwnames,
         )
     };
-    unsafe { crate::api::refcount::Py_DECREF(method) };
+    unsafe { crate::api::errors::release_preserving_error(&[method]) };
     result
 }
 
@@ -3119,111 +3062,61 @@ pub unsafe extern "C" fn molt_cfunction_call(
     args: *mut PyObject,
     kwargs: *mut PyObject,
 ) -> *mut PyObject {
+    // Always use the same tuple/dict-to-vector adapter as PyObject_Call.
+    // Calling the slot directly must not bypass convention or result checks.
+    unsafe { vectorcall_call_with_tuple(molt_cfunction_vectorcall, callable, args, kwargs) }
+}
+
+pub unsafe extern "C" fn molt_cfunction_vectorcall(
+    callable: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
+) -> *mut PyObject {
     if unsafe { PyCFunction_Check(callable) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     let cfunc = callable.cast::<PyCFunctionObject>();
     let ml = unsafe { (*cfunc).m_ml };
-    if ml.is_null() {
+    let Some(method) = (unsafe { ml.as_ref() }) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
-    }
-    let raw_func = match unsafe { (*ml).ml_meth } {
-        Some(func) => func,
-        None => return ptr::null_mut(),
     };
-    let flags = unsafe { (*ml).ml_flags };
-    let self_ = unsafe { (*cfunc).m_self };
-
-    if flags & METH_METHOD != 0 {
-        // METH_METHOD (defining-class convention) is served by the vectorcall
-        // path, not this tp_call bridge — fail loud rather than a bare NULL.
-        return unsafe {
-            cfunction_error(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                format!(
-                    "{}() uses the METH_METHOD calling convention, unsupported here",
-                    cfunction_name(cfunc)
-                ),
-            )
-        };
-    }
-
-    if flags & METH_FASTCALL != 0 {
-        let mut items = match unsafe { tuple_arg_vec(args) } {
-            Some(items) => items,
-            None => return ptr::null_mut(),
-        };
-        let ptr = if items.is_empty() {
-            ptr::null_mut()
-        } else {
-            items.as_mut_ptr()
-        };
-        if flags & METH_KEYWORDS != 0 {
-            let func: PyCFunctionFastWithKeywords = unsafe { std::mem::transmute(raw_func) };
-            return unsafe { func(self_, ptr, items.len() as Py_ssize_t, kwargs) };
-        }
-        if !kwargs.is_null() {
-            return unsafe { cfunction_no_kwargs_error(cfunc) };
-        }
-        let func: PyCFunctionFast = unsafe { std::mem::transmute(raw_func) };
-        return unsafe { func(self_, ptr, items.len() as Py_ssize_t) };
-    }
-
-    if flags & METH_KEYWORDS != 0 {
-        let func: PyCFunctionWithKeywords = unsafe { std::mem::transmute(raw_func) };
-        return unsafe { func(self_, args, kwargs) };
-    }
-    if !kwargs.is_null() {
-        return unsafe { cfunction_no_kwargs_error(cfunc) };
-    }
-    if flags & METH_NOARGS != 0 {
-        let given = unsafe { tuple_arg_len(args) };
-        if given != Some(0) {
-            let n = given.unwrap_or(0);
-            return unsafe {
-                cfunction_error(
-                    (&raw mut crate::abi_types::PyExc_TypeError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    format!("{}() takes no arguments ({n} given)", cfunction_name(cfunc)),
-                )
-            };
-        }
-        return unsafe { raw_func(self_, ptr::null_mut()) };
-    }
-    if flags & METH_O != 0 {
-        let given = unsafe { tuple_arg_len(args) };
-        if given != Some(1) {
-            let n = given.unwrap_or(0);
-            return unsafe {
-                cfunction_error(
-                    (&raw mut crate::abi_types::PyExc_TypeError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    format!(
-                        "{}() takes exactly one argument ({n} given)",
-                        cfunction_name(cfunc)
-                    ),
-                )
-            };
-        }
-        let item = unsafe { tuple_arg_item(args, 0) };
-        if item.is_null() {
+    let (Some(convention), Some(target)) = (
+        crate::api::cfunction::CFunctionConvention::from_flags(method.ml_flags),
+        method.ml_meth,
+    ) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
+        return ptr::null_mut();
+    };
+    let class = if convention == crate::api::cfunction::CFunctionConvention::Method {
+        if !std::ptr::eq(
+            unsafe { (*callable).ob_type },
+            &raw mut crate::abi_types::PyCMethod_Type,
+        ) {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return ptr::null_mut();
         }
-        return unsafe { raw_func(self_, item) };
-    }
-    if flags & METH_VARARGS != 0 {
-        return unsafe { raw_func(self_, args) };
-    }
-    // Unknown/unsupported flag combination: fail loud, never a silent NULL.
-    unsafe {
-        cfunction_error(
-            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-            format!(
-                "{}() has unsupported METH flags {flags:#x}",
-                cfunction_name(cfunc)
-            ),
+        unsafe { (*callable.cast::<crate::abi_types::PyCMethodObject>()).mm_class }
+    } else {
+        ptr::null_mut()
+    };
+    let result = unsafe {
+        convention.invoke(
+            target as *const (),
+            PyCFunction_GetSelf(callable),
+            class,
+            values,
+            vectorcall_nargs(nargsf) as usize,
+            kwnames,
+            || cfunction_name(cfunc),
         )
-    }
+    };
+    unsafe { check_vectorcall_result(callable, result) }
 }
 
 /// Best-effort `__name__` of a `PyCFunctionObject` for error messages.
@@ -3254,25 +3147,39 @@ unsafe fn cfunction_error(exc: *mut PyObject, message: String) -> *mut PyObject 
     ptr::null_mut()
 }
 
-/// CPython's `%U takes no keyword arguments` TypeError for a non-KEYWORDS method.
-unsafe fn cfunction_no_kwargs_error(cfunc: *mut PyCFunctionObject) -> *mut PyObject {
-    unsafe {
-        cfunction_error(
-            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-            format!("{}() takes no keyword arguments", cfunction_name(cfunc)),
-        )
-    }
-}
-
 pub unsafe extern "C" fn molt_cfunction_dealloc(op: *mut PyObject) {
     if op.is_null() {
         return;
     }
+    // Detach all owners before callbacks; CMethod owns an additional class and
+    // must be freed with its actual allocation layout, not a CFunction prefix.
     let cfunc = op.cast::<PyCFunctionObject>();
+    let is_method = std::ptr::eq(
+        unsafe { (*op).ob_type },
+        &raw mut crate::abi_types::PyCMethod_Type,
+    );
+    let self_ = unsafe { std::mem::replace(&mut (*cfunc).m_self, ptr::null_mut()) };
+    let module = unsafe { std::mem::replace(&mut (*cfunc).m_module, ptr::null_mut()) };
+    let class = if is_method {
+        unsafe {
+            std::mem::replace(
+                &mut (*op.cast::<crate::abi_types::PyCMethodObject>()).mm_class,
+                ptr::null_mut(),
+            )
+            .cast()
+        }
+    } else {
+        ptr::null_mut()
+    };
     unsafe {
-        crate::api::refcount::Py_XDECREF((*cfunc).m_self);
-        crate::api::refcount::Py_XDECREF((*cfunc).m_module);
-        drop(Box::from_raw(cfunc));
+        crate::api::errors::release_preserving_error(&[self_, module, class]);
+        if is_method {
+            drop(Box::from_raw(
+                op.cast::<crate::abi_types::PyCMethodObject>(),
+            ));
+        } else {
+            drop(Box::from_raw(cfunc));
+        }
     }
 }
 
@@ -3293,28 +3200,12 @@ pub unsafe extern "C" fn molt_method_call(
     if self_.is_null() {
         return unsafe { PyObject_Call(func, args, kwargs) };
     }
-    if kwargs.is_null()
-        && unsafe { PyCFunction_Check(func) } != 0
-        && unsafe { tuple_arg_len(args) } == Some(0)
-    {
-        let cfunc = func.cast::<PyCFunctionObject>();
-        let ml = unsafe { (*cfunc).m_ml };
-        if !ml.is_null() {
-            let flags = unsafe { (*ml).ml_flags };
-            if flags & METH_O != 0
-                && flags & (METH_FASTCALL | METH_KEYWORDS | METH_METHOD) == 0
-                && let Some(raw_func) = unsafe { (*ml).ml_meth }
-            {
-                return unsafe { raw_func((*cfunc).m_self, self_) };
-            }
-        }
-    }
     let bound_args = match unsafe { prepend_bound_self(self_, args) } {
         Some(bound_args) => bound_args,
         None => return ptr::null_mut(),
     };
     let result = unsafe { PyObject_Call(func, bound_args, kwargs) };
-    unsafe { crate::api::refcount::Py_DECREF(bound_args) };
+    unsafe { crate::api::errors::release_preserving_error(&[bound_args]) };
     result
 }
 
@@ -3344,110 +3235,12 @@ pub unsafe extern "C" fn PyCFunction_NewEx(
     self_: *mut PyObject,
     module: *mut PyObject,
 ) -> *mut PyObject {
-    if ml.is_null() || unsafe { (*ml).ml_meth }.is_none() {
-        return ptr::null_mut();
-    }
-
-    // Preferred path: register the C method as a real Molt callable through the
-    // runtime, then return the *bridge-registered* PyObject view of it. This is
-    // what lets the returned object resolve back to a Molt handle via
-    // `pyobj_to_handle` — without it, `PyDict_SetItem(dict, name, func)` (the
-    // tp_dict method-population step of PyType_Ready) cannot resolve `func` and
-    // the descriptor is silently dropped. Falls back to a raw ABI-owned
-    // `PyCFunctionObject` only when no runtime is wired (pure-ABI unit tests) or
-    // the runtime rejects the method's flags.
-    let ml_ref = unsafe { &*ml };
-    if let Some(fn_ptr) = ml_ref.ml_meth {
-        let name_bytes: &[u8] = if ml_ref.ml_name.is_null() {
-            b""
-        } else {
-            unsafe { std::ffi::CStr::from_ptr(ml_ref.ml_name) }.to_bytes()
-        };
-        // `register_c_function` borrows `self_bits`; the resulting Molt
-        // function takes its own closure edge when registration succeeds.
-        // Resolve an existing bridge identity without minting an extra runtime
-        // reference. A genuinely foreign `m_self` needs a first-class wrapper,
-        // and `molt_value_for_pyobj` returns that wrapper as an owned temporary
-        // which must be released after the hook returns on both success and
-        // failure.
-        let converted_self = if self_.is_null() {
-            Some((none_bits(), false))
-        } else if GLOBAL_BRIDGE.molt_handle_for_pyobj(self_).is_some() {
-            // A known managed/static identity that fails projection commit is
-            // an actual conversion failure, not a foreign object and never an
-            // unbound receiver. Keep that failure visible to the C caller.
-            let Some(value) = GLOBAL_BRIDGE.observed_handle_for_pyobj(self_) else {
-                return ptr::null_mut();
-            };
-            Some((value.bits(), false))
-        } else {
-            unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(self_) }.map(|bits| (bits, true))
-        };
-        if let Some((self_bits, self_owned_local)) = converted_self {
-            let meth_addr = fn_ptr as *const () as usize as u64;
-            let h = hooks_or_stubs();
-            let func_bits = unsafe {
-                (h.register_c_function)(
-                    meth_addr,
-                    ml_ref.ml_flags,
-                    self_bits,
-                    name_bytes.as_ptr(),
-                    name_bytes.len(),
-                )
-            };
-            if self_owned_local {
-                unsafe { (h.dec_ref)(self_bits) };
-            }
-            if func_bits != 0 {
-                unsafe {
-                    crate::api::refcount::Py_XINCREF(self_);
-                    crate::api::refcount::Py_XINCREF(module);
-                }
-                let obj = Box::new(PyCFunctionObject {
-                    ob_base: PyObject {
-                        ob_refcnt: 1,
-                        ob_type: &raw mut crate::abi_types::PyCFunction_Type,
-                    },
-                    m_ml: ml,
-                    m_self: self_,
-                    m_module: module,
-                    m_weakreflist: ptr::null_mut(),
-                    vectorcall: None,
-                });
-                let ptr = Box::into_raw(obj).cast::<PyObject>();
-                unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(ptr, func_bits) };
-                return ptr;
-            }
-        }
-        // A clean miss means no runtime is wired for a genuine foreign receiver
-        // and the ABI-owned fallback remains valid. Any pending conversion or
-        // construction failure must stay NULL instead of being concealed by a
-        // fallback callable.
-        if exception_already_pending() {
-            return ptr::null_mut();
-        }
-    }
-
-    // Fallback: no runtime-backed callable available. Return a raw ABI-owned
-    // PyCFunctionObject so callers still get a non-null, callable-shaped object.
-    unsafe {
-        crate::api::refcount::Py_XINCREF(self_);
-        crate::api::refcount::Py_XINCREF(module);
-    }
-    let obj = Box::new(PyCFunctionObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut crate::abi_types::PyCFunction_Type,
-        },
-        m_ml: ml,
-        m_self: self_,
-        m_module: module,
-        m_weakreflist: ptr::null_mut(),
-        vectorcall: None,
-    });
-    Box::into_raw(obj).cast::<PyObject>()
+    unsafe { PyCMethod_New(ml, self_, module, ptr::null_mut()) }
 }
 
+/// Both constructors admit flags and owners before publishing either a runtime
+/// handle or an ABI object. A real runtime registration failure never falls
+/// back to a callable-shaped object with different semantics.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCMethod_New(
     ml: *mut PyMethodDef,
@@ -3455,48 +3248,125 @@ pub unsafe extern "C" fn PyCMethod_New(
     module: *mut PyObject,
     cls: *mut PyTypeObject,
 ) -> *mut PyObject {
-    if ml.is_null() {
+    let Some(method) = (unsafe { ml.as_ref() }) else {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
-    }
-    let is_method = unsafe { (*ml).ml_flags } & METH_METHOD != 0;
-    if is_method == cls.is_null() {
-        let message = if is_method {
-            c"attempting to create PyCMethod with a METH_METHOD flag but no class"
-        } else {
-            c"attempting to create PyCFunction with class but no METH_METHOD flag"
+    };
+    let (Some(convention), Some(target)) = (
+        crate::api::cfunction::CFunctionConvention::from_flags(method.ml_flags),
+        method.ml_meth,
+    ) else {
+        return unsafe {
+            cfunction_error(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                format!(
+                    "invalid C function method definition (flags {:#x})",
+                    method.ml_flags
+                ),
+            )
         };
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                message.as_ptr(),
-            );
+    };
+    if (convention == crate::api::cfunction::CFunctionConvention::Method) != !cls.is_null() {
+        return unsafe {
+            cfunction_error(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                "METH_METHOD requires a defining class; other conventions forbid one".to_owned(),
+            )
+        };
+    }
+
+    let mut handle = None;
+    if crate::hooks::cfunction_registration_available() {
+        let optional_owner = |object: *mut PyObject| {
+            if object.is_null() {
+                Some(None)
+            } else {
+                unsafe { crate::bridge::RuntimeValue::acquire(object) }.map(Some)
+            }
+        };
+        let Some(self_owner) = optional_owner(self_) else {
+            return unsafe { cfunction_construction_error() };
+        };
+        let Some(class_owner) = optional_owner(cls.cast()) else {
+            return unsafe { cfunction_construction_error() };
+        };
+        let name = if method.ml_name.is_null() {
+            &[][..]
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(method.ml_name) }.to_bytes()
+        };
+        let bits = unsafe {
+            (hooks_or_stubs().register_c_function)(
+                target as *const () as usize as u64,
+                method.ml_flags,
+                self_owner
+                    .as_ref()
+                    .map_or_else(none_bits, crate::bridge::RuntimeValue::bits),
+                self_.is_null(),
+                class_owner
+                    .as_ref()
+                    .map_or_else(none_bits, crate::bridge::RuntimeValue::bits),
+                name.as_ptr(),
+                name.len(),
+            )
+        };
+        if bits == 0 {
+            return unsafe { cfunction_construction_error() };
         }
-        return ptr::null_mut();
+        if exception_already_pending() {
+            crate::api::errors::with_preserved_error(|| unsafe {
+                (hooks_or_stubs().dec_ref)(bits);
+            });
+            return unsafe { cfunction_construction_error() };
+        }
+        handle = Some(bits);
     }
-    if !is_method {
-        return unsafe { PyCFunction_NewEx(ml, self_, module) };
-    }
+
     unsafe {
         crate::api::refcount::Py_XINCREF(self_);
         crate::api::refcount::Py_XINCREF(module);
-        crate::api::refcount::Py_INCREF(cls.cast());
+        crate::api::refcount::Py_XINCREF(cls.cast());
     }
-    let obj = Box::new(crate::abi_types::PyCMethodObject {
-        func: PyCFunctionObject {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut crate::abi_types::PyCMethod_Type,
+    let func = PyCFunctionObject {
+        ob_base: PyObject {
+            ob_refcnt: 1,
+            ob_type: if cls.is_null() {
+                &raw mut crate::abi_types::PyCFunction_Type
+            } else {
+                &raw mut crate::abi_types::PyCMethod_Type
             },
-            m_ml: ml,
-            m_self: self_,
-            m_module: module,
-            m_weakreflist: ptr::null_mut(),
-            vectorcall: None,
         },
-        mm_class: cls,
-    });
-    Box::into_raw(obj).cast()
+        m_ml: ml,
+        m_self: self_,
+        m_module: module,
+        m_weakreflist: ptr::null_mut(),
+        vectorcall: Some(molt_cfunction_vectorcall),
+    };
+    let object = if cls.is_null() {
+        Box::into_raw(Box::new(func)).cast::<PyObject>()
+    } else {
+        Box::into_raw(Box::new(crate::abi_types::PyCMethodObject {
+            func,
+            mm_class: cls,
+        }))
+        .cast::<PyObject>()
+    };
+    if let Some(bits) = handle {
+        if !unsafe { GLOBAL_BRIDGE.register_pyobj_for_handle(object, bits) } {
+            unsafe { crate::api::errors::release_preserving_error(&[object]) };
+            return ptr::null_mut();
+        }
+    }
+    object
+}
+
+unsafe fn cfunction_construction_error() -> *mut PyObject {
+    unsafe {
+        cfunction_error(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+            "C function runtime registration failed".to_owned(),
+        )
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -3553,10 +3423,9 @@ pub unsafe extern "C" fn PyCFunction_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    std::ptr::eq(
-        unsafe { (*op).ob_type },
-        &raw mut crate::abi_types::PyCFunction_Type,
-    ) as c_int
+    let typ = unsafe { (*op).ob_type };
+    (std::ptr::eq(typ, &raw mut crate::abi_types::PyCFunction_Type)
+        || std::ptr::eq(typ, &raw mut crate::abi_types::PyCMethod_Type)) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -3577,7 +3446,9 @@ pub unsafe extern "C" fn PyCFunction_GetSelf(op: *mut PyObject) -> *mut PyObject
         return ptr::null_mut();
     }
     let func = op.cast::<PyCFunctionObject>();
-    if func.is_null() {
+    if unsafe { (*func).m_ml.is_null() }
+        || unsafe { (*(*func).m_ml).ml_flags } & crate::abi_types::METH_STATIC != 0
+    {
         ptr::null_mut()
     } else {
         unsafe { (*func).m_self }

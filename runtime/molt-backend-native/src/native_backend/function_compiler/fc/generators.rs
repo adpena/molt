@@ -142,9 +142,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*gen_obj]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "asyncgen_shutdown" => {
             let callee = SimpleBackend::import_func_id_split(

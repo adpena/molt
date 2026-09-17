@@ -30,6 +30,18 @@ def test_native_main_stub_uses_warning_free_windows_env_probe() -> None:
     assert 'getenv("MOLT_DEBUG_MAIN_EXCEPTION")' not in rendered
 
 
+def test_native_main_stub_attribute_result_preserves_boxed_width_on_windows() -> None:
+    rendered = native_main_stub._render_native_main_stub(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+    )
+
+    assert (
+        "extern unsigned long long molt_get_attr_generic("
+        "void* obj, const char* attr, unsigned long long len);"
+    ) in rendered
+    assert "extern long molt_get_attr_generic(" not in rendered
+
+
 def test_native_main_stub_explicit_grants_disable_ambient_tier() -> None:
     rendered = native_main_stub._render_native_main_stub(
         resolved_capability_policy=CapabilityManifest(allow=["fs.read"]).resolve(),

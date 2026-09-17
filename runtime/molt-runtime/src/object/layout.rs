@@ -3,8 +3,8 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_DICT,
     TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
     TYPE_ID_TUPLE, alloc_code_obj, alloc_string, alloc_tuple, builtin_classes_if_initialized,
-    dec_ref_bits, dict_get_in_place, fn_ptr_code_set, inc_ref_bits, intern_static_name,
-    obj_from_bits, object_class_bits, object_type_id, runtime_state,
+    dec_ref_bits, dict_get_in_place, inc_ref_bits, intern_static_name, obj_from_bits,
+    object_class_bits, object_type_id, runtime_state, string_bytes, string_len,
 };
 
 pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
@@ -892,12 +892,78 @@ pub(crate) unsafe fn function_closure_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(3 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
-pub(crate) unsafe fn function_set_closure_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+/// Immutable physical-call convention for a function object's first native
+/// argument. Public lexical closure storage is deliberately separate: an
+/// explicitly supplied empty `__closure__` tuple remains observable while its
+/// validated zero-freevar callable keeps the positional ABI. Internal runtime
+/// contexts publish `OpaqueContextFirst` directly, independent of representation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u64)]
+pub(crate) enum FunctionCallAbi {
+    Positional = 0,
+    LexicalClosureFirst = 1,
+    OpaqueContextFirst = 2,
+}
+
+impl FunctionCallAbi {
+    #[inline]
+    pub(crate) fn requires_context(self) -> bool {
+        self != Self::Positional
+    }
+
+    #[inline]
+    pub(crate) fn is_reconstructible(self) -> bool {
+        self != Self::OpaqueContextFirst
+    }
+}
+
+pub(crate) unsafe fn function_call_abi(ptr: *mut u8) -> FunctionCallAbi {
+    unsafe {
+        match *(ptr.add(12 * std::mem::size_of::<u64>()) as *const u64) {
+            0 => FunctionCallAbi::Positional,
+            1 => FunctionCallAbi::LexicalClosureFirst,
+            2 => FunctionCallAbi::OpaqueContextFirst,
+            raw => panic!("invalid function call ABI {raw}"),
+        }
+    }
+}
+
+/// Return the payload for the hidden first native argument, or zero when the
+/// callable's physical ABI has no such argument.
+pub(crate) unsafe fn function_execution_closure_bits(ptr: *mut u8) -> u64 {
+    unsafe {
+        let bits = function_closure_bits(ptr);
+        function_call_abi(ptr)
+            .requires_context()
+            .then_some(bits)
+            .unwrap_or(0)
+    }
+}
+
+pub(crate) unsafe fn function_has_execution_closure(ptr: *mut u8) -> bool {
+    unsafe { function_call_abi(ptr).requires_context() }
+}
+
+pub(crate) unsafe fn function_set_closure_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    call_abi: FunctionCallAbi,
+) {
     unsafe {
         crate::gil_assert();
-        *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+        assert!(
+            !call_abi.requires_context() || bits != 0,
+            "context-first function publication requires a retained context"
+        );
         if bits != 0 {
             inc_ref_bits(_py, bits);
+        }
+        let closure_slot = ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
+        let old_bits = closure_slot.replace(bits);
+        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = call_abi as u64;
+        if old_bits != 0 {
+            dec_ref_bits(_py, old_bits);
         }
     }
 }
@@ -959,33 +1025,178 @@ pub(crate) unsafe fn function_set_call_target_ptr(ptr: *mut u8, target: *const (
     }
 }
 
-pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+/// Replace every scalar that selects a function's executable callable.
+///
+/// The caller must validate closure compatibility and resolve `call_target`
+/// before entering this infallible publication step. The owned closure and code
+/// edges are deliberately managed by their dedicated setters.
+pub(crate) unsafe fn function_replace_callable_identity(
+    ptr: *mut u8,
+    identity: CodeCallableIdentity,
+    call_target: *const (),
+) {
     unsafe {
         crate::gil_assert();
-        let slot = ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != bits {
-            if bits != 0 {
-                inc_ref_bits(_py, bits);
-            }
-            *slot = bits;
-        }
-        let fn_ptr = function_fn_ptr(ptr);
+        *(ptr as *mut u64) = identity.fn_ptr;
+        *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = identity.trampoline_ptr;
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = call_target;
+        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = identity.call_abi as u64;
+    }
+}
+
+/// Fallible attachment preparation never changes either owner. Callers must
+/// publish immediately, without running callbacks between preparation and
+/// publication; the signature facts are borrowed until publication retains them.
+pub(crate) unsafe fn prepare_function_code_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    replacement_identity: Option<CodeCallableIdentity>,
+    signature: Option<PreparedCodeSignature>,
+) -> Result<PreparedFunctionCode, ()> {
+    unsafe {
+        crate::gil_assert();
+        let mut prepared = PreparedFunctionCode {
+            bits,
+            code: None,
+            signature: None,
+            lexical: None,
+            execution_kind: None,
+        };
         if let Some(code_ptr) = obj_from_bits(bits).as_ptr()
             && object_type_id(code_ptr) == TYPE_ID_CODE
         {
-            code_set_callable_identity_if_empty(
-                code_ptr,
-                fn_ptr,
-                function_trampoline_ptr(ptr),
-                function_arity(ptr),
-            );
-            code_set_signature_bits_from_function_attrs(_py, code_ptr, ptr);
+            let identity = replacement_identity.unwrap_or(CodeCallableIdentity {
+                fn_ptr: function_fn_ptr(ptr),
+                trampoline_ptr: function_trampoline_ptr(ptr),
+                arity: function_arity(ptr),
+                call_abi: function_call_abi(ptr),
+            });
+            let identity_was_unpublished = code_callable_identity(code_ptr).is_none();
+            if code_validate_callable_identity(code_ptr, identity).is_err() {
+                crate::raise_exception::<u64>(
+                    _py,
+                    "SystemError",
+                    "function and code object have conflicting callable identities",
+                );
+                return Err(());
+            }
+            if code_published_execution_kind(code_ptr).is_none() {
+                prepared.signature = match signature {
+                    Some(signature) => Some(signature),
+                    None if identity_was_unpublished => {
+                        prepare_code_signature_from_function_attrs(_py, ptr)?
+                    }
+                    None => None,
+                };
+            }
+            prepared.code = Some((code_ptr, identity));
         }
-        fn_ptr_code_set(_py, fn_ptr, bits);
-        if old_bits != bits && old_bits != 0 {
-            dec_ref_bits(_py, old_bits);
+        Ok(prepared)
+    }
+}
+
+#[must_use]
+pub(crate) struct PreparedFunctionCode {
+    bits: u64,
+    code: Option<(*mut u8, CodeCallableIdentity)>,
+    signature: Option<PreparedCodeSignature>,
+    lexical: Option<[u64; 2]>,
+    execution_kind: Option<CodeExecutionKind>,
+}
+
+#[must_use = "displaced code and signature owners must be released after publication"]
+pub(crate) struct DisplacedFunctionCode {
+    code: u64,
+    signature: [u64; 5],
+    lexical: [u64; 2],
+}
+
+impl PreparedFunctionCode {
+    pub(crate) unsafe fn with_lexical_metadata(
+        mut self,
+        py: &PyToken<'_>,
+        freevars: u64,
+        cellvars: u64,
+        kind: CodeExecutionKind,
+    ) -> Result<Self, ()> {
+        unsafe {
+            let (ptr, _) = self.code.expect("lexical metadata requires a code object");
+            validate_code_lexical_metadata(py, Some(ptr), freevars, cellvars)?;
+            if code_published_execution_kind(ptr).is_some_and(|published| published != kind) {
+                crate::raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "code execution kind is already published",
+                );
+                return Err(());
+            }
+            self.lexical = Some([freevars, cellvars]);
+            self.execution_kind = Some(kind);
+            Ok(self)
         }
+    }
+
+    /// Infallible, callback-free publication. The caller may publish additional
+    /// scalar/epoch/cache state before releasing the returned displaced owners.
+    pub(crate) unsafe fn publish(self, py: &PyToken<'_>, ptr: *mut u8) -> DisplacedFunctionCode {
+        unsafe {
+            crate::gil_assert();
+            let slot = ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64;
+            let old_bits = *slot;
+            if old_bits != self.bits && self.bits != 0 {
+                inc_ref_bits(py, self.bits);
+            }
+            let mut displaced_signature = [0; 5];
+            let mut displaced_lexical = [0; 2];
+            if let Some((code_ptr, identity)) = self.code {
+                if let Some(signature) = self.signature {
+                    displaced_signature = signature.publish(py, code_ptr);
+                }
+                if let Some(lexical) = self.lexical {
+                    displaced_lexical =
+                        publish_code_lexical_metadata_deferred(py, code_ptr, lexical);
+                }
+                if let Some(kind) = self.execution_kind {
+                    code_publish_execution_kind(code_ptr, kind)
+                        .expect("prepared code execution kind remains valid without callbacks");
+                }
+                code_publish_callable_identity_unchecked(code_ptr, identity);
+            }
+            *slot = self.bits;
+            DisplacedFunctionCode {
+                code: if old_bits != self.bits { old_bits } else { 0 },
+                signature: displaced_signature,
+                lexical: displaced_lexical,
+            }
+        }
+    }
+}
+
+impl DisplacedFunctionCode {
+    pub(crate) fn release(self, py: &PyToken<'_>) {
+        for bits in self
+            .signature
+            .into_iter()
+            .chain(self.lexical)
+            .chain([self.code])
+        {
+            if bits != 0 {
+                dec_ref_bits(py, bits);
+            }
+        }
+    }
+}
+
+#[must_use = "failed code attachment leaves a pending exception and must not report success"]
+pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe {
+        let Ok(prepared) = prepare_function_code_bits(_py, ptr, bits, None, None) else {
+            return false;
+        };
+        prepared.publish(_py, ptr).release(_py);
+        true
     }
 }
 
@@ -1007,49 +1218,42 @@ pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, 
     unsafe {
         crate::gil_assert();
         let slot = ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64;
-        let old_bits = *slot;
-        if old_bits != 0 {
-            dec_ref_bits(_py, old_bits);
-        }
-        *slot = bits;
-        if bits != 0 {
-            inc_ref_bits(_py, bits);
-        }
+        let builtins_slot = ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64;
+        let builtins = crate::builtins::frames::frame_effective_builtins_bits(_py, bits);
+        inc_ref_bits(_py, bits);
+        inc_ref_bits(_py, builtins);
+        let old_globals = std::mem::replace(&mut *slot, bits);
+        let old_builtins = std::mem::replace(&mut *builtins_slot, builtins);
+        dec_ref_bits(_py, old_globals);
+        dec_ref_bits(_py, old_builtins);
     }
 }
 
-/// Read the `__defaults__`/`__kwdefaults__` mutation version stamp (slot 10).
+/// Read the callable-shape mutation version stamp (slot 10).
 ///
-/// 0 means the function's defaults have never been mutated since creation, so a
-/// compile-time-baked literal default is still observably correct. Any
-/// non-zero value means a `func.__defaults__ = ...` / `func.__kwdefaults__ = ...`
-/// reassignment has occurred and a call must read the LIVE tuple/dict instead.
-pub(crate) unsafe fn function_defaults_version(ptr: *mut u8) -> u64 {
+/// 0 means neither defaults nor executable code have changed since creation, so
+/// compile-time-baked call shape remains observably correct. Any non-zero value
+/// means a defaults or `__code__` reassignment occurred and calls/caches must
+/// consult the live function and code authorities.
+pub(crate) unsafe fn function_mutation_version(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(10 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
-/// Bump the `__defaults__`/`__kwdefaults__` mutation version stamp (slot 10).
+/// Bump the callable-shape mutation version stamp (slot 10).
 ///
-/// Called from the single user-reachable mutation site (the generic function
-/// attribute setter for `__defaults__`/`__kwdefaults__`). NOT called from the
-/// function-creation path, so a freshly-created function keeps version 0. The
-/// counter is a plain u64; wrap-around requires 2^64 mutations and is harmless
-/// (the guard only distinguishes 0 from non-0).
-pub(crate) unsafe fn function_bump_defaults_version(ptr: *mut u8) {
+/// Called from user-reachable defaults and `__code__` mutation, never from fresh
+/// publication, so a fresh function keeps version 0. The counter is a plain
+/// u64; wrap-around requires 2^64 mutations and is harmless for live guards.
+pub(crate) unsafe fn bump_function_mutation_version(ptr: *mut u8) {
     unsafe {
         let slot = ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64;
         *slot = (*slot).wrapping_add(1);
     }
 }
 
-pub(crate) unsafe fn function_globals_override_enabled(ptr: *mut u8) -> bool {
-    unsafe { *(ptr.add(11 * std::mem::size_of::<u64>()) as *const u64) != 0 }
-}
-
-pub(crate) unsafe fn function_set_globals_override_enabled(ptr: *mut u8, enabled: bool) {
-    unsafe {
-        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = u64::from(enabled);
-    }
+/// Builtins captured with the function namespace, never re-read at invocation.
+pub(crate) unsafe fn function_builtins_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(11 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
 pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut u8) -> u64 {
@@ -1122,7 +1326,10 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
             return MoltObject::none().bits();
         }
         let code_bits = MoltObject::from_ptr(code_ptr).bits();
-        function_set_code_bits(_py, func_ptr, code_bits);
+        if !function_set_code_bits(_py, func_ptr, code_bits) {
+            dec_ref_bits(_py, code_bits);
+            return MoltObject::none().bits();
+        }
         dec_ref_bits(_py, code_bits);
         code_bits
     }
@@ -1176,6 +1383,242 @@ pub(crate) unsafe fn code_callable_arity(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(11 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+const CODE_CALL_ABI_UNPUBLISHED: u64 = u64::MAX;
+
+/// The complete native entry identity retained by a code object.
+///
+/// `call_abi` is provenance, not an inference from public `co_freevars`: a
+/// lexical closure can be safely reconstructed with cells, while an opaque
+/// runtime context must never be recreated as a positional Python function.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CodeCallableIdentity {
+    pub(crate) fn_ptr: u64,
+    pub(crate) trampoline_ptr: u64,
+    pub(crate) arity: u64,
+    pub(crate) call_abi: FunctionCallAbi,
+}
+
+pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallableIdentity> {
+    unsafe {
+        let fn_ptr = code_callable_fn_ptr(ptr);
+        let raw_abi = *(ptr.add(21 * std::mem::size_of::<u64>()) as *const u64);
+        if fn_ptr == 0 {
+            assert_eq!(
+                raw_abi, CODE_CALL_ABI_UNPUBLISHED,
+                "code call ABI published without callable target"
+            );
+            return None;
+        }
+        let call_abi = match raw_abi {
+            0 => FunctionCallAbi::Positional,
+            1 => FunctionCallAbi::LexicalClosureFirst,
+            2 => FunctionCallAbi::OpaqueContextFirst,
+            raw => panic!("invalid code call ABI {raw}"),
+        };
+        Some(CodeCallableIdentity {
+            fn_ptr,
+            trampoline_ptr: code_callable_trampoline_ptr(ptr),
+            arity: code_callable_arity(ptr),
+            call_abi,
+        })
+    }
+}
+
+/// Project immutable signature facts from a published reconstructible code
+/// object. Returning `None` means the function's explicit metadata dictionary
+/// remains authoritative (runtime/native setup or unpublished code metadata).
+pub(crate) unsafe fn function_code_signature_metadata_bits(
+    ptr: *mut u8,
+    name: &[u8],
+) -> Option<u64> {
+    unsafe {
+        let code_ptr = obj_from_bits(function_code_bits(ptr)).as_ptr()?;
+        if object_type_id(code_ptr) != TYPE_ID_CODE
+            || !code_callable_identity(code_ptr)?
+                .call_abi
+                .is_reconstructible()
+            || code_arg_names_bits(code_ptr) == 0
+            || code_kwonly_names_bits(code_ptr) == 0
+        {
+            return None;
+        }
+        match name {
+            b"__molt_arg_names__" => Some(code_arg_names_bits(code_ptr)),
+            b"__molt_posonly__" => Some(code_signature_posonly_bits(code_ptr)),
+            b"__molt_kwonly_names__" => Some(code_kwonly_names_bits(code_ptr)),
+            b"__molt_vararg__" => Some(code_vararg_bits(code_ptr)),
+            b"__molt_varkw__" => Some(code_varkw_bits(code_ptr)),
+            _ => None,
+        }
+    }
+}
+
+/// Immutable execution policy retained by a compiled code object.
+///
+/// Task closure size and allocation layout remain owned by the generated
+/// trampoline.  This fact only selects that trampoline instead of the ordinary
+/// fixed-arity entry and preserves Python's function-kind introspection when a
+/// new function is reconstructed from the code object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u64)]
+pub(crate) enum CodeExecutionKind {
+    Direct = 0,
+    Generator = 1,
+    Coroutine = 2,
+    AsyncGenerator = 3,
+}
+
+impl CodeExecutionKind {
+    #[inline]
+    pub(crate) fn requires_task_trampoline(self) -> bool {
+        self != Self::Direct
+    }
+}
+
+const CODE_EXECUTION_KIND_UNPUBLISHED: u64 = u64::MAX;
+const CODE_EXECUTION_KIND_MASK: u64 = 0x03;
+pub(crate) const CO_OPTIMIZED: u64 = 0x01;
+pub(crate) const CO_NEWLOCALS: u64 = 0x02;
+pub(crate) const CO_VARARGS: u64 = 0x04;
+pub(crate) const CO_VARKEYWORDS: u64 = 0x08;
+pub(crate) const CO_GENERATOR: u64 = 0x20;
+pub(crate) const CO_COROUTINE: u64 = 0x80;
+pub(crate) const CO_ITERABLE_COROUTINE: u64 = 0x100;
+pub(crate) const CO_ASYNC_GENERATOR: u64 = 0x200;
+const CODE_PROTOCOL_FLAGS_MASK: u64 = CO_ITERABLE_COROUTINE;
+
+#[inline]
+fn published_code_policy(raw: u64) -> (CodeExecutionKind, u64) {
+    let unknown = raw & !(CODE_EXECUTION_KIND_MASK | CODE_PROTOCOL_FLAGS_MASK);
+    assert_eq!(unknown, 0, "invalid published code policy bits 0x{raw:x}");
+    let kind = match raw & CODE_EXECUTION_KIND_MASK {
+        0 => CodeExecutionKind::Direct,
+        1 => CodeExecutionKind::Generator,
+        2 => CodeExecutionKind::Coroutine,
+        3 => CodeExecutionKind::AsyncGenerator,
+        _ => unreachable!("execution-kind mask is exhaustive"),
+    };
+    (kind, raw & CODE_PROTOCOL_FLAGS_MASK)
+}
+
+pub(crate) unsafe fn code_published_execution_kind(ptr: *mut u8) -> Option<CodeExecutionKind> {
+    unsafe {
+        let raw = *(ptr.add(18 * std::mem::size_of::<u64>()) as *const u64);
+        (raw != CODE_EXECUTION_KIND_UNPUBLISHED).then(|| published_code_policy(raw).0)
+    }
+}
+
+pub(crate) unsafe fn code_execution_kind(ptr: *mut u8) -> CodeExecutionKind {
+    unsafe { code_published_execution_kind(ptr).unwrap_or(CodeExecutionKind::Direct) }
+}
+
+/// Publish the compiled execution kind once. Replaying the same publication is
+/// harmless; attempting to change an already-published kind is rejected.
+pub(crate) unsafe fn code_publish_execution_kind(
+    ptr: *mut u8,
+    kind: CodeExecutionKind,
+) -> Result<(), CodeExecutionKind> {
+    unsafe {
+        let slot = ptr.add(18 * std::mem::size_of::<u64>()) as *mut u64;
+        let raw = *slot;
+        if raw == CODE_EXECUTION_KIND_UNPUBLISHED {
+            *slot = kind as u64;
+            Ok(())
+        } else {
+            let published = published_code_policy(raw).0;
+            if published == kind {
+                Ok(())
+            } else {
+                Err(published)
+            }
+        }
+    }
+}
+
+pub(crate) unsafe fn code_protocol_flags(ptr: *mut u8) -> u64 {
+    unsafe {
+        let raw = *(ptr.add(18 * std::mem::size_of::<u64>()) as *const u64);
+        if raw == CODE_EXECUTION_KIND_UNPUBLISHED {
+            0
+        } else {
+            published_code_policy(raw).1
+        }
+    }
+}
+
+/// Publish the complete immutable execution policy of a newly cloned code
+/// object. Unlike execution-kind replay, protocol flags must match exactly.
+pub(crate) unsafe fn code_publish_policy(
+    ptr: *mut u8,
+    kind: CodeExecutionKind,
+    protocol_flags: u64,
+) -> Result<(), u64> {
+    assert_eq!(
+        protocol_flags & !CODE_PROTOCOL_FLAGS_MASK,
+        0,
+        "unsupported code protocol flags 0x{protocol_flags:x}"
+    );
+    unsafe {
+        let slot = ptr.add(18 * std::mem::size_of::<u64>()) as *mut u64;
+        let published = kind as u64 | protocol_flags;
+        if *slot == CODE_EXECUTION_KIND_UNPUBLISHED {
+            *slot = published;
+            Ok(())
+        } else if *slot == published {
+            Ok(())
+        } else {
+            Err(*slot)
+        }
+    }
+}
+
+/// Canonical CPython-visible code flags. Execution kind and protocol bits are
+/// immutable code policy; signature slots add the standard vararg flags.
+pub(crate) unsafe fn code_flags(ptr: *mut u8) -> u64 {
+    unsafe {
+        let is_module = obj_from_bits(code_name_bits(ptr))
+            .as_ptr()
+            .is_some_and(|name_ptr| {
+                object_type_id(name_ptr) == TYPE_ID_STRING
+                    && std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr))
+                        == b"<module>"
+            });
+        let mut flags = if is_module {
+            0
+        } else {
+            CO_OPTIMIZED | CO_NEWLOCALS
+        };
+        flags |= match code_execution_kind(ptr) {
+            CodeExecutionKind::Direct => 0,
+            CodeExecutionKind::Generator => CO_GENERATOR,
+            CodeExecutionKind::Coroutine => CO_COROUTINE,
+            CodeExecutionKind::AsyncGenerator => CO_ASYNC_GENERATOR,
+        };
+        flags |= code_protocol_flags(ptr);
+        let vararg_bits = code_vararg_bits(ptr);
+        if vararg_bits != 0 && !obj_from_bits(vararg_bits).is_none() {
+            flags |= CO_VARARGS;
+        }
+        let varkw_bits = code_varkw_bits(ptr);
+        if varkw_bits != 0 && !obj_from_bits(varkw_bits).is_none() {
+            flags |= CO_VARKEYWORDS;
+        }
+        flags
+    }
+}
+
+/// Exact compiled-entry identity, independent of source filename and code address.
+pub(crate) unsafe fn code_frame_slot_id(ptr: *mut u8) -> Option<u64> {
+    unsafe { (*(ptr.add(17 * std::mem::size_of::<u64>()) as *const u64)).checked_sub(1) }
+}
+
+pub(crate) unsafe fn code_set_frame_slot_id(ptr: *mut u8, id: u64) {
+    unsafe {
+        *(ptr.add(17 * std::mem::size_of::<u64>()) as *mut u64) =
+            id.checked_add(1).expect("validated code slot");
+    }
+}
+
 pub(crate) unsafe fn code_arg_names_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(12 * std::mem::size_of::<u64>()) as *const u64) }
 }
@@ -1196,6 +1639,140 @@ pub(crate) unsafe fn code_varkw_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(16 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+pub(crate) unsafe fn code_freevars_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(19 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_cellvars_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(20 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Publish the two positional lexical-name contracts as one immutable unit.
+/// Both incoming tuples are validated and retained before either slot changes;
+/// replaced values are released only after the pair is visible to reentry.
+pub(crate) unsafe fn code_publish_lexical_metadata(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    freevars_bits: u64,
+    cellvars_bits: u64,
+) -> bool {
+    unsafe {
+        if validate_code_lexical_metadata(_py, Some(ptr), freevars_bits, cellvars_bits).is_err() {
+            return false;
+        }
+        for bits in publish_code_lexical_metadata_deferred(_py, ptr, [freevars_bits, cellvars_bits])
+        {
+            dec_ref_bits(_py, bits);
+        }
+        true
+    }
+}
+
+unsafe fn publish_code_lexical_metadata_deferred(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    lexical: [u64; 2],
+) -> [u64; 2] {
+    unsafe {
+        let mut displaced = [0; 2];
+        for bits in lexical {
+            inc_ref_bits(py, bits);
+        }
+        for (offset, bits) in lexical.into_iter().enumerate() {
+            let slot = ptr.add((19 + offset) * std::mem::size_of::<u64>()) as *mut u64;
+            displaced[offset] = std::mem::replace(&mut *slot, bits);
+        }
+        displaced
+    }
+}
+
+pub(crate) unsafe fn validate_code_lexical_metadata(
+    _py: &PyToken<'_>,
+    ptr: Option<*mut u8>,
+    freevars_bits: u64,
+    cellvars_bits: u64,
+) -> Result<(), ()> {
+    unsafe {
+        crate::gil_assert();
+        use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeFreevars, freevars_bits)
+        {
+            crate::raise_exception::<u64>(_py, "TypeError", "code freevars must be a tuple of str");
+            return Err(());
+        }
+        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeCellvars, cellvars_bits)
+        {
+            crate::raise_exception::<u64>(_py, "TypeError", "code cellvars must be a tuple of str");
+            return Err(());
+        }
+
+        if let Some(ptr) = ptr
+            && code_published_execution_kind(ptr).is_some()
+        {
+            if code_freevars_bits(ptr) == freevars_bits && code_cellvars_bits(ptr) == cellvars_bits
+            {
+                return Ok(());
+            }
+            crate::raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "code lexical metadata is already published",
+            );
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
+/// Validated borrowed signature facts. Preparation is callback-free; publication
+/// retains every incoming edge before replacing any slot and defers retirement.
+#[must_use]
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedCodeSignature([u64; 5]);
+
+pub(crate) fn prepare_code_signature(
+    py: &PyToken<'_>,
+    bits: [u64; 5],
+) -> Result<PreparedCodeSignature, ()> {
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    let slots = [
+        HeapAcyclicSlot::CodeArgNames,
+        HeapAcyclicSlot::CodePosonly,
+        HeapAcyclicSlot::CodeKwonly,
+        HeapAcyclicSlot::CodeVararg,
+        HeapAcyclicSlot::CodeVarkw,
+    ];
+    if !slots
+        .into_iter()
+        .zip(bits)
+        .all(|(slot, bits)| crate::object::builders::acyclic_slot_edge(slot, bits))
+    {
+        crate::raise_exception::<u64>(
+            py,
+            "SystemError",
+            "code signature mutation violated generated code_metadata acyclic capability",
+        );
+        return Err(());
+    }
+    Ok(PreparedCodeSignature(bits))
+}
+
+impl PreparedCodeSignature {
+    unsafe fn publish(self, py: &PyToken<'_>, ptr: *mut u8) -> [u64; 5] {
+        unsafe {
+            let mut displaced = [0; 5];
+            for bits in self.0 {
+                inc_ref_bits(py, bits);
+            }
+            for (offset, bits) in self.0.into_iter().enumerate() {
+                let slot = ptr.add((12 + offset) * std::mem::size_of::<u64>()) as *mut u64;
+                displaced[offset] = std::mem::replace(&mut *slot, bits);
+            }
+            displaced
+        }
+    }
+}
+
 pub(crate) unsafe fn code_set_signature_bits(
     _py: &PyToken<'_>,
     ptr: *mut u8,
@@ -1204,134 +1781,117 @@ pub(crate) unsafe fn code_set_signature_bits(
     kwonly_bits: u64,
     vararg_bits: u64,
     varkw_bits: u64,
-) {
+) -> Result<(), ()> {
     unsafe {
         crate::gil_assert();
-        use crate::object::heap_kinds_generated::HeapAcyclicSlot;
-        if !crate::object::builders::acyclic_slot_edge(
-            HeapAcyclicSlot::CodeArgNames,
-            arg_names_bits,
-        ) || !crate::object::builders::acyclic_slot_edge(
-            HeapAcyclicSlot::CodePosonly,
-            posonly_bits,
-        ) || !crate::object::builders::acyclic_slot_edge(
-            HeapAcyclicSlot::CodeKwonly,
-            kwonly_bits,
-        ) || !crate::object::builders::acyclic_slot_edge(
-            HeapAcyclicSlot::CodeVararg,
-            vararg_bits,
-        ) || !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeVarkw, varkw_bits)
-        {
-            crate::raise_exception::<u64>(
-                _py,
-                "SystemError",
-                "code signature mutation violated generated code_metadata acyclic capability",
-            );
-            return;
+        if code_published_execution_kind(ptr).is_some() {
+            return Ok(());
         }
-        for (idx, bits) in [
-            (12usize, arg_names_bits),
-            (13usize, posonly_bits),
-            (14usize, kwonly_bits),
-            (15usize, vararg_bits),
-            (16usize, varkw_bits),
-        ] {
-            let slot = ptr.add(idx * std::mem::size_of::<u64>()) as *mut u64;
-            let old_bits = *slot;
-            if old_bits == bits {
-                continue;
-            }
-            if bits != 0 {
-                inc_ref_bits(_py, bits);
-            }
-            *slot = bits;
+        let signature = prepare_code_signature(
+            _py,
+            [
+                arg_names_bits,
+                posonly_bits,
+                kwonly_bits,
+                vararg_bits,
+                varkw_bits,
+            ],
+        )?;
+        for old_bits in signature.publish(_py, ptr) {
             if old_bits != 0 {
                 dec_ref_bits(_py, old_bits);
             }
         }
+        Ok(())
     }
 }
 
-unsafe fn code_set_signature_bits_from_function_attrs(
+unsafe fn prepare_code_signature_from_function_attrs(
     _py: &PyToken<'_>,
-    code_ptr: *mut u8,
     func_ptr: *mut u8,
-) {
+) -> Result<Option<PreparedCodeSignature>, ()> {
     unsafe {
         if let Some(classes) = builtin_classes_if_initialized(_py)
             && object_class_bits(func_ptr) == classes.builtin_function_or_method
         {
-            return;
+            return Ok(None);
         }
 
         let dict_bits = function_dict_bits(func_ptr);
         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-            return;
+            return Ok(None);
         };
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return;
+            return Ok(None);
         }
 
-        let interned = &runtime_state(_py).interned;
-        let arg_names_attr =
-            intern_static_name(_py, &interned.molt_arg_names, b"__molt_arg_names__");
-        let Some(arg_names_bits) = dict_get_in_place(_py, dict_ptr, arg_names_attr) else {
-            return;
+        // Metadata lookup must not call equality/hash hooks or allocate interned
+        // names while holding borrowed edges from this same dictionary.
+        let get = |name| crate::object::ops::dict_get_str_bytes_borrowed(_py, dict_ptr, name);
+        let Some(arg_names_bits) = get(b"__molt_arg_names__") else {
+            return Ok(None);
         };
-        let Some(arg_names_ptr) = obj_from_bits(arg_names_bits).as_ptr() else {
-            return;
+        let Some(kwonly_bits) = get(b"__molt_kwonly_names__") else {
+            return Ok(None);
         };
-        if object_type_id(arg_names_ptr) != TYPE_ID_TUPLE {
-            return;
-        }
+        let posonly_bits =
+            get(b"__molt_posonly__").unwrap_or_else(|| MoltObject::from_int(0).bits());
+        let vararg_bits = get(b"__molt_vararg__").unwrap_or_else(|| MoltObject::none().bits());
+        let varkw_bits = get(b"__molt_varkw__").unwrap_or_else(|| MoltObject::none().bits());
 
-        let kwonly_attr =
-            intern_static_name(_py, &interned.molt_kwonly_names, b"__molt_kwonly_names__");
-        let Some(kwonly_bits) = dict_get_in_place(_py, dict_ptr, kwonly_attr) else {
-            return;
-        };
-        let Some(kwonly_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
-            return;
-        };
-        if object_type_id(kwonly_ptr) != TYPE_ID_TUPLE {
-            return;
-        }
-
-        let posonly_attr = intern_static_name(_py, &interned.molt_posonly, b"__molt_posonly__");
-        let posonly_bits = dict_get_in_place(_py, dict_ptr, posonly_attr)
-            .unwrap_or_else(|| MoltObject::from_int(0).bits());
-        let vararg_attr = intern_static_name(_py, &interned.molt_vararg, b"__molt_vararg__");
-        let vararg_bits = dict_get_in_place(_py, dict_ptr, vararg_attr)
-            .unwrap_or_else(|| MoltObject::none().bits());
-        let varkw_attr = intern_static_name(_py, &interned.molt_varkw, b"__molt_varkw__");
-        let varkw_bits = dict_get_in_place(_py, dict_ptr, varkw_attr)
-            .unwrap_or_else(|| MoltObject::none().bits());
-
-        code_set_signature_bits(
+        prepare_code_signature(
             _py,
-            code_ptr,
-            arg_names_bits,
-            posonly_bits,
-            kwonly_bits,
-            vararg_bits,
-            varkw_bits,
-        );
+            [
+                arg_names_bits,
+                posonly_bits,
+                kwonly_bits,
+                vararg_bits,
+                varkw_bits,
+            ],
+        )
+        .map(Some)
     }
 }
 
-unsafe fn code_set_callable_identity_if_empty(
+/// Publish the complete callable identity once. Replaying the exact identity is
+/// harmless; a conflict is returned without rewriting executable provenance so
+/// callers can reject the incoherent function/code pairing.
+pub(crate) unsafe fn code_publish_callable_identity(
     ptr: *mut u8,
-    fn_ptr: u64,
-    trampoline_ptr: u64,
-    arity: u64,
-) {
+    identity: CodeCallableIdentity,
+) -> Result<(), CodeCallableIdentity> {
     unsafe {
-        if code_callable_fn_ptr(ptr) != 0 || fn_ptr == 0 {
-            return;
+        code_validate_callable_identity(ptr, identity)?;
+        code_publish_callable_identity_unchecked(ptr, identity);
+        Ok(())
+    }
+}
+
+unsafe fn code_validate_callable_identity(
+    ptr: *mut u8,
+    identity: CodeCallableIdentity,
+) -> Result<(), CodeCallableIdentity> {
+    unsafe {
+        if identity.fn_ptr == 0 {
+            return Err(identity);
         }
-        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = fn_ptr;
-        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = trampoline_ptr;
-        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = arity;
+        if let Some(published) = code_callable_identity(ptr) {
+            return if published == identity {
+                Ok(())
+            } else {
+                Err(published)
+            };
+        }
+        Ok(())
+    }
+}
+
+unsafe fn code_publish_callable_identity_unchecked(ptr: *mut u8, identity: CodeCallableIdentity) {
+    unsafe {
+        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = identity.fn_ptr;
+        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = identity.trampoline_ptr;
+        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
+        *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) = identity.call_abi as u64;
     }
 }
 
@@ -1920,10 +2480,7 @@ mod tests {
     };
     use crate::object::header_from_obj_ptr;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
-    use crate::{
-        alloc_function_obj, alloc_string, dec_ref_bits, fn_ptr_code_get, fn_ptr_code_set,
-        inc_ref_bits, obj_from_bits,
-    };
+    use crate::{alloc_function_obj, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
 
     #[test]
@@ -2019,7 +2576,7 @@ mod tests {
     fn function_code_slot_retains_and_releases_borrowed_code() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr = alloc_function_obj(_py, 0, 0);
+            let func_ptr = alloc_function_obj(_py, 0xF00D, 0);
             assert_eq!(unsafe { function_code_bits(func_ptr) }, 0);
 
             let code_bits = unsafe { ensure_function_code_bits(_py, func_ptr) };
@@ -2039,7 +2596,7 @@ mod tests {
             let replacement_bits = MoltObject::from_ptr(replacement_ptr).bits();
             assert_eq!(unsafe { ref_count(replacement_ptr) }, 1);
 
-            unsafe { function_set_code_bits(_py, func_ptr, replacement_bits) };
+            assert!(unsafe { function_set_code_bits(_py, func_ptr, replacement_bits) });
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
             assert_eq!(unsafe { ref_count(replacement_ptr) }, 2);
             dec_ref_bits(_py, code_bits);
@@ -2056,51 +2613,284 @@ mod tests {
     }
 
     #[test]
-    fn fn_ptr_code_map_retain_replace_and_clear_release_outside_slot_owner() {
+    fn rejected_signature_attachment_keeps_identity_edges_and_epoch_retryable() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let key = 0xF00D_C0DE_5151_0001;
-            fn_ptr_code_set(_py, key, 0);
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let function = alloc_function_obj(py, 0xF00D, 0);
+                let function_bits = MoltObject::from_ptr(function).bits();
+                let original = ensure_function_code_bits(py, function);
+                inc_ref_bits(py, original);
+                let original_ptr = obj_from_bits(original).as_ptr().unwrap();
+                let name = alloc_string(py, b"signature-attachment-transaction");
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let code = alloc_test_code(py, name_bits, name_bits, 1);
+                let code_bits = MoltObject::from_ptr(code).bits();
+                // Mortal tuples expose the retain/retire transitions; the
+                // canonical empty tuple is immortal.
+                let empty = crate::alloc_tuple(py, &[name_bits]);
+                let empty_bits = MoltObject::from_ptr(empty).bits();
+                let invalid = crate::alloc_list(py, &[]);
+                let invalid_bits = MoltObject::from_ptr(invalid).bits();
+                let arg_key = alloc_string(py, b"__molt_arg_names__");
+                let kw_key = alloc_string(py, b"__molt_kwonly_names__");
+                let varkw_key = alloc_string(py, b"__molt_varkw__");
+                let arg_key_bits = MoltObject::from_ptr(arg_key).bits();
+                let kw_key_bits = MoltObject::from_ptr(kw_key).bits();
+                let varkw_key_bits = MoltObject::from_ptr(varkw_key).bits();
+                let dict = crate::alloc_dict_with_pairs(
+                    py,
+                    &[
+                        arg_key_bits,
+                        empty_bits,
+                        kw_key_bits,
+                        empty_bits,
+                        varkw_key_bits,
+                        invalid_bits,
+                    ],
+                );
+                assert!(!dict.is_null());
+                super::function_set_dict_bits(function, MoltObject::from_ptr(dict).bits());
+                let epoch = super::function_mutation_version(function);
+                let tuple_refs = ref_count(empty);
+                let invalid_refs = ref_count(invalid);
 
-            let filename_a_ptr = alloc_string(_py, b"<fn-ptr-code-a>");
-            let name_a_ptr = alloc_string(_py, b"<fn-ptr-code-a-name>");
-            let filename_a_bits = MoltObject::from_ptr(filename_a_ptr).bits();
-            let name_a_bits = MoltObject::from_ptr(name_a_ptr).bits();
-            let code_a_ptr = alloc_test_code(_py, filename_a_bits, name_a_bits, 5);
-            dec_ref_bits(_py, filename_a_bits);
-            dec_ref_bits(_py, name_a_bits);
-            let code_a_bits = MoltObject::from_ptr(code_a_ptr).bits();
-            inc_ref_bits(_py, code_a_bits);
+                assert!(!function_set_code_bits(py, function, code_bits));
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+                assert_eq!(super::code_callable_identity(code), None);
+                assert_eq!(super::code_published_execution_kind(code), None);
+                assert_eq!(function_code_bits(function), original);
+                assert_eq!(super::function_mutation_version(function), epoch);
+                assert_eq!(ref_count(code), 1);
+                assert_eq!(ref_count(original_ptr), 2);
+                assert_eq!(ref_count(empty), tuple_refs);
+                assert_eq!(ref_count(invalid), invalid_refs);
+                for offset in 12..=16 {
+                    assert_eq!(
+                        *(code.add(offset * std::mem::size_of::<u64>()) as *const u64),
+                        0
+                    );
+                }
 
-            let filename_b_ptr = alloc_string(_py, b"<fn-ptr-code-b>");
-            let name_b_ptr = alloc_string(_py, b"<fn-ptr-code-b-name>");
-            let filename_b_bits = MoltObject::from_ptr(filename_b_ptr).bits();
-            let name_b_bits = MoltObject::from_ptr(name_b_ptr).bits();
-            let code_b_ptr = alloc_test_code(_py, filename_b_bits, name_b_bits, 9);
-            dec_ref_bits(_py, filename_b_bits);
-            dec_ref_bits(_py, name_b_bits);
-            let code_b_bits = MoltObject::from_ptr(code_b_ptr).bits();
-            inc_ref_bits(_py, code_b_bits);
+                crate::dict_set_in_place(py, dict, varkw_key_bits, MoltObject::none().bits());
+                assert!(!crate::exception_pending(py));
+                assert!(function_set_code_bits(py, function, code_bits));
+                assert_eq!(super::code_callable_identity(code).unwrap().fn_ptr, 0xF00D);
+                assert_eq!(super::code_arg_names_bits(code), empty_bits);
+                assert_eq!(super::code_kwonly_names_bits(code), empty_bits);
+                assert_eq!(function_code_bits(function), code_bits);
+                assert_eq!(ref_count(code), 2);
+                assert_eq!(ref_count(original_ptr), 1);
+                assert_eq!(ref_count(empty), tuple_refs + 2);
+                assert_eq!(ref_count(invalid), invalid_refs - 1);
 
-            assert_eq!(unsafe { ref_count(code_a_ptr) }, 2);
-            fn_ptr_code_set(_py, key, code_a_bits);
-            assert_eq!(fn_ptr_code_get(_py, key), code_a_bits);
-            assert_eq!(unsafe { ref_count(code_a_ptr) }, 3);
-            dec_ref_bits(_py, code_a_bits);
-            assert_eq!(unsafe { ref_count(code_a_ptr) }, 2);
+                // Once identity is published, the code's signature owns the
+                // facts; replay must not reinterpret stale function metadata.
+                crate::dict_set_in_place(py, dict, varkw_key_bits, invalid_bits);
+                assert!(function_set_code_bits(py, function, code_bits));
+                assert!(!crate::exception_pending(py));
+                assert_eq!(super::code_varkw_bits(code), MoltObject::none().bits());
+                assert_eq!(ref_count(code), 2);
+                assert_eq!(ref_count(empty), tuple_refs + 2);
 
-            fn_ptr_code_set(_py, key, code_b_bits);
-            assert_eq!(fn_ptr_code_get(_py, key), code_b_bits);
-            assert_eq!(unsafe { ref_count(code_b_ptr) }, 3);
-            assert_eq!(unsafe { ref_count(code_a_ptr) }, 1);
-            dec_ref_bits(_py, code_a_bits);
-            dec_ref_bits(_py, code_b_bits);
-            assert_eq!(unsafe { ref_count(code_b_ptr) }, 2);
+                for bits in [
+                    function_bits,
+                    original,
+                    code_bits,
+                    empty_bits,
+                    invalid_bits,
+                    name_bits,
+                    arg_key_bits,
+                    kw_key_bits,
+                    varkw_key_bits,
+                ] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
 
-            fn_ptr_code_set(_py, key, 0);
-            assert_eq!(fn_ptr_code_get(_py, key), 0);
-            assert_eq!(unsafe { ref_count(code_b_ptr) }, 1);
-            dec_ref_bits(_py, code_b_bits);
-        })
+    #[test]
+    fn signature_and_identity_preflight_never_publish_partial_sibling_slots() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let name = alloc_string(py, b"signature-sibling-transaction");
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let code = alloc_test_code(py, name_bits, name_bits, 1);
+                let code_bits = MoltObject::from_ptr(code).bits();
+                let old = crate::alloc_tuple(py, &[name_bits]);
+                let next = crate::alloc_tuple(py, &[name_bits, name_bits]);
+                let invalid = crate::alloc_list(py, &[]);
+                let old_bits = MoltObject::from_ptr(old).bits();
+                let next_bits = MoltObject::from_ptr(next).bits();
+                let invalid_bits = MoltObject::from_ptr(invalid).bits();
+                let none = MoltObject::none().bits();
+                let zero = MoltObject::from_int(0).bits();
+                super::code_set_signature_bits(py, code, old_bits, zero, old_bits, none, none)
+                    .expect("initial signature");
+                let old_refs = ref_count(old);
+                let next_refs = ref_count(next);
+                assert!(
+                    super::code_set_signature_bits(
+                        py,
+                        code,
+                        next_bits,
+                        MoltObject::from_int(1).bits(),
+                        next_bits,
+                        name_bits,
+                        invalid_bits,
+                    )
+                    .is_err()
+                );
+                crate::clear_exception(py);
+                assert_eq!(super::code_arg_names_bits(code), old_bits);
+                assert_eq!(super::code_signature_posonly_bits(code), zero);
+                assert_eq!(super::code_kwonly_names_bits(code), old_bits);
+                assert_eq!(super::code_vararg_bits(code), none);
+                assert_eq!(super::code_varkw_bits(code), none);
+                assert_eq!(ref_count(old), old_refs);
+                assert_eq!(ref_count(next), next_refs);
+
+                let owner = alloc_function_obj(py, 0x101, 0);
+                let conflicting = alloc_function_obj(py, 0x202, 0);
+                assert!(function_set_code_bits(py, owner, code_bits));
+                let identity = super::code_callable_identity(code);
+                let signature =
+                    super::prepare_code_signature(py, [next_bits, zero, next_bits, none, none])
+                        .expect("valid alternative signature");
+                assert!(
+                    super::prepare_function_code_bits(
+                        py,
+                        conflicting,
+                        code_bits,
+                        None,
+                        Some(signature),
+                    )
+                    .is_err()
+                );
+                crate::clear_exception(py);
+                assert_eq!(super::code_callable_identity(code), identity);
+                assert_eq!(super::code_arg_names_bits(code), old_bits);
+                assert_eq!(function_code_bits(conflicting), 0);
+                assert_eq!(ref_count(old), old_refs);
+                assert_eq!(ref_count(next), next_refs);
+                for bits in [
+                    MoltObject::from_ptr(owner).bits(),
+                    MoltObject::from_ptr(conflicting).bits(),
+                    code_bits,
+                    old_bits,
+                    next_bits,
+                    invalid_bits,
+                    name_bits,
+                ] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn metadata_initializers_reject_invalid_signature_before_any_publication() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                for packed in [false, true] {
+                    let name = alloc_string(py, b"metadata-signature-transaction");
+                    let name_bits = MoltObject::from_ptr(name).bits();
+                    let empty = crate::alloc_tuple(py, &[]);
+                    let empty_bits = MoltObject::from_ptr(empty).bits();
+                    let invalid = crate::alloc_list(py, &[]);
+                    let invalid_bits = MoltObject::from_ptr(invalid).bits();
+                    let function = alloc_function_obj(py, 0xF00D, 0);
+                    let function_bits = MoltObject::from_ptr(function).bits();
+                    let code = alloc_test_code(py, name_bits, name_bits, 1);
+                    let code_bits = MoltObject::from_ptr(code).bits();
+                    let original_freevars = super::code_freevars_bits(code);
+                    let original_cellvars = super::code_cellvars_bits(code);
+                    let epoch = super::function_mutation_version(function);
+                    let empty_refs = ref_count(empty);
+                    let none = MoltObject::none().bits();
+                    let zero = MoltObject::from_int(0).bits();
+
+                    for varkw in [invalid_bits, none] {
+                        if packed {
+                            let metadata = crate::alloc_tuple(
+                                py,
+                                &[
+                                    name_bits, name_bits, none, empty_bits, zero, empty_bits, none,
+                                    varkw, none, none, none, zero, empty_bits, empty_bits,
+                                ],
+                            );
+                            let metadata_bits = MoltObject::from_ptr(metadata).bits();
+                            crate::builtins::functions::molt_function_init_metadata_packed(
+                                function_bits,
+                                metadata_bits,
+                                code_bits,
+                                none,
+                            );
+                            dec_ref_bits(py, metadata_bits);
+                        } else {
+                            crate::builtins::functions::molt_function_init_metadata(
+                                function_bits,
+                                name_bits,
+                                name_bits,
+                                none,
+                                empty_bits,
+                                zero,
+                                empty_bits,
+                                none,
+                                varkw,
+                                none,
+                                none,
+                                none,
+                                code_bits,
+                                none,
+                            );
+                        }
+                        if varkw == invalid_bits {
+                            assert!(crate::exception_pending(py));
+                            crate::clear_exception(py);
+                            assert_eq!(super::function_dict_bits(function), 0);
+                            assert_eq!(function_code_bits(function), 0);
+                            assert_eq!(super::function_mutation_version(function), epoch);
+                            assert_eq!(super::code_callable_identity(code), None);
+                            assert_eq!(super::code_published_execution_kind(code), None);
+                            assert_eq!(super::code_arg_names_bits(code), 0);
+                            assert_eq!(super::code_freevars_bits(code), original_freevars);
+                            assert_eq!(super::code_cellvars_bits(code), original_cellvars);
+                            assert_eq!(ref_count(code), 1);
+                            assert_eq!(ref_count(empty), empty_refs);
+                            assert_eq!(ref_count(invalid), 1);
+                        } else {
+                            assert!(!crate::exception_pending(py));
+                            assert_eq!(function_code_bits(function), code_bits);
+                            assert_eq!(super::code_callable_identity(code).unwrap().fn_ptr, 0xF00D);
+                            assert_eq!(super::code_arg_names_bits(code), empty_bits);
+                            assert_eq!(super::code_kwonly_names_bits(code), empty_bits);
+                            assert_eq!(super::function_mutation_version(function), epoch);
+                            if packed {
+                                assert_eq!(
+                                    super::code_published_execution_kind(code),
+                                    Some(super::CodeExecutionKind::Direct)
+                                );
+                                assert_eq!(super::code_freevars_bits(code), empty_bits);
+                                assert_eq!(super::code_cellvars_bits(code), empty_bits);
+                            }
+                        }
+                    }
+                    for bits in [
+                        function_bits,
+                        code_bits,
+                        empty_bits,
+                        invalid_bits,
+                        name_bits,
+                    ] {
+                        dec_ref_bits(py, bits);
+                    }
+                }
+            }
+        });
     }
 }

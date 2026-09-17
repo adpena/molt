@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend._types import parse_source_module_publication
+from molt.frontend.lowering.function_metadata import (
+    FunctionMetadataEmitter,
+    MaterializedFunctionMetadata,
+    emit_materialized_function_metadata,
+)
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
-from molt.native_callable_abi import NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1
+from molt.frontend.sema import FunctionKind
+from molt.native_callable_abi import (
+    NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
+    native_callable_uses_callargs,
+)
+from molt.native_callable_exports import NativeCallableExport
 from molt.type_facts import TypeFacts
 
 from molt.cli.atomic_io import _atomic_write_json
@@ -581,11 +593,12 @@ _MODULE_ENSURE_SYMBOL = "molt_module_ensure"
 
 
 def _module_registry_target_enabled(target: str) -> bool:
-    """Targets that consume the canonical per-build module catalog.
+    """Select the binary representation of the shared finite import catalog.
 
     Native projects it as a relocated init table; WASM projects the same rows
     as its app-owned import export. Source emitters do not yet ship the Molt
-    runtime/catalog ABI and retain their textual dispatch shape.
+    runtime/catalog ABI and retain their textual dispatch shape. This is not
+    source-scan custody or admission of runtime import semantics.
     """
     if target in {"luau", "rust", "mlir"}:
         return False
@@ -1063,6 +1076,282 @@ def _append_static_native_parent_binding_ops(
     return next_var
 
 
+def _native_callable_wrapper_symbol(export: NativeCallableExport) -> str:
+    identity = "\0".join(
+        (
+            export.qualified_name,
+            export.abi,
+            export.symbol or "",
+            str(export.wrapper_payload_arity),
+        )
+    )
+    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    name = SimpleTIRGenerator._sanitize_module_name(export.qualified_name)
+    return f"molt_native_callable_wrapper_{name}_{suffix}"
+
+
+def _native_callable_wrapper_function(
+    export: NativeCallableExport,
+) -> dict[str, Any]:
+    symbol = _native_callable_wrapper_symbol(export)
+    uses_callargs = native_callable_uses_callargs(export.abi)
+    if uses_callargs:
+        params = ["args", "kwargs"]
+        ops: list[dict[str, Any]] = [
+            {"kind": "callargs_new", "out": "v0"},
+            {"kind": "check_exception", "value": 2},
+            {
+                "kind": "callargs_expand_star",
+                "args": ["v0", "args"],
+                "out": "v1",
+            },
+            {"kind": "check_exception", "value": 1},
+            {
+                "kind": "callargs_expand_kwstar",
+                "args": ["v0", "kwargs"],
+                "out": "v2",
+            },
+            {"kind": "check_exception", "value": 1},
+        ]
+        payload = ["v0"]
+        result = "v3"
+    else:
+        params = [f"p{index}" for index in range(export.wrapper_payload_arity)]
+        ops = []
+        payload = list(params)
+        result = "v0"
+    ops.append(
+        {
+            "kind": "invoke_ffi",
+            "args": payload,
+            "out": result,
+            "native_callable_export": export.qualified_name,
+            "native_callable_binding": "direct_symbol",
+            "native_callable_abi": export.abi,
+            "native_callable_symbol": export.symbol,
+        }
+    )
+    ops.append({"kind": "check_exception", "value": 1})
+    if uses_callargs:
+        ops.append({"kind": "release", "args": ["v0"]})
+    ops.append({"kind": "ret", "args": [result]})
+    ops.append({"kind": "label", "value": 1})
+    if uses_callargs:
+        ops.append({"kind": "release", "args": ["v0"]})
+    failure_result = "v4" if uses_callargs else "v1"
+    ops.extend(
+        [
+            {"kind": "const_none", "out": failure_result},
+            {"kind": "ret", "args": [failure_result]},
+        ]
+    )
+    if uses_callargs:
+        ops.extend(
+            [
+                {"kind": "label", "value": 2},
+                {"kind": "const_none", "out": "v5"},
+                {"kind": "ret", "args": ["v5"]},
+            ]
+        )
+    return {"name": symbol, "params": params, "ops": ops}
+
+
+class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
+    """Canonical metadata primitives for post-frontend generated functions."""
+
+    def __init__(
+        self,
+        ops: list[dict[str, Any]],
+        *,
+        module_var: str,
+        register_global_code_id: Callable[[str], int],
+        next_var: int,
+    ) -> None:
+        self.ops = ops
+        self.module_var = module_var
+        self.register_global_code_id = register_global_code_id
+        self.next_var = next_var
+
+    def alloc(self) -> str:
+        value = f"v{self.next_var}"
+        self.next_var += 1
+        return value
+
+    def _result(self, kind: str, **fields: Any) -> str:
+        result = self.alloc()
+        self.ops.append({"kind": kind, **fields, "out": result})
+        return result
+
+    def const_str(self, value: str) -> str:
+        return self._result("const_str", s_value=value)
+
+    def const_int(self, value: int) -> str:
+        return self._result("const", value=value)
+
+    def const_none(self) -> str:
+        return self._result("const_none")
+
+    def tuple_new(self, values: list[str]) -> str:
+        return self._result("tuple_new", args=list(values))
+
+    def code_new(self, values: list[str]) -> str:
+        return self._result("code_new", args=list(values))
+
+    def code_slot_set(self, code_symbol: str, code: str) -> None:
+        module_dict_name = self.const_str("__dict__")
+        globals_dict = self._result(
+            "module_get_attr",
+            args=[self.module_var, module_dict_name],
+        )
+        self.ops.append(
+            {
+                "kind": "code_slot_set",
+                "value": self.register_global_code_id(code_symbol),
+                "args": [code, globals_dict],
+            }
+        )
+
+    def init_metadata(
+        self,
+        function: str,
+        metadata: str,
+        code: str,
+        bind_kind: str,
+    ) -> None:
+        self.ops.append(
+            {
+                "kind": "call",
+                "s_value": "molt_function_init_metadata_packed",
+                "args": [function, metadata, code, bind_kind],
+                "out": self.alloc(),
+                "value": self.register_global_code_id(
+                    "molt_function_init_metadata_packed"
+                ),
+            }
+        )
+
+
+def _append_native_callable_function_metadata_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    export: NativeCallableExport,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> int:
+    wrapper_symbol = _native_callable_wrapper_symbol(export)
+    uses_callargs = native_callable_uses_callargs(export.abi)
+    if uses_callargs:
+        bound_params = ["args", "kwargs"]
+        positional_names: tuple[str, ...] = ()
+        vararg_name = "args"
+        varkw_name = "kwargs"
+    else:
+        bound_params = [f"p{index}" for index in range(export.wrapper_payload_arity)]
+        positional_names = tuple(bound_params)
+        vararg_name = None
+        varkw_name = None
+
+    func_var = f"v{next_var}"
+    next_var += 1
+    ops.append(
+        {
+            "kind": "func_new",
+            "s_value": wrapper_symbol,
+            "value": len(bound_params),
+            "out": func_var,
+        }
+    )
+    emitter = _SimpleIRFunctionMetadataEmitter(
+        ops,
+        module_var=module_var,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+    )
+
+    def materialize_empty_defaults(function: str) -> tuple[str, str, str]:
+        return function, emitter.const_none(), emitter.const_none()
+
+    emit_materialized_function_metadata(
+        emitter,
+        function=func_var,
+        materialize_defaults=materialize_empty_defaults,
+        metadata=MaterializedFunctionMetadata(
+            name=export.name,
+            qualname=export.name,
+            module=export.module,
+            posonly_params=positional_names,
+            pos_or_kw_params=(),
+            kwonly_params=(),
+            vararg=vararg_name,
+            varkw=varkw_name,
+            docstring=None,
+            execution_kind=FunctionKind.SYNC,
+            bind_kind=None,
+            code_symbol=wrapper_symbol,
+            trace_filename=f"<native callable export {export.qualified_name}>",
+            trace_lineno=0,
+            trace_name=export.name,
+            varnames=tuple(bound_params),
+            code_names=(),
+            freevars=(),
+            cellvars=(),
+        ),
+    )
+    attr_name_var = emitter.const_str(export.name)
+    ops.append(
+        {
+            "kind": "module_set_attr",
+            "args": [module_var, attr_name_var, func_var],
+            "out": emitter.alloc(),
+        }
+    )
+    return emitter.next_var
+
+
+def _append_static_native_direct_symbol_export_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    spec: _ExternalNativeModuleInitSpec,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+) -> int:
+    for export in spec.direct_symbol_exports:
+        next_var = _append_native_callable_function_metadata_ops(
+            ops,
+            module_var=module_var,
+            export=export,
+            register_global_code_id=register_global_code_id,
+            next_var=next_var,
+        )
+    return next_var
+
+
+def _append_static_native_callable_wrapper_functions(
+    functions: list[dict[str, Any]],
+    *,
+    specs: Sequence[_ExternalNativeModuleInitSpec],
+    register_global_code_id: Callable[[str], int],
+) -> None:
+    existing = {
+        func.get("name")
+        for func in functions
+        if isinstance(func, Mapping) and isinstance(func.get("name"), str)
+    }
+    for spec in specs:
+        for export in spec.direct_symbol_exports:
+            symbol = _native_callable_wrapper_symbol(export)
+            if symbol in existing:
+                raise ValueError(
+                    f"native callable wrapper {symbol!r} for "
+                    f"{export.qualified_name!r} collides with an existing function"
+                )
+            register_global_code_id(symbol)
+            functions.append(_native_callable_wrapper_function(export))
+            existing.add(symbol)
+
+
 def _append_static_native_module_attr_export_ops(
     ops: list[dict[str, Any]],
     *,
@@ -1070,6 +1359,7 @@ def _append_static_native_module_attr_export_ops(
     spec: _ExternalNativeModuleInitSpec,
     register_global_code_id: Callable[[str], int],
     next_var: int,
+    failure_label: int = 1,
 ) -> int:
     exports_by_provider: dict[str, list[str]] = {}
     for export in spec.module_attr_exports:
@@ -1087,7 +1377,7 @@ def _append_static_native_module_attr_export_ops(
                     "out": provider_init_var,
                     "value": register_global_code_id(provider_init),
                 },
-                {"kind": "check_exception", "value": 1},
+                {"kind": "check_exception", "value": failure_label},
             ]
         )
         provider_name_var = f"v{next_var}"
@@ -1123,7 +1413,7 @@ def _append_static_native_module_attr_export_ops(
                         "args": [provider_module_var, attr_name_var],
                         "out": attr_value_var,
                     },
-                    {"kind": "check_exception", "value": 1},
+                    {"kind": "check_exception", "value": failure_label},
                     {
                         "kind": "module_set_attr",
                         "args": [module_var, attr_name_var, attr_value_var],
@@ -1132,6 +1422,58 @@ def _append_static_native_module_attr_export_ops(
                 ]
             )
     return next_var
+
+
+def _append_static_native_callable_publication_ops(
+    ops: list[dict[str, Any]],
+    *,
+    module_var: str,
+    spec: _ExternalNativeModuleInitSpec,
+    register_global_code_id: Callable[[str], int],
+    next_var: int,
+    failure_label: int = 1,
+) -> int:
+    """Publish local callable identities before executing provider callbacks."""
+    next_var = _append_static_native_direct_symbol_export_ops(
+        ops,
+        module_var=module_var,
+        spec=spec,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+    )
+    return _append_static_native_module_attr_export_ops(
+        ops,
+        module_var=module_var,
+        spec=spec,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+        failure_label=failure_label,
+    )
+
+
+def _guard_generated_native_module_init_ops(
+    before_publication: Sequence[dict[str, Any]],
+    after_publication: Sequence[dict[str, Any]],
+    *,
+    module_name_var: str,
+) -> list[dict[str, Any]]:
+    """Separate pre-publication failures from an owned cache transaction.
+
+    Cache publication may fail after writing one projection. From that operation
+    onward, unwind the name through the canonical cache deletion primitive,
+    which also unpublishes the registry slot and preserves the pending error.
+    Cleanup is intentionally unguarded: a pending error must not loop back into
+    its own handler. No name/value allocated by a failed prologue is read there.
+    """
+    return [
+        *_guard_initialization_ops(before_publication, failure_label=1),
+        *_guard_initialization_ops(after_publication, failure_label=2),
+        {"kind": "label", "value": 2},
+        {"kind": "module_cache_del", "args": [module_name_var]},
+        {"kind": "ret_void"},
+        {"kind": "label", "value": 1},
+        {"kind": "ret_void"},
+    ]
 
 
 def _build_registry_native_module_init_ops(
@@ -1211,6 +1553,8 @@ def _build_registry_native_module_init_ops(
     # publish-before-exec shape frontend-compiled module bodies have
     # (invariant I6); the runtime mirrors it into the ModuleTable slot while
     # this ensure transaction is open.
+    before_publication = ops
+    ops = []
     ops.append(
         {
             "kind": "module_cache_set",
@@ -1225,17 +1569,18 @@ def _build_registry_native_module_init_ops(
         is_extension=spec.is_extension,
         next_var=next_var,
     )
-    next_var = _append_static_native_module_attr_export_ops(
+    next_var = _append_static_native_callable_publication_ops(
         ops,
         module_var=module_var,
         spec=spec,
         register_global_code_id=register_global_code_id,
         next_var=next_var,
+        failure_label=2,
     )
     ops.append({"kind": "ret_void"})
-    if spec.is_extension or spec.module_attr_exports:
-        ops.extend(({"kind": "label", "value": 1}, {"kind": "ret_void"}))
-    return ops
+    return _guard_generated_native_module_init_ops(
+        before_publication, ops, module_name_var=module_name_var
+    )
 
 
 def _build_static_native_module_init_ops(
@@ -1349,6 +1694,8 @@ def _build_static_native_module_init_ops(
         ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
     cache_set_var = f"v{next_var}"
     next_var += 1
+    before_publication = ops
+    ops = []
     ops.append(
         {
             "kind": "module_cache_set",
@@ -1364,9 +1711,17 @@ def _build_static_native_module_init_ops(
             is_extension=spec.is_extension,
             next_var=next_var,
         )
-    ops.append({"kind": "end_if"})
-    # Re-load through the cache so parent binding and attr publication use
-    # the canonical module object on both the first-init and cached paths.
+    next_var = _append_static_native_callable_publication_ops(
+        ops,
+        module_var=module_var,
+        spec=spec,
+        register_global_code_id=register_global_code_id,
+        next_var=next_var,
+        failure_label=2,
+    )
+    # Providers may have replaced the cache entry. Bind the parent to the
+    # canonical result, but only while this invocation owns initialization.
+    # A cached import preserves any subsequent user attribute rebinding.
     canonical_module_var = f"v{next_var}"
     next_var += 1
     ops.append(
@@ -1382,17 +1737,109 @@ def _build_static_native_module_init_ops(
         module_name=spec.module,
         next_var=next_var,
     )
-    next_var = _append_static_native_module_attr_export_ops(
-        ops,
-        module_var=canonical_module_var,
+    ops.append({"kind": "end_if"})
+    ops.append({"kind": "ret_void"})
+    return _guard_generated_native_module_init_ops(
+        before_publication, ops, module_name_var=module_name_var
+    )
+
+
+def _attach_static_native_publication_to_source_init(
+    function: dict[str, Any],
+    *,
+    spec: _ExternalNativeModuleInitSpec,
+    register_global_code_id: Callable[[str], int],
+) -> None:
+    """Attach native callable publication to the canonical source init body.
+
+    A public Python module and a native artifact may intentionally share the
+    same ``molt_init_*`` symbol.  The source body remains the only init body;
+    callable publication runs at the declared post-frame/pre-body boundary,
+    reusing the source body's module object and exception cleanup. Source code
+    may therefore capture the published callable and later rebind it normally.
+    """
+
+    init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+    if spec.is_extension or spec.is_alias:
+        authority = "extension" if spec.is_extension else "alias"
+        raise ValueError(
+            f"existing source init {init_symbol!r} collides with native {authority} "
+            f"module authority for {spec.module!r}"
+        )
+    if not spec.module_attr_exports and not spec.direct_symbol_exports:
+        return
+    if function.get("params") != []:
+        raise ValueError(
+            f"existing source init {init_symbol!r} cannot publish native callables: "
+            "module init must have no parameters"
+        )
+    ops = function.get("ops")
+    if not isinstance(ops, list) or not all(isinstance(op, dict) for op in ops):
+        raise ValueError(
+            f"existing source init {init_symbol!r} cannot publish native callables: "
+            "ops must be a mutable list of operation objects"
+        )
+    source_publication = parse_source_module_publication(
+        function.get("source_module_publication")
+    )
+    if source_publication["module_name"] != spec.module:
+        raise ValueError(
+            f"source module identity {source_publication['module_name']!r} "
+            f"does not own native module {spec.module!r}"
+        )
+    module_var = str(source_publication["module_value"])
+    failure_label = int(source_publication["failure_label"])
+    boundary_indices = [
+        index
+        for index, op in enumerate(ops)
+        if op.get("source_module_publication_boundary") is True
+    ]
+    if len(boundary_indices) != 1:
+        raise ValueError(
+            f"existing source init {init_symbol!r} cannot publish native callables: "
+            "expected one canonical publication boundary"
+        )
+    boundary_index = boundary_indices[0]
+    boundary_op = ops[boundary_index]
+    if boundary_op.get("kind") != "frame_locals_set":
+        raise ValueError(
+            f"existing source init {init_symbol!r} cannot publish native callables: "
+            "publication boundary lost its frame-locals anchor"
+        )
+
+    wrapper_symbols = {
+        _native_callable_wrapper_symbol(export) for export in spec.direct_symbol_exports
+    }
+    if any(
+        op.get("kind") == "func_new" and op.get("s_value") in wrapper_symbols
+        for op in ops
+    ):
+        raise ValueError(
+            f"existing source init {init_symbol!r} already contains native callable "
+            "publication"
+        )
+
+    publication_ops: list[dict[str, Any]] = []
+    _append_static_native_callable_publication_ops(
+        publication_ops,
+        module_var=module_var,
         spec=spec,
         register_global_code_id=register_global_code_id,
-        next_var=next_var,
+        next_var=_next_tir_var_index(ops),
+        failure_label=failure_label,
     )
-    ops.append({"kind": "ret_void"})
-    if spec.is_extension or spec.is_alias or spec.module_attr_exports:
-        ops.extend(({"kind": "label", "value": 1}, {"kind": "ret_void"}))
-    return ops
+    guarded_publication = _guard_initialization_ops(
+        publication_ops,
+        failure_label=failure_label,
+    )
+    # Bind locals before any provider can observe this frame, and propagate a
+    # prologue failure before executing publication side effects. The boundary
+    # is a frontend fact; an optimized-away adjacent check is not an authority.
+    insertion_index = boundary_index + 1
+    ops[insertion_index:insertion_index] = [
+        {"kind": "check_exception", "value": failure_label},
+        *guarded_publication,
+    ]
 
 
 def _append_static_native_module_init_functions(
@@ -1410,19 +1857,88 @@ def _append_static_native_module_init_functions(
     ``kind=Alias`` registry row resolves inside ``molt_module_ensure`` — and
     init bodies are pure body executors without cache-guard preambles.
     """
-    existing = {
-        func.get("name")
-        for func in functions
-        if isinstance(func, Mapping) and isinstance(func.get("name"), str)
+    existing: dict[str, list[dict[str, Any]]] = {}
+    source_inits: dict[str, dict[str, Any]] = {}
+    for func in functions:
+        if not isinstance(func, dict) or not isinstance(func.get("name"), str):
+            continue
+        existing.setdefault(func["name"], []).append(func)
+        if "source_module_publication" in func:
+            publication = parse_source_module_publication(
+                func["source_module_publication"]
+            )
+            module = publication["module_name"]
+            if func["name"] != SimpleTIRGenerator.module_init_symbol(module):
+                raise ValueError(
+                    f"source module identity {module!r} does not own init "
+                    f"symbol {func['name']!r}"
+                )
+            if module in source_inits:
+                raise ValueError(f"multiple source init bodies own module {module!r}")
+            source_inits[module] = func
+    for symbol, bodies in existing.items():
+        if len(bodies) > 1 and (
+            symbol.startswith("molt_init_")
+            or any("source_module_publication" in body for body in bodies)
+        ):
+            raise ValueError(f"multiple existing init bodies own {symbol!r}")
+
+    # Preflight the complete ownership set before publishing code IDs or editing
+    # any source body. A lowered symbol is a linkage address, never Python module
+    # identity. Registry aliases own a name/target edge but no function symbol.
+    native_names: set[str] = set()
+    body_owners: dict[str, str] = {
+        function["name"]: module for module, function in source_inits.items()
     }
+    for spec in specs:
+        if spec.module in native_names:
+            raise ValueError(f"multiple native init specs own module {spec.module!r}")
+        native_names.add(spec.module)
+        for export in spec.direct_symbol_exports:
+            if export.module != spec.module:
+                raise ValueError(
+                    f"native export {export.qualified_name!r} does not belong to "
+                    f"module {spec.module!r}"
+                )
+        symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+        if spec.module in source_inits:
+            if spec.is_alias or spec.is_extension:
+                authority = "extension" if spec.is_extension else "alias"
+                raise ValueError(
+                    f"existing source init {symbol!r} collides with native "
+                    f"{authority} module authority for {spec.module!r}"
+                )
+            continue
+        if registry_lane and spec.is_alias:
+            continue
+        owner = body_owners.get(symbol)
+        if owner is not None:
+            raise ValueError(
+                f"module init symbol collision: {owner!r} and {spec.module!r} "
+                f"both require {symbol!r}"
+            )
+        if symbol in existing:
+            # A legacy/unstructured function cannot be silently treated as the
+            # source initializer merely because its spelling happens to match.
+            raise ValueError(
+                f"existing init {symbol!r} for {spec.module!r}: "
+                "missing canonical source-module publication metadata"
+            )
+        body_owners[symbol] = spec.module
+
     owned_modules: list[str] = []
     for spec in specs:
         init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
-        if init_symbol in existing:
+        source_init = source_inits.get(spec.module)
+        if source_init is not None:
+            _attach_static_native_publication_to_source_init(
+                source_init,
+                spec=spec,
+                register_global_code_id=register_global_code_id,
+            )
             continue
         if registry_lane and spec.is_alias:
             owned_modules.append(spec.module)
-            existing.add(init_symbol)
             continue
         register_global_code_id(init_symbol)
         build_ops = (
@@ -1430,18 +1946,28 @@ def _append_static_native_module_init_functions(
             if registry_lane
             else _build_static_native_module_init_ops
         )
-        functions.append(
-            {
-                "name": init_symbol,
-                "params": [],
-                "ops": build_ops(
-                    spec,
-                    register_global_code_id=register_global_code_id,
-                ),
-            }
-        )
+        function = {
+            "name": init_symbol,
+            "params": [],
+            "ops": build_ops(
+                spec,
+                register_global_code_id=register_global_code_id,
+            ),
+        }
+        functions.append(function)
         owned_modules.append(spec.module)
-        existing.add(init_symbol)
+        existing[init_symbol] = [function]
+    # These frontend facts exist only to assemble native publication into the
+    # canonical source init. They are not part of executable SimpleIR.
+    for function_group in existing.values():
+        for function in function_group:
+            function.pop("source_module_publication", None)
+            function_ops = function.get("ops")
+            if not isinstance(function_ops, list):
+                continue
+            for op in function_ops:
+                if isinstance(op, dict):
+                    op.pop("source_module_publication_boundary", None)
     return tuple(owned_modules)
 
 
@@ -1737,6 +2263,17 @@ def _prepare_backend_ir(
 ) -> tuple[_PreparedBackendIR | None, _CliFailure | None]:
     catalog_lane = _module_registry_target_enabled(target)
     module_table_lane = catalog_lane
+    native_callable_conflicts = (
+        native_artifact_plan.native_callable_contract_conflicts()
+    )
+    if native_callable_conflicts:
+        return None, fail(
+            "static native callable export contract conflicts:\n"
+            + "\n".join(native_callable_conflicts),
+            json_output,
+            command="build",
+        )
+
     entry_path: Path | None = None
     if entry_module != "__main__":
         entry_path = module_graph.get(entry_module)
@@ -1798,12 +2335,24 @@ def _prepare_backend_ir(
         )
 
     native_module_init_specs = native_artifact_plan.native_module_init_specs()
-    generated_native_init_modules = _append_static_native_module_init_functions(
-        functions,
-        specs=native_module_init_specs,
-        register_global_code_id=register_global_code_id,
-        registry_lane=module_table_lane,
-    )
+    try:
+        generated_native_init_modules = _append_static_native_module_init_functions(
+            functions,
+            specs=native_module_init_specs,
+            register_global_code_id=register_global_code_id,
+            registry_lane=module_table_lane,
+        )
+        _append_static_native_callable_wrapper_functions(
+            functions,
+            specs=native_module_init_specs,
+            register_global_code_id=register_global_code_id,
+        )
+    except ValueError as exc:
+        return None, fail(
+            f"static native module publication assembly failed: {exc}",
+            json_output,
+            command="build",
+        )
     native_module_order = [spec.module for spec in native_module_init_specs]
     native_runtime_import_dispatch_roots = set(runtime_import_dispatch_roots)
     native_runtime_import_dispatch_roots.update(native_module_order)

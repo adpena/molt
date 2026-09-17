@@ -25,16 +25,17 @@ use super::{ObjectAuxPreselection, alloc_object_zeroed_unpublished_with_aux, bit
 /// strong reference custody (`Py_INCREF`) is the caller's responsibility (the
 /// bridge does it at mint time so cache hits do not double-count).
 ///
-/// Returns the wrapper's NaN-boxed handle bits, or 0 on allocation failure.
+/// Returns the wrapper's NaN-boxed handle bits, or reserved zero on failure.
 pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
     if unsafe { molt_cpython_abi::bridge::molt_foreign_object_is_gc_capable(c_ptr) }
         && !super::gc::native_gc_is_enrolled(c_ptr)
     {
-        return crate::raise_exception::<u64>(
+        crate::raise_exception::<()>(
             _py,
             "TypeError",
             "GC-capable foreign object was not enrolled in the runtime GC authority",
         );
+        return 0;
     }
     let total = std::mem::size_of::<crate::MoltHeader>() + std::mem::size_of::<usize>();
     let ptr = alloc_object_zeroed_unpublished_with_aux(
@@ -44,6 +45,9 @@ pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
         ObjectAuxPreselection::Default,
     );
     if ptr.is_null() {
+        if !crate::exception_pending(_py) {
+            crate::raise_exception::<()>(_py, "MemoryError", "foreign wrapper allocation failed");
+        }
         return 0;
     }
     unsafe {

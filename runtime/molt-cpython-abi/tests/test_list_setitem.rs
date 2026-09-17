@@ -27,7 +27,9 @@ use std::sync::Mutex;
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 // handle bits → the list's item vector.
 static LISTS: Mutex<Option<HashMap<u64, Vec<u64>>>> = Mutex::new(None);
+static TUPLES: Mutex<Option<HashMap<u64, Vec<u64>>>> = Mutex::new(None);
 static NEXT_LIST: Mutex<u64> = Mutex::new(0x9000);
+static NEXT_TUPLE: Mutex<u64> = Mutex::new(0x19_0000);
 static NEXT_FOREIGN: Mutex<u64> = Mutex::new(0xF0DE_0000_0000_0010);
 
 unsafe extern "C" fn fx_alloc_list() -> u64 {
@@ -102,6 +104,77 @@ unsafe extern "C" fn fx_list_set(
         _ => molt_cpython_abi::hooks::OwnedHandleResult::error(),
     }
 }
+unsafe extern "C" fn fx_list_insert(
+    list_bits: u64,
+    where_: isize,
+    item_bits: u64,
+    _item: *mut PyObject,
+) -> i32 {
+    let mut lists = LISTS.lock().unwrap();
+    let Some(list) = lists.get_or_insert_default().get_mut(&list_bits) else {
+        return -1;
+    };
+    let index = if where_ < 0 {
+        (where_ + list.len() as isize).max(0) as usize
+    } else {
+        (where_ as usize).min(list.len())
+    };
+    list.insert(index, item_bits);
+    0
+}
+unsafe extern "C" fn fx_alloc_tuple(len: usize) -> u64 {
+    let mut next = NEXT_TUPLE.lock().unwrap();
+    let addr = *next as usize;
+    *next += 0x100;
+    let bits = MoltObject::from_ptr(addr as *mut u8).bits();
+    TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(bits, vec![MoltObject::none().bits(); len]);
+    bits
+}
+unsafe extern "C" fn fx_tuple_set(
+    tuple_bits: u64,
+    i: usize,
+    val_bits: u64,
+    _item: *mut PyObject,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    let mut tuples = TUPLES.lock().unwrap();
+    match tuples.get_or_insert_default().get_mut(&tuple_bits) {
+        Some(tuple) if i < tuple.len() => {
+            let old = std::mem::replace(&mut tuple[i], val_bits);
+            molt_cpython_abi::hooks::OwnedHandleResult::ok(old)
+        }
+        _ => molt_cpython_abi::hooks::OwnedHandleResult::error(),
+    }
+}
+unsafe extern "C" fn fx_tuple_len(bits: u64) -> usize {
+    TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .map_or(0, Vec::len)
+}
+unsafe extern "C" fn fx_tuple_item(
+    bits: u64,
+    i: usize,
+) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    match TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .get(&bits)
+        .and_then(|tuple| tuple.get(i).copied())
+    {
+        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
+        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
+    }
+}
+unsafe extern "C" fn fx_ref_count(_bits: u64) -> usize {
+    1
+}
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     if LISTS
         .lock()
@@ -110,6 +183,13 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
         .contains_key(&bits)
     {
         MoltTypeTag::List as u8
+    } else if TUPLES
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .contains_key(&bits)
+    {
+        MoltTypeTag::Tuple as u8
     } else {
         MoltTypeTag::Other as u8
     }
@@ -132,6 +212,12 @@ fn install() {
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
     hooks.list_set = fx_list_set;
+    hooks.list_insert = fx_list_insert;
+    hooks.alloc_tuple = fx_alloc_tuple;
+    hooks.tuple_set = fx_tuple_set;
+    hooks.tuple_len = fx_tuple_len;
+    hooks.tuple_item = fx_tuple_item;
+    hooks.ref_count = fx_ref_count;
     hooks.classify_heap = fx_classify_heap;
     hooks.int_from_i64 = fx_int_from_i64;
     hooks.foreign_new = fx_foreign_new;
@@ -310,6 +396,103 @@ fn setitem_accepts_a_self_cycle_during_presized_construction() {
         0
     );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
+}
+
+#[test]
+fn setitem_accepts_mutual_list_tuple_construction_edges() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install();
+    unsafe { errors::PyErr_Clear() };
+
+    let list = unsafe { sequences::PyList_New(1) };
+    let tuple = unsafe { sequences::PyTuple_New(1) };
+    assert!(!list.is_null() && !tuple.is_null());
+
+    // Both containers are still incomplete. Reference insertion transports
+    // their canonical identities; it does not semantically observe either
+    // container's not-yet-readable contents.
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(list) };
+    assert_eq!(unsafe { sequences::PyTuple_SetItem(tuple, 0, list) }, 0);
+    unsafe { molt_cpython_abi::api::refcount::Py_INCREF(tuple) };
+    assert_eq!(unsafe { sequences::PyList_SetItem(list, 0, tuple) }, 0);
+
+    assert_eq!(unsafe { sequences::PyList_GetItem(list, 0) }, tuple);
+    assert_eq!(unsafe { sequences::PyTuple_GetItem(tuple, 0) }, list);
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+
+    // Break the list edge first so the exact tuple becomes uniquely owned and
+    // may legally replace its construction slot, then retire both callers.
+    assert_eq!(
+        unsafe { sequences::PyList_SetItem(list, 0, numbers::PyLong_FromLong(1)) },
+        0
+    );
+    assert_eq!(
+        unsafe { sequences::PyTuple_SetItem(tuple, 0, numbers::PyLong_FromLong(2)) },
+        0
+    );
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+        molt_cpython_abi::api::refcount::Py_DECREF(list);
+    }
+}
+
+#[test]
+fn append_and_insert_accept_incomplete_list_reference_edges() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install();
+    unsafe { errors::PyErr_Clear() };
+
+    let appended = unsafe { sequences::PyList_New(1) };
+    let append_target = unsafe { sequences::PyList_New(0) };
+    let inserted = unsafe { sequences::PyList_New(1) };
+    let insert_target = unsafe { sequences::PyList_New(0) };
+    assert!(!appended.is_null() && !append_target.is_null());
+    assert!(!inserted.is_null() && !insert_target.is_null());
+
+    assert_eq!(
+        unsafe { sequences::PyList_Append(append_target, appended) },
+        0
+    );
+    assert_eq!(
+        unsafe { sequences::PyList_Insert(insert_target, 0, inserted) },
+        0
+    );
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+    let bits = |object| {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(object)
+            .expect("managed construction object must retain identity")
+            .bits()
+    };
+    let append_target_bits = bits(append_target);
+    let appended_bits = bits(appended);
+    let insert_target_bits = bits(insert_target);
+    let inserted_bits = bits(inserted);
+    {
+        let lists = LISTS.lock().unwrap();
+        let lists = lists.as_ref().expect("fake list storage");
+        assert_eq!(
+            lists.get(&append_target_bits).map(Vec::as_slice),
+            Some(&[appended_bits][..])
+        );
+        assert_eq!(
+            lists.get(&insert_target_bits).map(Vec::as_slice),
+            Some(&[inserted_bits][..])
+        );
+    }
+
+    // Retaining the edge does not make an incomplete value semantically
+    // readable. The ordinary observation boundary must still reject it.
+    assert!(unsafe { sequences::PyList_GetItem(appended, 0) }.is_null());
+    assert!(!unsafe { errors::PyErr_Occurred() }.is_null());
+    unsafe { errors::PyErr_Clear() };
+
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(append_target);
+        molt_cpython_abi::api::refcount::Py_DECREF(appended);
+        molt_cpython_abi::api::refcount::Py_DECREF(insert_target);
+        molt_cpython_abi::api::refcount::Py_DECREF(inserted);
+    }
 }
 
 #[test]

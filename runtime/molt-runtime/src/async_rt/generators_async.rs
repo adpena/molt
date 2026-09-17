@@ -1048,7 +1048,7 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
 
 #[cfg(test)]
 mod tests {
-    use super::{molt_asyncgen_new, molt_generator_new};
+    use super::{molt_asyncgen_new, molt_task_new};
     use crate::{GEN_CONTROL_SIZE, asyncgen_registry, dec_ref_bits, obj_from_bits};
 
     #[test]
@@ -1059,7 +1059,7 @@ mod tests {
                 let mut guard = asyncgen_registry(_py).lock().unwrap();
                 guard.clear();
             }
-            let gen_bits = molt_generator_new(0, GEN_CONTROL_SIZE as u64);
+            let gen_bits = molt_task_new(0, GEN_CONTROL_SIZE as u64, crate::TASK_KIND_GENERATOR);
             assert!(
                 !obj_from_bits(gen_bits).is_none(),
                 "generator allocation failed"

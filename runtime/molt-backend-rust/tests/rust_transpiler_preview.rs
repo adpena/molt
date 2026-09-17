@@ -451,103 +451,19 @@ fn rust_backend_stamps_target_python_version_state() {
 }
 
 #[test]
-fn rust_backend_imports_sys_version_metadata_without_placeholder_diagnostics() {
-    let mut major_raw = op("const");
-    major_raw.value = Some(3);
-    major_raw.out = Some("major_raw".to_string());
-
-    let mut major = op("box");
-    major.args = Some(vec!["major_raw".to_string()]);
-    major.out = Some("major".to_string());
-
-    let mut minor_raw = op("const");
-    minor_raw.value = Some(14);
-    minor_raw.out = Some("minor_raw".to_string());
-
-    let mut minor = op("box");
-    minor.args = Some(vec!["minor_raw".to_string()]);
-    minor.out = Some("minor".to_string());
-
-    let mut micro_raw = op("const");
-    micro_raw.value = Some(0);
-    micro_raw.out = Some("micro_raw".to_string());
-
-    let mut micro = op("box");
-    micro.args = Some(vec!["micro_raw".to_string()]);
-    micro.out = Some("micro".to_string());
-
-    let mut releaselevel = op("const_str");
-    releaselevel.s_value = Some("final".to_string());
-    releaselevel.out = Some("releaselevel".to_string());
-
-    let mut serial_raw = op("const");
-    serial_raw.value = Some(0);
-    serial_raw.out = Some("serial_raw".to_string());
-
-    let mut serial = op("box");
-    serial.args = Some(vec!["serial_raw".to_string()]);
-    serial.out = Some("serial".to_string());
-
-    let mut version = op("const_str");
-    version.s_value = Some("3.14.0 (molt)".to_string());
-    version.out = Some("version".to_string());
-
-    let mut set_version = op("call");
-    set_version.s_value = Some("molt_sys_set_version_info".to_string());
-    set_version.args = Some(vec![
-        "major".to_string(),
-        "minor".to_string(),
-        "micro".to_string(),
-        "releaselevel".to_string(),
-        "serial".to_string(),
-        "version".to_string(),
-    ]);
-    set_version.out = Some("set_result".to_string());
-
-    let mut sys_name = op("const_str");
-    sys_name.s_value = Some("sys".to_string());
-    sys_name.out = Some("sys_name".to_string());
-
+fn rust_backend_rejects_sys_import_without_python_import_protocol() {
     let mut import_sys = op("module_import");
-    import_sys.args = Some(vec!["sys_name".to_string()]);
+    import_sys.s_value = Some("sys".to_string());
     import_sys.out = Some("sys_module".to_string());
 
-    let mut version_info_name = op("const_str");
-    version_info_name.s_value = Some("version_info".to_string());
-    version_info_name.out = Some("version_info_name".to_string());
-
-    let mut version_info = op("module_get_attr");
-    version_info.args = Some(vec![
-        "sys_module".to_string(),
-        "version_info_name".to_string(),
-    ]);
-    version_info.out = Some("version_info".to_string());
-
     let mut ret = op("ret");
-    ret.args = Some(vec!["version_info".to_string()]);
+    ret.args = Some(vec!["sys_module".to_string()]);
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_target_python_sys_import_probe".to_string(),
             params: Vec::new(),
-            ops: vec![
-                major_raw,
-                major,
-                minor_raw,
-                minor,
-                micro_raw,
-                micro,
-                releaselevel,
-                serial_raw,
-                serial,
-                version,
-                set_version,
-                sys_name,
-                import_sys,
-                version_info_name,
-                version_info,
-                ret,
-            ],
+            ops: vec![import_sys, ret],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -558,15 +474,15 @@ fn rust_backend_imports_sys_version_metadata_without_placeholder_diagnostics() {
     };
 
     let mut backend = RustBackend::new();
-    let source = backend
+    let error = backend
         .compile_checked(&ir)
-        .expect("preview rust backend should materialize sys metadata");
+        .expect_err("sys import requires the complete Python import protocol");
 
-    assert!(!source.contains("compile_error!"));
-    assert!(source.contains("fn molt_import_module(name: &MoltValue) -> MoltValue"));
-    assert!(source.contains("\"version_info\".to_string()"));
-    assert!(source.contains("\"hexversion\".to_string()"));
-    assert!(source.contains("molt_import_module(&sys_name)"));
+    assert!(
+        error.contains("rejected before source generation"),
+        "{error}"
+    );
+    assert!(error.contains("module_import"), "{error}");
 }
 
 #[test]

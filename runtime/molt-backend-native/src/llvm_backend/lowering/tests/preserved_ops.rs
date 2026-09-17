@@ -110,6 +110,21 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             Some("gen_fn"),
             "molt_gen_locals_register",
         ),
+        (
+            "asyncgen_locals_register",
+            2,
+            false,
+            Some("gen_fn"),
+            "molt_asyncgen_locals_register",
+        ),
+        (
+            "function_closure_bits",
+            1,
+            true,
+            None,
+            "molt_function_closure_bits",
+        ),
+        ("asyncgen_new", 1, true, None, "molt_asyncgen_new"),
     ];
     for &(kind, nops, with_result, s_value, sym) in cases {
         let ir = lower_preserved_kind_ir(&backend, kind, nops, with_result, s_value)
@@ -124,6 +139,205 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             "preserved `{kind}` must lower to `{sym}` (not an operand-0 \
                  passthrough); IR:\n{ir}"
         );
+    }
+}
+
+#[test]
+fn callable_constructors_release_only_discarded_owned_results() {
+    for (kind, argc) in [
+        ("func_new", 0),
+        ("func_new_closure", 1),
+        ("builtin_func", 0),
+        ("code_new", 9),
+        ("callargs_new", 0),
+        ("classmethod_new", 1),
+        ("staticmethod_new", 1),
+        ("property_new", 3),
+        ("bound_method_new", 2),
+        ("asyncgen_new", 1),
+    ] {
+        for bound in [false, true] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            backend.function_linkage_abis.insert(
+                "callable_result_target".into(),
+                test_native_linkage_abi(
+                    if kind == "func_new_closure" {
+                        vec![TirType::DynBox]
+                    } else {
+                        vec![]
+                    },
+                    Some(TirType::DynBox),
+                ),
+            );
+            let symbol_target = matches!(kind, "func_new" | "func_new_closure" | "builtin_func")
+                .then_some("callable_result_target");
+            let ir = lower_preserved_kind_ir(&backend, kind, argc, bound, symbol_target)
+                .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()));
+            backend
+                .module
+                .verify()
+                .unwrap_or_else(|error| panic!("{kind}, bound={bound}: {error}"));
+            let symbol = if kind == "builtin_func" {
+                "molt_func_new_builtin".into()
+            } else {
+                format!("molt_{kind}")
+            };
+            assert!(ir.contains(&format!("call i64 @{symbol}(")), "{ir}");
+            assert_eq!(
+                ir.matches("call void @molt_dec_ref_obj(").count(),
+                usize::from(!bound),
+                "{kind}, bound={bound}: {ir}"
+            );
+            assert!(
+                !ir.contains("call void @molt_inc_ref_obj("),
+                "owned constructor result is transferred, not retained: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
+    for kind in ["alloc_class", "asyncgen_new", "function_closure_bits"] {
+        for keep_result in [false, true] {
+            let ctx = Context::create();
+            let backend = make_backend(&ctx);
+            let mut func = TirFunction::new(
+                format!("dedicated_{kind}_{keep_result}"),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+            );
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let operand = entry.args[0].id;
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![operand],
+                results: if keep_result { vec![result] } else { vec![] },
+                attrs: AttrDict::from([
+                    ("_original_kind".into(), AttrValue::Str(kind.into())),
+                    ("value".into(), AttrValue::Int(48)),
+                ]),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![if keep_result { result } else { operand }],
+            };
+            let ir = try_lower_tir_to_llvm(&func, &backend)
+                .expect("dedicated runtime ABI must lower")
+                .print_to_string()
+                .to_string();
+            backend
+                .module
+                .verify()
+                .expect("dedicated runtime ABI must verify");
+            let expected_call = if kind == "alloc_class" {
+                "call i64 @molt_alloc_class(i64 48, i64 %0)".to_string()
+            } else {
+                format!("call i64 @molt_{kind}(i64 %0)")
+            };
+            assert!(ir.contains(&expected_call), "{ir}");
+            assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
+            if kind == "alloc_class" {
+                let publish = "call i64 @molt_object_publish_initialized(i64 %alloc_class)";
+                assert!(ir.contains(publish), "{ir}");
+                assert!(
+                    ir.find(&expected_call).unwrap() < ir.find(publish).unwrap(),
+                    "{ir}"
+                );
+                if !keep_result {
+                    assert!(
+                        ir.contains("call void @molt_dec_ref_obj(i64 %class_initialized)"),
+                        "{ir}"
+                    );
+                }
+            }
+            if kind == "asyncgen_new" && !keep_result {
+                assert!(
+                    ir.contains("call void @molt_dec_ref_obj(i64 %asyncgen_new)"),
+                    "{ir}"
+                );
+            }
+            if keep_result {
+                let result_name = if kind == "alloc_class" {
+                    "class_initialized"
+                } else {
+                    kind
+                };
+                assert!(ir.contains(&format!("ret i64 %{result_name}")), "{ir}");
+            }
+            let borrowed = kind == "function_closure_bits";
+            assert_eq!(
+                ir.matches("call void @molt_inc_ref_obj(").count(),
+                usize::from(borrowed && keep_result),
+                "only binding a borrowed closure acquires an owner: {ir}"
+            );
+            assert_eq!(
+                ir.matches("call void @molt_dec_ref_obj(").count(),
+                usize::from(!borrowed && !keep_result),
+                "only discarding an owned result retires an owner: {ir}"
+            );
+            if borrowed && keep_result {
+                assert!(
+                    ir.contains("call void @molt_inc_ref_obj(i64 %function_closure_bits)"),
+                    "{ir}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn generator_locals_registration_preserves_mixed_abi_for_both_families() {
+    for kind in ["gen_locals_register", "asyncgen_locals_register"] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.function_linkage_abis.insert(
+            "poll_fn".into(),
+            test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
+        );
+        let mut func = TirFunction::new(
+            format!("register_{kind}"),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let names = entry.args[0].id;
+        let offsets = entry.args[1].id;
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![names, offsets],
+            results: vec![result],
+            attrs: AttrDict::from([
+                ("_original_kind".into(), AttrValue::Str(kind.into())),
+                ("s_value".into(), AttrValue::Str("poll_fn".into())),
+                ("value".into(), AttrValue::Int(1)),
+            ]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .expect("generator locals mixed ABI must lower")
+            .print_to_string()
+            .to_string();
+        backend
+            .module
+            .verify()
+            .expect("generator locals mixed ABI must verify");
+        assert!(
+            ir.contains(&format!(
+                "call i64 @molt_{kind}(i64 ptrtoint (ptr @poll_fn to i64), i64 %0, i64 %1)"
+            )),
+            "{ir}"
+        );
+        assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
+        assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
     }
 }
 
@@ -314,6 +528,12 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ("set_update", 2, "molt_set_update"),
         ("dict_str_int_inc", 3, "molt_dict_str_int_inc"),
         ("spawn", 1, "molt_spawn"),
+        ("math_sin", 1, "molt_math_sin"),
+        (
+            "string_split_field_len_from_bounds",
+            4,
+            "molt_string_split_field_len_from_bounds",
+        ),
     ];
     for &(_, _, sym) in cases {
         backend.runtime_callable_symbols.insert(sym.to_string());
@@ -365,8 +585,22 @@ fn lower_preserved_void_runtime_result_shape_fails_loud() {
         .insert("molt_spawn".to_string());
     let err = lower_preserved_kind_ir(&backend, "spawn", 1, true, None)
         .expect_err("void preserved runtime ops must not bind a boxed result");
-    assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
+    assert_lowering_error_contains(&err, "call to void runtime symbol");
     assert_lowering_error_contains(&err, "spawn");
+}
+
+#[test]
+fn preserved_runtime_calls_reject_raw_carriers_even_when_linked() {
+    for (kind, arity) in [("int_from_i64", 1), ("int_as_i64", 1), ("is_truthy", 1)] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend
+            .runtime_callable_symbols
+            .insert(format!("molt_{kind}"));
+        let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
+            .expect_err("machine i64 ABI cannot authorize boxed operands/results");
+        assert_lowering_error_contains(&error, "no positional boxed-value ABI classification");
+    }
 }
 
 /// The dual safety check: a result-less preserved op whose `molt_<kind>`

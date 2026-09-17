@@ -255,6 +255,7 @@ pub(crate) fn exception_method_bits_for_owner(
                     _py,
                     ptr,
                     MoltObject::from_int(i64::from(root as u8)).bits(),
+                    crate::FunctionCallAbi::OpaqueContextFirst,
                 );
                 let vararg_name = intern_static_name(
                     _py,
@@ -1530,7 +1531,7 @@ pub(crate) unsafe fn exception_capture_typed_snapshot(
                     unsafe { exception_typed_field_raw_bits(exception_ptr, field) }
                         .expect("schema object field must have runtime storage")
                 };
-                if raw != 0 && !obj_from_bits(raw).is_none() {
+                if !obj_from_bits(raw).is_none() {
                     inc_ref_bits(_py, raw);
                     snapshot.present_mask |= 1u32 << index;
                     snapshot.handles[index] = raw;
@@ -5624,7 +5625,11 @@ mod tests {
     fn generator_lifecycle_detach_drains_exception_stack() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let generator_bits = crate::molt_generator_new(0, crate::GEN_CONTROL_SIZE as u64);
+            let generator_bits = crate::molt_task_new(
+                0,
+                crate::GEN_CONTROL_SIZE as u64,
+                crate::TASK_KIND_GENERATOR,
+            );
             let ptr = obj_from_bits(generator_bits)
                 .as_ptr()
                 .expect("generator allocation");

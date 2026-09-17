@@ -679,8 +679,50 @@ end
 pub(super) const CALLARGS_RUNTIME: &str = r#"
 
 local function molt_function_init_metadata_packed(func: any, metadata: any, _code: any, bind_kind: any): nil
-	if type(func) ~= "function" or type(metadata) ~= "table" or molt_sequence_len(metadata) ~= 11 then
+	if type(func) ~= "function" or type(metadata) ~= "table" or molt_sequence_len(metadata) ~= 14 then
 		error({__type="TypeError", __msg="invalid packed function metadata"})
+	end
+	local execution_kind = rawget(metadata, 12)
+	local freevars, cellvars = rawget(metadata, 13), rawget(metadata, 14)
+	local function validate_names(names: any): nil
+		if type(names) ~= "table" or rawget(names, molt_sequence_kind_key) ~= "tuple" then
+			error({__type="TypeError", __msg="code lexical names must be tuples"})
+		end
+		for index = 1, molt_sequence_len(names) do
+			if type(rawget(names, index)) ~= "string" then
+				error({__type="TypeError", __msg="code lexical names must be strings"})
+			end
+		end
+		return nil
+	end
+	validate_names(freevars)
+	validate_names(cellvars)
+	if type(execution_kind) ~= "number" or execution_kind < 0 or execution_kind > 3 or execution_kind ~= math.floor(execution_kind) then
+		error({__type="TypeError", __msg="invalid function execution kind"})
+	end
+	if type(_code) == "table" then
+		local previous = rawget(_code, "__molt_execution_kind")
+		if previous ~= nil and previous ~= execution_kind then
+			error({__type="SystemError", __msg="code execution kind cannot change"})
+		end
+		if previous ~= nil then
+			for name, names in {co_freevars=freevars, co_cellvars=cellvars} do
+				local published = rawget(_code, name)
+				if type(published) ~= "table" or molt_sequence_len(published) ~= molt_sequence_len(names) then
+					error({__type="SystemError", __msg="code lexical names cannot change"})
+				end
+				for index = 1, molt_sequence_len(names) do
+					if rawget(published, index) ~= rawget(names, index) then
+						error({__type="SystemError", __msg="code lexical names cannot change"})
+					end
+				end
+			end
+		end
+		rawset(_code, "co_freevars", freevars)
+		rawset(_code, "co_cellvars", cellvars)
+		rawset(_code, "__molt_execution_kind", execution_kind)
+	elseif execution_kind ~= 0 then
+		error({__type="SystemError", __msg="task callable requires code metadata"})
 	end
 	molt_func_attr_set(func, "__name__", rawget(metadata, 1))
 	molt_func_attr_set(func, "__qualname__", rawget(metadata, 2))
@@ -689,7 +731,9 @@ local function molt_function_init_metadata_packed(func: any, metadata: any, _cod
 	molt_func_attr_set(func, "__kwdefaults__", rawget(metadata, 10))
 	molt_func_attr_set(func, "__doc__", rawget(metadata, 11))
 	molt_func_attr_set(func, "__code__", _code)
+	molt_frame_function_capture(func, rawget(metadata, 3))
 	molt_func_attr_set(func, "__molt_bind_kind__", bind_kind)
+	local previous_metadata = molt_function_metadata[func]
 	molt_function_metadata[func] = {
 		arg_names = rawget(metadata, 4),
 		posonly = rawget(metadata, 5) or 0,
@@ -698,17 +742,43 @@ local function molt_function_init_metadata_packed(func: any, metadata: any, _cod
 		varkw = rawget(metadata, 8),
 		defaults = rawget(metadata, 9),
 		kwdefaults = rawget(metadata, 10),
+		is_builtin = previous_metadata ~= nil and previous_metadata.is_builtin == true,
 	}
 	return nil
+end
+
+local function molt_function_attr_set(func: any, name: any, value: any): nil
+	local metadata = molt_function_metadata[func]
+	if metadata ~= nil then
+		if name == "__defaults__" then
+			if value ~= nil and (type(value) ~= "table" or rawget(value, molt_sequence_kind_key) ~= "tuple") then
+				error({__type="TypeError", __msg="__defaults__ must be set to a tuple object"})
+			end
+			metadata.defaults = value
+		elseif name == "__kwdefaults__" then
+			if value ~= nil and not molt_dict_is_ordered(value) then
+				error({__type="TypeError", __msg="__kwdefaults__ must be set to a dict object"})
+			end
+			metadata.kwdefaults = value
+		end
+	end
+	return molt_func_attr_set(func, name, value)
+end
+
+local function molt_function_attr_del(func: any, name: any): nil
+	local metadata = molt_function_metadata[func]
+	if metadata ~= nil then
+		if name == "__defaults__" then metadata.defaults = nil
+		elseif name == "__kwdefaults__" then metadata.kwdefaults = nil end
+	end
+	return molt_func_attr_del(func, name)
 end
 
 local function molt_function_set_defaults(func: any, defaults: any, kwdefaults: any): nil
 	local metadata = molt_function_metadata[func]
 	if metadata == nil then error({__type="TypeError", __msg="expected function metadata"}) end
-	metadata.defaults = defaults
-	metadata.kwdefaults = kwdefaults
-	molt_func_attr_set(func, "__defaults__", defaults)
-	molt_func_attr_set(func, "__kwdefaults__", kwdefaults)
+	molt_function_attr_set(func, "__defaults__", defaults)
+	molt_function_attr_set(func, "__kwdefaults__", kwdefaults)
 	return nil
 end
 
@@ -743,8 +813,10 @@ local function molt_callargs_push_kw(builder: {any}, key: any, value: any): nil
 end
 
 local function molt_callargs_expand_star(builder: {any}, iterable: any): nil
-	local ok, iterator = pcall(molt_iterator_new, iterable)
-	if not ok then error({__type="TypeError", __msg="argument after * must be an iterable, not " .. type(iterable)}) end
+	-- Iterator construction is the iterable-protocol authority.  Do not catch
+	-- and rewrite its failures here: a user __iter__ exception must remain the
+	-- exception observed by the call expression.
+	local iterator = molt_iterator_new(iterable)
 	while true do
 		local step = iterator()
 		if rawget(step, 2) then break end
@@ -754,6 +826,9 @@ local function molt_callargs_expand_star(builder: {any}, iterable: any): nil
 end
 
 local function molt_callargs_expand_kwstar(builder: {any}, mapping: any): nil
+	-- Checked admission proves this is the canonical ordered Molt dict carrier.
+	-- Arbitrary Python mappings remain rejected before source generation until
+	-- Luau has one shared keys()/__getitem__ protocol authority.
 	if not molt_dict_is_ordered(mapping) then error({__type="TypeError", __msg="argument after ** must be a mapping"}) end
 	molt_dict_scan(mapping, function(key, value) molt_callargs_push_kw(builder, key, value) end)
 	return nil
@@ -767,11 +842,27 @@ local function molt_call_bound(func: any, positional: {any}, kwargs: {[any]: any
 		if molt_dict_len(kwargs) ~= 0 then error({__type="TypeError", __msg="callable does not accept keyword arguments"}) end
 		return func(table.unpack(positional, 1, positional_count))
 	end
+	if metadata.bound_func ~= nil then
+		local forwarded = molt_pack_list()
+		rawset(forwarded, 1, metadata.bound_self)
+		for index = 1, positional_count do rawset(forwarded, index + 1, rawget(positional, index)) end
+		rawset(forwarded, molt_sequence_length_key, positional_count + 1)
+		return molt_call_bound(metadata.bound_func, forwarded, kwargs)
+	end
+	-- `builtin_func` establishes the packed-argument ABI before frontend
+	-- metadata initialization.  Absence of arg_names means no Python signature
+	-- has been published yet; an explicit empty tuple is a genuine zero-arity
+	-- signature and must continue through the ordinary binder below.
+	if metadata.is_builtin == true and metadata.arg_names == nil then
+		if molt_dict_len(kwargs) ~= 0 then error({__type="TypeError", __msg="callable does not accept keyword arguments"}) end
+		return func(positional)
+	end
 	local arg_names = metadata.arg_names or molt_pack_tuple()
 	local positional_param_count = molt_sequence_len(arg_names)
 	local kwonly = metadata.kwonly or molt_pack_tuple()
 	local kwonly_count = molt_sequence_len(kwonly)
 	if positional_count == positional_param_count and kwonly_count == 0 and metadata.vararg == nil and metadata.varkw == nil and molt_dict_len(kwargs) == 0 then
+		if metadata.is_builtin == true then return func(positional) end
 		return func(table.unpack(positional, 1, positional_count))
 	end
 	local values = molt_pack_list()
@@ -832,6 +923,7 @@ local function molt_call_bound(func: any, positional: {any}, kwargs: {[any]: any
 	end
 	if metadata.varkw ~= nil then final_count += 1; rawset(values, final_count, extra_keywords) end
 	rawset(values, molt_sequence_length_key, final_count)
+	if metadata.is_builtin == true then return func(values) end
 	return func(table.unpack(values, 1, final_count))
 end
 
@@ -843,7 +935,7 @@ end
 molt_call_checked = function(callable: any, ...): any
 	local metadata = molt_function_metadata[callable]
 	if metadata == nil then return callable(...) end
-	if molt_sequence_len(metadata.arg_names or molt_pack_tuple()) == select('#', ...) and molt_sequence_len(metadata.kwonly or molt_pack_tuple()) == 0 and metadata.vararg == nil and metadata.varkw == nil then
+	if metadata.bound_func == nil and metadata.is_builtin ~= true and molt_sequence_len(metadata.arg_names or molt_pack_tuple()) == select('#', ...) and molt_sequence_len(metadata.kwonly or molt_pack_tuple()) == 0 and metadata.vararg == nil and metadata.varkw == nil then
 		return callable(...)
 	end
 	local positional = molt_pack_list(...)
@@ -854,27 +946,9 @@ local function molt_bound_method_new(func: any, self_value: any): any
 	local function bound(...): any return molt_call_checked(func, self_value, ...) end
 	local metadata = molt_function_metadata[func]
 	if metadata ~= nil then
-		local names = molt_pack_tuple()
-		local count = math.max(0, molt_sequence_len(metadata.arg_names) - 1)
-		for index = 1, count do rawset(names, index, rawget(metadata.arg_names, index + 1)) end
-		rawset(names, molt_sequence_length_key, count)
-		local defaults = metadata.defaults
-		if defaults ~= nil then
-			local defaults_count = molt_sequence_len(defaults)
-			local keep = math.min(defaults_count, count)
-			local bound_defaults = molt_pack_tuple()
-			for index = 1, keep do rawset(bound_defaults, index, rawget(defaults, defaults_count - keep + index)) end
-			rawset(bound_defaults, molt_sequence_length_key, keep)
-			defaults = bound_defaults
-		end
 		molt_function_metadata[bound] = {
-			arg_names = names,
-			posonly = math.max(0, (metadata.posonly or 0) - 1),
-			kwonly = metadata.kwonly,
-			vararg = metadata.vararg,
-			varkw = metadata.varkw,
-			defaults = defaults,
-			kwdefaults = metadata.kwdefaults,
+			bound_func = func,
+			bound_self = self_value,
 		}
 	end
 	return bound

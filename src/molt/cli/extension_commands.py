@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence
 
 from molt.cli import source_extensions as _source_extensions
 from molt.cli import source_extension_cython as _source_extension_cython
-from molt.cli.python_module_names import encode_python_module_names
+from molt.python_module_names import encode_python_module_names
 from molt.cli.compiler_target import compiler_target_triple
 from molt.cli.source_extension_language import (
     SourceExtensionLanguage,

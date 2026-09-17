@@ -1,14 +1,17 @@
 // Call dispatch, builtin wrappers, and type constructor builtins.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::builtins::frames::{
+    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, take_invocation_namespace,
+};
 use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
+use crate::state::recursion::RecursionGuard;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::ops::float_result_bits;
 use super::ops_sys::{decode_slice_bound, slice_error};
@@ -94,14 +97,14 @@ pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
         let Some(count) = usize::try_from(count).ok() else {
             return raise_exception::<_>(_py, "MemoryError", "code slot count too large");
         };
-        let slots = (0..count).map(|_| AtomicU64::new(0)).collect();
+        let slots = (0..count).map(|_| CompiledCodeSlot::default()).collect();
         let _ = runtime_state(_py).code_slots.set(slots);
         MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
+pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(slots) = runtime_state(_py).code_slots.get() else {
             return raise_exception::<_>(_py, "RuntimeError", "code slots not initialized");
@@ -121,89 +124,105 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64) -> u64 {
         } else {
             return raise_exception::<_>(_py, "TypeError", "code slot expects code object");
         }
-        if code_bits != 0 {
-            inc_ref_bits(_py, code_bits);
+        if crate::builtins::frames::globals_namespace_storage_bits(_py, globals_bits).is_none() {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            return raise_exception::<_>(_py, "TypeError", "code slot expects globals dictionary");
         }
-        let old_bits = slots[idx].swap(code_bits, AtomicOrdering::AcqRel);
-        if old_bits != 0 {
-            dec_ref_bits(_py, old_bits);
+        if crate::builtins::frames::compiled_slot_for_code(code_bits)
+            .is_some_and(|existing| existing != code_id)
+        {
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "code object cannot move between compiled slots",
+            );
         }
+        unsafe {
+            crate::object::layout::code_set_frame_slot_id(
+                obj_from_bits(code_bits).as_ptr().unwrap(),
+                code_id,
+            );
+        }
+        slots[idx].replace(
+            _py,
+            CodeNamespace {
+                code_bits,
+                globals_bits,
+            },
+        );
         MoltObject::none().bits()
     })
 }
 
-fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> u64 {
+fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> Option<CodeNamespace> {
     let Some(slots) = runtime_state(_py).code_slots.get() else {
-        return MoltObject::none().bits();
+        return None;
     };
     let Some(idx) = usize::try_from(code_id).ok() else {
-        return MoltObject::none().bits();
+        return None;
     };
-    let bits = if idx < slots.len() {
-        slots[idx].load(AtomicOrdering::Acquire)
-    } else {
-        MoltObject::none().bits()
-    };
-    if bits == 0 || obj_from_bits(bits).is_none() {
-        return MoltObject::none().bits();
+    let binding = slots.get(idx)?.acquire(_py);
+    if binding.code_bits == 0 {
+        binding.release(_py);
+        return None;
     }
-    let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-        return MoltObject::none().bits();
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_CODE {
-            return MoltObject::none().bits();
-        }
-    }
-    inc_ref_bits(_py, bits);
-    bits
+    Some(binding)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
+pub extern "C" fn molt_frame_invocation_enter(callee_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut code_bits = MoltObject::none().bits();
-        let mut pushed = false;
-        let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
-        let func_obj = obj_from_bits(func_bits);
-        if let Some(func_ptr) = func_obj.as_ptr() {
-            unsafe {
-                match object_type_id(func_ptr) {
-                    TYPE_ID_FUNCTION => {
-                        code_bits = ensure_function_code_bits(_py, func_ptr);
-                        frame_func_ptr = func_ptr;
-                    }
-                    TYPE_ID_BOUND_METHOD => {
-                        let bound_func_bits = bound_method_func_bits(func_ptr);
-                        if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
-                            && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
-                        {
-                            code_bits = ensure_function_code_bits(_py, bound_ptr);
-                            frame_func_ptr = bound_ptr;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
-            unsafe {
-                if object_type_id(code_ptr) == TYPE_ID_CODE {
-                    frame_stack_push_function(_py, code_bits, frame_func_ptr);
-                    pushed = true;
-                }
-            }
-        }
-        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(pushed));
-        code_bits
+        FrameInvocationGuard::for_callable(_py, callee_bits)
+            .map_or(0, FrameInvocationGuard::into_token)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_invocation_exit(token: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        FrameInvocationGuard::exit_token(_py, token);
+        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let code_bits = code_slot_acquire(_py, code_id);
-        let mut pushed = false;
+        let (binding, builtins_bits) = if let Some([globals, builtins, code]) =
+            take_invocation_namespace(code_id)
+        {
+            // The invocation already owns every edge. Do not acquire and then
+            // discard unrelated lexical owners from the mutable default slot.
+            (
+                CodeNamespace {
+                    code_bits: code,
+                    globals_bits: globals,
+                },
+                builtins,
+            )
+        } else {
+            let Some(binding) = code_slot_acquire(_py, code_id) else {
+                TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
+                return raise_exception::<u64>(
+                    _py,
+                    "SystemError",
+                    "compiled frame slot is unbound",
+                );
+            };
+            let builtins =
+                crate::builtins::frames::frame_effective_builtins_bits(_py, binding.globals_bits);
+            inc_ref_bits(_py, builtins);
+            (binding, builtins)
+        };
+        let code_bits = binding.code_bits;
+        if exception_pending(_py) {
+            binding.release(_py);
+            dec_ref_bits(_py, builtins_bits);
+            TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
+            return MoltObject::none().bits();
+        }
         if trace_enter_slot_enabled() {
             let mut name = "<none>".to_string();
             let mut file = "<none>".to_string();
@@ -223,18 +242,8 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                 code_id, code_bits, name, file
             );
         }
-        if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
-            unsafe {
-                if object_type_id(code_ptr) == TYPE_ID_CODE {
-                    frame_stack_push_owned(_py, code_bits);
-                    pushed = true;
-                }
-            }
-        }
-        if !pushed && !obj_from_bits(code_bits).is_none() {
-            dec_ref_bits(_py, code_bits);
-        }
-        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(pushed));
+        frame_stack_push_owned(_py, code_bits, binding.globals_bits, builtins_bits);
+        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
         code_bits
     })
 }
@@ -275,12 +284,7 @@ pub extern "C" fn molt_trace_exit() -> u64 {
 /// operations per call site.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn molt_guarded_call(
-    fn_ptr: u64,
-    args_ptr: *const u64,
-    nargs: u64,
-    code_id: i64,
-) -> u64 {
+pub extern "C" fn molt_guarded_call(fn_ptr: u64, args_ptr: *const u64, nargs: u64) -> u64 {
     let Some(fn_target) = crate::provenance::abi::function_ptr(fn_ptr) else {
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
@@ -299,29 +303,12 @@ pub extern "C" fn molt_guarded_call(
             )
         });
     };
-    if !recursion_guard_enter() {
-        crate::with_gil_entry_nopanic!(_py, {
-            return raise_exception::<u64>(
-                _py,
-                "RecursionError",
-                "maximum recursion depth exceeded",
-            );
-        });
-    }
-    if code_id >= 0 {
-        crate::with_gil_entry_nopanic!(_py, {
-            let code_bits = code_slot_acquire(_py, code_id as u64);
-            frame_stack_push_owned(_py, code_bits);
-        });
-    }
-    let result: u64 = unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) };
-    if code_id >= 0 {
-        crate::with_gil_entry_nopanic!(_py, {
-            frame_stack_pop(_py);
-        });
-    }
-    recursion_guard_exit();
-    result
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(_recursion) = RecursionGuard::enter(_py) else {
+            return MoltObject::none().bits();
+        };
+        unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) }
+    })
 }
 
 /// Outlined guarded-call helper for dynamic dispatch paths where the callee
@@ -356,51 +343,15 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
             )
         });
     };
-    if !recursion_guard_enter() {
-        crate::with_gil_entry_nopanic!(_py, {
-            return raise_exception::<u64>(
-                _py,
-                "RecursionError",
-                "maximum recursion depth exceeded",
-            );
-        });
-    }
-    if callee_bits != 0 {
-        crate::with_gil_entry_nopanic!(_py, {
-            let mut code_bits = MoltObject::none().bits();
-            let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
-            let func_obj = obj_from_bits(callee_bits);
-            if let Some(func_ptr) = func_obj.as_ptr() {
-                unsafe {
-                    match object_type_id(func_ptr) {
-                        TYPE_ID_FUNCTION => {
-                            code_bits = ensure_function_code_bits(_py, func_ptr);
-                            frame_func_ptr = func_ptr;
-                        }
-                        TYPE_ID_BOUND_METHOD => {
-                            let bound_func_bits = bound_method_func_bits(func_ptr);
-                            if let Some(bound_ptr) = obj_from_bits(bound_func_bits).as_ptr()
-                                && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
-                            {
-                                code_bits = ensure_function_code_bits(_py, bound_ptr);
-                                frame_func_ptr = bound_ptr;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            frame_stack_push_function(_py, code_bits, frame_func_ptr);
-        });
-    }
-    let result: u64 = unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) };
-    if callee_bits != 0 {
-        crate::with_gil_entry_nopanic!(_py, {
-            frame_stack_pop(_py);
-        });
-    }
-    recursion_guard_exit();
-    result
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(_recursion) = RecursionGuard::enter(_py) else {
+            return MoltObject::none().bits();
+        };
+        let Some(_invocation) = FrameInvocationGuard::for_callable(_py, callee_bits) else {
+            return MoltObject::none().bits();
+        };
+        unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) }
+    })
 }
 
 /// Shared dispatch table: call fn_ptr with n arguments read from args_ptr.
@@ -1016,7 +967,7 @@ pub extern "C" fn molt_call_func_dispatch(
         // Trampoline-backed functions use the closure slot as callable payload
         // (for example a C-extension registry id). Ordinary closures still take
         // the full callargs path for env capture setup below.
-        let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
+        let has_closure = unsafe { function_has_execution_closure(func_ptr) };
         let trampoline_ptr = unsafe { function_trampoline_ptr(func_ptr) };
         let has_trampoline = trampoline_ptr != 0;
         let fn_ptr_val = unsafe { function_fn_ptr(func_ptr) };
@@ -1300,41 +1251,13 @@ fn molt_call_func_direct(
     else {
         return missing_direct_call_target(_py, fn_ptr);
     };
-    if !recursion_guard_enter() {
-        return raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded");
-    }
-    if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
-        unsafe {
-            let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
-            let code_bits = match object_type_id(func_ptr) {
-                TYPE_ID_FUNCTION => {
-                    frame_func_ptr = func_ptr;
-                    ensure_function_code_bits(_py, func_ptr)
-                }
-                TYPE_ID_BOUND_METHOD => {
-                    let bf = bound_method_func_bits(func_ptr);
-                    if let Some(bp) = obj_from_bits(bf).as_ptr() {
-                        if object_type_id(bp) == TYPE_ID_FUNCTION {
-                            frame_func_ptr = bp;
-                            ensure_function_code_bits(_py, bp)
-                        } else {
-                            MoltObject::none().bits()
-                        }
-                    } else {
-                        MoltObject::none().bits()
-                    }
-                }
-                _ => MoltObject::none().bits(),
-            };
-            frame_stack_push_function(_py, code_bits, frame_func_ptr);
-        }
-    }
-    let result = unsafe { molt_guarded_call_dispatch(call_target, args.as_ptr(), args.len()) };
-    if obj_from_bits(callable_bits).as_ptr().is_some() {
-        frame_stack_pop(_py);
-    }
-    recursion_guard_exit();
-    result
+    let Some(_recursion) = RecursionGuard::enter(_py) else {
+        return MoltObject::none().bits();
+    };
+    let Some(_invocation) = FrameInvocationGuard::for_callable(_py, callable_bits) else {
+        return MoltObject::none().bits();
+    };
+    unsafe { molt_guarded_call_dispatch(call_target, args.as_ptr(), args.len()) }
 }
 
 /// Ultra-fast inline dispatch for `call_func` with known small arities.
@@ -1476,24 +1399,8 @@ unsafe fn probe_simple_func(
     expected_arity: usize,
 ) -> Option<(u64, *const ())> {
     unsafe {
-        let obj = obj_from_bits(func_bits);
-        let ptr = obj.as_ptr()?;
-        if object_type_id(ptr) != TYPE_ID_FUNCTION {
-            return None;
-        }
+        let ptr = direct_call_function(_py, func_bits, expected_arity, false)?;
         if function_trampoline_ptr(ptr) != 0 {
-            return None;
-        }
-        if function_closure_bits(ptr) != 0 {
-            return None;
-        }
-        if crate::call::bind::function_requires_binder_flag(ptr)
-            || crate::call::bind::function_needs_full_binder(_py, ptr)
-        {
-            crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
-            return None;
-        }
-        if function_arity_usize(ptr)? != expected_arity {
             return None;
         }
         let fn_ptr = function_fn_ptr(ptr);
@@ -1502,25 +1409,149 @@ unsafe fn probe_simple_func(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_requires_binder_fast(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        unsafe {
-            let Some(ptr) = obj_from_bits(func_bits).as_ptr() else {
-                return 0;
-            };
-            if object_type_id(ptr) != TYPE_ID_FUNCTION {
-                return 0;
-            }
-            if crate::call::bind::function_requires_binder_flag(ptr)
-                || crate::call::bind::function_needs_full_binder(_py, ptr)
-            {
-                crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
-                return 1;
-            }
-            0
+/// Admit a raw compiled call only after its Python shape and execution kind
+/// agree with the call site. Backends must not reproduce this classifier.
+unsafe fn direct_call_function(
+    py: &PyToken<'_>,
+    func_bits: u64,
+    supplied: usize,
+    expects_closure: bool,
+) -> Option<*mut u8> {
+    unsafe {
+        let ptr = obj_from_bits(func_bits).as_ptr()?;
+        if object_type_id(ptr) != TYPE_ID_FUNCTION
+            || function_arity_usize(ptr)? != supplied
+            || function_has_execution_closure(ptr) != expects_closure
+            || crate::call::bind::function_raw_positional_call_needs_binding(py, ptr, supplied)
+        {
+            return None;
         }
+        match crate::call::function::function_code_execution_kind(ptr) {
+            Some(crate::object::layout::CodeExecutionKind::Direct) => {}
+            Some(_) => return None,
+            None if function_trampoline_ptr(ptr) != 0 => return None,
+            None => {}
+        }
+        Some(ptr)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_direct_call_eligible(
+    func_bits: u64,
+    supplied: u64,
+    expects_closure: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Ok(supplied) = usize::try_from(supplied) else {
+            return 0;
+        };
+        u64::from(unsafe {
+            direct_call_function(_py, func_bits, supplied, expects_closure != 0).is_some()
+        })
     })
+}
+
+#[cfg(test)]
+mod direct_call_tests {
+    use super::*;
+    use crate::object::layout::{
+        CodeExecutionKind, code_publish_execution_kind, function_set_closure_bits,
+    };
+
+    #[test]
+    fn admission_tracks_actual_shape_binding_and_code_kind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let function = alloc_function_obj(py, 17, 1);
+                assert!(!function.is_null());
+                let bits = MoltObject::from_ptr(function).bits();
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
+                assert_eq!(molt_function_direct_call_eligible(bits, 0, 0), 0);
+                assert_eq!(molt_function_direct_call_eligible(bits, 2, 0), 0);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 1), 0);
+                assert_eq!(
+                    molt_function_direct_call_eligible(MoltObject::none().bits(), 0, 0),
+                    0
+                );
+
+                let empty = alloc_tuple(py, &[]);
+                assert!(!empty.is_null());
+                let empty_bits = MoltObject::from_ptr(empty).bits();
+                function_set_closure_bits(
+                    py,
+                    function,
+                    empty_bits,
+                    crate::FunctionCallAbi::OpaqueContextFirst,
+                );
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 0);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 1), 1);
+                function_set_closure_bits(
+                    py,
+                    function,
+                    empty_bits,
+                    crate::FunctionCallAbi::Positional,
+                );
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 1), 0);
+                function_set_closure_bits(py, function, 0, crate::FunctionCallAbi::Positional);
+
+                let name_ptr = alloc_string(py, b"raw-call-shape");
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                for kind in [
+                    CodeExecutionKind::Generator,
+                    CodeExecutionKind::Coroutine,
+                    CodeExecutionKind::AsyncGenerator,
+                    CodeExecutionKind::Direct,
+                ] {
+                    let code = alloc_code_obj(
+                        py,
+                        name_bits,
+                        name_bits,
+                        1,
+                        MoltObject::none().bits(),
+                        empty_bits,
+                        empty_bits,
+                        1,
+                        0,
+                        0,
+                    );
+                    assert!(!code.is_null());
+                    let code_bits = MoltObject::from_ptr(code).bits();
+                    assert_eq!(code_publish_execution_kind(code, kind), Ok(()));
+                    assert!(function_set_code_bits(py, function, code_bits));
+                    assert_eq!(
+                        molt_function_direct_call_eligible(bits, 1, 0),
+                        u64::from(kind == CodeExecutionKind::Direct)
+                    );
+                    dec_ref_bits(py, code_bits);
+                }
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
+
+                let vararg_name = attr_name_bits_from_bytes(py, b"__molt_vararg__").unwrap();
+                assert!(crate::call::class_init::function_set_attr_bits(
+                    py,
+                    function,
+                    vararg_name,
+                    name_bits
+                ));
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 0);
+                assert!(crate::call::class_init::function_set_attr_bits(
+                    py,
+                    function,
+                    vararg_name,
+                    MoltObject::none().bits()
+                ));
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0), 1);
+
+                dec_ref_bits(py, bits);
+                dec_ref_bits(py, name_bits);
+                dec_ref_bits(py, empty_bits);
+            }
+        });
+    }
 }
 
 /// Fast 0-argument function call. No args — minimal dispatch.
@@ -1529,16 +1560,13 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
             if let Some((_fn_ptr, call_target)) = probe_simple_func(_py, func_bits, 0) {
-                if !recursion_guard_enter() {
-                    return raise_exception::<u64>(
-                        _py,
-                        "RecursionError",
-                        "maximum recursion depth exceeded",
-                    );
-                }
-                let result = direct_call_0(call_target);
-                recursion_guard_exit();
-                return result;
+                let Some(_recursion) = RecursionGuard::enter(_py) else {
+                    return MoltObject::none().bits();
+                };
+                let Some(_invocation) = FrameInvocationGuard::for_callable(_py, func_bits) else {
+                    return MoltObject::none().bits();
+                };
+                return direct_call_0(call_target);
             }
             let args: [u64; 0] = [];
             molt_call_func_dispatch(func_bits, args.as_ptr() as u64, 0, 0)
@@ -2282,7 +2310,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                     type_name(_py, obj_from_bits(obj_bits)),
                     &attr_name,
                     obj_bits,
-                ) as u64;
+                );
             }
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
@@ -2319,7 +2347,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                             type_label,
                             &attr_name,
                             MoltObject::from_ptr(obj_ptr).bits(),
-                        ) as u64;
+                        );
                     }
                     let type_label = if !desc_ptr.is_null() {
                         let name = &(*desc_ptr).name;
@@ -2336,7 +2364,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                         type_label,
                         &attr_name,
                         MoltObject::from_ptr(obj_ptr).bits(),
-                    ) as u64;
+                    );
                 }
                 if type_id == TYPE_ID_TYPE {
                     let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
@@ -2347,17 +2375,17 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                         &msg,
                         &attr_name,
                         MoltObject::from_ptr(obj_ptr).bits(),
-                    ) as u64;
+                    );
                 }
                 return attr_error_with_obj(
                     _py,
                     type_name(_py, MoltObject::from_ptr(obj_ptr)),
                     &attr_name,
                     MoltObject::from_ptr(obj_ptr).bits(),
-                ) as u64;
+                );
             }
             let obj = obj_from_bits(obj_bits);
-            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
+            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits)
         }
     })
 }
@@ -2396,10 +2424,10 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
                 let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr)))
                     .unwrap_or_default();
                 let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
-                return attr_error_with_message(_py, &msg) as u64;
+                return attr_error_with_message(_py, &msg);
             }
             let obj = obj_from_bits(obj_bits);
-            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits) as u64
+            attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits)
         }
     })
 }
@@ -2524,10 +2552,10 @@ pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
                     del_attr_ptr(_py, obj_ptr, attr_bits, &attr_name)
                 };
                 dec_ref_bits(_py, attr_bits);
-                return res as u64;
+                return res;
             }
             let obj = obj_from_bits(obj_bits);
-            let res = attr_error(_py, type_name(_py, obj), &attr_name) as u64;
+            let res = attr_error(_py, type_name(_py, obj), &attr_name);
             dec_ref_bits(_py, attr_bits);
             res
         }

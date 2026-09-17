@@ -374,6 +374,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     bytes: attr_bytes(&op.attrs, "bytes"),
                     var: attr_str(&op.attrs, "_var"),
                     task_kind: attr_str(&op.attrs, "task_kind"),
+                    task_closure_size: attr_int(&op.attrs, "task_closure_size"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),
                     // Named-local fact (#58) — container literals (`list_new`/

@@ -1,9 +1,12 @@
 use super::*;
+use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 
 pub(super) const HANDLED_KINDS: &[&str] = &[
     "builtin_func",
     "func_new",
     "func_new_closure",
+    "function_closure_bits",
+    "asyncgen_new",
     "code_new",
     "code_slot_set",
     "code_slots_init",
@@ -14,7 +17,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "trace_exit",
     "frame_locals_set",
     "line",
-    "fn_ptr_code_set",
     "callargs_new",
     "callargs_push_pos",
     "callargs_push_kw",
@@ -26,6 +28,49 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: &str) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
+            "function_closure_bits" => {
+                if op.operands.len() != 1 || op.results.len() > 1 {
+                    return false;
+                }
+                let func_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let closure_fn = self.ensure_runtime_i64_fn("molt_function_closure_bits", 1);
+                let closure = self
+                    .backend
+                    .builder
+                    .build_call(closure_fn, &[func_bits.into()], "function_closure_bits")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                // The function owns this edge. Only a retained SSA result gains
+                // an owner; a discarded borrowed edge must never be decreffed.
+                if !op.results.is_empty() {
+                    let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+                    self.backend
+                        .builder
+                        .build_call(retain, &[closure.into()], "")
+                        .unwrap();
+                    self.bind_owned_runtime_result(op, closure);
+                }
+                true
+            }
+            "asyncgen_new" => {
+                if op.operands.len() != 1 || op.results.len() > 1 {
+                    return false;
+                }
+                // Dedicated task-wrapper ABI; a machine i64 declaration does
+                // not authorize generic boxed-call admission for this symbol.
+                let generator = self.materialize_dynbox_operand(op.operands[0]);
+                let wrap = self.ensure_runtime_import(MOLT_ASYNCGEN_NEW);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(wrap, &[generator.into()], "asyncgen_new")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                self.bind_owned_runtime_result(op, result);
+                true
+            }
             "builtin_func" => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
@@ -96,10 +141,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .try_as_basic_value()
                         .unwrap_basic()
                 };
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, func_bits);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, func_bits);
                 true
             }
             "func_new" => {
@@ -153,10 +195,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "func_new_closure" => {
@@ -215,10 +254,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "code_new" => {
@@ -238,10 +274,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "code_slot_set" => {
@@ -256,8 +289,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let Some(&code_bits_id) = op.operands.first() else {
                     return false;
                 };
+                let Some(&globals_bits_id) = op.operands.get(1) else {
+                    return false;
+                };
                 let code_bits = self.ensure_i64(self.resolve(code_bits_id));
-                let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 2);
+                let globals_bits = self.ensure_i64(self.resolve(globals_bits_id));
+                let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
                 let _ = self
                     .backend
                     .builder
@@ -266,6 +303,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         &[
                             i64_ty.const_int(code_id as u64, true).into(),
                             code_bits.into(),
+                            globals_bits.into(),
                         ],
                         "code_slot_set",
                     )
@@ -306,10 +344,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "staticmethod_new" => {
@@ -325,10 +360,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "property_new" => {
@@ -350,10 +382,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "trace_enter_slot" => {
@@ -420,47 +449,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
-            "fn_ptr_code_set" => {
-                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let arity = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let Some(&code_bits_id) = op.operands.first() else {
-                    return false;
-                };
-                let code_bits = self.ensure_i64(self.resolve(code_bits_id));
-                let func = self.ensure_function_symbol(func_name, arity, false);
-                let fn_ptr = self
-                    .backend
-                    .builder
-                    .build_ptr_to_int(
-                        func.as_global_value().as_pointer_value(),
-                        i64_ty,
-                        "fn_ptr_code",
-                    )
-                    .unwrap();
-                let set_fn = self.ensure_runtime_i64_fn("molt_fn_ptr_code_set", 2);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(
-                        set_fn,
-                        &[fn_ptr.into(), code_bits.into()],
-                        "fn_ptr_code_set",
-                    )
-                    .unwrap();
-                true
-            }
             "callargs_new" => {
                 let new_fn = self.ensure_runtime_i64_fn("molt_callargs_new", 2);
                 let result = self
@@ -474,10 +462,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, result);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
+                self.bind_owned_runtime_result(op, result);
                 true
             }
             "callargs_push_pos" => {

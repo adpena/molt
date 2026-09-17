@@ -81,9 +81,19 @@ def test_function_local_import_has_no_module_publication(statement: str) -> None
 
 
 @pytest.mark.parametrize("statement", IMPORT_BINDINGS)
-def test_function_global_import_publishes_once_to_module(statement: str) -> None:
+def test_function_global_import_publishes_once_to_active_globals(
+    statement: str,
+) -> None:
     _, ops = _generate(f"def f():\n    global bound\n    {statement}\n")
-    assert len(_named_stores(ops, "MODULE_SET_ATTR", "bound")) == 1
+    active_globals = {
+        op.result.name
+        for op in ops
+        if op.kind == "CALL" and op.args == ["molt_globals_builtin"]
+    }
+    stores = _named_stores(ops, "DICT_SET", "bound")
+    assert len(stores) == 1
+    assert stores[0].args[0].name in active_globals
+    assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
 
 
 @pytest.mark.parametrize("statement", IMPORT_BINDINGS)

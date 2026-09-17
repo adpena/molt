@@ -10,6 +10,7 @@ SimpleTIRGenerator MRO via self.<method>.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -67,7 +68,8 @@ class ExpressionVisitorMixin(_MixinBase):
             if (
                 self.in_annotation
                 and self.python_binding_index is not None
-                and (fact := self.python_binding_index.expression_fact(node)) is not None
+                and (fact := self.python_binding_index.expression_fact(node))
+                is not None
                 and fact.binding_global_lookup
             ):
                 # A deferred class-global annotation bypasses captured type
@@ -81,7 +83,9 @@ class ExpressionVisitorMixin(_MixinBase):
             if class_scope is not None:
                 local = self._class_ns_load(class_scope, node.id)
                 if local is not None:
-                    return local
+                    # Class namespaces are live mappings and may be changed by
+                    # metaclass callbacks; never reuse a producer-only fact here.
+                    return MoltValue(local.name, type_hint=local.type_hint)
             if self._expression_has_invalidated_binding(node):
                 return self._emit_global_get(node.id)
             if node.id == "__name__":
@@ -138,6 +142,10 @@ class ExpressionVisitorMixin(_MixinBase):
                 return self._emit_global_get(node.id)
             global_val = self.globals.get(node.id)
             if global_val is None:
+                if node.id in BUILTIN_SHAPE_NAMES:
+                    # A Python reference must capture the live object, not
+                    # manufacture a new builtin wrapper from its spelling.
+                    return self._emit_global_get(node.id)
                 if node.id == "NotImplemented":
                     res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
@@ -855,16 +863,15 @@ class ExpressionVisitorMixin(_MixinBase):
         if obj is None:
             obj = MoltValue("unknown_obj", type_hint="Unknown")
         obj_name = None
-        exact_class = None
         if isinstance(
             node.value, ast.Name
         ) and not self._expression_has_invalidated_binding(node.value):
             obj_name = node.value.id
-            exact_class = self.exact_locals.get(obj_name)
         elif isinstance(node.value, ast.NamedExpr) and isinstance(
             node.value.target, ast.Name
         ):
             obj_name = node.value.target.id
+        exact_class = self._exact_class_for_value(obj, obj_name)
         return self._emit_attribute_load(node, obj, obj_name, exact_class)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:

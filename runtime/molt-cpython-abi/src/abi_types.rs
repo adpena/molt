@@ -24,6 +24,13 @@ pub type PyCFunctionFastWithKeywords = unsafe extern "C" fn(
     Py_ssize_t,
     *mut PyObject,
 ) -> *mut PyObject;
+pub type PyCMethod = unsafe extern "C" fn(
+    *mut PyObject,
+    *mut PyTypeObject,
+    *mut *mut PyObject,
+    usize,
+    *mut PyObject,
+) -> *mut PyObject;
 pub type PyVectorcallFunc =
     unsafe extern "C" fn(*mut PyObject, *mut *mut PyObject, usize, *mut PyObject) -> *mut PyObject;
 pub type PyCapsuleDestructor = unsafe extern "C" fn(*mut PyObject);
@@ -1875,8 +1882,18 @@ pub unsafe fn init_static_types() {
         PyDateTime_TimeType.tp_dealloc = Some(crate::api::datetime::molt_datetime_dealloc);
         PyDateTime_DeltaType.tp_dealloc = Some(crate::api::datetime::molt_datetime_dealloc);
         PyCFunction_Type.tp_call = Some(crate::api::object::molt_cfunction_call);
+        PyCFunction_Type.tp_basicsize = std::mem::size_of::<PyCFunctionObject>() as Py_ssize_t;
+        PyCFunction_Type.tp_flags |= Py_TPFLAGS_HAVE_VECTORCALL;
+        PyCFunction_Type.tp_vectorcall_offset =
+            std::mem::offset_of!(PyCFunctionObject, vectorcall) as Py_ssize_t;
         PyCFunction_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
         PyCMethod_Type.tp_call = Some(crate::api::object::molt_cfunction_call);
+        PyCMethod_Type.tp_basicsize = std::mem::size_of::<PyCMethodObject>() as Py_ssize_t;
+        PyCMethod_Type.tp_base = &raw mut PyCFunction_Type;
+        PyCMethod_Type.tp_flags |= Py_TPFLAGS_HAVE_VECTORCALL;
+        PyCMethod_Type.tp_vectorcall_offset = (std::mem::offset_of!(PyCMethodObject, func)
+            + std::mem::offset_of!(PyCFunctionObject, vectorcall))
+            as Py_ssize_t;
         PyCMethod_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
         PyMethod_Type.tp_call = Some(crate::api::object::molt_method_call);
         PyMethod_Type.tp_dealloc = Some(crate::api::object::molt_method_dealloc);

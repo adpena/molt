@@ -1280,7 +1280,8 @@ mod code_object_ownership_tests {
                     kwonly_names_bits,
                     vararg_marker_bits,
                     varkw_marker_bits,
-                );
+                )
+                .expect("valid owned signature");
             }
 
             assert_eq!(unsafe { ref_count(arg_names_ptr) }, 2);
@@ -1334,7 +1335,7 @@ mod code_object_ownership_tests {
             dec_ref_bits(_py, name_bits);
             let code_bits = MoltObject::from_ptr(code_ptr).bits();
 
-            unsafe { function_set_code_bits(_py, func_ptr, code_bits) };
+            assert!(unsafe { function_set_code_bits(_py, func_ptr, code_bits) });
             dec_ref_bits(_py, code_bits);
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
 

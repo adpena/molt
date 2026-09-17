@@ -39,14 +39,11 @@ impl SimpleBackend {
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
-        // Capture marker facts only from original source bodies. A batch may
-        // already contain compiler-provenance partitions; their task facts
-        // belong to the frozen module context, not lowered marker operands.
+        // Constructor task facts are immutable typed fields. Capture every
+        // surviving definition and merge the retained source facts after
+        // partitioning; physical symbol spelling carries no authority.
         let source_callables =
-            molt_tir::trampolines::CallableMetadata::from_functions_with_marker_filter(
-                &ir.functions,
-                |function| !self.partition_sources.contains_key(&function.name),
-            );
+            molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
         // Pre-TIR IR passes (parallel). Each pass operates on a single
         // FunctionIR with no shared mutable state, so all passes can run in
         // parallel across functions. Fusing them into one par_iter_mut avoids

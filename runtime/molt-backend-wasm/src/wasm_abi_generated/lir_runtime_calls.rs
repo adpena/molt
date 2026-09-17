@@ -702,6 +702,7 @@ pub(crate) enum OpLoopRuntimeArgSpec {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpLoopRuntimeSinkSpec {
     ResultOrDrop,
+    OwnedResultOrRelease,
     NonNoneResultOrDrop,
     Drop,
     None,
@@ -1068,8 +1069,9 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 WasmRuntimeImport::AsyncgenLocalsRegister,
                 WasmRuntimeImport::AsyncgenNew,
                 WasmRuntimeImport::AsyncgenShutdown,
+                WasmRuntimeImport::DecRefObj,
             ],
-            sink: OpLoopRuntimeSinkSpec::ResultOrDrop,
+            sink: OpLoopRuntimeSinkSpec::OwnedResultOrRelease,
         }),
         "thread_submit" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ThreadSubmit,

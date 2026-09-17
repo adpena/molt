@@ -4,15 +4,128 @@
 
 mod support;
 
-use molt_cpython_abi::abi_types::{MoltTypeTag, Py_False, Py_True};
+use molt_cpython_abi::abi_types::{
+    MoltTypeTag, Py_False, Py_None, Py_NotImplementedSentinel, Py_True, PyNumberMethods, PyObject,
+    PyTypeObject,
+};
+use molt_cpython_abi::hooks::{BorrowedHandleResult, OwnedHandleResult};
+use molt_lang_obj_model::MoltObject;
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
 
+thread_local! {
+    static POWER_MODULUS_BITS: Cell<Option<u64>> = const { Cell::new(None) };
+    static POWER_HOOK_FAILS: Cell<bool> = const { Cell::new(false) };
+    static FOREIGN_POWER_CALLS: Cell<u32> = const { Cell::new(0) };
+    static FOREIGN_INPLACE_POWER_CALLS: Cell<u32> = const { Cell::new(0) };
+    static FOREIGN_INPLACE_NOT_IMPLEMENTED: Cell<bool> = const { Cell::new(false) };
+    static FOREIGN_POWER_MODULUS: Cell<usize> = const { Cell::new(usize::MAX) };
+    static FOREIGN_POWER_BASE: Cell<usize> = const { Cell::new(0) };
+    static FOREIGN_POWER_EXPONENT: Cell<usize> = const { Cell::new(0) };
+    static FOREIGN_BINARY_CALLS: Cell<u32> = const { Cell::new(0) };
+    static FOREIGN_MATRIX_CALLS: Cell<u32> = const { Cell::new(0) };
+    static FOREIGN_INPLACE_MATRIX_CALLS: Cell<u32> = const { Cell::new(0) };
+    static UNINITIALIZED_LIST: Cell<Option<(u64, usize, usize)>> = const { Cell::new(None) };
+}
+
 unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
-    if support::fake_complex::contains(bits) {
+    if UNINITIALIZED_LIST
+        .with(Cell::get)
+        .is_some_and(|value| value.0 == bits)
+    {
+        MoltTypeTag::List as u8
+    } else if support::fake_complex::contains(bits) {
         MoltTypeTag::Complex as u8
     } else {
         MoltTypeTag::Other as u8
+    }
+}
+
+unsafe extern "C" fn capture_number_power(
+    _base_bits: u64,
+    _exponent_bits: u64,
+    modulus_bits: u64,
+) -> OwnedHandleResult {
+    POWER_MODULUS_BITS.with(|value| value.set(Some(modulus_bits)));
+    if POWER_HOOK_FAILS.with(Cell::get) {
+        OwnedHandleResult::error()
+    } else {
+        OwnedHandleResult::ok(MoltObject::from_int(1).bits())
+    }
+}
+
+unsafe extern "C" fn foreign_power_slot(
+    _base: *mut PyObject,
+    _exponent: *mut PyObject,
+    modulus: *mut PyObject,
+) -> *mut PyObject {
+    FOREIGN_POWER_CALLS.with(|calls| calls.set(calls.get() + 1));
+    FOREIGN_POWER_BASE.with(|value| value.set(_base as usize));
+    FOREIGN_POWER_EXPONENT.with(|value| value.set(_exponent as usize));
+    FOREIGN_POWER_MODULUS.with(|value| value.set(modulus as usize));
+    unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_None) }
+}
+
+unsafe extern "C" fn foreign_inplace_power_slot(
+    _base: *mut PyObject,
+    _exponent: *mut PyObject,
+    modulus: *mut PyObject,
+) -> *mut PyObject {
+    FOREIGN_INPLACE_POWER_CALLS.with(|calls| calls.set(calls.get() + 1));
+    FOREIGN_POWER_BASE.with(|value| value.set(_base as usize));
+    FOREIGN_POWER_EXPONENT.with(|value| value.set(_exponent as usize));
+    FOREIGN_POWER_MODULUS.with(|value| value.set(modulus as usize));
+    if FOREIGN_INPLACE_NOT_IMPLEMENTED.with(Cell::get) {
+        unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_NotImplementedSentinel) }
+    } else {
+        unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_None) }
+    }
+}
+
+unsafe extern "C" fn foreign_binary_slot(
+    _left: *mut PyObject,
+    _right: *mut PyObject,
+) -> *mut PyObject {
+    FOREIGN_BINARY_CALLS.with(|calls| calls.set(calls.get() + 1));
+    unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_None) }
+}
+
+unsafe extern "C" fn foreign_matrix_slot(
+    _left: *mut PyObject,
+    _right: *mut PyObject,
+) -> *mut PyObject {
+    FOREIGN_MATRIX_CALLS.with(|calls| calls.set(calls.get() + 1));
+    unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_None) }
+}
+
+unsafe extern "C" fn foreign_inplace_matrix_slot(
+    _left: *mut PyObject,
+    _right: *mut PyObject,
+) -> *mut PyObject {
+    FOREIGN_INPLACE_MATRIX_CALLS.with(|calls| calls.set(calls.get() + 1));
+    unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut Py_None) }
+}
+
+unsafe extern "C" fn alloc_uninitialized_list(size: usize) -> u64 {
+    let token = Box::into_raw(Box::new(0u64));
+    let bits = MoltObject::from_ptr(token.cast::<u8>()).bits();
+    UNINITIALIZED_LIST.with(|value| value.set(Some((bits, size, token as usize))));
+    bits
+}
+
+unsafe extern "C" fn uninitialized_list_len(bits: u64) -> usize {
+    UNINITIALIZED_LIST
+        .with(Cell::get)
+        .map_or(0, |value| if value.0 == bits { value.1 } else { 0 })
+}
+
+unsafe extern "C" fn uninitialized_list_item(bits: u64, index: usize) -> BorrowedHandleResult {
+    match UNINITIALIZED_LIST.with(Cell::get) {
+        Some((expected, len, _)) if expected == bits && index < len => {
+            BorrowedHandleResult::ok(MoltObject::none().bits())
+        }
+        _ => BorrowedHandleResult::missing(),
     }
 }
 
@@ -23,7 +136,293 @@ fn init() {
     hooks.object_hash = support::fake_complex::hash;
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.complex_parts = support::fake_complex::parts;
+    hooks.number_power = capture_number_power;
+    hooks.alloc_list_presized = alloc_uninitialized_list;
+    hooks.list_len = uninitialized_list_len;
+    hooks.list_item = uninitialized_list_item;
     support::prepare_abi_test_thread(hooks);
+    POWER_MODULUS_BITS.with(|value| value.set(None));
+    POWER_HOOK_FAILS.with(|value| value.set(false));
+    FOREIGN_POWER_CALLS.with(|calls| calls.set(0));
+    FOREIGN_INPLACE_POWER_CALLS.with(|calls| calls.set(0));
+    FOREIGN_INPLACE_NOT_IMPLEMENTED.with(|value| value.set(false));
+    FOREIGN_POWER_MODULUS.with(|value| value.set(usize::MAX));
+    FOREIGN_POWER_BASE.with(|value| value.set(0));
+    FOREIGN_POWER_EXPONENT.with(|value| value.set(0));
+    FOREIGN_BINARY_CALLS.with(|calls| calls.set(0));
+    FOREIGN_MATRIX_CALLS.with(|calls| calls.set(0));
+    FOREIGN_INPLACE_MATRIX_CALLS.with(|calls| calls.set(0));
+    UNINITIALIZED_LIST.with(|value| value.set(None));
+}
+
+// ---------------------------------------------------------------------------
+// PyNumber_Power
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pynumber_power_preserves_modulus_presence_and_value_bits() {
+    init();
+    let base = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
+    let exponent = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
+    let positive_float_zero = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0) };
+    let negative_float_zero = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(-0.0) };
+    let integer_zero = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(0) };
+    let cases = [
+        (
+            "omitted modulus",
+            ptr::null_mut(),
+            MoltObject::none().bits(),
+        ),
+        ("explicit None", &raw mut Py_None, MoltObject::none().bits()),
+        (
+            "float +0.0",
+            positive_float_zero,
+            MoltObject::from_float(0.0).bits(),
+        ),
+        (
+            "float -0.0",
+            negative_float_zero,
+            MoltObject::from_float(-0.0).bits(),
+        ),
+        ("integer zero", integer_zero, MoltObject::from_int(0).bits()),
+    ];
+
+    for (label, modulus, expected_bits) in cases {
+        POWER_MODULUS_BITS.with(|value| value.set(None));
+        let result = unsafe {
+            molt_cpython_abi::api::abstract_number::PyNumber_Power(base, exponent, modulus)
+        };
+        assert!(!result.is_null(), "{label} must reach the runtime hook");
+        assert_eq!(
+            POWER_MODULUS_BITS.with(Cell::get),
+            Some(expected_bits),
+            "{label} lost its modulus representation"
+        );
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
+
+        POWER_MODULUS_BITS.with(|value| value.set(None));
+        let result = unsafe {
+            molt_cpython_abi::api::abstract_number::PyNumber_InPlacePower(base, exponent, modulus)
+        };
+        assert!(
+            !result.is_null(),
+            "in-place {label} must reach the runtime hook"
+        );
+        assert_eq!(
+            POWER_MODULUS_BITS.with(Cell::get),
+            Some(expected_bits),
+            "in-place {label} lost its modulus representation"
+        );
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
+    }
+
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(base);
+        molt_cpython_abi::api::refcount::Py_DECREF(exponent);
+        molt_cpython_abi::api::refcount::Py_DECREF(positive_float_zero);
+        molt_cpython_abi::api::refcount::Py_DECREF(negative_float_zero);
+        molt_cpython_abi::api::refcount::Py_DECREF(integer_zero);
+    }
+}
+
+#[test]
+fn test_pynumber_power_hook_failure_returns_null_with_exception() {
+    init();
+    let base = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
+    let exponent = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
+    POWER_HOOK_FAILS.with(|value| value.set(true));
+
+    let result = unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_Power(base, exponent, ptr::null_mut())
+    };
+    assert!(result.is_null());
+    assert_eq!(
+        POWER_MODULUS_BITS.with(Cell::get),
+        Some(MoltObject::none().bits())
+    );
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+
+    POWER_HOOK_FAILS.with(|value| value.set(false));
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        molt_cpython_abi::api::refcount::Py_DECREF(base);
+        molt_cpython_abi::api::refcount::Py_DECREF(exponent);
+    }
+}
+
+#[test]
+fn test_pynumber_power_foreign_dispatch_uses_normal_and_inplace_slots() {
+    init();
+    let mut methods: Box<PyNumberMethods> = Box::new(unsafe { std::mem::zeroed() });
+    methods.nb_power = foreign_power_slot as *mut c_void;
+    methods.nb_inplace_power = foreign_inplace_power_slot as *mut c_void;
+    methods.nb_matrix_multiply = foreign_matrix_slot as *mut c_void;
+    methods.nb_inplace_matrix_multiply = foreign_inplace_matrix_slot as *mut c_void;
+    let methods = Box::into_raw(methods);
+
+    let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    ty.tp_name = c"PowerProbe".as_ptr();
+    ty.tp_as_number = methods.cast();
+    let ty = Box::into_raw(ty);
+    let base = Box::into_raw(Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: ty,
+    }));
+    let exponent = Box::into_raw(Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: ty,
+    }));
+
+    let normal = unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_Power(base, exponent, ptr::null_mut())
+    };
+    assert!(std::ptr::eq(normal, &raw mut Py_None));
+    assert_eq!(FOREIGN_POWER_CALLS.with(Cell::get), 1);
+    assert_eq!(FOREIGN_INPLACE_POWER_CALLS.with(Cell::get), 0);
+    assert_eq!(
+        FOREIGN_POWER_MODULUS.with(Cell::get),
+        (&raw mut Py_None) as usize
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(normal) };
+
+    let inplace = unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlacePower(
+            base,
+            exponent,
+            &raw mut Py_None,
+        )
+    };
+    assert!(std::ptr::eq(inplace, &raw mut Py_None));
+    assert_eq!(FOREIGN_POWER_CALLS.with(Cell::get), 1);
+    assert_eq!(FOREIGN_INPLACE_POWER_CALLS.with(Cell::get), 1);
+    assert_eq!(
+        FOREIGN_POWER_MODULUS.with(Cell::get),
+        (&raw mut Py_None) as usize
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(inplace) };
+
+    FOREIGN_INPLACE_NOT_IMPLEMENTED.with(|value| value.set(true));
+    let fallback = unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlacePower(
+            base,
+            exponent,
+            ptr::null_mut(),
+        )
+    };
+    assert!(std::ptr::eq(fallback, &raw mut Py_None));
+    assert_eq!(FOREIGN_POWER_CALLS.with(Cell::get), 2);
+    assert_eq!(FOREIGN_INPLACE_POWER_CALLS.with(Cell::get), 2);
+    assert_eq!(
+        FOREIGN_POWER_MODULUS.with(Cell::get),
+        (&raw mut Py_None) as usize
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(fallback) };
+
+    let aliased =
+        unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Power(base, base, base) };
+    assert!(std::ptr::eq(aliased, &raw mut Py_None));
+    assert_eq!(FOREIGN_POWER_CALLS.with(Cell::get), 3);
+    assert_eq!(FOREIGN_POWER_BASE.with(Cell::get), base as usize);
+    assert_eq!(FOREIGN_POWER_EXPONENT.with(Cell::get), base as usize);
+    assert_eq!(FOREIGN_POWER_MODULUS.with(Cell::get), base as usize);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(aliased) };
+
+    let matrix =
+        unsafe { molt_cpython_abi::api::abstract_number::PyNumber_MatrixMultiply(base, exponent) };
+    assert!(std::ptr::eq(matrix, &raw mut Py_None));
+    assert_eq!(FOREIGN_MATRIX_CALLS.with(Cell::get), 1);
+    assert_eq!(FOREIGN_INPLACE_MATRIX_CALLS.with(Cell::get), 0);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(matrix) };
+
+    let inplace_matrix = unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlaceMatrixMultiply(base, exponent)
+    };
+    assert!(std::ptr::eq(inplace_matrix, &raw mut Py_None));
+    assert_eq!(FOREIGN_MATRIX_CALLS.with(Cell::get), 1);
+    assert_eq!(FOREIGN_INPLACE_MATRIX_CALLS.with(Cell::get), 1);
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(inplace_matrix);
+        drop(Box::from_raw(base));
+        drop(Box::from_raw(exponent));
+        drop(Box::from_raw(ty));
+        drop(Box::from_raw(methods));
+    }
+}
+
+#[test]
+fn test_failed_managed_projection_never_reaches_foreign_numeric_slots() {
+    fn assert_commit_failure(result: *mut PyObject) {
+        assert!(result.is_null());
+        assert!(std::ptr::eq(
+            unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast::<PyObject>()
+        ));
+        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    }
+
+    init();
+    let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(1) };
+    assert!(!list.is_null());
+
+    let mut methods: Box<PyNumberMethods> = Box::new(unsafe { std::mem::zeroed() });
+    methods.nb_add = foreign_binary_slot as *mut c_void;
+    methods.nb_power = foreign_power_slot as *mut c_void;
+    methods.nb_inplace_power = foreign_inplace_power_slot as *mut c_void;
+    methods.nb_matrix_multiply = foreign_matrix_slot as *mut c_void;
+    methods.nb_inplace_matrix_multiply = foreign_inplace_matrix_slot as *mut c_void;
+    let methods = Box::into_raw(methods);
+    let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    ty.tp_name = c"ForeignNumericProbe".as_ptr();
+    ty.tp_as_number = methods.cast();
+    let ty = Box::into_raw(ty);
+    let foreign = Box::into_raw(Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: ty,
+    }));
+
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_Add(list, foreign)
+    });
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlaceAdd(list, foreign)
+    });
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_Power(list, foreign, ptr::null_mut())
+    });
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlacePower(
+            list,
+            foreign,
+            ptr::null_mut(),
+        )
+    });
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_MatrixMultiply(list, foreign)
+    });
+    assert_commit_failure(unsafe {
+        molt_cpython_abi::api::abstract_number::PyNumber_InPlaceMatrixMultiply(list, foreign)
+    });
+    assert_commit_failure(unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Long(list) });
+    assert_commit_failure(unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Float(list) });
+    assert_commit_failure(unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Index(list) });
+
+    assert_eq!(FOREIGN_BINARY_CALLS.with(Cell::get), 0);
+    assert_eq!(FOREIGN_POWER_CALLS.with(Cell::get), 0);
+    assert_eq!(FOREIGN_INPLACE_POWER_CALLS.with(Cell::get), 0);
+    assert_eq!(FOREIGN_MATRIX_CALLS.with(Cell::get), 0);
+    assert_eq!(FOREIGN_INPLACE_MATRIX_CALLS.with(Cell::get), 0);
+
+    let (_, _, token) = UNINITIALIZED_LIST
+        .with(Cell::get)
+        .expect("PyList_New must retain its unique test handle");
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(list);
+        drop(Box::from_raw(foreign));
+        drop(Box::from_raw(ty));
+        drop(Box::from_raw(methods));
+    }
+    UNINITIALIZED_LIST.with(|value| value.set(None));
+    unsafe { drop(Box::from_raw(token as *mut u64)) };
 }
 
 // ---------------------------------------------------------------------------

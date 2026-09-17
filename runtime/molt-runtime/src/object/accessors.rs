@@ -513,6 +513,10 @@ pub unsafe extern "C" fn molt_guard_layout(
     }
 }
 
+/// Returns a tagged value, using the generic attribute ABI on a guard miss.
+/// Failure returns tagged None with an exception pending, not raw zero (which
+/// is a valid floating-point value). Consumers must check exception state.
+///
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
@@ -538,22 +542,23 @@ pub unsafe extern "C" fn molt_guarded_field_get(
                 && guard_layout_match(_py, obj_ptr, class_bits, expected_version)
             {
                 if instance_dict_bits(obj_ptr) != 0 {
-                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits)
-                        as u64;
+                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
                 }
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
                 if is_missing_bits(_py, bits) {
                     dec_ref_bits(_py, bits);
-                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits)
-                        as u64;
+                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
                 }
                 return bits;
             }
-            crate::molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits) as u64
+            crate::molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits)
         })
     }
 }
 
+/// Returns tagged None on success or failure, using the generic attribute ABI
+/// on a guard miss. Exception state, never the return bits, distinguishes them.
+///
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
@@ -582,7 +587,6 @@ pub unsafe extern "C" fn molt_guarded_field_set(
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
             crate::molt_set_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits, val_bits)
-                as u64
         })
     }
 }
@@ -615,7 +619,7 @@ pub unsafe extern "C" fn molt_guarded_field_init_ptr(
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
             }
-            crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits) as u64
+            crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits)
         })
     }
 }
@@ -708,7 +712,7 @@ pub unsafe extern "C" fn molt_object_field_init(
 /// # Safety
 /// `obj_ptr` must point to a valid molt object (or be null, which returns 0).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> i64 {
+pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> u64 {
     unsafe {
         if obj_ptr.is_null() {
             return 0;
@@ -752,7 +756,7 @@ pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> 
                             let flags = (*header).load_synchronized_flags();
                             (*header).retain_owned_mirrored(bits, 1, "molt_ic_probe_fast", flags);
                         }
-                        return bits as i64;
+                        return bits;
                     }
                 }
             }
@@ -777,7 +781,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
     ic_index: u64,
-) -> i64 {
+) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             if obj_ptr.is_null() {
@@ -792,7 +796,7 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
             // Populate the IC on success.
             if idx < IC_TABLE_CAPACITY
                 && result != 0
-                && !obj_from_bits(result as u64).is_none()
+                && !obj_from_bits(result).is_none()
                 && !exception_pending(_py)
                 && let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
                 && let Some(attr_len) = usize_from_bits(attr_name_len_bits)

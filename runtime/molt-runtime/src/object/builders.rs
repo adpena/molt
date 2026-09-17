@@ -1,11 +1,12 @@
 use crate::PyToken;
+use crate::object::layout::{
+    CodeExecutionKind, code_callable_identity, code_cellvars_bits, code_frame_slot_id,
+    code_freevars_bits, code_protocol_flags, code_publish_callable_identity,
+    code_publish_lexical_metadata, code_publish_policy, code_published_execution_kind,
+    code_set_frame_slot_id, code_set_signature_bits,
+};
 use crate::object::{ClassEdgeOwnership, MoltAuxWord, object_init_class_edge_unpublished};
 use crate::*;
-
-#[inline]
-fn raw_payload_total_or_null(payload_size: usize) -> Option<usize> {
-    crate::object::checked_object_total_size(payload_size)
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_header_size() -> u64 {
@@ -160,7 +161,8 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
             "instance allocation is smaller than sealed class layout",
         );
     }
-    let Some(total_size) = raw_payload_total_or_null(size) else {
+    let Some(total_size) = crate::object::checked_object_total_size(size) else {
+        record_memory_error_without_allocation(_py);
         return MoltObject::none().bits();
     };
     let aux = if class_bits == 0 {
@@ -203,26 +205,27 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
     MoltObject::from_ptr(obj_ptr).bits()
 }
 
-/// Canonical exact-dict construction transaction.
-///
-/// Storage and initial edges remain unpublished until they are complete. The
-/// single publication step applies the generated dynamic GC projection, so an
-/// atomic/empty dict never leaks through the always-tracked allocation state.
-pub(crate) fn alloc_dict_with_capacity_and_pairs(
-    _py: &PyToken<'_>,
-    capacity_hint: usize,
-    pairs: &[u64],
-) -> *mut u8 {
+/// Allocate the shared dict/set/frozenset storage transaction, still unpublished.
+/// Each admitted buffer immediately belongs to the zeroed object, so the normal
+/// lifecycle is the single rollback authority even after partial allocation.
+fn alloc_hash_aggregate_unpublished(_py: &PyToken<'_>, capacity: usize, type_id: u32) -> *mut u8 {
+    debug_assert!(matches!(
+        type_id,
+        TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
+    ));
     if exception_pending(_py) {
         return std::ptr::null_mut();
     }
-    let Some(order_capacity) = capacity_hint.checked_mul(2) else {
+    let Some(order_capacity) = capacity.checked_mul(if type_id == TYPE_ID_DICT { 2 } else { 1 })
+    else {
+        record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
-    let table_capacity = if capacity_hint == 0 {
+    let table_capacity = if capacity == 0 {
         0
     } else {
-        let Some(capacity) = crate::object::ops::checked_dict_table_capacity(capacity_hint) else {
+        let Some(capacity) = crate::object::ops::checked_dict_table_capacity(capacity) else {
+            record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
         };
         capacity
@@ -234,38 +237,45 @@ pub(crate) fn alloc_dict_with_capacity_and_pairs(
     let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
         _py,
         total,
-        TYPE_ID_DICT,
+        type_id,
         ObjectAuxPreselection::Default,
     );
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        let Some(order_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_capacity)
-        else {
+        let initialized = (|| {
+            *(ptr as *mut *mut Vec<u64>) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_capacity)?;
+            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) =
+                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+                as *mut *mut Vec<u64>) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity)?;
+            Some(())
+        })();
+        if initialized.is_none() {
+            record_memory_error_without_allocation(_py);
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
-        };
-        let Some(table_ptr) =
-            crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)
-        else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let Some(hashes_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-        else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
-            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        *(ptr as *mut *mut Vec<u64>) = order_ptr;
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-            as *mut *mut Vec<u64>) = hashes_ptr;
+        }
+    }
+    ptr
+}
+
+/// Storage and initial edges remain unpublished until complete. Publication
+/// applies the generated dynamic GC projection exactly once.
+pub(crate) fn alloc_dict_with_capacity_and_pairs(
+    _py: &PyToken<'_>,
+    capacity_hint: usize,
+    pairs: &[u64],
+) -> *mut u8 {
+    let ptr =
+        alloc_hash_aggregate_unpublished(_py, capacity_hint.max(pairs.len() / 2), TYPE_ID_DICT);
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
         for pair in pairs.chunks(2) {
             if pair.len() == 2 {
                 dict_set_in_place(_py, ptr, pair[0], pair[1]);
@@ -298,48 +308,11 @@ pub(crate) fn alloc_set_like_with_capacity_and_entries(
     entries: &[u64],
     type_id: u32,
 ) -> *mut u8 {
-    if exception_pending(_py) {
-        return std::ptr::null_mut();
-    }
-    let capacity_hint = capacity_hint.max(entries.len());
-    let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<usize>>()
-        + std::mem::size_of::<*mut Vec<u64>>();
-    let ptr = alloc_object(_py, total, type_id);
+    let ptr = alloc_hash_aggregate_unpublished(_py, capacity_hint.max(entries.len()), type_id);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        let Some(order_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-        else {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let table_cap = if capacity_hint == 0 {
-            0
-        } else {
-            set_table_capacity(capacity_hint)
-        };
-        let Some(table_ptr) = crate::object::backing::tracked_vec_box_zeroed::<usize>(table_cap)
-        else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let Some(hashes_ptr) =
-            crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
-        else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
-            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        *(ptr as *mut *mut Vec<u64>) = order_ptr;
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-            as *mut *mut Vec<u64>) = hashes_ptr;
         for &entry in entries {
             set_add_in_place(_py, ptr, entry, HashContext::SetElement);
             if exception_pending(_py) {
@@ -347,6 +320,7 @@ pub(crate) fn alloc_set_like_with_capacity_and_entries(
                 return std::ptr::null_mut();
             }
         }
+        crate::object::gc::gc_publish_initialized(_py, ptr);
     }
     ptr
 }
@@ -1033,13 +1007,14 @@ pub(crate) unsafe fn alloc_tuple_subclass(
     }
 }
 
-/// Allocate a fixed-length tuple whose slots begin as the invalid zero
-/// construction sentinel. This is the
+/// Allocate a fixed-length tuple whose slots begin as the canonical internal
+/// missing singleton, never a Python value such as float +0.0. This is the
 /// construction-only authority for `PyTuple_New`; later writes cannot grow it.
 pub(crate) fn alloc_tuple_uninitialized(_py: &PyToken<'_>, len: usize) -> *mut u8 {
     if len == 0 {
         return alloc_tuple(_py, &[]);
     }
+    let missing = missing_bits(_py);
     let Some(total) = crate::object::layout::TupleStorage::object_size(len) else {
         return std::ptr::null_mut();
     };
@@ -1056,8 +1031,9 @@ pub(crate) fn alloc_tuple_uninitialized(_py: &PyToken<'_>, len: usize) -> *mut u
         crate::object::layout::tuple_storage_set_len_unpublished(ptr, len);
         let items = crate::object::layout::tuple_storage_items_mut(ptr);
         for index in 0..len {
-            items.add(index).write(0);
+            items.add(index).write(missing);
         }
+        (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
     }
     ptr
 }
@@ -1346,14 +1322,11 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
     // Slots 0..9 are the function object fields (fn_ptr, arity, dict, closure,
-    // code, trampoline, annotations, annotate, call_target, globals); slot 10
-    // is the `__defaults__`/`__kwdefaults__` mutation version stamp, and slot 11
-    // is the explicit globals-override flag used by `types.FunctionType`.
-    // Slots 10/11 are plain u64 values, NOT refcounted objects — dealloc leaves
-    // them alone. The defaults version is 0 at creation and bumped only on a
-    // user-reachable mutation of defaults attrs, so compile-time defaults stay
-    // valid IFF the version is still 0 ("never mutated since creation").
-    let total = std::mem::size_of::<MoltHeader>() + 12 * std::mem::size_of::<u64>();
+    // code, trampoline, annotations, annotate, call_target, globals).
+    // Slot 10 is a plain defaults-version stamp, slot 11 owns captured builtins,
+    // and slot 12 is the plain immutable FunctionCallAbi discriminant. The
+    // scalar slots are not refcounted; dealloc leaves them alone.
+    let total = std::mem::size_of::<MoltHeader>() + 13 * std::mem::size_of::<u64>();
     let ptr = alloc_object_with_aux(
         _py,
         total,
@@ -1384,6 +1357,8 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) =
+            crate::object::layout::FunctionCallAbi::Positional as u64;
         inc_ref_bits(_py, none_bits);
     }
     ptr
@@ -1423,11 +1398,20 @@ pub(crate) fn alloc_code_obj(
         return std::ptr::null_mut();
     }
     // Slots 0..8 are CPython-visible code facts, 9..11 hold the Molt callable
-    // identity, and 12..16 retain immutable signature facts used by
-    // `types.FunctionType` reconstruction.
-    let total = std::mem::size_of::<MoltHeader>() + 17 * std::mem::size_of::<u64>();
+    // identity, 12..16 retain immutable signature facts used by
+    // `types.FunctionType` reconstruction, 17 binds the compiled frame slot,
+    // 18 selects the generated execution trampoline policy, 19..20 own the
+    // immutable freevar/cellvar positional-name contracts, and 21 is the
+    // immutable callable-context provenance paired with slots 9..11.
+    let empty_lexical_ptr = alloc_tuple(_py, &[]);
+    if empty_lexical_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
+    let total = std::mem::size_of::<MoltHeader>() + 22 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
+        dec_ref_bits(_py, empty_lexical_bits);
         return ptr;
     }
     unsafe {
@@ -1448,6 +1432,13 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(14 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(15 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(16 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(17 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        // Execution kind is published exactly once with the packed function
+        // metadata. Until then readers conservatively expose Direct behavior.
+        *(ptr.add(18 * std::mem::size_of::<u64>()) as *mut u64) = u64::MAX;
+        *(ptr.add(19 * std::mem::size_of::<u64>()) as *mut u64) = empty_lexical_bits;
+        *(ptr.add(20 * std::mem::size_of::<u64>()) as *mut u64) = empty_lexical_bits;
+        *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) = u64::MAX;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1463,8 +1454,84 @@ pub(crate) fn alloc_code_obj(
         if names_bits != 0 {
             inc_ref_bits(_py, names_bits);
         }
+        inc_ref_bits(_py, empty_lexical_bits);
+        inc_ref_bits(_py, empty_lexical_bits);
     }
+    dec_ref_bits(_py, empty_lexical_bits);
     ptr
+}
+
+/// Clone every immutable compiled-code fact while adding protocol flags to the
+/// new code object's publication. Object-valued slots are retained through the
+/// ordinary constructor/signature setters; the source remains untouched.
+pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
+    _py: &PyToken<'_>,
+    source: *mut u8,
+    added_protocol_flags: u64,
+) -> *mut u8 {
+    unsafe {
+        let clone = alloc_code_obj(
+            _py,
+            code_filename_bits(source),
+            code_name_bits(source),
+            code_firstlineno(source),
+            code_linetable_bits(source),
+            code_varnames_bits(source),
+            code_names_bits(source),
+            code_argcount(source),
+            code_posonlyargcount(source),
+            code_kwonlyargcount(source),
+        );
+        if clone.is_null() {
+            return clone;
+        }
+        let signature = [
+            code_arg_names_bits(source),
+            code_signature_posonly_bits(source),
+            code_kwonly_names_bits(source),
+            code_vararg_bits(source),
+            code_varkw_bits(source),
+        ];
+        // A freshly allocated or synthetic code object can have no signature.
+        // Preserve that state; a partially populated signature must still fail
+        // the same generated-capability validation as ordinary publication.
+        if signature != [0; 5]
+            && code_set_signature_bits(
+                _py,
+                clone,
+                signature[0],
+                signature[1],
+                signature[2],
+                signature[3],
+                signature[4],
+            )
+            .is_err()
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(clone).bits());
+            return std::ptr::null_mut();
+        }
+        if !code_publish_lexical_metadata(
+            _py,
+            clone,
+            code_freevars_bits(source),
+            code_cellvars_bits(source),
+        ) {
+            dec_ref_bits(_py, MoltObject::from_ptr(clone).bits());
+            return std::ptr::null_mut();
+        }
+        if let Some(frame_slot) = code_frame_slot_id(source) {
+            code_set_frame_slot_id(clone, frame_slot);
+        }
+        if let Some(identity) = code_callable_identity(source) {
+            code_publish_callable_identity(clone, identity)
+                .expect("fresh code clone has unpublished callable identity");
+        }
+        let kind = code_published_execution_kind(source).unwrap_or(CodeExecutionKind::Direct);
+        let protocol_flags = code_protocol_flags(source) | added_protocol_flags;
+        code_publish_policy(clone, kind, protocol_flags)
+            .expect("fresh code clone has unpublished execution policy");
+        clone
+    }
 }
 
 pub(crate) fn alloc_bound_method_obj(_py: &PyToken<'_>, func_bits: u64, self_bits: u64) -> *mut u8 {
@@ -1770,8 +1837,9 @@ pub(crate) fn alloc_inline_bytes_with_len(
 ) -> *mut u8 {
     let Some(total) = len
         .checked_add(std::mem::size_of::<usize>())
-        .and_then(raw_payload_total_or_null)
+        .and_then(crate::object::checked_object_total_size)
     else {
+        record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
     let ptr = alloc_object(_py, total, kind.type_id());
@@ -2166,6 +2234,158 @@ mod sequence_builder_tests {
     }
 
     #[test]
+    fn raw_object_allocators_share_nonallocating_failure_custody() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for mode in 0..3 {
+                let allocate = |size| match mode {
+                    0 => alloc_object(py, size, TYPE_ID_OBJECT),
+                    1 => crate::object::alloc_object_zeroed_with_aux(
+                        py,
+                        size,
+                        TYPE_ID_OBJECT,
+                        ObjectAuxPreselection::Default,
+                    ),
+                    _ => crate::object::alloc_object_zeroed_unpublished_with_aux(
+                        py,
+                        size,
+                        TYPE_ID_OBJECT,
+                        ObjectAuxPreselection::Default,
+                    ),
+                };
+                for size in [0, usize::MAX, std::mem::size_of::<MoltHeader>() + 8] {
+                    let budget = deny_allocations();
+                    assert!(allocate(size).is_null());
+                    assert!(exception_pending(py), "mode={mode}, size={size}");
+                    drop(budget);
+                    clear_exception(py);
+                    let _ = raise_exception::<u64>(py, "ValueError", "keep the caller error");
+                    let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    let budget = deny_allocations();
+                    assert!(allocate(size).is_null());
+                    drop(budget);
+                    let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert_eq!(still_pending, pending);
+                    dec_ref_bits(py, still_pending);
+                    dec_ref_bits(py, pending);
+                    clear_exception(py);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn hash_storage_failure_rolls_back_every_allocation_and_borrowed_edge() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let item = bits_from_ptr(alloc_string(py, b"hash-storage-borrowed-owner"));
+            let baseline = refs(item);
+            for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
+                for populated in [false, true] {
+                    let construct = || {
+                        if type_id == TYPE_ID_DICT {
+                            let pairs = [MoltObject::from_int(1).bits(), item];
+                            alloc_dict_with_capacity_and_pairs(
+                                py,
+                                7,
+                                if populated { &pairs } else { &[] },
+                            )
+                        } else {
+                            let entries = [item];
+                            alloc_set_like_with_capacity_and_entries(
+                                py,
+                                7,
+                                if populated { &entries } else { &[] },
+                                type_id,
+                            )
+                        }
+                    };
+                    // Warm runtime metadata/hash caches before deterministic denial.
+                    let warm = construct();
+                    assert!(!warm.is_null());
+                    dec_ref_bits(py, bits_from_ptr(warm));
+                    let mut failures = 0;
+                    let mut completed = false;
+                    for limit in 0..=8 {
+                        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                            max_allocations: Some(limit + 1),
+                            ..Default::default()
+                        })));
+                        let budget = RestoreBudget;
+                        let sentinel =
+                            crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
+                                .expect("one reserved sentinel allocation");
+                        let ptr = construct();
+                        if ptr.is_null() {
+                            failures += 1;
+                            assert!(exception_pending(py), "type={type_id}, limit={limit}");
+                            assert_eq!(refs(item), baseline);
+                            // Every admitted object/buffer charge must be gone,
+                            // but rollback must not steal the sentinel's count.
+                            crate::resource::with_tracker(|tracker| {
+                                for _ in 0..limit {
+                                    assert!(
+                                        tracker.on_allocate(1).is_ok(),
+                                        "rollback leaked an allocation"
+                                    );
+                                }
+                                assert!(tracker.on_allocate(1).is_err());
+                                for _ in 0..limit {
+                                    tracker.on_free(1);
+                                }
+                            });
+                        } else {
+                            assert!(!exception_pending(py));
+                            assert!(unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() });
+                            assert_eq!(refs(item), baseline + u32::from(populated));
+                            dec_ref_bits(py, bits_from_ptr(ptr));
+                            assert_eq!(refs(item), baseline);
+                            completed = true;
+                        }
+                        unsafe { drop(crate::object::backing::tracked_vec_box_from_raw(sentinel)) };
+                        drop(budget);
+                        clear_exception(py);
+                        if completed {
+                            break;
+                        }
+                    }
+                    assert!(completed, "bounded admission never succeeded for {type_id}");
+                    assert!(failures >= 4, "must exercise object and all three buffers");
+                }
+            }
+            dec_ref_bits(py, item);
+        });
+    }
+
+    #[test]
+    fn hash_storage_capacity_overflow_raises_and_preserves_first_error() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
+                for capacity in [usize::MAX, usize::MAX / 2] {
+                    assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
+                    assert!(exception_pending(py));
+                    clear_exception(py);
+                    let _ = raise_exception::<u64>(
+                        py,
+                        "ValueError",
+                        "original allocation caller error",
+                    );
+                    let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    let budget = deny_allocations();
+                    assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
+                    drop(budget);
+                    let still_pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert_eq!(still_pending, pending);
+                    dec_ref_bits(py, still_pending);
+                    dec_ref_bits(py, pending);
+                    clear_exception(py);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn direct_hash_aggregate_abort_releases_only_admitted_borrowed_edges() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -2407,8 +2627,14 @@ mod sequence_builder_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{acyclic_slot_edge, alloc_function_obj};
+    use super::{
+        acyclic_slot_edge, alloc_code_obj, alloc_function_obj, clone_code_obj_with_protocol_flags,
+    };
     use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    use crate::object::layout::{
+        CodeCallableIdentity, FunctionCallAbi, code_callable_identity, code_cellvars_bits,
+        code_freevars_bits, code_publish_callable_identity, code_publish_lexical_metadata,
+    };
     use crate::{
         TYPE_ID_FUNCTION, alloc_bytes, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
         function_globals_bits, object_type_id,
@@ -2417,6 +2643,72 @@ mod tests {
 
     extern "C" fn allocator_inert_function_target() -> u64 {
         MoltObject::none().bits()
+    }
+
+    #[test]
+    fn code_clone_retains_exact_lexical_metadata_tuples() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = alloc_string(py, b"clone_lexical");
+            let freevar = alloc_string(py, b"captured");
+            let cellvar = alloc_string(py, b"local_cell");
+            assert!(!name.is_null() && !freevar.is_null() && !cellvar.is_null());
+            let name_bits = MoltObject::from_ptr(name).bits();
+            let freevar_bits = MoltObject::from_ptr(freevar).bits();
+            let cellvar_bits = MoltObject::from_ptr(cellvar).bits();
+            let empty = alloc_tuple(py, &[]);
+            let freevars = alloc_tuple(py, &[freevar_bits]);
+            let cellvars = alloc_tuple(py, &[cellvar_bits]);
+            assert!(!empty.is_null() && !freevars.is_null() && !cellvars.is_null());
+            let empty_bits = MoltObject::from_ptr(empty).bits();
+            let freevars_bits = MoltObject::from_ptr(freevars).bits();
+            let cellvars_bits = MoltObject::from_ptr(cellvars).bits();
+            let source = alloc_code_obj(
+                py,
+                name_bits,
+                name_bits,
+                1,
+                MoltObject::none().bits(),
+                empty_bits,
+                empty_bits,
+                0,
+                0,
+                0,
+            );
+            assert!(!source.is_null());
+            unsafe {
+                assert!(code_publish_lexical_metadata(
+                    py,
+                    source,
+                    freevars_bits,
+                    cellvars_bits,
+                ));
+                let identity = CodeCallableIdentity {
+                    fn_ptr: 0x101,
+                    trampoline_ptr: 0x202,
+                    arity: 0,
+                    call_abi: FunctionCallAbi::LexicalClosureFirst,
+                };
+                assert_eq!(code_publish_callable_identity(source, identity), Ok(()));
+                let clone = clone_code_obj_with_protocol_flags(py, source, 0);
+                assert!(!clone.is_null());
+                assert_eq!(code_freevars_bits(clone), freevars_bits);
+                assert_eq!(code_cellvars_bits(clone), cellvars_bits);
+                assert_eq!(code_callable_identity(clone), Some(identity));
+                dec_ref_bits(py, MoltObject::from_ptr(clone).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(source).bits());
+            }
+            for bits in [
+                cellvars_bits,
+                freevars_bits,
+                empty_bits,
+                cellvar_bits,
+                freevar_bits,
+                name_bits,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
     }
 
     #[test]
@@ -2442,6 +2734,8 @@ mod tests {
                 }
                 dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
                 assert!(super::alloc_inline_bytes_with_len(py, usize::MAX, kind).is_null());
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
             }
             let ptr = super::alloc_bytearray(py, b"storage payload");
             assert!(!ptr.is_null());

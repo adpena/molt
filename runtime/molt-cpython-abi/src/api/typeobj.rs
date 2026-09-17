@@ -384,15 +384,12 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         return unsafe { reject_type_readiness(c"recursive PyType_Ready on an initializing type") };
     }
 
-    // Idempotent: a type readied once (numpy's builtin PyType_Ready(&PyBool_Type)
-    // calls, or a re-entrant static-init) must not be re-processed. Still register
-    // it in the bridge (idempotent) so an already-ready static type the extension
-    // hands back — e.g. `PyBool_Type`, readied at `init_static_types` — resolves
-    // via `pyobj_to_handle` instead of failing the bridge lookup.
+    // Readiness owns C layout and subclass metadata, not a runtime reference.
+    // Only an actual C-to-runtime crossing may acquire a foreign wrapper; in
+    // particular, a runtime-bound builtin must never get a second identity.
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
         unsafe {
             register_type_subclasses(tp);
-            crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(tp.cast::<PyObject>());
             install_metatype_getattro(tp);
         }
         return 0;
@@ -543,17 +540,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     }
     drop(_readying);
 
-    // (7) Register the readied type object in the split-runtime object bridge so a
-    //     C extension that hands the type back to the runtime — `PyModule_AddObject`
-    //     (numpy's `ndarray`/`dtype`/`flatiter`/... module attributes) or a
-    //     `PyDict_SetItem` whose key/value IS the type object (numpy's
-    //     scalar-type -> DType registry) — resolves it via `pyobj_to_handle`
-    //     instead of failing the bridge lookup. This is the same
-    //     canonical bridge registration that `PyDescr_NewGetSet`/`PyDescr_NewMember`
-    //     already apply to the descriptors they mint (idempotent + stable handle),
-    //     not a weakening of the unresolved-object checks.
     unsafe {
-        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(tp.cast::<PyObject>());
         install_metatype_getattro(tp);
     }
     0
@@ -575,20 +562,29 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
         // Iterate until the sentinel entry (ml_name == NULL).
         while !(*methods).ml_name.is_null() {
             let name_ptr = (*methods).ml_name;
-            // Skip entries without a callable (defensive; numpy tables are dense).
-            if (*methods).ml_meth.is_none() {
-                methods = methods.add(1);
-                continue;
-            }
-            let func = crate::api::object::PyCFunction_NewEx(
+            // Constructor admission is authoritative for flags and targets.
+            // METHOD carries its defining class separately from the receiver;
+            // STATIC must not acquire the type as a bound receiver.
+            let receiver = if (*methods).ml_flags & crate::abi_types::METH_STATIC != 0 {
+                ptr::null_mut()
+            } else {
+                tp.cast::<PyObject>()
+            };
+            let defining_class = if (*methods).ml_flags & crate::abi_types::METH_METHOD != 0 {
+                tp
+            } else {
+                ptr::null_mut()
+            };
+            let func = crate::api::object::PyCMethod_New(
                 methods,
-                tp.cast::<PyObject>(),
+                receiver,
                 ptr::null_mut(),
+                defining_class,
             );
             if func.is_null() {
                 crate::capi_trace::record_silent_failure(
                     "PyType_Ready",
-                    Some("PyCFunction_NewEx failed for method"),
+                    Some("C method constructor admission failed"),
                 );
                 return -1;
             }
@@ -1219,9 +1215,7 @@ unsafe fn new_wrapper_descr(
             d_common: header,
             d_wrapped: wrapped,
         });
-        let ptr = Box::into_raw(descr).cast::<PyObject>();
-        let _ = crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
-        ptr
+        Box::into_raw(descr).cast::<PyObject>()
     }
 }
 
@@ -2560,9 +2554,7 @@ pub unsafe extern "C" fn PyDescr_NewGetSet(
             d_common: header,
             d_getset: getset,
         });
-        let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
-        ptr
+        Box::into_raw(descr).cast::<PyObject>()
     }
 }
 
@@ -2589,9 +2581,7 @@ pub unsafe extern "C" fn PyDescr_NewMember(
             d_common: header,
             d_member: member,
         });
-        let ptr = Box::into_raw(descr).cast::<PyObject>();
-        crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr);
-        ptr
+        Box::into_raw(descr).cast::<PyObject>()
     }
 }
 
@@ -2730,7 +2720,18 @@ unsafe extern "C" fn member_descr_dealloc(op: *mut PyObject) {
     }
 }
 
-/// Install the descriptor protocol slots on the two descriptor type objects.
+unsafe extern "C" fn wrapper_descr_dealloc(op: *mut PyObject) {
+    if op.is_null() {
+        return;
+    }
+    unsafe {
+        let descr = op.cast::<crate::abi_types::PyWrapperDescrObject>();
+        descr_common_decref(&mut (*descr).d_common);
+        drop(Box::from_raw(descr));
+    }
+}
+
+/// Install descriptor ownership and the getset/member protocol slots.
 /// Called once at ABI init (after `init_static_types`) so that a
 /// `getset_descriptor` / `member_descriptor` found in a type's `tp_dict`
 /// resolves through `tp_descr_get` / `tp_descr_set` exactly as CPython wires
@@ -2753,6 +2754,11 @@ pub unsafe fn init_descriptor_slots() {
         (*mem).tp_dealloc = Some(member_descr_dealloc);
         (*mem).tp_basicsize =
             std::mem::size_of::<crate::abi_types::PyMemberDescrObject>() as Py_ssize_t;
+
+        let wrapper = &raw mut crate::abi_types::PyWrapperDescr_Type;
+        (*wrapper).tp_dealloc = Some(wrapper_descr_dealloc);
+        (*wrapper).tp_basicsize =
+            std::mem::size_of::<crate::abi_types::PyWrapperDescrObject>() as Py_ssize_t;
     }
 }
 
@@ -4391,7 +4397,7 @@ mod class2_decode_tests {
     }
 
     #[test]
-    fn raw_registered_foreign_object_never_decodes_as_molt_value() {
+    fn raw_foreign_object_never_decodes_as_molt_value() {
         let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         crate::bridge::molt_cpython_abi_init();
         HASH_CALLS.store(0, Ordering::SeqCst);
@@ -4415,7 +4421,6 @@ mod class2_decode_tests {
         };
         unsafe {
             REPR_RESULT.ob_type = &raw mut crate::abi_types::PyUnicode_Type;
-            crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(&raw mut obj);
         }
 
         assert_eq!(unsafe { PyObject_Hash(&raw mut obj) }, 4242);
@@ -4892,5 +4897,42 @@ mod subclass_registry_tests {
         );
         drop(registry);
         unregister_type_address(base_address);
+    }
+}
+
+#[cfg(test)]
+mod constructor_ownership_tests {
+    use super::*;
+
+    #[test]
+    fn wrapper_descriptor_releases_all_native_header_owners() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        crate::bridge::molt_cpython_abi_init();
+        let mut owner: PyTypeObject = unsafe { std::mem::zeroed() };
+        owner.ob_base.ob_base.ob_refcnt = 2;
+        let mut name = PyObject {
+            ob_refcnt: 2,
+            ob_type: ptr::null_mut(),
+        };
+        let mut qualname = PyObject {
+            ob_refcnt: 2,
+            ob_type: ptr::null_mut(),
+        };
+        let descr = Box::new(crate::abi_types::PyWrapperDescrObject {
+            d_common: crate::abi_types::PyDescrObject {
+                ob_base: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut crate::abi_types::PyWrapperDescr_Type,
+                },
+                d_type: &raw mut owner,
+                d_name: &raw mut name,
+                d_qualname: &raw mut qualname,
+            },
+            d_wrapped: ptr::null_mut(),
+        });
+        unsafe { crate::api::refcount::Py_DECREF(Box::into_raw(descr).cast()) };
+        assert_eq!(owner.ob_base.ob_base.ob_refcnt, 1);
+        assert_eq!(name.ob_refcnt, 1);
+        assert_eq!(qualname.ob_refcnt, 1);
     }
 }

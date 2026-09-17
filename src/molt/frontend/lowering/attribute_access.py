@@ -20,8 +20,8 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS,
-    SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
+    SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS,
+    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
 )
 
 if TYPE_CHECKING:
@@ -34,6 +34,23 @@ else:
 
 
 class AttributeAccessMixin(_MixinBase):
+    def _exact_dataclass_field(
+        self,
+        obj: MoltValue,
+        obj_name: str | None,
+        attr: str,
+    ) -> tuple[str, int] | None:
+        class_id = self._exact_class_for_value(obj, obj_name)
+        if class_id is None:
+            return None
+        class_info = self.classes.get(class_id)
+        if class_info is None or not class_info.get("dataclass"):
+            return None
+        offset = class_info.get("fields", {}).get(attr)
+        if not isinstance(offset, int):
+            return None
+        return class_id, offset
+
     def _module_can_defer_attrs(self, node: ast.Module) -> bool:
         for current in ast.walk(node):
             if isinstance(
@@ -158,6 +175,14 @@ class AttributeAccessMixin(_MixinBase):
     def _emit_module_attr_get(
         self, name: str, *, effect_proof: str | None = None
     ) -> MoltValue:
+        # A bare module binding referenced from a Python function belongs to
+        # that function object's active globals mapping. MODULE_GET_GLOBAL
+        # supplies its builtins fallback and NameError behavior; explicit
+        # ``module.attribute`` reads continue through _emit_module_attr_get_on.
+        if self._function_needs_frame_trace():
+            # A rebound function can supply a different value and type. Lexical
+            # module facts do not establish the active namespace's value type.
+            return self._emit_global_get(name)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         if self.current_func_name == "molt_main" and self.module_obj is not None:
@@ -201,6 +226,18 @@ class AttributeAccessMixin(_MixinBase):
         )
 
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
+        if self._function_needs_frame_trace():
+            globals_dict = self._emit_globals_dict()
+            name_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
+            self.emit(
+                MoltOp(
+                    kind="DICT_SET",
+                    args=[globals_dict, name_val, value],
+                    result=MoltValue("none"),
+                )
+            )
+            return
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         if self.current_func_name == "molt_main" and self.module_obj is not None:
@@ -269,9 +306,9 @@ class AttributeAccessMixin(_MixinBase):
             )
             if gateway_bits:
                 return gateway_bits
-        if attr is None or attr in SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS:
-            return SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        return 0
+        if attr is None:
+            return SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS
+        return SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS.get(attr, 0)
 
     def _emit_getattr_name_default(
         self,
@@ -310,7 +347,6 @@ class AttributeAccessMixin(_MixinBase):
         value: MoltValue,
         expected_class: str,
         *,
-        assume_exact: bool = False,
         obj_name: str | None = None,
     ) -> None:
         name = obj_name or obj.name
@@ -348,12 +384,9 @@ class AttributeAccessMixin(_MixinBase):
         if class_info and not class_info.get("static"):
             class_ref = self._load_local_value(expected_class)
             if class_ref is None:
-                if assume_exact and self._class_layout_stable(expected_class):
-                    # The caller guarantees the object is an instance of
-                    # expected_class (e.g. `self` inside a method body).
-                    # Emit a direct field store even when the class_ref is
-                    # not available in the current scope (class defined
-                    # inside a function).
+                if self._exact_class_for_value(
+                    obj, obj_name
+                ) == expected_class and self._class_layout_stable(expected_class):
                     self.emit(
                         MoltOp(
                             kind="SETATTR",
@@ -397,7 +430,7 @@ class AttributeAccessMixin(_MixinBase):
             )
             return
         if self._class_layout_stable(expected_class):
-            if assume_exact or self.exact_locals.get(name) == expected_class:
+            if self._exact_class_for_value(obj, obj_name) == expected_class:
                 self.emit(
                     MoltOp(
                         kind="SETATTR",
@@ -457,7 +490,6 @@ class AttributeAccessMixin(_MixinBase):
         attr: str,
         expected_class: str,
         *,
-        assume_exact: bool = False,
         obj_name: str | None = None,
     ) -> MoltValue:
         name = obj_name or obj.name
@@ -499,11 +531,9 @@ class AttributeAccessMixin(_MixinBase):
         if class_info and not class_info.get("static"):
             class_ref = self._load_local_value(expected_class)
             if class_ref is None:
-                if assume_exact and self._class_layout_stable(expected_class):
-                    # The caller guarantees the object is an instance of
-                    # expected_class (e.g. `self` in a method body or a
-                    # freshly created instance in the calling scope).
-                    # Use a direct field load.
+                if self._exact_class_for_value(
+                    obj, obj_name
+                ) == expected_class and self._class_layout_stable(expected_class):
                     res = MoltValue(self.next_var())
                     self.emit(
                         MoltOp(
@@ -553,7 +583,7 @@ class AttributeAccessMixin(_MixinBase):
             )
             return res
         if self._class_layout_stable(expected_class):
-            if assume_exact or self.exact_locals.get(name) == expected_class:
+            if self._exact_class_for_value(obj, obj_name) == expected_class:
                 res = MoltValue(self.next_var())
                 self.emit(
                     MoltOp(
@@ -725,7 +755,6 @@ class AttributeAccessMixin(_MixinBase):
         attr: str,
         getter_symbol: str,
         expected_class: str,
-        return_hint: str | None,
         *,
         obj_name: str | None = None,
     ) -> MoltValue:
@@ -733,7 +762,9 @@ class AttributeAccessMixin(_MixinBase):
         if guard is None:
             guard = self._emit_layout_guard(obj, expected_class)
         use_phi = self.enable_phi and not self.is_async()
-        fast_hint = return_hint or "Any"
+        # The receiver-layout guard certifies descriptor dispatch, not the
+        # returned value. A getter annotation cannot certify its result lane.
+        fast_hint = "Any"
         if use_phi:
             self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
             fast_val = MoltValue(self.next_var(), type_hint=fast_hint)
@@ -916,25 +947,28 @@ class AttributeAccessMixin(_MixinBase):
                     )
                 )
                 return res
-        if class_info and class_info.get("dataclass"):
-            field_map = class_info["fields"]
-            if node.attr not in field_map:
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_GENERIC_OBJ",
-                        args=[obj, node.attr],
-                        result=res,
-                    )
-                )
-                return res
+        exact_dataclass_field = self._exact_dataclass_field(obj, obj_name, node.attr)
+        if exact_dataclass_field is not None:
+            exact_dataclass, field_offset = exact_dataclass_field
             idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[field_map[node.attr]], result=idx_val))
+            self.emit(MoltOp(kind="CONST", args=[field_offset], result=idx_val))
             hint = None
             if self._hints_enabled():
-                hint = class_info.get("field_hints", {}).get(node.attr)
+                hint = (
+                    self.classes[exact_dataclass].get("field_hints", {}).get(node.attr)
+                )
             res = MoltValue(self.next_var(), type_hint=hint or "Unknown")
             self.emit(MoltOp(kind="DATACLASS_GET", args=[obj, idx_val], result=res))
+            return res
+        if class_info and class_info.get("dataclass"):
+            res = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="GETATTR_GENERIC_OBJ",
+                    args=[obj, node.attr],
+                    result=res,
+                )
+            )
             return res
         method_info = None
         method_class = None
@@ -1015,7 +1049,6 @@ class AttributeAccessMixin(_MixinBase):
                 node.attr,
                 getter_symbol,
                 obj.type_hint,
-                method_info["return_hint"],
                 obj_name=obj_name,
             )
         if obj.type_hint.startswith("module"):
@@ -1041,17 +1074,14 @@ class AttributeAccessMixin(_MixinBase):
                 )
             )
             return res
-        # Fast-path BoundMethod hints for known built-in types.
-        # When the receiver type is statically known (e.g. type_hint="str")
-        # and the accessed attribute is in the fast-dispatch method table,
-        # annotate the result with "BoundMethod:<type>:<method>" so that
-        # _emit_dynamic_call emits CALL_METHOD and the native backend's
-        # s_value match arm can avoid callargs allocation + IC lookup.
-        _fast_methods = _BUILTIN_FAST_METHODS.get(obj.type_hint)
+        # Acquired method values use the same exact source-point result as
+        # immediate method calls, never an annotation/transport hint.
+        receiver_kind = self._builtin_exact_type_from_expr(node.value)
+        _fast_methods = _BUILTIN_FAST_METHODS.get(receiver_kind)
         if _fast_methods is not None and node.attr in _fast_methods:
             res = MoltValue(
                 self.next_var(),
-                type_hint=f"BoundMethod:{obj.type_hint}:{node.attr}",
+                type_hint=f"BoundMethod:{receiver_kind}:{node.attr}",
             )
             self.emit(
                 MoltOp(
@@ -1109,12 +1139,10 @@ class AttributeAccessMixin(_MixinBase):
         hint = None
         if self._hints_enabled():
             hint = self.classes[expected_class].get("field_hints", {}).get(node.attr)
-        assume_exact = exact_class == expected_class if exact_class else False
         res = self._emit_guarded_getattr(
             obj,
             node.attr,
             expected_class,
-            assume_exact=assume_exact,
             obj_name=obj_name,
         )
         if hint is not None:
@@ -1126,7 +1154,6 @@ class AttributeAccessMixin(_MixinBase):
         obj: MoltValue | None,
         obj_expr: ast.AST | None,
         obj_name: str | None,
-        exact_class: str | None,
         attr: str,
         value_node: MoltValue,
     ) -> None:
@@ -1134,6 +1161,10 @@ class AttributeAccessMixin(_MixinBase):
             class_name = obj_expr.id
             if class_name in self.classes:
                 self._invalidate_loop_guards_for_class(class_name)
+        # Callers may have evaluated callback-capable operands since first
+        # loading the receiver (notably augmented assignment). Re-resolve at
+        # the consuming store; a captured class string is never authority.
+        exact_class = self._exact_class_for_value(obj, obj_name)
         class_info = None
         if obj is not None:
             class_info = self.classes.get(obj.type_hint)
@@ -1158,26 +1189,30 @@ class AttributeAccessMixin(_MixinBase):
                         value_node,
                         exact_class,
                         obj_name=obj_name,
-                        assume_exact=True,
                     )
                     return
-        if class_info and class_info.get("dataclass"):
-            field_map = class_info["fields"]
-            if attr not in field_map:
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_OBJ",
-                        args=[obj, attr, value_node],
-                        result=MoltValue("none"),
-                    )
-                )
-                return
+        exact_dataclass_field = (
+            self._exact_dataclass_field(obj, obj_name, attr)
+            if obj is not None
+            else None
+        )
+        if exact_dataclass_field is not None:
+            _, field_offset = exact_dataclass_field
             idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[field_map[attr]], result=idx_val))
+            self.emit(MoltOp(kind="CONST", args=[field_offset], result=idx_val))
             self.emit(
                 MoltOp(
                     kind="DATACLASS_SET",
                     args=[obj, idx_val, value_node],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        if class_info and class_info.get("dataclass"):
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[obj, attr, value_node],
                     result=MoltValue("none"),
                 )
             )
@@ -1202,24 +1237,12 @@ class AttributeAccessMixin(_MixinBase):
                         )
                     )
                 else:
-                    # Inside a method body, `self` (the first parameter)
-                    # is guaranteed to be an instance of the current class.
-                    # Mark it as exact so the guarded setattr can use a
-                    # direct field store instead of the slow generic path.
-                    is_method_self = (
-                        self.current_class is not None
-                        and obj_expr is not None
-                        and isinstance(obj_expr, ast.Name)
-                        and obj_expr.id == self.current_method_first_param
-                        and obj.type_hint == self.current_class
-                    )
                     self._emit_guarded_setattr(
                         obj,
                         attr,
                         value_node,
                         obj.type_hint,
                         obj_name=obj_name,
-                        assume_exact=is_method_self,
                     )
             else:
                 self.emit(

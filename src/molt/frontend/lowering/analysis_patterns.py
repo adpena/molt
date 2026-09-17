@@ -2,7 +2,7 @@
 
 Move-only extraction from frontend/__init__.py. These helpers recognize pure
 frontend AST shapes for vector reductions, counted loops, dict increments,
-range comprehensions, matmul loops, and TAQ ingest loops.
+range comprehensions and TAQ ingest loops.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import ast
 
 from typing import (
     TYPE_CHECKING,
-    cast,
 )
 
 from molt.frontend._types import MoltValue
@@ -26,20 +25,6 @@ else:
 
 
 class AnalysisPatternMixin(_MixinBase):
-    @staticmethod
-    def _match_optional_intrinsic_loader_expr(expr: ast.AST) -> str | None:
-        if not isinstance(expr, ast.Call) or expr.keywords or len(expr.args) != 1:
-            return None
-        if (
-            not isinstance(expr.func, ast.Name)
-            or expr.func.id != "_load_optional_intrinsic"
-        ):
-            return None
-        arg = expr.args[0]
-        if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
-            return None
-        return arg.value
-
     def _match_vector_reduction_loop(
         self, node: ast.For
     ) -> tuple[str, str, str] | None:
@@ -94,7 +79,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(node.iter, ast.Call):
             return None
-        if not isinstance(node.iter.func, ast.Name) or node.iter.func.id != "range":
+        if self._specializable_builtin_name(node.iter) != "range":
             return None
         args = node.iter.args
         if not args or len(args) > 3:
@@ -128,7 +113,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(stop, ast.Call):
             return None
-        if not isinstance(stop.func, ast.Name) or stop.func.id != "len":
+        if self._specializable_builtin_name(stop) != "len":
             return None
         if len(stop.args) != 1 or not isinstance(stop.args[0], ast.Name):
             return None
@@ -177,7 +162,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(node.iter, ast.Call):
             return None
-        if not isinstance(node.iter.func, ast.Name) or node.iter.func.id != "range":
+        if self._specializable_builtin_name(node.iter) != "range":
             return None
         args = node.iter.args
         if not args or len(args) > 3:
@@ -211,7 +196,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(stop, ast.Call):
             return None
-        if not isinstance(stop.func, ast.Name) or stop.func.id != "len":
+        if self._specializable_builtin_name(stop) != "len":
             return None
         if len(stop.args) != 1 or not isinstance(stop.args[0], ast.Name):
             return None
@@ -431,7 +416,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(comp.iter, ast.Call):
             return None
-        if not isinstance(comp.iter.func, ast.Name) or comp.iter.func.id != "range":
+        if self._specializable_builtin_name(comp.iter) != "range":
             return None
         if len(comp.iter.args) > 3 or comp.iter.keywords:
             return None
@@ -452,7 +437,7 @@ class AnalysisPatternMixin(_MixinBase):
             return None
         if not isinstance(comp.iter, ast.Call):
             return None
-        if not isinstance(comp.iter.func, ast.Name) or comp.iter.func.id != "range":
+        if self._specializable_builtin_name(comp.iter) != "range":
             return None
         if len(comp.iter.args) > 3 or comp.iter.keywords:
             return None
@@ -618,101 +603,6 @@ class AnalysisPatternMixin(_MixinBase):
         if start_val >= inner_bound:
             return acc_name, 0
         return acc_name, (inner_bound - start_val) * delta
-
-    def _match_matmul_loop(self, node: ast.For) -> tuple[str, str, str] | None:
-        if node.orelse or not isinstance(node.target, ast.Name):
-            return None
-        if len(node.body) != 1 or not isinstance(node.body[0], ast.For):
-            return None
-        outer_i = node.target.id
-        j_loop = node.body[0]
-        if j_loop.orelse or not isinstance(j_loop.target, ast.Name):
-            return None
-        inner_j = j_loop.target.id
-        if len(j_loop.body) != 3:
-            return None
-        init = j_loop.body[0]
-        k_loop = j_loop.body[1]
-        store = j_loop.body[2]
-        if not isinstance(init, ast.Assign):
-            return None
-        if len(init.targets) != 1 or not isinstance(init.targets[0], ast.Name):
-            return None
-        acc_name = init.targets[0].id
-        if not isinstance(init.value, ast.Constant) or init.value.value != 0:
-            return None
-        if not isinstance(k_loop, ast.For) or k_loop.orelse:
-            return None
-        if not isinstance(k_loop.target, ast.Name):
-            return None
-        inner_k = k_loop.target.id
-        if len(k_loop.body) != 1 or not isinstance(k_loop.body[0], ast.Assign):
-            return None
-        acc_assign = k_loop.body[0]
-        if (
-            len(acc_assign.targets) != 1
-            or not isinstance(acc_assign.targets[0], ast.Name)
-            or acc_assign.targets[0].id != acc_name
-        ):
-            return None
-        if not isinstance(acc_assign.value, ast.BinOp) or not isinstance(
-            acc_assign.value.op, ast.Add
-        ):
-            return None
-        add_left = acc_assign.value.left
-        add_right = acc_assign.value.right
-        if not isinstance(add_left, ast.Name) or add_left.id != acc_name:
-            return None
-        if not isinstance(add_right, ast.BinOp) or not isinstance(
-            add_right.op, ast.Mult
-        ):
-            return None
-        left_get = add_right.left
-        right_get = add_right.right
-        if not (isinstance(left_get, ast.Call) and isinstance(right_get, ast.Call)):
-            return None
-        left_args = self._parse_molt_buffer_call(left_get, "get")
-        right_args = self._parse_molt_buffer_call(right_get, "get")
-        if left_args is None or right_args is None:
-            return None
-        if len(left_args) != 3 or len(right_args) != 3:
-            return None
-        if not all(isinstance(arg, ast.Name) for arg in left_args[1:]):
-            return None
-        if not all(isinstance(arg, ast.Name) for arg in right_args[1:]):
-            return None
-        left_buf = left_args[0]
-        right_buf = right_args[0]
-        if not isinstance(left_buf, ast.Name) or not isinstance(right_buf, ast.Name):
-            return None
-        a_name = left_buf.id
-        b_name = right_buf.id
-        left_i = cast(ast.Name, left_args[1]).id
-        left_k = cast(ast.Name, left_args[2]).id
-        right_k = cast(ast.Name, right_args[1]).id
-        right_j = cast(ast.Name, right_args[2]).id
-        if left_i != outer_i or left_k != inner_k:
-            return None
-        if right_k != inner_k or right_j != inner_j:
-            return None
-        if not isinstance(store, ast.Expr) or not isinstance(store.value, ast.Call):
-            return None
-        store_args = self._parse_molt_buffer_call(store.value, "set")
-        if store_args is None or len(store_args) != 4:
-            return None
-        if not isinstance(store_args[0], ast.Name):
-            return None
-        out_name = store_args[0].id
-        if not all(isinstance(arg, ast.Name) for arg in store_args[1:3]):
-            return None
-        if (
-            cast(ast.Name, store_args[1]).id != outer_i
-            or cast(ast.Name, store_args[2]).id != inner_j
-        ):
-            return None
-        if not isinstance(store_args[3], ast.Name) or store_args[3].id != acc_name:
-            return None
-        return out_name, a_name, b_name
 
     def _match_dict_increment_assign(
         self, node: ast.Assign
@@ -910,8 +800,7 @@ class AnalysisPatternMixin(_MixinBase):
             not isinstance(ts_stmt.value, ast.Call)
             or ts_stmt.value.keywords
             or len(ts_stmt.value.args) != 1
-            or not isinstance(ts_stmt.value.func, ast.Name)
-            or ts_stmt.value.func.id != "int"
+            or self._specializable_builtin_name(ts_stmt.value) != "int"
             or not match_sub(split_name, 0, ts_stmt.value.args[0])
         ):
             return None
@@ -933,8 +822,7 @@ class AnalysisPatternMixin(_MixinBase):
             not isinstance(vol_stmt.value, ast.Call)
             or vol_stmt.value.keywords
             or len(vol_stmt.value.args) != 1
-            or not isinstance(vol_stmt.value.func, ast.Name)
-            or vol_stmt.value.func.id != "int"
+            or self._specializable_builtin_name(vol_stmt.value) != "int"
             or not match_sub(split_name, 4, vol_stmt.value.args[0])
         ):
             return None

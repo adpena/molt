@@ -39,8 +39,9 @@ What it emits
 Determinism / clean diffs
 ==========================
   * Methods are emitted SORTED by name (dedup: most-derived MRO definition wins),
-    with their REAL signature extracted from source AST (decorators + ``def``
-    header preserved verbatim, body replaced with ``...``). Method signatures
+    with their call shape and annotations extracted from source AST. Defaults
+    and bodies become ``...``: protocols describe optional arguments, not the
+    implementation expressions that supply their values. Method signatures
     therefore need no curated input - they are pure introspection.
   * Attributes are emitted SORTED by name and split at the midpoint across the
     two files. Their *types* come from the curated table harvested from the two
@@ -112,6 +113,7 @@ _TYPING_NAMES = {
 # runtime cost): identifier -> ``from`` module.
 _TYPE_CHECKING_IMPORTS = {
     "FunctionKind": "molt.frontend.sema",
+    "StatefulFunctionFramePlan": "molt.frontend.sema.funcmeta",
     "ModuleExecutionKind": "molt.compiler_analysis.python_imports",
     "ModuleImportContext": "molt.compiler_analysis.python_imports",
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
@@ -197,8 +199,8 @@ def _render_method_stub(name: str, value: object) -> str | None:
     """Render a single Protocol method stub for *name* from its real source.
 
     Preserves the decorator list (``@staticmethod`` / ``@classmethod`` /
-    ``@property`` etc.) and the full ``def`` header (all parameter and return
-    annotations verbatim), replacing the body with ``...``. Returns ``None`` if
+    ``@property`` etc.) and all parameter and return annotations, replacing
+    defaults and the body with ``...``. Returns ``None`` if
     the source cannot be parsed (the caller then skips it - never silently emits
     a wrong signature).
     """
@@ -252,6 +254,17 @@ def _render_method_stub(name: str, value: object) -> str | None:
         if isinstance(func_node, ast.AsyncFunctionDef)
         else ast.FunctionDef
     )
+    # Defaults execute even with postponed annotations. Their presence belongs
+    # to the protocol, but evaluating implementation factories, sentinels or
+    # enum members here would introduce a second runtime dependency authority.
+    # Ellipsis preserves positional/keyword requiredness without those imports.
+    func_node.args.defaults = [
+        ast.Constant(value=Ellipsis) for _ in func_node.args.defaults
+    ]
+    func_node.args.kw_defaults = [
+        None if default is None else ast.Constant(value=Ellipsis)
+        for default in func_node.args.kw_defaults
+    ]
     rebuilt = stripped(
         name=func_node.name,
         args=func_node.args,
@@ -575,11 +588,10 @@ def _referenced_identifiers(annotation_texts: list[str]) -> set[str]:
 
 
 def _annotation_texts_from_methods(methods: list[tuple[str, str]]) -> list[str]:
-    """Extract every annotation + default expression text from rendered method
-    stubs so import computation sees the full type vocabulary they use."""
+    """Extract annotations from stubs; defaults carry no runtime dependencies."""
     texts: list[str] = []
     for _name, stub in methods:
-        # Re-parse the rendered stub; collect arg/return annotations + defaults.
+        # Re-parse the rendered stub; collect arg/return annotations.
         try:
             tree = ast.parse(textwrap.dedent(stub))
         except SyntaxError:
@@ -598,9 +610,6 @@ def _annotation_texts_from_methods(methods: list[tuple[str, str]]) -> list[str]:
                         texts.append(ast.unparse(arg.annotation))
                 if node.returns is not None:
                     texts.append(ast.unparse(node.returns))
-                for default in (*args.defaults, *args.kw_defaults):
-                    if default is not None:
-                        texts.append(ast.unparse(default))
     return texts
 
 

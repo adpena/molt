@@ -16,6 +16,7 @@ from molt.cli.models import (
     _CompleteImportScan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalPackageNativeArtifactPlan,
+    _ImportDiscoveryProjection,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _PreparedEntryModuleGraph,
@@ -109,15 +110,65 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
         )
 
 
+@pytest.mark.parametrize(
+    "left_mode", ["module_init", "module_init_static_helpers", "full"]
+)
+@pytest.mark.parametrize(
+    "right_mode", ["module_init", "module_init_static_helpers", "full"]
+)
+@pytest.mark.parametrize(
+    "left_dynamic,right_dynamic",
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+def test_scan_merge_preserves_depth_and_dynamic_package_requirement(
+    tmp_path: Path,
+    left_mode,
+    right_mode,
+    left_dynamic,
+    right_dynamic,
+) -> None:
+    source = _source(tmp_path / "pkg" / "owner.py", "pass\n")
+    left = _ModuleGraphScanAuthority(
+        (
+            _ModuleSourceScanAuthority(
+                "pkg.owner", source, left_mode, False, left_dynamic
+            ),
+        )
+    )
+    right = _ModuleGraphScanAuthority(
+        (
+            _ModuleSourceScanAuthority(
+                "pkg.owner", source, right_mode, False, right_dynamic
+            ),
+        )
+    )
+    merged = left.merged(right)
+    assert merged == right.merged(left)
+    assert merged.merged(left).merged(right) == merged
+    modes = ["module_init", "module_init_static_helpers", "full"]
+    assert merged.by_module["pkg.owner"].mode == max(
+        (left_mode, right_mode), key=modes.index
+    )
+    assert merged.by_module["pkg.owner"].requires_runtime_package_anchor is (
+        left_dynamic or right_dynamic
+    )
+
+
 def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     tmp_path: Path,
 ) -> None:
     source = _source(tmp_path / "entry.py", "pass\n")
+    expected_scan = _CompleteImportScan(
+        (),
+        (),
+        ("pkg.child",),
+        True,
+    )
     record = discovery._bind_precomputed_module_import_scan(
         source,
         module_name="entry",
         import_scan_mode="full",
-        scan=_CompleteImportScan((), ()),
+        scan=expected_scan,
         target_python=PYTHON,
     )
 
@@ -132,7 +183,8 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
             precomputed_scan=record,
         )
 
-    assert load().scan == record.scan
+    assert load().scan == expected_scan
+    assert record.authority.requires_runtime_package_anchor
     with pytest.raises(ValueError, match="custody"):
         load(mode="module_init")
     with pytest.raises(ValueError, match="source authority"):
@@ -140,6 +192,44 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
     source.write_text("VALUE = 1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="custody"):
         load()
+
+
+def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path / "pkg" / "owner.py", "pass\n")
+    monkeypatch.setattr(
+        graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "dynamic-relative-imports",
+    )
+    expected = _CompleteImportScan(
+        ("ssl",),
+        (),
+        ("pkg.child",),
+        True,
+    )
+
+    graph_cache._write_persisted_import_scan(
+        tmp_path,
+        source,
+        module_name="pkg.owner",
+        is_package=False,
+        import_scan_mode="full",
+        scan=expected,
+    )
+
+    assert (
+        graph_cache._read_persisted_import_scan_record(
+            tmp_path,
+            source,
+            module_name="pkg.owner",
+            is_package=False,
+            import_scan_mode="full",
+        )
+        == expected
+    )
 
 
 def test_runtime_policy_memo_covers_statements_and_binds_source_and_mode(
@@ -176,9 +266,11 @@ def test_runtime_policy_memo_covers_statements_and_binds_source_and_mode(
     assert not cache.ast_cache
 
 
+@pytest.mark.parametrize("target", ["native", "wasm", "rust", "luau", "mlir"])
 def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    target: str,
 ) -> None:
     entry = _source(tmp_path / "entry.py", "pass\n")
     late = _source(
@@ -204,7 +296,7 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
         module_resolution_cache=_ModuleResolutionCache(),
         module_graph=initial.graph,
         scan_authority=initial.scan_authority,
-        target="native",
+        target=target,
         explicit_imports=initial.explicit_imports,
         runtime_import_dispatch_roots=frozenset(),
         stub_parents=set(),
@@ -267,10 +359,10 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
         scan_authorities=roles,
         module_reasons={},
         module_resolution_cache=_ModuleResolutionCache(),
+        roots=[tmp_path, owner.parent],
         stdlib_root=owner.parent,
         stdlib_allowlist={"runtime_owner"},
         entry_module="entry",
-        target="native",
         target_python=PYTHON,
         import_admission_policy=None,
     )
@@ -341,6 +433,118 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     assert changed.custody.catalog == second.custody.catalog
     assert changed.custody.owner_ast_digests != second.custody.owner_ast_digests
     assert extend.call_count > extensions
+
+
+def test_dynamic_owner_fixed_point_uses_custody_names_and_admitted_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _source(tmp_path / "app" / "entry.py", "import support.owner\n")
+    stdlib = tmp_path / "stdlib"
+    _source(stdlib / "support" / "__init__.py", "pass\n")
+    owner = _source(
+        stdlib / "support" / "owner.py",
+        "__package__ = choose_package()\nfrom . import child\n",
+    )
+    _source(tmp_path / "vendor" / "support" / "__init__.py", "pass\n")
+    child = _source(
+        tmp_path / "vendor" / "support" / "child.py",
+        "__package__ = choose_package()\nfrom . import grandchild\n",
+    )
+    grandchild = _source(
+        tmp_path / "vendor" / "support" / "grandchild.py",
+        "VALUE = 1\n",
+    )
+    monkeypatch.setattr(
+        scanner,
+        "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
+        ("support.owner",),
+    )
+    graph = {"app.entry": entry}
+    roles = {
+        "app.entry": _ModuleSourceScanAuthority("app.entry", entry, "full", False),
+    }
+    common = dict(
+        module_graph=graph,
+        scan_authorities=roles,
+        module_reasons={},
+        explicit_imports={"support.owner"},
+        dispatch_roots={"support.owner"},
+        module_resolution_cache=_ModuleResolutionCache(),
+        roots=[tmp_path / "app", tmp_path / "vendor", stdlib],
+        stdlib_root=stdlib,
+        stdlib_allowlist={"support.owner"},
+        entry_module="app.entry",
+        target_python=PYTHON,
+        import_admission_policy=None,
+    )
+
+    closure = graphs._finalize_runtime_import_closure(**common)
+
+    assert closure.policy.needs_runtime_import_support
+    assert closure.custody is not None
+    assert closure.custody.owners_by_module["support.owner"] == owner
+    assert closure.custody.owners_by_module["support.child"] == child
+    assert closure.custody.catalog_by_module["support.grandchild"] == grandchild
+    assert roles["support.owner"].mode == "full"
+    assert roles["support.child"].mode == "full"
+    assert roles["support.owner"].requires_runtime_package_anchor
+    assert roles["support.child"].requires_runtime_package_anchor
+
+
+def test_ordinary_nested_package_owner_rescans_under_original_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    entry = _source(project / "entry.py", "pass\n")
+    _source(project / "pkg" / "__init__.py", "pass\n")
+    _source(project / "pkg" / "nested" / "__init__.py", "pass\n")
+    owner = _source(
+        project / "pkg" / "nested" / "owner.py",
+        "__package__ = choose_package()\nfrom . import child\n",
+    )
+    child = _source(project / "pkg" / "nested" / "child.py", "VALUE = 1\n")
+    stdlib = tmp_path / "stdlib"
+    support = _source(stdlib / "runtime_owner.py", "pass\n")
+    monkeypatch.setattr(
+        scanner,
+        "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
+        ("runtime_owner",),
+    )
+    graph = {"entry": entry, "pkg.nested.owner": owner}
+    roles = {
+        "entry": _ModuleSourceScanAuthority("entry", entry, "full", False),
+        "pkg.nested.owner": _ModuleSourceScanAuthority(
+            "pkg.nested.owner",
+            owner,
+            "module_init",
+            False,
+            True,
+        ),
+    }
+
+    closure = graphs._finalize_runtime_import_closure(
+        module_graph=graph,
+        scan_authorities=roles,
+        module_reasons={},
+        explicit_imports={"pkg.nested.owner"},
+        dispatch_roots={"pkg.nested.owner"},
+        module_resolution_cache=_ModuleResolutionCache(),
+        roots=[project, stdlib],
+        stdlib_root=stdlib,
+        stdlib_allowlist={"runtime_owner"},
+        entry_module="entry",
+        target_python=PYTHON,
+        import_admission_policy=None,
+    )
+
+    assert closure.policy.needs_runtime_import_support
+    assert closure.custody is not None
+    assert closure.custody.owners_by_module["pkg.nested.owner"] == owner
+    assert closure.custody.owners_by_module["runtime_owner"] == support
+    assert graph["pkg.nested.child"] == child
+    assert roles["pkg.nested.owner"].mode == "full"
 
 
 def test_generated_native_slice_carries_one_source_for_both_scan_projections(
@@ -572,7 +776,18 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
     cache = _ModuleResolutionCache()
     calls = []
 
-    def collector(tree, module_name, is_package, *, import_scan_mode, target_python):
+    from molt.compiler_analysis.python_imports import _PythonAstDigestAdmission
+
+    def collector(
+        tree: ast.AST,
+        module_name: str | None,
+        is_package: bool,
+        *,
+        import_scan_mode: str,
+        target_python: TargetPythonVersion,
+        ast_digest_admission: _PythonAstDigestAdmission,
+    ) -> list[str]:
+        assert ast_digest_admission.tree is tree
         calls.append(target_python.tag)
         return [target_python.tag]
 
@@ -589,7 +804,21 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
             target_python=target,
         ) == (target.tag,)
     assert calls == ["py312", "py313"]
-    monkeypatch.setattr(scanner, "_collect_imports", collector)
+
+    def graph_collector(
+        tree: ast.AST,
+        module_name: str | None,
+        is_package: bool,
+        *,
+        import_scan_mode: str,
+        target_python: TargetPythonVersion,
+        ast_digest_admission: _PythonAstDigestAdmission,
+    ) -> _ImportDiscoveryProjection:
+        assert ast_digest_admission.tree is tree
+        calls.append(target_python.tag)
+        return _ImportDiscoveryProjection((target_python.tag,))
+
+    monkeypatch.setattr(scanner, "_collect_imports_for_graph", graph_collector)
     target = TargetPythonVersion(3, 13, 0)
     loaded = discovery._load_module_import_scan(
         source,

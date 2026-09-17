@@ -731,7 +731,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
 }
 
 #[test]
-fn test_compile_checked_rejects_async_marker() {
+fn test_compile_checked_rejects_spawn_scheduler_semantics() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "async_test".to_string(),
@@ -756,13 +756,13 @@ fn test_compile_checked_rejects_async_marker() {
     assert!(
         err.contains("rejected before source generation")
             && err.contains("`spawn`")
-            && err.contains("unclassified"),
+            && err.contains("exact async scheduler"),
         "error should come from generated pre-source admission, got: {err}"
     );
 }
 
 #[test]
-fn test_compile_checked_lowers_call_async_poll_target_directly() {
+fn test_compile_checked_rejects_call_async_scheduler_semantics() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "call_async_test".to_string(),
@@ -795,21 +795,14 @@ fn test_compile_checked_lowers_call_async_poll_target_directly() {
         }],
         profile: None,
     };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-
-    assert!(
-        source.contains("local awaited = poll_target(payload)"),
-        "call_async should invoke the s_value poll target directly, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[async: call_async]") && !source.contains("[unsupported op: call_async]"),
-        "call_async must not leave async stub markers, got:\n{source}"
-    );
+    let error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("Luau has no exact Molt task-construction or scheduler model");
+    assert!(error.contains("`call_async`") && error.contains("exact async scheduler"));
 }
 
 #[test]
-fn test_compile_checked_lowers_is_native_awaitable_target_fact() {
+fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "native_awaitable_test".to_string(),
@@ -835,17 +828,10 @@ fn test_compile_checked_lowers_is_native_awaitable_target_fact() {
         }],
         profile: None,
     };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(
-        source.contains("local is_native = false"),
-        "Luau has no native Molt poll-function objects, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[async: is_native_awaitable]")
-            && !source.contains("[unsupported op: is_native_awaitable]"),
-        "is_native_awaitable must not lower through async stubs, got:\n{source}"
-    );
+    let error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("native-awaitable identity requires the rejected async runtime family");
+    assert!(error.contains("`is_native_awaitable`") && error.contains("exact async scheduler"));
 }
 
 #[test]

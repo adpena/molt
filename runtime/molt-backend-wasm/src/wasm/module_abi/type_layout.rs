@@ -24,9 +24,6 @@ impl WasmModuleTypeLayout {
     ) -> Self {
         let mut user_type_map = BTreeMap::new();
         for func_ir in &ir.functions {
-            if !func_ir.is_extern && func_ir.name.ends_with("_poll") {
-                continue;
-            }
             let arity = func_ir.params.len();
             if let std::collections::btree_map::Entry::Vacant(entry) = user_type_map.entry(arity) {
                 backend.types.function(
@@ -138,9 +135,6 @@ impl WasmModuleTypeLayout {
                     signature.arity
                 )
             });
-        }
-        if func_ir.name.ends_with("_poll") {
-            return 2;
         }
         *user_type_map.get(&func_ir.params.len()).unwrap_or_else(|| {
             panic!(

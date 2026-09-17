@@ -185,6 +185,7 @@ class FunctionVisitorMixin(_MixinBase):
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(node))
             )
+            cell_vars = self._callable_cell_vars(node)
 
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.GENERATOR,
@@ -201,22 +202,20 @@ class FunctionVisitorMixin(_MixinBase):
                 self.next_var(),
                 type_hint=frame_plan.function_type_hint(closure_size),
             )
-            if has_closure and closure_val is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW_CLOSURE",
-                        args=[poll_func_name, len(params), closure_val],
-                        result=func_val,
-                    )
-                )
-            else:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW",
-                        args=[poll_func_name, len(params)],
-                        result=func_val,
-                    )
-                )
+            function_def = MoltOp(
+                kind=(
+                    "FUNC_NEW_CLOSURE"
+                    if has_closure and closure_val is not None
+                    else "FUNC_NEW"
+                ),
+                args=(
+                    [poll_func_name, len(params), closure_val]
+                    if has_closure and closure_val is not None
+                    else [poll_func_name, len(params)]
+                ),
+                result=func_val,
+            )
+            self.emit(function_def)
             func_spill = None
             if self.in_generator and signature_contains_yield(
                 decorators=node.decorator_list,
@@ -234,6 +233,7 @@ class FunctionVisitorMixin(_MixinBase):
             )
             self._emit_function_metadata(
                 func_val,
+                code_symbol=poll_func_name,
                 name=func_name,
                 qualname=qualname,
                 trace_lineno=node.lineno,
@@ -245,13 +245,15 @@ class FunctionVisitorMixin(_MixinBase):
                 default_exprs=node.args.defaults,
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node, clean=False),
-                is_generator=True,
+                execution_kind=FunctionKind.GENERATOR,
                 varnames=varnames,
                 code_names=self._collect_code_names_for_body(
                     node.body,
                     varnames=varnames,
                     free_vars=free_vars,
                 ),
+                freevars=free_vars,
+                cellvars=cell_vars,
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -262,6 +264,7 @@ class FunctionVisitorMixin(_MixinBase):
             self.current_class = None
             self.start_function(
                 poll_func_name,
+                stateful_frame_plan=frame_plan,
                 python_first_arg=self._python_first_positional_arg(node.args),
                 params=["self"],
                 compiler_params={"self"},
@@ -292,6 +295,7 @@ class FunctionVisitorMixin(_MixinBase):
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
+            self._prebox_scope_cell_vars(cell_vars)
             if self.type_hint_policy == "check":
                 for arg in arg_nodes:
                     hint = self.explicit_type_hints.get(arg.arg)
@@ -354,6 +358,11 @@ class FunctionVisitorMixin(_MixinBase):
             gen_public_locals = self._async_locals_public_entries()
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
+            # Publish the final spilled-frame extent on the defining op.
+            function_def.metadata = {
+                **(function_def.metadata or {}),
+                **frame_plan.callable_task_metadata(closure_size),
+            }
             func_val.type_hint = frame_plan.function_type_hint(closure_size)
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
@@ -372,17 +381,6 @@ class FunctionVisitorMixin(_MixinBase):
                 MoltOp(
                     kind="GEN_LOCALS_REGISTER",
                     args=[poll_func_name, names_tuple, offsets_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            closure_size_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[closure_size], result=closure_size_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_closure_size__", closure_size_val],
                     result=MoltValue("none"),
                 )
             )
@@ -447,6 +445,7 @@ class FunctionVisitorMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(node))
         )
+        cell_vars = self._callable_cell_vars(node)
 
         func_hint = f"Func:{func_symbol}"
         if has_closure:
@@ -483,6 +482,7 @@ class FunctionVisitorMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=func_symbol,
             name=func_name,
             qualname=qualname,
             trace_lineno=node.lineno,
@@ -500,6 +500,8 @@ class FunctionVisitorMixin(_MixinBase):
                 varnames=varnames,
                 free_vars=free_vars,
             ),
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
         # ── @gpu.kernel: mark function IR so the backend routes through GPU pipeline ──
@@ -587,7 +589,7 @@ class FunctionVisitorMixin(_MixinBase):
                 if hint is not None:
                     self._emit_guard_type(self.locals[arg.arg], hint)
         if not self.is_async():
-            self._prebox_scope_cell_vars(body=node.body, arg_nodes=arg_nodes)
+            self._prebox_scope_cell_vars(cell_vars)
             # Only box variables that genuinely need cells (closure-captured).
             # Non-closure locals use store_var/load_var for SSA-visible mutations.
             param_names = {arg.arg for arg in arg_nodes}
@@ -713,6 +715,7 @@ class FunctionVisitorMixin(_MixinBase):
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(node))
             )
+            cell_vars = self._callable_cell_vars(node)
 
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.GENERATOR,
@@ -729,22 +732,20 @@ class FunctionVisitorMixin(_MixinBase):
                 self.next_var(),
                 type_hint=frame_plan.function_type_hint(closure_size),
             )
-            if has_closure and closure_val is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW_CLOSURE",
-                        args=[poll_func_name, len(params), closure_val],
-                        result=func_val,
-                    )
-                )
-            else:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW",
-                        args=[poll_func_name, len(params)],
-                        result=func_val,
-                    )
-                )
+            function_def = MoltOp(
+                kind=(
+                    "FUNC_NEW_CLOSURE"
+                    if has_closure and closure_val is not None
+                    else "FUNC_NEW"
+                ),
+                args=(
+                    [poll_func_name, len(params), closure_val]
+                    if has_closure and closure_val is not None
+                    else [poll_func_name, len(params)]
+                ),
+                result=func_val,
+            )
+            self.emit(function_def)
             func_spill = None
             if self.in_generator and signature_contains_yield(
                 decorators=[],
@@ -762,6 +763,7 @@ class FunctionVisitorMixin(_MixinBase):
             )
             self._emit_function_metadata(
                 func_val,
+                code_symbol=poll_func_name,
                 name="<lambda>",
                 qualname=qualname,
                 trace_lineno=node.lineno,
@@ -773,13 +775,15 @@ class FunctionVisitorMixin(_MixinBase):
                 default_exprs=node.args.defaults,
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=None,
-                is_generator=True,
+                execution_kind=FunctionKind.GENERATOR,
                 varnames=varnames,
                 code_names=self._collect_code_names_for_body(
                     [ast.Expr(value=node.body)],
                     varnames=varnames,
                     free_vars=free_vars,
                 ),
+                freevars=free_vars,
+                cellvars=cell_vars,
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -789,6 +793,7 @@ class FunctionVisitorMixin(_MixinBase):
             prev_first_param = self.current_method_first_param
             self.start_function(
                 poll_func_name,
+                stateful_frame_plan=frame_plan,
                 python_first_arg=self._python_first_positional_arg(node.args),
                 params=["self"],
                 compiler_params={"self"},
@@ -820,6 +825,7 @@ class FunctionVisitorMixin(_MixinBase):
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
+            self._prebox_scope_cell_vars(cell_vars)
             if self.type_hint_policy == "check":
                 for arg in arg_nodes:
                     hint = self.explicit_type_hints.get(arg.arg)
@@ -882,6 +888,11 @@ class FunctionVisitorMixin(_MixinBase):
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
             self.current_method_first_param = prev_first_param
+            # Publish the final spilled-frame extent on the defining op.
+            function_def.metadata = {
+                **(function_def.metadata or {}),
+                **frame_plan.callable_task_metadata(closure_size),
+            }
             func_val.type_hint = frame_plan.function_type_hint(closure_size)
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
@@ -900,17 +911,6 @@ class FunctionVisitorMixin(_MixinBase):
                 MoltOp(
                     kind="GEN_LOCALS_REGISTER",
                     args=[poll_func_name, names_tuple, offsets_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            closure_size_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[closure_size], result=closure_size_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_closure_size__", closure_size_val],
                     result=MoltValue("none"),
                 )
             )
@@ -941,6 +941,7 @@ class FunctionVisitorMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(node))
         )
+        cell_vars = self._callable_cell_vars(node)
 
         func_hint = f"Func:{func_symbol}"
         if has_closure:
@@ -970,6 +971,7 @@ class FunctionVisitorMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=func_symbol,
             name="<lambda>",
             qualname=qualname,
             trace_lineno=node.lineno,
@@ -987,6 +989,8 @@ class FunctionVisitorMixin(_MixinBase):
                 varnames=varnames,
                 free_vars=free_vars,
             ),
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
 
         func_params, parameter_bindings = self._function_transport_params(
@@ -1044,14 +1048,9 @@ class FunctionVisitorMixin(_MixinBase):
                 if hint is not None:
                     self._emit_guard_type(self.locals[arg.arg], hint)
         if not self.is_async():
-            self._prebox_scope_cell_vars(
-                body=[ast.Expr(value=node.body)], arg_nodes=arg_nodes
-            )
-            # Box ALL scope-assigned variables into cell lists.
-            # Cell lists provide correct refcount management (inc_ref/
-            # dec_ref in molt_store_index). The TIR backend's Memory SSA
-            # rewrite converts cell store_index/index to store_var/load_var
-            # for SSA phi visibility when optimization is enabled.
+            self._prebox_scope_cell_vars(cell_vars)
+            # Lambda lowering retains its existing all-local boxing policy,
+            # now backed by the runtime's dedicated closure-cell primitive.
             for name in sorted(self.scope_assigned):
                 self._box_local(name)
             for arg in arg_nodes:

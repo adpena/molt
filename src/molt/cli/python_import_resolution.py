@@ -82,6 +82,10 @@ class PythonSourceSnapshot:
                 f"cannot parse local Python source {self.path}: {exc}"
             ) from exc
 
+    @cached_property
+    def ast_digest(self) -> str:
+        return python_ast_digest(self.tree)
+
 
 @dataclass(frozen=True, slots=True)
 class LocalPythonImportRequest:
@@ -220,7 +224,28 @@ class LocalPythonModuleResolver:
             # search path, while a regular module cannot have children.
             locations = self.search_roots
             parents: list[LocalPythonModuleSource] = []
-            for index, part in enumerate(parts):
+            start_index = 0
+            for prefix_length in range(len(parts) - 1, 0, -1):
+                prefix = ".".join(parts[:prefix_length])
+                if prefix not in self._resolution_cache:
+                    continue
+                cached_prefix = self._resolution_cache[prefix]
+                if cached_prefix is None:
+                    self._resolution_cache[module] = None
+                    return None
+                if not cached_prefix.package_locations:
+                    self._resolution_cache[module] = None
+                    return None
+                locations = cached_prefix.package_locations
+                parents = list(cached_prefix.parent_initializers)
+                if cached_prefix.source is not None:
+                    parents.append(cached_prefix.source)
+                start_index = prefix_length
+                break
+
+            for index in range(start_index, len(parts)):
+                part = parts[index]
+                prefix = ".".join(parts[: index + 1])
                 namespace_locations: list[Path] = []
                 regular_source: Path | None = None
                 regular_package_location: Path | None = None
@@ -246,40 +271,38 @@ class LocalPythonModuleResolver:
 
                 final_segment = index == len(parts) - 1
                 if regular_source is not None:
+                    module_source = LocalPythonModuleSource(prefix, regular_source)
+                    result = _ResolvedLocalModule(
+                        source=module_source,
+                        package_locations=(
+                            (regular_package_location,)
+                            if regular_package_location is not None
+                            else ()
+                        ),
+                        parent_initializers=tuple(parents),
+                    )
+                    self._resolution_cache[prefix] = result
                     if final_segment:
-                        result = _ResolvedLocalModule(
-                            source=LocalPythonModuleSource(module, regular_source),
-                            package_locations=(
-                                (regular_package_location,)
-                                if regular_package_location is not None
-                                else ()
-                            ),
-                            parent_initializers=tuple(parents),
-                        )
-                        self._resolution_cache[module] = result
                         return result
                     if not regular_is_package or regular_package_location is None:
                         self._resolution_cache[module] = None
                         return None
-                    parents.append(
-                        LocalPythonModuleSource(
-                            ".".join(parts[: index + 1]), regular_source
-                        )
-                    )
+                    parents.append(module_source)
                     locations = (regular_package_location,)
                     continue
 
                 if not namespace_locations:
+                    self._resolution_cache[prefix] = None
                     self._resolution_cache[module] = None
                     return None
                 locations = tuple(namespace_locations)
+                result = _ResolvedLocalModule(
+                    source=None,
+                    package_locations=locations,
+                    parent_initializers=tuple(parents),
+                )
+                self._resolution_cache[prefix] = result
                 if final_segment:
-                    result = _ResolvedLocalModule(
-                        source=None,
-                        package_locations=locations,
-                        parent_initializers=tuple(parents),
-                    )
-                    self._resolution_cache[module] = result
                     return result
 
             raise AssertionError("non-empty module resolution exhausted no segment")
@@ -452,7 +475,7 @@ def analyze_local_imports(
         if binding_index is None:
             binding_index = analyze_python_bindings(
                 tree,
-                source_digest=python_ast_digest(tree),
+                source_digest=source.ast_digest,
                 policy=replace(
                     binding_policy,
                     module_name=module,

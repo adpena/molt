@@ -43,6 +43,12 @@ def constructor_error(label, constructor):
 # deletion-to-None, and no accidental __dict__ publication.
 attribute = AttributeError("attribute", name="missing", obj="owner")
 fields("attribute", attribute, ("name", "obj"))
+for zero in (0.0, -0.0, 0.0):
+    set_field("attribute-zero", attribute, "name", zero)
+    set_field("attribute-zero", attribute, "obj", zero)
+    set_field("attribute-zero", attribute, "__notes__", zero)
+    fields("attribute-zero", attribute, ("name", "obj", "__notes__"))
+delete_field("attribute-zero", attribute, "__notes__")
 set_field("attribute", attribute, "name", "changed")
 set_field("attribute", attribute, "obj", "changed-owner")
 delete_field("attribute", attribute, "name")

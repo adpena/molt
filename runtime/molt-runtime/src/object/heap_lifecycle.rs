@@ -406,6 +406,13 @@ pub(crate) unsafe fn visit_owned_values(
     visit: &mut dyn FnMut(u64),
 ) {
     unsafe { visit_common_class_edge(ptr, visit) };
+    // Activation custody is common sidecar ownership, independent of the task's
+    // payload shape or generator/coroutine kind. Preserve alias multiplicity.
+    for bits in super::aux_header::object_frame_context_bits(ptr) {
+        if bits != 0 {
+            visit_bits(bits, visit);
+        }
+    }
     let type_id = unsafe { object_type_id(ptr) };
     let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in traversal");
     unsafe {
@@ -503,6 +510,7 @@ pub(crate) unsafe fn visit_owned_values(
                 visit_bits(super::layout::function_code_bits(ptr), visit);
                 visit_bits(super::layout::function_closure_bits(ptr), visit);
                 visit_bits(super::layout::function_globals_bits(ptr), visit);
+                visit_bits(super::layout::function_builtins_bits(ptr), visit);
             }
             HeapLifecycleHandler::BoundMethod => {
                 visit_bits(super::layout::bound_method_func_bits(ptr), visit);
@@ -579,14 +587,12 @@ pub(crate) unsafe fn visit_owned_values(
                 visit_bits(super::layout::union_type_args_bits(ptr), visit);
             }
             HeapLifecycleHandler::TracebackPayload => {
-                visit_bits(
-                    crate::builtins::frames::traceback_payload_code_bits(ptr),
-                    visit,
-                );
-                visit_bits(
-                    crate::builtins::frames::traceback_payload_next_bits(ptr),
-                    visit,
-                );
+                for slot in crate::builtins::frames::TRACEBACK_PAYLOAD_OWNED_SLOTS {
+                    visit_bits(
+                        *(ptr.add(slot * std::mem::size_of::<u64>()) as *const u64),
+                        visit,
+                    );
+                }
             }
             HeapLifecycleHandler::ContextManager => {
                 visit_bits(crate::builtins::context::context_payload_bits(ptr), visit);
@@ -607,12 +613,15 @@ pub(crate) unsafe fn visit_owned_values(
                 visit_bits(super::instance_dict_bits(ptr), visit);
             }
             HeapLifecycleHandler::Code => {
-                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16] {
+                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20] {
                     visit_bits(
                         *(ptr.add(slot * std::mem::size_of::<u64>()) as *const u64),
                         visit,
                     );
                 }
+            }
+            HeapLifecycleHandler::Cell => {
+                visit_bits(super::cells::cell_value_bits(ptr), visit);
             }
             // Shape/custom handlers have their own typed projection authorities.
             HeapLifecycleHandler::Generator => {
@@ -657,13 +666,17 @@ pub(crate) unsafe fn visit_owned_values(
                     |bits| visit_bits(bits, visit),
                 );
             }
+            HeapLifecycleHandler::Buffer2d => {
+                super::buffer2d::visit_owned_values(super::buffer2d_ptr(ptr), |bits| {
+                    visit_bits(bits, visit)
+                });
+            }
             // Object subshapes are visited after the common inline/dict projection.
             // The typed hook owns poll/operator/itertools/functools/types payloads.
             // Weakref is handled with Object above.
             HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::Bytearray
-            | HeapLifecycleHandler::Buffer2d
             | HeapLifecycleHandler::Intarray
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex
@@ -735,6 +748,8 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) -> (usize, usize) {
     let mut count = 0usize;
+    // The shared traversal includes both sidecar namespace owners, including
+    // two sink entries when globals and builtins alias the same dictionary.
     unsafe {
         visit_owned_edges(py, ptr, &mut |_| {
             count = count
@@ -884,6 +899,9 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
     let type_id = unsafe { object_type_id(ptr) };
     let handler = heap_lifecycle_handler(type_id).expect("unknown heap kind in clear");
     unsafe {
+        // Clear the complete context before payload detachment can release owners.
+        // Terminal detach uses this same path; a preceding GC clear is idempotent.
+        detach(sink, super::aux_header::object_take_frame_context_bits(ptr));
         if handler == HeapLifecycleHandler::Weakref {
             super::weakref::weakref_object_detach_owned_edges(py, ptr, sink);
         }
@@ -995,7 +1013,11 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 }
             }
             HeapLifecycleHandler::Function => {
-                detach(sink, detach_slots(ptr, [2, 3, 4, 6, 7, 9]));
+                detach(sink, detach_slots(ptr, [2, 3, 4, 6, 7, 9, 11]));
+            }
+            HeapLifecycleHandler::Cell => {
+                let old = super::cells::cell_detach_value(ptr, crate::missing_bits(py));
+                sink.detach_if_heap(old);
             }
             HeapLifecycleHandler::Module => {
                 detach(sink, detach_slots(ptr, [0, 1]));
@@ -1223,13 +1245,17 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                     sink.detach(MoltObject::from_ptr(cached).bits());
                 }
             }
-            HeapLifecycleHandler::TracebackPayload => detach_slots(ptr, [0, 4], sink),
+            HeapLifecycleHandler::TracebackPayload => detach_slots(
+                ptr,
+                crate::builtins::frames::TRACEBACK_PAYLOAD_OWNED_SLOTS,
+                sink,
+            ),
             HeapLifecycleHandler::ContextManager => {
                 let payload = ptr.add(2 * std::mem::size_of::<*const ()>()) as *mut u64;
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));
             }
             HeapLifecycleHandler::Code => {
-                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16], sink)
+                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20], sink)
             }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {
@@ -1246,6 +1272,11 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                     sink.detach_if_heap(bits)
                 });
             }
+            HeapLifecycleHandler::Buffer2d => {
+                super::buffer2d::detach_owned_values(super::buffer2d_ptr(ptr), |bits| {
+                    sink.detach_if_heap(bits)
+                });
+            }
             // Mutable handlers were fully emptied by clear_cycle_edges_with_sink.
             HeapLifecycleHandler::Object
             | HeapLifecycleHandler::Weakref
@@ -1259,6 +1290,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::WeakContainerState
             | HeapLifecycleHandler::Iter
             | HeapLifecycleHandler::Function
+            | HeapLifecycleHandler::Cell
             | HeapLifecycleHandler::Module
             | HeapLifecycleHandler::Type
             | HeapLifecycleHandler::Dataclass
@@ -1268,7 +1300,6 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             | HeapLifecycleHandler::String
             | HeapLifecycleHandler::Bytes
             | HeapLifecycleHandler::Bytearray
-            | HeapLifecycleHandler::Buffer2d
             | HeapLifecycleHandler::Intarray
             | HeapLifecycleHandler::Bigint
             | HeapLifecycleHandler::Complex

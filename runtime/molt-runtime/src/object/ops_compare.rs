@@ -515,11 +515,154 @@ fn comparison_bool_to_value(outcome: CompareBoolOutcome) -> CompareValueOutcome 
     }
 }
 
+#[derive(Clone, Copy)]
+enum CellCompareOp {
+    Eq,
+    Ne,
+    Order(CompareOp),
+}
+
+/// Compare the retained contents of two cells. The extracted values remain
+/// owned across arbitrary rich-comparison callbacks even if either callback
+/// clears or replaces its source cell.
+fn compare_cell_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op: CellCompareOp,
+) -> Option<CompareValueOutcome> {
+    let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
+        return None;
+    };
+    if unsafe { object_type_id(lhs_ptr) } != TYPE_ID_CELL
+        || unsafe { object_type_id(rhs_ptr) } != TYPE_ID_CELL
+    {
+        return None;
+    }
+    let Some(_guard) = ComparisonRecursionGuard::enter(_py) else {
+        return Some(CompareValueOutcome::Error);
+    };
+    let left = unsafe { crate::object::cells::cell_value_bits(lhs_ptr) };
+    let right = unsafe { crate::object::cells::cell_value_bits(rhs_ptr) };
+    inc_ref_bits(_py, left);
+    inc_ref_bits(_py, right);
+    let left_missing = crate::builtins::methods::is_missing_bits(_py, left);
+    let right_missing = crate::builtins::methods::is_missing_bits(_py, right);
+    let outcome = if left_missing || right_missing {
+        let ordering = match (left_missing, right_missing) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => unreachable!(),
+        };
+        CompareValueOutcome::Value(
+            MoltObject::from_bool(match op {
+                CellCompareOp::Eq => ordering == Ordering::Equal,
+                CellCompareOp::Ne => ordering != Ordering::Equal,
+                CellCompareOp::Order(op) => ordering_matches(ordering, op),
+            })
+            .bits(),
+        )
+    } else {
+        match op {
+            CellCompareOp::Eq => {
+                compare_object_eq_value(_py, obj_from_bits(left), obj_from_bits(right))
+            }
+            CellCompareOp::Ne => {
+                compare_object_ne_value(_py, obj_from_bits(left), obj_from_bits(right))
+            }
+            CellCompareOp::Order(op) => {
+                compare_object_value_for_op(_py, obj_from_bits(left), obj_from_bits(right), op)
+            }
+        }
+    };
+    dec_ref_bits(_py, right);
+    dec_ref_bits(_py, left);
+    Some(outcome)
+}
+
+/// Direct `cell` comparison methods admit only a physical cell receiver and
+/// return `NotImplemented` for any non-cell peer so the generic rich-compare
+/// dispatcher can try reflection or its normal fallback without re-entering
+/// the same cell method.
+fn cell_compare_method(
+    _py: &PyToken<'_>,
+    lhs_bits: u64,
+    rhs_bits: u64,
+    method: &str,
+    op: CellCompareOp,
+) -> u64 {
+    let lhs = obj_from_bits(lhs_bits);
+    if crate::object::cells::cell_ptr_from_bits(lhs_bits).is_none() {
+        let received = type_name(_py, lhs);
+        return raise_exception::<_>(
+            _py,
+            "TypeError",
+            &format!("descriptor '{method}' requires a 'cell' object but received a '{received}'"),
+        );
+    }
+    if crate::object::cells::cell_ptr_from_bits(rhs_bits).is_none() {
+        return crate::builtins::methods::not_implemented_bits(_py);
+    }
+    match compare_cell_value(_py, lhs, obj_from_bits(rhs_bits), op) {
+        Some(CompareValueOutcome::Value(bits)) => bits,
+        Some(CompareValueOutcome::NotComparable) | None => {
+            crate::builtins::methods::not_implemented_bits(_py)
+        }
+        Some(CompareValueOutcome::Error) => MoltObject::none().bits(),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_eq(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__eq__", CellCompareOp::Eq)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_ne(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__ne__", CellCompareOp::Ne)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_lt(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__lt__", CellCompareOp::Order(CompareOp::Lt))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_le(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__le__", CellCompareOp::Order(CompareOp::Le))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_gt(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__gt__", CellCompareOp::Order(CompareOp::Gt))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_cell_ge(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        cell_compare_method(_py, a, b, "__ge__", CellCompareOp::Order(CompareOp::Ge))
+    })
+}
+
 fn compare_object_eq_value(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
 ) -> CompareValueOutcome {
+    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, CellCompareOp::Eq) {
+        return outcome;
+    }
     match compare_builtin_eq_bool(_py, lhs, rhs) {
         CompareBoolOutcome::NotComparable => {}
         outcome => return comparison_bool_to_value(outcome),
@@ -533,6 +676,39 @@ fn compare_object_eq_value(
                 CompareValueOutcome::Error
             } else {
                 CompareValueOutcome::Value(MoltObject::from_bool(equal).bits())
+            }
+        }
+        outcome => outcome,
+    }
+}
+
+fn compare_object_ne_value(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> CompareValueOutcome {
+    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, CellCompareOp::Ne) {
+        return outcome;
+    }
+    match compare_builtin_eq_bool(_py, lhs, rhs) {
+        CompareBoolOutcome::True => {
+            return CompareValueOutcome::Value(MoltObject::from_bool(false).bits());
+        }
+        CompareBoolOutcome::False => {
+            return CompareValueOutcome::Value(MoltObject::from_bool(true).bits());
+        }
+        CompareBoolOutcome::Error => return CompareValueOutcome::Error,
+        CompareBoolOutcome::NotComparable => {}
+    }
+    let name = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
+    match rich_compare_value(_py, lhs, rhs, name, name) {
+        CompareValueOutcome::NotComparable => {
+            let previous = exception_last_bits_noinc(_py);
+            let equal = obj_eq(_py, lhs, rhs);
+            if exception_pending(_py) && exception_last_bits_noinc(_py) != previous {
+                CompareValueOutcome::Error
+            } else {
+                CompareValueOutcome::Value(MoltObject::from_bool(!equal).bits())
             }
         }
         outcome => outcome,
@@ -744,6 +920,10 @@ fn compare_builtin_value(
         unsafe {
             let ltype = object_type_id(lhs_ptr);
             let rtype = object_type_id(rhs_ptr);
+            if ltype == TYPE_ID_CELL && rtype == TYPE_ID_CELL {
+                return compare_cell_value(_py, lhs, rhs, CellCompareOp::Order(op))
+                    .expect("validated cell operands");
+            }
             if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
                 || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
             {
@@ -948,26 +1128,10 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let lhs = obj_from_bits(a);
-        let rhs = obj_from_bits(b);
-        match compare_builtin_eq_bool(_py, lhs, rhs) {
-            CompareBoolOutcome::True => return MoltObject::from_bool(false).bits(),
-            CompareBoolOutcome::False => return MoltObject::from_bool(true).bits(),
-            CompareBoolOutcome::Error => return MoltObject::none().bits(),
-            CompareBoolOutcome::NotComparable => {}
-        }
-        let name = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
-        match rich_compare_value(_py, lhs, rhs, name, name) {
+        match compare_object_ne_value(_py, obj_from_bits(a), obj_from_bits(b)) {
             CompareValueOutcome::Value(bits) => bits,
-            CompareValueOutcome::Error => MoltObject::none().bits(),
-            CompareValueOutcome::NotComparable => {
-                let previous = exception_last_bits_noinc(_py);
-                let equal = obj_eq(_py, lhs, rhs);
-                if exception_pending(_py) && exception_last_bits_noinc(_py) != previous {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_bool(!equal).bits()
-                }
+            CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
+                MoltObject::none().bits()
             }
         }
     })

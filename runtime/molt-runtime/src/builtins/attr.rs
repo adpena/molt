@@ -835,7 +835,10 @@ pub(crate) fn debug_last_attr_name() -> Option<String> {
         .flatten()
 }
 
-pub(crate) fn attr_error(_py: &PyToken<'_>, type_label: impl AsRef<str>, attr_name: &str) -> i64 {
+// Attribute APIs transport boxed values on both success and failure. Keep this
+// result unsigned so raise_exception selects boxed None, never the raw signed
+// status sentinel used by numeric/status APIs.
+pub(crate) fn attr_error(_py: &PyToken<'_>, type_label: impl AsRef<str>, attr_name: &str) -> u64 {
     crate::gil_assert();
     let msg = format!(
         "'{}' object has no attribute '{}'",
@@ -868,7 +871,7 @@ pub(crate) fn setattr_no_attr_error_with_obj(
     type_label: impl AsRef<str>,
     attr_name: &str,
     obj_bits: u64,
-) -> i64 {
+) -> u64 {
     crate::gil_assert();
     let msg = format!(
         "'{}' object has no attribute '{}'{}",
@@ -915,7 +918,7 @@ pub(crate) fn attr_error_with_obj(
     type_label: impl AsRef<str>,
     attr_name: &str,
     obj_bits: u64,
-) -> i64 {
+) -> u64 {
     crate::gil_assert();
     let msg = format!(
         "'{}' object has no attribute '{}'",
@@ -932,7 +935,7 @@ pub(crate) fn attr_error_with_obj(
     res
 }
 
-pub(crate) fn attr_error_with_message(_py: &PyToken<'_>, msg: &str) -> i64 {
+pub(crate) fn attr_error_with_message(_py: &PyToken<'_>, msg: &str) -> u64 {
     crate::gil_assert();
     raise_exception(_py, "AttributeError", msg)
 }
@@ -942,7 +945,7 @@ pub(crate) fn attr_error_with_obj_message(
     msg: &str,
     attr_name: &str,
     obj_bits: u64,
-) -> i64 {
+) -> u64 {
     crate::gil_assert();
     let res = raise_exception(_py, "AttributeError", msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());

@@ -14,7 +14,6 @@ fn stdlib_partition_reference_kind(kind: &str) -> bool {
             | "alloc_task"
             | "generator_create"
             | "coro_create"
-            | "fn_ptr_code_set"
             | "asyncgen_locals_register"
             | "gen_locals_register"
             | "task_new"

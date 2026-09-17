@@ -1,5 +1,105 @@
 use super::*;
 
+fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, returns_value: bool) {
+    let mut backend = SimpleBackend::new();
+    let mut signature = backend.module.make_signature();
+    for _ in 0..arity {
+        signature
+            .params
+            .push(cranelift_codegen::ir::AbiParam::new(types::I64));
+    }
+    if returns_value {
+        signature
+            .returns
+            .push(cranelift_codegen::ir::AbiParam::new(types::I64));
+    }
+    backend
+        .module
+        .declare_function(target, cranelift_module::Linkage::Import, &signature)
+        .expect("predeclare exact target ABI");
+    let args = match kind {
+        "gen_locals_register" | "asyncgen_locals_register" => {
+            vec!["metadata".to_string(), "metadata".to_string()]
+        }
+        _ => Vec::new(),
+    };
+    let caller = FunctionIR {
+        name: "caller".to_string(),
+        params: Vec::new(),
+        ops: vec![
+            OpIR {
+                kind: "const_none".to_string(),
+                out: Some("metadata".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: kind.to_string(),
+                s_value: Some(target.to_string()),
+                args: Some(args),
+                out: matches!(kind, "func_new" | "call_async").then(|| "result".to_string()),
+                value: (kind == "func_new").then_some(arity as i64),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            },
+        ],
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        execution_context: Default::default(),
+    };
+    let defined = BTreeSet::from(["caller".to_string()]);
+    backend.compile_func(
+        caller,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &defined,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::from([("caller".to_string(), 0), (target.to_string(), arity)]),
+        &BTreeMap::from([
+            ("caller".to_string(), false),
+            (target.to_string(), returns_value),
+        ]),
+    );
+}
+
+#[test]
+fn metadata_pointer_declarations_use_exact_target_abi() {
+    for kind in ["gen_locals_register", "asyncgen_locals_register"] {
+        for (target, arity, returns_value) in [
+            ("opaque_body", 1, true),
+            ("ordinary_poll", 0, true),
+            ("ordinary_poll", 2, true),
+            ("void_poll", 0, false),
+        ] {
+            compile_exact_target_reference(kind, target, arity, returns_value);
+        }
+    }
+}
+
+#[test]
+fn ordinary_poll_named_callable_keeps_its_declared_arity() {
+    for arity in [0, 2] {
+        compile_exact_target_reference("func_new", "ordinary_poll", arity, true);
+    }
+}
+
+#[test]
+fn call_async_accepts_exact_opaque_task_target() {
+    compile_exact_target_reference("call_async", "opaque_body", 1, true);
+}
+
+#[test]
+#[should_panic(expected = "must have ABI (i64) -> i64")]
+fn call_async_rejects_poll_spelling_with_wrong_signature() {
+    compile_exact_target_reference("call_async", "ordinary_poll", 0, true);
+}
+
 fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
     let mut backend = SimpleBackend::new();
     let mut predeclared_sig = backend.module.make_signature();
@@ -28,9 +128,7 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &defined_functions,
-        &defined_functions,
         &BTreeSet::new(),
-        false,
         &BTreeSet::new(),
         &function_arities,
         &function_has_ret,
@@ -82,38 +180,6 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
             OpIR {
                 kind: "ret".to_string(),
                 args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::default()
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: Default::default(),
-    });
-}
-
-#[test]
-#[should_panic(expected = "fn_ptr_code_set declaration mismatch for `helper`")]
-fn fn_ptr_code_set_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                kind: "const_none".to_string(),
-                out: Some("code".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "fn_ptr_code_set".to_string(),
-                s_value: Some("helper".to_string()),
-                args: Some(vec!["code".to_string()]),
-                value: Some(1),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret_void".to_string(),
                 ..OpIR::default()
             },
         ],

@@ -16,7 +16,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    _MOLT_CLOSURE_PARAM,
     GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -66,11 +65,11 @@ class AsyncGenVisitorMixin(_MixinBase):
             func_name = node.name
             qualname = self._qualname_for_def(func_name)
             func_symbol = self._function_symbol(func_name)
+            poll_func_name = f"{func_symbol}_poll"
             if not self._has_typing_overload_decorator(node):
-                self._record_func_default_specs(func_symbol, node.args)
+                self._record_func_default_specs(poll_func_name, node.args)
             else:
                 return None
-            poll_func_name = f"{func_symbol}_poll"
             prev_func = self.current_func_name
             has_return = self._function_contains_return(node)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
@@ -90,6 +89,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(node))
             )
+            cell_vars = self._callable_cell_vars(node)
 
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.ASYNC_GENERATOR,
@@ -112,6 +112,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             prev_first_param = self.current_method_first_param
             self.start_function(
                 poll_func_name,
+                stateful_frame_plan=frame_plan,
                 python_first_arg=self._python_first_positional_arg(node.args),
                 params=["self"],
                 compiler_params={"self"},
@@ -146,6 +147,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
+            self._prebox_scope_cell_vars(cell_vars)
             if self.type_hint_policy == "check":
                 for arg in arg_nodes:
                     hint = self.explicit_type_hints.get(arg.arg)
@@ -212,22 +214,21 @@ class AsyncGenVisitorMixin(_MixinBase):
 
             func_hint = frame_plan.function_type_hint(closure_size)
             func_val = MoltValue(self.next_var(), type_hint=func_hint)
-            if has_closure and closure_val is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW_CLOSURE",
-                        args=[func_symbol, len(params), closure_val],
-                        result=func_val,
-                    )
-                )
-            else:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW",
-                        args=[func_symbol, len(params)],
-                        result=func_val,
-                    )
-                )
+            function_def = MoltOp(
+                kind=(
+                    "FUNC_NEW_CLOSURE"
+                    if has_closure and closure_val is not None
+                    else "FUNC_NEW"
+                ),
+                args=(
+                    [poll_func_name, len(params), closure_val]
+                    if has_closure and closure_val is not None
+                    else [poll_func_name, len(params)]
+                ),
+                result=func_val,
+                metadata=frame_plan.callable_task_metadata(closure_size),
+            )
+            self.emit(function_def)
             func_spill = None
             if self.in_generator and signature_contains_yield(
                 decorators=node.decorator_list,
@@ -245,6 +246,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             )
             self._emit_function_metadata(
                 func_val,
+                code_symbol=poll_func_name,
                 name=func_name,
                 qualname=qualname,
                 trace_lineno=node.lineno,
@@ -256,14 +258,15 @@ class AsyncGenVisitorMixin(_MixinBase):
                 default_exprs=node.args.defaults,
                 kw_default_exprs=node.args.kw_defaults,
                 docstring=ast.get_docstring(node, clean=False),
-                is_async_generator=True,
-                poll_fn_symbol=poll_func_name,
+                execution_kind=FunctionKind.ASYNC_GENERATOR,
                 varnames=varnames,
                 code_names=self._collect_code_names_for_body(
                     node.body,
                     varnames=varnames,
                     free_vars=free_vars,
                 ),
+                freevars=free_vars,
+                cellvars=cell_vars,
             )
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
@@ -288,81 +291,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
             self._emit_function_annotate(func_val, node)
-            closure_size_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[closure_size], result=closure_size_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_closure_size__", closure_size_val],
-                    result=MoltValue("none"),
-                )
-            )
             self._publish_definition_binding(func_name, func_val)
-
-            prev_func = self.current_func_name
-            prev_state = self._capture_function_state()
-            self.current_class = None
-            func_params, parameter_bindings = self._function_transport_params(
-                params,
-                has_closure=has_closure,
-            )
-            self.start_function(
-                func_symbol,
-                python_first_arg=self._python_first_positional_arg(node.args),
-                params=func_params,
-                type_facts_name=func_name,
-            )
-            self._inherit_free_var_import_resolution(free_vars, prev_state)
-            self.parameter_bindings = parameter_bindings
-            if has_closure:
-                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                    _MOLT_CLOSURE_PARAM, type_hint="tuple"
-                )
-            for idx, arg in enumerate(arg_nodes):
-                hint = None
-                if idx == 0 and arg.arg == "self":
-                    hint = None
-                if self._hints_enabled():
-                    explicit = self.explicit_type_hints.get(arg.arg)
-                    if explicit is None:
-                        explicit = self._annotation_to_hint(arg.annotation)
-                        if explicit is not None:
-                            self.explicit_type_hints[arg.arg] = explicit
-                    if explicit is not None:
-                        hint = explicit
-                    elif hint is None:
-                        hint = "Any"
-                value = self._parameter_value(
-                    arg.arg,
-                    type_hint=hint or "Unknown",
-                )
-                if hint is not None:
-                    self._apply_hint_to_value(arg.arg, value, hint)
-                self.locals[arg.arg] = value
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(self.locals[arg.arg], hint)
-            args = [self.locals[arg.arg] for arg in arg_nodes]
-            if has_closure:
-                args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
-            gen_val = MoltValue(self.next_var(), type_hint="generator")
-            self.emit(
-                MoltOp(
-                    kind="ALLOC_TASK",
-                    args=[poll_func_name, closure_size] + args,
-                    result=gen_val,
-                    metadata={"task_kind": "generator"},
-                )
-            )
-            res = MoltValue(self.next_var(), type_hint="async_generator")
-            self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-            self._emit_normal_return_terminator(res)
-            self.resume_function(prev_func)
-            self._restore_function_state(prev_state)
             if node.decorator_list:
                 decorated = func_val
                 for deco in reversed(node.decorator_list):
@@ -385,18 +314,18 @@ class AsyncGenVisitorMixin(_MixinBase):
             self._record_source_app_callable(
                 func_name,
                 kind=FunctionKind.ASYNC_GENERATOR,
-                symbol=func_symbol,
+                symbol=poll_func_name,
                 decorated=bool(node.decorator_list),
             )
             return None
         func_name = node.name
         qualname = self._qualname_for_def(func_name)
         func_symbol = self._function_symbol(func_name)
+        poll_func_name = f"{func_symbol}_poll"
         if not self._has_typing_overload_decorator(node):
-            self._record_func_default_specs(func_symbol, node.args)
+            self._record_func_default_specs(poll_func_name, node.args)
         else:
             return None
-        poll_func_name = f"{func_symbol}_poll"
         prev_func = self.current_func_name
         has_return = self._function_contains_return(node)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(node.args)
@@ -415,6 +344,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(node))
         )
+        cell_vars = self._callable_cell_vars(node)
 
         # Add to globals to support calls from other scopes
         frame_plan = stateful_function_frame_plan(
@@ -438,6 +368,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         prev_first_param = self.current_method_first_param
         self.start_function(
             poll_func_name,
+            stateful_frame_plan=frame_plan,
             python_first_arg=self._python_first_positional_arg(node.args),
             params=["self"],
             compiler_params={"self"},
@@ -471,6 +402,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
+        self._prebox_scope_cell_vars(cell_vars)
         if self.type_hint_policy == "check":
             for arg in arg_nodes:
                 hint = self.explicit_type_hints.get(arg.arg)
@@ -505,20 +437,21 @@ class AsyncGenVisitorMixin(_MixinBase):
         self.current_method_first_param = prev_first_param
         func_hint = frame_plan.function_type_hint(closure_size)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
-        if has_closure and closure_val is not None:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW_CLOSURE",
-                    args=[func_symbol, len(params), closure_val],
-                    result=func_val,
-                )
-            )
-        else:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW", args=[func_symbol, len(params)], result=func_val
-                )
-            )
+        function_def = MoltOp(
+            kind=(
+                "FUNC_NEW_CLOSURE"
+                if has_closure and closure_val is not None
+                else "FUNC_NEW"
+            ),
+            args=(
+                [poll_func_name, len(params), closure_val]
+                if has_closure and closure_val is not None
+                else [poll_func_name, len(params)]
+            ),
+            result=func_val,
+            metadata=frame_plan.callable_task_metadata(closure_size),
+        )
+        self.emit(function_def)
         func_spill = None
         if self.in_generator and signature_contains_yield(
             decorators=node.decorator_list,
@@ -536,6 +469,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=poll_func_name,
             name=func_name,
             qualname=qualname,
             trace_lineno=node.lineno,
@@ -547,88 +481,20 @@ class AsyncGenVisitorMixin(_MixinBase):
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node, clean=False),
-            is_coroutine=True,
+            execution_kind=FunctionKind.ASYNC,
             varnames=varnames,
             code_names=self._collect_code_names_for_body(
                 node.body,
                 varnames=varnames,
                 free_vars=free_vars,
             ),
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
         self._emit_function_annotate(func_val, node)
-        closure_size_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[closure_size], result=closure_size_val))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[func_val, "__molt_closure_size__", closure_size_val],
-                result=MoltValue("none"),
-            )
-        )
         self._publish_definition_binding(func_name, func_val)
-
-        prev_func = self.current_func_name
-        prev_state = self._capture_function_state()
-        self.current_class = None
-        func_params, parameter_bindings = self._function_transport_params(
-            params,
-            has_closure=has_closure,
-        )
-        self.start_function(
-            func_symbol,
-            python_first_arg=self._python_first_positional_arg(node.args),
-            params=func_params,
-            type_facts_name=func_name,
-        )
-        self._inherit_free_var_import_resolution(free_vars, prev_state)
-        self.parameter_bindings = parameter_bindings
-        if has_closure:
-            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                _MOLT_CLOSURE_PARAM, type_hint="tuple"
-            )
-        for idx, arg in enumerate(arg_nodes):
-            hint = None
-            if idx == 0 and arg.arg == "self":
-                hint = None
-            if self._hints_enabled():
-                explicit = self.explicit_type_hints.get(arg.arg)
-                if explicit is None:
-                    explicit = self._annotation_to_hint(arg.annotation)
-                    if explicit is not None:
-                        self.explicit_type_hints[arg.arg] = explicit
-                if explicit is not None:
-                    hint = explicit
-                elif hint is None:
-                    hint = "Any"
-            value = self._parameter_value(
-                arg.arg,
-                type_hint=hint or "Unknown",
-            )
-            if hint is not None:
-                self._apply_hint_to_value(arg.arg, value, hint)
-            self.locals[arg.arg] = value
-        if self.type_hint_policy == "check":
-            for arg in arg_nodes:
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is not None:
-                    self._emit_guard_type(self.locals[arg.arg], hint)
-        args = [self.locals[arg.arg] for arg in arg_nodes]
-        if has_closure:
-            args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
-        res = MoltValue(self.next_var(), type_hint="Future")
-        self.emit(
-            MoltOp(
-                kind="ALLOC_TASK",
-                args=[poll_func_name, closure_size] + args,
-                result=res,
-                metadata={"task_kind": frame_plan.task_kind},
-            )
-        )
-        self._emit_normal_return_terminator(res)
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
         if node.decorator_list:
             decorated = func_val
             for deco in reversed(node.decorator_list):
@@ -649,7 +515,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         self._record_source_app_callable(
             func_name,
             kind=FunctionKind.ASYNC,
-            symbol=func_symbol,
+            symbol=poll_func_name,
             decorated=bool(node.decorator_list),
         )
         return None
@@ -830,6 +696,7 @@ class AsyncGenVisitorMixin(_MixinBase):
                 Diagnostic.CONTROL_FLOW,
                 "async for is only supported in async functions",
             )
+        self._prepare_exact_class_loop_entry(node.body)
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
         )
@@ -1449,7 +1316,10 @@ class AsyncGenVisitorMixin(_MixinBase):
         return res
 
     def is_async(self) -> bool:
-        return self.current_func_name.endswith("_poll")
+        return (
+            self.funcs_map[self.current_func_name].get("stateful_frame_plan")
+            is not None
+        )
 
     def is_async_context(self) -> bool:
         return self.async_context
@@ -1795,8 +1665,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             else:
                 default_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-            res_cell = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[default_val], result=res_cell))
+            res_cell = self._emit_cell_new(default_val)
             self.emit(MoltOp(kind="IF", args=[done], result=MoltValue("none")))
             if not has_default:
                 stop_val = self._emit_exception_new("StopAsyncIteration", "")
@@ -1806,17 +1675,9 @@ class AsyncGenVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             val = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell, zero, val],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(res_cell, val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
-            return res
+            return self._emit_cell_get(res_cell)
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         awaitable = MoltValue(self.next_var(), type_hint="Future")
@@ -1828,10 +1689,7 @@ class AsyncGenVisitorMixin(_MixinBase):
         else:
             default_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
-        res_cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[default_val], result=res_cell))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        res_cell = self._emit_cell_new(default_val)
         cell_slot: int | None = None
         if self.is_async():
             cell_slot = self._new_async_internal_slot()
@@ -1919,7 +1777,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="IF", args=[is_none_after], result=MoltValue("none")))
         if cell_slot is not None:
-            res_cell_after = MoltValue(self.next_var(), type_hint="list")
+            res_cell_after = MoltValue(self.next_var(), type_hint="cell")
             self.emit(
                 MoltOp(
                     kind="LOAD_CLOSURE",
@@ -1927,29 +1785,15 @@ class AsyncGenVisitorMixin(_MixinBase):
                     result=res_cell_after,
                 )
             )
-            zero_after = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_after))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell_after, zero_after, awaited_val],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(res_cell_after, awaited_val)
         else:
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[res_cell, zero, awaited_val],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(res_cell, awaited_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         if cell_slot is not None:
-            res_cell_final = MoltValue(self.next_var(), type_hint="list")
+            res_cell_final = MoltValue(self.next_var(), type_hint="cell")
             self.emit(
                 MoltOp(
                     kind="LOAD_CLOSURE",
@@ -1957,24 +1801,15 @@ class AsyncGenVisitorMixin(_MixinBase):
                     result=res_cell_final,
                 )
             )
-            zero_final = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero_final))
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(kind="INDEX", args=[res_cell_final, zero_final], result=res)
-            )
+            res = self._emit_cell_get(res_cell_final)
         else:
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="INDEX", args=[res_cell, zero], result=res))
+            res = self._emit_cell_get(res_cell)
         return res
 
     def _emit_awaitable_transform(self, awaitable: MoltValue) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["__await__"], result=name_val))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[awaitable], result=cell))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        cell = self._emit_cell_new(awaitable)
         is_native = MoltValue(self.next_var(), type_hint="bool")
         self.emit(
             MoltOp(kind="IS_NATIVE_AWAITABLE", args=[awaitable], result=is_native)
@@ -1995,17 +1830,9 @@ class AsyncGenVisitorMixin(_MixinBase):
             MoltOp(kind="GETATTR_NAME", args=[awaitable, name_val], result=method)
         )
         awaited = self._emit_call_bound_or_func(method, [])
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, zero, awaited],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(cell, awaited)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        final_val = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=final_val))
-        return final_val
+        return self._emit_cell_get(cell)
 
     def _emit_await_value(
         self, awaitable: MoltValue, *, raise_pending: bool = True

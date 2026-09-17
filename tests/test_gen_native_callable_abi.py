@@ -9,6 +9,11 @@ from types import ModuleType
 
 import pytest
 
+from molt.native_callable_exports import (
+    NativeCallableExportError,
+    normalize_native_callable_export,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -44,9 +49,19 @@ def test_python_and_rust_projections_cover_every_registry_row() -> None:
     javascript = gen.OUT_JAVASCRIPT.read_text(encoding="utf-8")
 
     assert generated.NATIVE_CALLABLE_ABIS == tuple(abi.token for abi in schema.abis)
+    assert generated.native_callable_python_export_abi_choices() == ", ".join(
+        abi.token for abi in schema.abis if abi.python_callable
+    )
     for abi in schema.abis:
         assert generated.native_callable_fixed_arity(abi.token) == abi.fixed_arity
         assert generated.native_callable_uses_callargs(abi.token) is abi.uses_callargs
+        assert (
+            generated.native_callable_is_python_export(abi.token) is abi.python_callable
+        )
+        assert (
+            generated.native_callable_requires_explicit_export_arity(abi.token)
+            is abi.requires_explicit_export_arity
+        )
         assert (
             generated.native_callable_requires_direct_symbol_binding(abi.token)
             is abi.requires_direct_symbol_binding
@@ -68,6 +83,8 @@ def test_python_and_rust_projections_cover_every_registry_row() -> None:
             "None" if abi.fixed_arity is None else f"Some({abi.fixed_arity})"
         )
         assert f"Self::{abi.rust_variant} => {expected_arity}," in rust
+    assert "pub const fn is_python_export(self) -> bool" in rust
+    assert "pub const fn requires_explicit_export_arity(self) -> bool" in rust
 
 
 def test_schema_rejects_identity_arity_and_machine_signature_drift(
@@ -122,11 +139,34 @@ def test_schema_rejects_identity_arity_and_machine_signature_drift(
     with pytest.raises(gen.SchemaError, match="signatures and arity must match"):
         gen.load_schema(valid_but_wrong)
 
+    missing_public_classification = tmp_path / "missing_public_classification.toml"
+    missing_public_classification.write_text(
+        source.replace("python_callable = true\n", "", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match="missing=\\['python_callable'\\]"):
+        gen.load_schema(missing_public_classification)
+
+    invalid_public_classification = tmp_path / "invalid_public_classification.toml"
+    invalid_public_classification.write_text(
+        source.replace("python_callable = true", 'python_callable = "yes"', 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match="python_callable must be boolean"):
+        gen.load_schema(invalid_public_classification)
+
 
 def test_consumers_delegate_abi_classification_to_generated_projections() -> None:
-    frontend = (ROOT / "src/molt/frontend/visitors/call_module_dispatch.py").read_text(
-        encoding="utf-8"
+    frontend_sources = tuple(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "src/molt/frontend/visitors/calls.py",
+            "src/molt/frontend/visitors/call_module_dispatch.py",
+            "src/molt/frontend/visitors/call_dispatch_named.py",
+            "src/molt/frontend/visitors/call_dispatch_attribute.py",
+        )
     )
+    backend_wrappers = (ROOT / "src/molt/cli/backend_ir.py").read_text(encoding="utf-8")
     simple_ir = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
     wasm_imports = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs"
@@ -144,9 +184,14 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
     ).read_text(encoding="utf-8")
     browser_embed = (ROOT / "wasm/browser_embed.js").read_text(encoding="utf-8")
 
-    assert "native_callable_requires_direct_symbol_binding" in frontend
-    assert "NATIVE_CALLABLE_ABI_FORWARD_F32_V1" not in frontend
-    assert "NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1" not in frontend
+    for frontend in frontend_sources:
+        assert "native_callable_requires_direct_symbol_binding" not in frontend
+        assert "native_callable_fixed_arity" not in frontend
+        assert "native_callable_uses_callargs" not in frontend
+        assert "NATIVE_CALLABLE_ABI_FORWARD_F32_V1" not in frontend
+        assert "NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1" not in frontend
+    assert "native_callable_uses_callargs" in backend_wrappers
+    assert "emit_materialized_function_metadata" in backend_wrappers
     assert "parsed_abi.fixed_arity()" in simple_ir
     assert "parsed.requires_direct_symbol_binding()" in wasm_imports
     assert ".wasm_machine_signature(arity)" in wasm_imports
@@ -163,3 +208,35 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
         assert "NativeCallableAbi::ForwardF32V1" not in consumer
         assert "NativeCallableAbi::PyinitModuleV1" not in consumer
         assert "NativeCallableAbi::ObjectCallargsV1" not in consumer
+
+
+def test_public_callable_export_rejects_missing_variadic_arity() -> None:
+    with pytest.raises(
+        NativeCallableExportError,
+        match="direct_symbol ABI 'molt.object_call_v1' requires explicit arity",
+    ):
+        normalize_native_callable_export(
+            {
+                "module": "nativepkg",
+                "name": "run",
+                "binding": "direct_symbol",
+                "abi": "molt.object_call_v1",
+                "symbol": "molt_nativepkg_run",
+            }
+        )
+
+
+def test_public_callable_export_rejects_bootstrap_pyinit_abi() -> None:
+    with pytest.raises(
+        NativeCallableExportError,
+        match="abi 'molt.pyinit_module_v1' is internal",
+    ):
+        normalize_native_callable_export(
+            {
+                "module": "nativepkg",
+                "name": "run",
+                "binding": "direct_symbol",
+                "abi": "molt.pyinit_module_v1",
+                "symbol": "PyInit_nativepkg",
+            }
+        )

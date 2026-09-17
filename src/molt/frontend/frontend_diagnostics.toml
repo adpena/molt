@@ -66,10 +66,3 @@ code = "MOLT-FE009"
 title = "frontend capability is not implemented"
 tier = "bridge"
 impact = "high"
-
-[[diagnostic]]
-name = "call_defaults"
-code = "MOLT-FE010"
-title = "dynamic call defaults require explicit arguments"
-tier = "bridge"
-impact = "medium"

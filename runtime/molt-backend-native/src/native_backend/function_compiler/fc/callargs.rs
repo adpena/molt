@@ -64,9 +64,6 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
     };
     match op.kind.as_str() {
         "callargs_new" => {
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
             let zero = builder.ins().iconst(types::I64, 0);
             let local_callee = import_func_ref(
                 &mut *module,
@@ -79,7 +76,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             );
             let call = builder.ins().call(local_callee, &[zero, zero]);
             let res = builder.inst_results(call)[0];
-            def_var_named(&mut *builder, vars, out_name, res);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "callargs_push_pos" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

@@ -2,7 +2,7 @@
 
 Move-only extraction from frontend/__init__.py. This lowering authority owns
 cross-consumer expression-list evaluation, primitive bool/compare/containment
-emission, int-array iterable adaptation, molt_buffer call parsing, any/all
+emission, int-array iterable adaptation, any/all
 genexpr shape checks, and bound/function call normalization.
 """
 
@@ -126,18 +126,6 @@ class ExpressionPrimitivesMixin(_MixinBase):
         raise FrontendRejection(
             Diagnostic.SYNTAX_FORM, "Comparison operator not supported"
         )
-
-    def _parse_molt_buffer_call(
-        self, node: ast.Call, name: str
-    ) -> list[ast.expr] | None:
-        if (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "molt_buffer"
-            and node.func.attr == name
-        ):
-            return node.args
-        return None
 
     def _can_inline_any_all_genexpr(self, node: ast.GeneratorExp) -> bool:
         return (

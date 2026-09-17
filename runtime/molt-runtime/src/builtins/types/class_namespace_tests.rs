@@ -53,7 +53,7 @@ fn class_namespace_cell_publishes_actual_copied_dictionary() {
         let key = attr_name_bits_from_bytes(_py, b"injected").unwrap();
         let prepared = alloc_dict_with_pairs(_py, &[key, MoltObject::from_int(1).bits()]);
         let prepared_bits = MoltObject::from_ptr(prepared).bits();
-        let cell = alloc_list(_py, &[prepared_bits]);
+        let cell = crate::object::cells::alloc_cell(_py, prepared_bits);
         let cell_bits = MoltObject::from_ptr(cell).bits();
         let class = alloc_class_obj(_py, name);
         assert!(!prepared.is_null() && !cell.is_null() && !class.is_null());
@@ -63,10 +63,7 @@ fn class_namespace_cell_publishes_actual_copied_dictionary() {
             dict_set_in_place(_py, copied, key, MoltObject::from_int(2).bits());
             dict_set_in_place(_py, copied, cell_key, cell_bits);
             assert!(class_finalize_namespace_metadata(_py, class, name));
-            assert_eq!(
-                &*snapshot(_py, cell, "namespace cell snapshot").unwrap(),
-                &[copied_bits]
-            );
+            assert_eq!(crate::object::cells::cell_value_bits(cell), copied_bits);
             assert_eq!(dict_get_in_place(_py, copied, cell_key), None);
             dict_set_in_place(_py, prepared, key, MoltObject::from_int(3).bits());
             assert_eq!(
@@ -74,8 +71,7 @@ fn class_namespace_cell_publishes_actual_copied_dictionary() {
                 Some(MoltObject::from_int(2).bits())
             );
             dict_set_in_place(_py, copied, key, MoltObject::from_int(4).bits());
-            let capture = snapshot(_py, cell, "namespace cell snapshot").unwrap();
-            let captured = capture[0];
+            let captured = crate::object::cells::cell_value_bits(cell);
             assert_eq!(
                 dict_get_in_place(_py, obj_from_bits(captured).as_ptr().unwrap(), key),
                 Some(MoltObject::from_int(4).bits())

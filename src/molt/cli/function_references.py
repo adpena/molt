@@ -17,7 +17,6 @@ FUNCTION_REFERENCE_OP_KINDS: frozenset[str] = frozenset(
         "alloc_task",
         "generator_create",
         "coro_create",
-        "fn_ptr_code_set",
         "asyncgen_locals_register",
         "gen_locals_register",
         "task_new",

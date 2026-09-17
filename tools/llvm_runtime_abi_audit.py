@@ -1,45 +1,46 @@
 #!/usr/bin/env python3
 """Verify LLVM runtime import ABI authority for preserved-Copy runtime calls.
 
-`MOLT_RUNTIME_CALLABLE_SYMBOLS` is an active-profile availability set, not an
-ABI manifest. The LLVM generic preserved-op fallback may call `molt_<kind>` only
-when `runtime_imports/abi_facts.rs` owns an explicit `(symbol, parameter ABI,
-return ABI)` fact.
+`MOLT_RUNTIME_CALLABLE_SYMBOLS` is availability, not representation authority.
+Generic direct/preserved calls require normalized runtime_boxed_call_specs:
+object-value operands and an owned object-value or void result. Integer machine
+carriers never prove this contract. Fixed and residual dedicated declarations
+are independently checked against native Rust export shapes.
 
 This audit derives the generic preserved runtime surface from the frontend wire
 vocabulary and the generated TIR mapper:
 
-* `serialization.py` emits JSON wire `kind` strings.
+* the serialization handler cluster emits JSON wire `kind` strings.
 * `op_kinds_generated.rs::kind_to_opcode_table` maps first-class TIR kinds.
 * emitted-but-unmapped kinds become preserved `Copy{_original_kind}` values.
 * if a `runtime/molt-runtime*/src/**/*.rs` leaf exports `molt_<kind>`, LLVM's generic
   fallback can see it through the runtime-callable availability set.
 
-Every boxed/i64 or void export in that surface must be owned by either the
-fixed runtime import table or the residual conservative import table; non-boxed
-C returns are explicitly fail-closed. Every ABI fact must also match the actual
-Rust export parameter ABI and return ABI, because the LLVM fallback declaration
-is derived from that fact.
+Only kinds not claimed by dedicated preserved handlers or vector reductions
+reach the generic path. Their semantics come from the same normalized manifest
+projection used to generate LLVM's table, never a second symbol allowlist.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import re
 import sys
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+for source_root in (ROOT / "src", ROOT / "tools"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
-SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
 RUNTIME_IMPORT_ABI_FACTS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
 )
@@ -52,12 +53,6 @@ ABI_I64_RETURNS = {"u64", "i64"}
 ABI_I32_RETURNS = {"u32", "i32"}
 ABI_VOID_RETURNS = {"", "()", "void"}
 ABI_I64_PARAMS = {"u64", "i64"}
-
-# The generic preserved-runtime fallback may only use boxed/i64 or void ABI
-# exports. Non-boxed returns must be owned by dedicated lowering arms; this
-# allowlist stays empty unless a future dedicated fail-closed exception is
-# explicitly proven.
-ALLOWED_NON_BOXED_RETURNS: set[tuple[str, int, str]] = set()
 
 
 def runtime_src_roots(root: Path = ROOT) -> tuple[Path, ...]:
@@ -140,8 +135,8 @@ class AuditResult:
     mismatched: tuple[AbiIssue, ...]
     duplicate_facts: tuple[DuplicateAbiFact, ...]
     classified_fact_issues: tuple[ClassifiedFactIssue, ...]
-    unexpected_non_boxed: tuple[RuntimeSignature, ...]
-    allowed_non_boxed: tuple[RuntimeSignature, ...]
+    boxed_fact_issues: tuple[ClassifiedFactIssue, ...]
+    unresolved_frontend: tuple[str, ...]
 
     @property
     def ok(self) -> bool:
@@ -150,25 +145,51 @@ class AuditResult:
             or self.mismatched
             or self.duplicate_facts
             or self.classified_fact_issues
-            or self.unexpected_non_boxed
+            or self.boxed_fact_issues
+            or self.unresolved_frontend
         )
 
 
-def frontend_wire_kinds(path: Path = SERIALIZATION_PY) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    kinds: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
-            continue
-        for key, value in zip(node.keys, node.values):
-            if (
-                isinstance(key, ast.Constant)
-                and key.value == "kind"
-                and isinstance(value, ast.Constant)
-                and isinstance(value.value, str)
-            ):
-                kinds.add(value.value)
-    return kinds
+@lru_cache(maxsize=1)
+def runtime_boxed_abi_facts() -> dict[tuple[str, int], AbiFact]:
+    """The normalized semantic projection used by the generator and both audits."""
+    from wasm_abi_gen.manifest import load_manifest, runtime_boxed_call_specs
+
+    return {
+        (row["runtime_name"], row["arity"]): AbiFact(
+            row["runtime_name"],
+            row["arity"],
+            "I64" if row["result"] == "i64" else "Void",
+            ("I64",) * row["arity"],
+        )
+        for row in runtime_boxed_call_specs(load_manifest())
+    }
+
+
+@lru_cache(maxsize=1)
+def boxed_runtime_export_issues() -> tuple[ClassifiedFactIssue, ...]:
+    """Validate boxed signatures using the generator's complete export scan.
+
+    That scan owns runtime dependency leaves and conditional export variants;
+    the native pointer/custom declaration audit remains separate below.
+    """
+    from wasm_abi_gen.manifest import generator_runtime_export_signature_rows
+
+    issues: list[ClassifiedFactIssue] = []
+    exports: dict[str, list[RuntimeSignature]] = {}
+    for symbol, params, result in generator_runtime_export_signature_rows():
+        exports.setdefault(symbol, []).append(
+            RuntimeSignature(
+                symbol, len(params), result, "<normalized-runtime-export>", "", params
+            )
+        )
+    for key, fact in runtime_boxed_abi_facts().items():
+        candidates = exports.get(fact.symbol, [])
+        if not candidates:
+            issues.extend(validate_classified_facts({}, {key: fact}))
+        for export in candidates:
+            issues.extend(validate_classified_facts({fact.symbol: export}, {key: fact}))
+    return tuple(sorted(issues))
 
 
 def mapped_tir_kinds(path: Path = OP_KINDS_GENERATED_RS) -> set[str]:
@@ -324,9 +345,11 @@ def runtime_import_abi_facts(
     conservative_path: Path = RUNTIME_IMPORT_ABI_FACTS_RS,
     fixed_path: Path = RUNTIME_IMPORT_FIXED_RS,
     constants_path: Path = RUNTIME_IMPORT_ABI_RS,
+    *,
+    include_fixed: bool = True,
 ) -> tuple[dict[tuple[str, int], AbiFact], tuple[DuplicateAbiFact, ...]]:
     conservative_text = conservative_path.read_text(encoding="utf-8")
-    fixed_text = fixed_path.read_text(encoding="utf-8")
+    fixed_text = fixed_path.read_text(encoding="utf-8") if include_fixed else ""
     constants = runtime_import_signature_constants(constants_path)
     fixed_param_constants = fixed_runtime_param_abi_constants(fixed_text)
     facts: dict[tuple[str, int], AbiFact] = {}
@@ -519,49 +542,66 @@ def validate_classified_facts(
 
 
 def run_audit(root: Path = ROOT) -> AuditResult:
-    serialization = root / SERIALIZATION_PY.relative_to(ROOT)
+    # Import lazily: the op-kind audit consumes our semantic reader but owns the
+    # source extractors for frontend emissions and dedicated handler routing.
+    from tools import audit_op_kinds
+
     op_kinds = root / OP_KINDS_GENERATED_RS.relative_to(ROOT)
     conservative_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
     fixed_imports = root / RUNTIME_IMPORT_FIXED_RS.relative_to(ROOT)
     runtime_import_abi = root / RUNTIME_IMPORT_ABI_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
-
-    preserved_kinds = frontend_wire_kinds(serialization) - mapped_tir_kinds(op_kinds)
+    frontend = audit_op_kinds.extract_frontend_kinds(root=root)
+    dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=root)
+    dedicated |= audit_op_kinds.extract_vec_reduction_ops(
+        root / audit_op_kinds.LLVM_VEC_REDUCTIONS_RS.relative_to(ROOT)
+    )
+    preserved_kinds = frontend.all - mapped_tir_kinds(op_kinds) - dedicated
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)
     facts, duplicates = runtime_import_abi_facts(
         conservative_imports, fixed_imports, runtime_import_abi
     )
-    classified_fact_issues = validate_classified_facts(exports, facts, aliases)
+    boxed = runtime_boxed_abi_facts()
+    classified_fact_issues = list(validate_classified_facts(exports, facts, aliases))
+
+    # Fixed declarations retain stronger attributes; matching generated/fixed
+    # facts are therefore legitimate. Conservative mirrors must be deleted.
+    conservative, _ = runtime_import_abi_facts(
+        conservative_imports, fixed_imports, runtime_import_abi, include_fixed=False
+    )
+    duplicates = list(duplicates)
+    for key, fact in conservative.items():
+        if key in boxed:
+            duplicates.append(
+                DuplicateAbiFact(
+                    fact.symbol, fact.arity, "conservative", "generated-boxed"
+                )
+            )
+    for key in facts.keys() & boxed.keys():
+        if facts[key] != boxed[key]:
+            fact = facts[key]
+            classified_fact_issues.append(
+                ClassifiedFactIssue(
+                    "boxed-declaration-mismatch",
+                    fact.symbol,
+                    fact.arity,
+                    str(fact.arity),
+                    boxed[key].return_abi,
+                    str(boxed[key]),
+                    str(fact),
+                    "<native-declaration>",
+                )
+            )
 
     missing: list[AbiIssue] = []
     mismatched: list[AbiIssue] = []
-    unexpected_non_boxed: list[RuntimeSignature] = []
-    allowed_non_boxed: list[RuntimeSignature] = []
-
     for kind in sorted(preserved_kinds):
         symbol = f"molt_{kind}"
         export = exports.get(symbol)
         if export is None:
             continue
-        expected = rust_return_to_abi(export.rust_return, aliases)
-        export = RuntimeSignature(
-            export.symbol,
-            export.arity,
-            export.rust_return,
-            export.source,
-            kind,
-            export.rust_params,
-        )
-        if expected is None:
-            key = (export.symbol, export.arity, export.rust_return)
-            if key in ALLOWED_NON_BOXED_RETURNS:
-                allowed_non_boxed.append(export)
-            else:
-                unexpected_non_boxed.append(export)
-            continue
-
-        actual = facts.get((symbol, export.arity))
+        actual = boxed.get((symbol, export.arity))
         if actual is None:
             missing.append(
                 AbiIssue(
@@ -569,29 +609,37 @@ def run_audit(root: Path = ROOT) -> AuditResult:
                     export.arity,
                     kind,
                     export.rust_return,
-                    expected,
+                    "<positional-boxed-contract>",
                     "<missing>",
                 )
             )
-        elif actual.return_abi != expected:
+            continue
+        expected = rust_return_to_abi(export.rust_return, aliases)
+        params = tuple(
+            rust_param_to_abi(param, aliases) for param in export.rust_params
+        )
+        if actual.return_abi != expected or actual.param_abis != params:
             mismatched.append(
                 AbiIssue(
                     symbol,
                     export.arity,
                     kind,
                     export.rust_return,
-                    expected,
-                    actual.return_abi,
+                    str((params, expected)),
+                    str((actual.param_abis, actual.return_abi)),
                 )
             )
 
     return AuditResult(
         missing=tuple(sorted(missing)),
         mismatched=tuple(sorted(mismatched)),
-        duplicate_facts=duplicates,
-        classified_fact_issues=classified_fact_issues,
-        unexpected_non_boxed=tuple(sorted(unexpected_non_boxed)),
-        allowed_non_boxed=tuple(sorted(allowed_non_boxed)),
+        duplicate_facts=tuple(sorted(duplicates)),
+        classified_fact_issues=tuple(sorted(classified_fact_issues)),
+        boxed_fact_issues=boxed_runtime_export_issues(),
+        unresolved_frontend=tuple(
+            f"{path}:{line}:{expression}"
+            for path, line, expression in frontend.unresolved
+        ),
     )
 
 
@@ -629,18 +677,16 @@ def format_report(result: AuditResult) -> str:
             f"expected={issue.expected} actual={issue.actual} source={issue.source}"
             for issue in result.classified_fact_issues
         )
-    if result.unexpected_non_boxed:
-        lines.append("unexpected non-boxed preserved runtime returns:")
+    if result.boxed_fact_issues:
+        lines.append("boxed contracts that do not match runtime exports:")
         lines.extend(
-            f"  - {sig.symbol}/{sig.arity} kind={sig.kind} rust_return={sig.rust_return} source={sig.source}"
-            for sig in result.unexpected_non_boxed
+            f"  - {issue.problem}: {issue.symbol}/{issue.classified_arity} "
+            f"expected={issue.expected} actual={issue.actual}"
+            for issue in result.boxed_fact_issues
         )
-    if result.allowed_non_boxed:
-        lines.append("allowed fail-closed non-boxed returns:")
-        lines.extend(
-            f"  - {sig.symbol}/{sig.arity} kind={sig.kind} rust_return={sig.rust_return}"
-            for sig in result.allowed_non_boxed
-        )
+    if result.unresolved_frontend:
+        lines.append("unresolved frontend kind emissions:")
+        lines.extend(f"  - {site}" for site in result.unresolved_frontend)
     return "\n".join(lines)
 
 

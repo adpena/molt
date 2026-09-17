@@ -31,30 +31,6 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
     def _try_emit_named_builtin_iter_call(
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any:
-        if func_id == "range":
-            if node.keywords:
-                for keyword in node.keywords:
-                    val = self.visit(keyword.value)
-                    if val is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported range keyword",
-                        )
-                return self._emit_type_error_value(
-                    "range() takes no keyword arguments", "range"
-                )
-            range_args = self._parse_range_call(node)
-            if range_args is None:
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee, True)
-            start, stop, step, _lowerable = range_args
-            res = MoltValue(self.next_var(), type_hint="range")
-            self.emit(MoltOp(kind="RANGE_NEW", args=[start, stop, step], result=res))
-            return res
         if func_id == "enumerate":
             if len(node.args) > 2:
                 raise FrontendRejection(
@@ -332,6 +308,7 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                 )
                 self._emit_function_metadata(
                     callee,
+                    code_symbol=None,
                     name="iter",
                     qualname="iter",
                     posonly_params=["callable", "sentinel"],
@@ -343,6 +320,8 @@ class CallNamedBuiltinIterDispatchMixin(_MixinBase):
                     kw_default_exprs=[],
                     docstring=None,
                     module_override="builtins",
+                    freevars=(),
+                    cellvars=(),
                 )
                 res = MoltValue(self.next_var(), type_hint="iter")
                 self.emit(

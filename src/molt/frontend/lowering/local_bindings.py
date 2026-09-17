@@ -10,13 +10,23 @@ from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Sequence, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    TypeVar,
+)
 
+from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
     AsyncFrameSlotRole,
     ComprehensionBinding,
+    ExactClassFact,
     MoltOp,
     MoltValue,
     ScratchCell,
@@ -27,6 +37,7 @@ from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.generator_state import (
     FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS,
 )
+from molt.frontend.sema.funcmeta import parse_stateful_function_type_hint
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -66,6 +77,71 @@ def _mask_binding_projection(
 
 
 class LocalBindingMixin(_MixinBase):
+    def _advance_exact_class_token(self) -> int:
+        self._next_exact_class_token += 1
+        self.exact_class_token = self._next_exact_class_token
+        return self.exact_class_token
+
+    def _expire_exact_class_facts(self) -> None:
+        self._advance_exact_class_token()
+        self.exact_locals.clear()
+
+    def _stamp_exact_class(self, value: MoltValue, class_id: str) -> MoltValue:
+        value.exact_class = class_id
+        value.exact_class_token = self.exact_class_token
+        return value
+
+    def _publish_exact_local(self, name: str, class_id: str) -> None:
+        self.exact_locals[name] = ExactClassFact(class_id, self.exact_class_token)
+
+    def _exact_class_for_name(self, name: str) -> str | None:
+        fact = self.exact_locals.get(name)
+        if fact is None or fact.token != self.exact_class_token:
+            return None
+        return fact.class_id
+
+    def _snapshot_live_exact_bindings(self) -> dict[str, ExactClassFact]:
+        return {
+            name: fact
+            for name, fact in self.exact_locals.items()
+            if fact.token == self.exact_class_token
+        }
+
+    def _mask_exact_binding_projection(self, names: set[str]) -> Callable[[], None]:
+        entry_token = self.exact_class_token
+        saved = {
+            name: fact
+            for name in names
+            if (fact := self.exact_locals.pop(name, None)) is not None
+            and fact.token == entry_token
+        }
+
+        def restore() -> None:
+            for name in names:
+                self.exact_locals.pop(name, None)
+            if self.exact_class_token == entry_token:
+                self.exact_locals.update(saved)
+
+        return restore
+
+    def _emit_cell_new(self, value: MoltValue) -> MoltValue:
+        return self._emit_runtime_call("molt_cell_new", [value], type_hint="cell")
+
+    def _emit_cell_get(self, cell: MoltValue, *, type_hint: str = "Any") -> MoltValue:
+        return self._emit_runtime_call("molt_cell_get", [cell], type_hint=type_hint)
+
+    def _emit_cell_set(self, cell: MoltValue, value: MoltValue) -> None:
+        self._emit_runtime_call("molt_cell_set", [cell, value], type_hint="None")
+
+    def _specializable_builtin_name(self, node: ast.AST) -> str | None:
+        """Shared identity/lifetime authorization for call and fused consumers."""
+        if not isinstance(node, ast.Call) or self.python_binding_index is None:
+            return None
+        fact = self.python_binding_index.call_fact(node)
+        if fact is None or not fact.callee_elision_safe:
+            return None
+        return fact.exact_builtin_name()
+
     def _expression_has_invalidated_binding(self, node: ast.expr) -> bool:
         """Query source-order authority before cached-name/call specialization."""
         while isinstance(node, ast.Attribute):
@@ -224,8 +300,7 @@ class LocalBindingMixin(_MixinBase):
             else:
                 init = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=init))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[init], result=cell))
+        cell = self._emit_cell_new(init)
         self.boxed_locals[name] = cell
         if init.type_hint:
             self.boxed_local_hints[name] = init.type_hint
@@ -267,8 +342,7 @@ class LocalBindingMixin(_MixinBase):
                 async_slot=slot,
                 type_hint=type_hint,
             )
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[initial], result=cell))
+        cell = self._emit_cell_new(initial)
         return ScratchCell(value=cell, async_slot=None, type_hint=type_hint)
 
     def _load_scratch_cell(self, cell: ScratchCell) -> MoltValue:
@@ -284,10 +358,7 @@ class LocalBindingMixin(_MixinBase):
             return result
         if cell.value is None:
             raise AssertionError("synchronous scratch cell has no storage value")
-        index = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=index))
-        self.emit(MoltOp(kind="INDEX", args=[cell.value, index], result=result))
-        return result
+        return self._emit_cell_get(cell.value, type_hint=cell.type_hint)
 
     def _consume_scratch_cell(self, cell: ScratchCell) -> MoltValue:
         """Retain the loaded value before releasing compiler-owned storage."""
@@ -309,15 +380,7 @@ class LocalBindingMixin(_MixinBase):
             return
         if cell.value is None:
             raise AssertionError("synchronous scratch cell has no storage value")
-        index = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=index))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell.value, index, value],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(cell.value, value)
 
     def _load_boxed_cell(self, name: str) -> MoltValue | None:
         binding = self.comprehension_bindings.get(name)
@@ -335,7 +398,7 @@ class LocalBindingMixin(_MixinBase):
             return cell
         if name not in self.async_locals:
             return cell
-        slot_val = MoltValue(self.next_var(), type_hint="list")
+        slot_val = MoltValue(self.next_var(), type_hint="cell")
         self.emit(
             MoltOp(
                 kind="LOAD_CLOSURE",
@@ -350,7 +413,7 @@ class LocalBindingMixin(_MixinBase):
         candidates: Iterable[str],
         *,
         value_captures: dict[str, MoltValue] | None = None,
-        extra_cells: Sequence[MoltValue] = (),
+        cell_captures: Mapping[str, MoltValue] | None = None,
         class_scope: _ClassNsScope | None = None,
     ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]:
         """Capture one lexical owner for every function-like source region.
@@ -362,6 +425,7 @@ class LocalBindingMixin(_MixinBase):
         """
         names = set(candidates)
         values = value_captures or {}
+        captured_cells = cell_captures or {}
         scope = class_scope or (
             self._class_ns_stack[-1] if self._class_ns_stack else None
         )
@@ -386,17 +450,24 @@ class LocalBindingMixin(_MixinBase):
                     free_vars = sorted({*free_vars, "__class__"})
             else:
                 free_vars = self._free_vars_in_outer_scope(names)
-            free_vars = sorted(set(free_vars) | (names & values.keys()))
-            if not free_vars and not extra_cells:
+            free_vars = sorted(
+                set(free_vars)
+                | (names & values.keys())
+                | (names & captured_cells.keys())
+            )
+            if not free_vars:
                 return [], {}, None, False
             self.unbound_check_names.update(free_vars)
             hints: dict[str, str] = {}
             cells: list[MoltValue] = []
             for name in free_vars:
+                if name in captured_cells:
+                    cells.append(captured_cells[name])
+                    hints[name] = "Any"
+                    continue
                 if name in values:
                     value = values[name]
-                    cell = MoltValue(self.next_var(), type_hint="list")
-                    self.emit(MoltOp(kind="LIST_NEW", args=[value], result=cell))
+                    cell = self._emit_cell_new(value)
                     cells.append(cell)
                     hints[name] = value.type_hint or "Any"
                     continue
@@ -413,7 +484,6 @@ class LocalBindingMixin(_MixinBase):
                     hint = value.type_hint
                 hints[name] = hint or "Any"
                 cells.extend(self._closure_cells_for([name]))
-            cells.extend(extra_cells)
             closure = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=cells, result=closure))
             return free_vars, hints, closure, True
@@ -457,22 +527,10 @@ class LocalBindingMixin(_MixinBase):
             names.append(varkw)
         return names
 
-    def _prebox_scope_cell_vars(
-        self, *, body: Sequence[ast.stmt], arg_nodes: Sequence[ast.arg]
-    ) -> None:
-        local_candidates = set(self.scope_assigned)
-        local_candidates.update(arg.arg for arg in arg_nodes)
-        local_candidates -= self.global_decls
-        local_candidates -= self.nonlocal_decls
-        if not local_candidates:
-            return
-        for name in sorted(self._collect_scope_cell_vars(body, local_candidates)):
+    def _prebox_scope_cell_vars(self, cell_vars: Sequence[str]) -> None:
+        for name in cell_vars:
             self._box_local(name)
             self.closure_locals.add(name)
-        # Every comprehension-walrus binding leaks into this function scope,
-        # so its cell must dominate zero-trip loops and untaken branches too.
-        for name in self._collect_comp_walrus_cell_names(body):
-            self._box_local(name)
 
     def _emit_free_var_load(
         self, name: str, *, guard_unbound: bool = True
@@ -480,11 +538,8 @@ class LocalBindingMixin(_MixinBase):
         cell = self._load_free_var_cell(name)
         if cell is None:
             return None
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         hint = self.free_var_hints.get(name, "Any")
-        res = MoltValue(self.next_var(), type_hint=hint)
-        self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=res))
+        res = self._emit_cell_get(cell, type_hint=hint)
         if guard_unbound:
             self._emit_unbound_free_guard(res, name)
         return res
@@ -493,15 +548,7 @@ class LocalBindingMixin(_MixinBase):
         cell = self._load_free_var_cell(name)
         if cell is None:
             return False
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        self.emit(
-            MoltOp(
-                kind="STORE_INDEX",
-                args=[cell, zero, value],
-                result=MoltValue("none"),
-            )
-        )
+        self._emit_cell_set(cell, value)
         return True
 
     def _load_free_var_cell(self, name: str) -> MoltValue | None:
@@ -526,7 +573,7 @@ class LocalBindingMixin(_MixinBase):
             return None
         idx_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[idx], result=idx_val))
-        cell = MoltValue(self.next_var(), type_hint="list")
+        cell = MoltValue(self.next_var(), type_hint="cell")
         self.emit(MoltOp(kind="INDEX", args=[closure, idx_val], result=cell))
         return cell
 
@@ -565,73 +612,67 @@ class LocalBindingMixin(_MixinBase):
             or self.python_binding_index.module_namespace_may_be_observed(node)
         )
 
-    def _class_id_from_call(self, node: ast.Call) -> str | None:
-        if isinstance(node.func, ast.Name) and node.func.id in self.classes:
-            return node.func.id
-        return None
-
     def _builtin_exact_type_from_expr(self, value: ast.AST | None) -> str | None:
-        if isinstance(value, (ast.Dict, ast.DictComp)):
-            return "dict"
-        if isinstance(value, (ast.List, ast.ListComp)):
-            return "list"
-        if isinstance(value, (ast.Set, ast.SetComp)):
-            return "set"
-        if isinstance(value, ast.Tuple):
-            return "tuple"
-        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
-            index = self.python_binding_index
-            fact = index.expression_fact(value.func) if index is not None else None
-            if fact is None or fact.binding_invalidated or fact.binding_is_bound:
-                # A constructor spelling is not an exact-type proof when a
-                # lexical/module binding can select a user callable.
-                return None
-            func_id = value.func.id
-            if func_id in {"dict", "list", "set", "tuple"}:
-                return func_id
-            if (
-                func_id in {"globals", "locals", "vars"}
-                and not value.args
-                and not value.keywords
-            ):
-                return "dict"
-        return None
+        if not isinstance(value, ast.expr):
+            return None
+        result = (
+            self.python_binding_index.expression_result(value)
+            if self.python_binding_index is not None
+            else static_expression_result(value)
+        )
+        if result.kind == "unknown":
+            return None
+        return "None" if result.kind == "NoneType" else result.kind
 
-    def _update_exact_local(self, name: str, value: ast.AST | None) -> None:
-        builtin_exact = self._builtin_exact_type_from_expr(value)
-        if builtin_exact is not None:
-            self.exact_builtin_locals[name] = builtin_exact
+    def _update_exact_local(
+        self,
+        name: str,
+        source_expr: ast.AST | None,
+        lowered_value: MoltValue | None,
+    ) -> None:
+        """Publish only exact identity proven by lowering or a live local alias."""
+        if isinstance(source_expr, ast.Name):
+            source_class = self._exact_class_for_name(source_expr.id)
+            lowered_class = self._exact_class_for_value(lowered_value)
+            if (
+                source_class is not None
+                and lowered_class == source_class
+                and (
+                    self.current_func_name == "molt_main"
+                    or source_expr.id not in self.global_decls
+                )
+            ):
+                self._publish_exact_local(name, source_class)
+                return
             self.exact_locals.pop(name, None)
             return
-        if isinstance(value, ast.Call):
-            class_id = self._class_id_from_call(value)
-            if class_id is not None:
-                class_info = self.classes.get(class_id)
-                if (
-                    class_info
-                    and not class_info.get("dynamic")
-                    and not class_info.get("dataclass")
-                ):
-                    self.exact_locals[name] = class_id
-                    self.exact_builtin_locals.pop(name, None)
-                    return
-        if isinstance(value, ast.Name):
-            if value.id in self.exact_locals and (
-                self.current_func_name == "molt_main"
-                or value.id not in self.global_decls
-            ):
-                self.exact_locals[name] = self.exact_locals[value.id]
-                self.exact_builtin_locals.pop(name, None)
-                return
-            if value.id in self.exact_builtin_locals and (
-                self.current_func_name == "molt_main"
-                or value.id not in self.global_decls
-            ):
-                self.exact_builtin_locals[name] = self.exact_builtin_locals[value.id]
-                self.exact_locals.pop(name, None)
-                return
+        exact_class = self._exact_class_for_value(lowered_value)
+        if exact_class is not None:
+            self._publish_exact_local(name, exact_class)
+            return
         self.exact_locals.pop(name, None)
-        self.exact_builtin_locals.pop(name, None)
+
+    def _exact_class_for_value(
+        self, value: MoltValue | None, source_name: str | None = None
+    ) -> str | None:
+        """Resolve the canonical lowered fact, with named-binding recovery."""
+        if source_name is not None:
+            named_class = self._exact_class_for_name(source_name)
+            if (
+                named_class is not None
+                and value is not None
+                and value.exact_class == named_class
+                and value.exact_class_token == self.exact_class_token
+            ):
+                return named_class
+            return None
+        if (
+            value is not None
+            and value.exact_class is not None
+            and value.exact_class_token == self.exact_class_token
+        ):
+            return value.exact_class
+        return None
 
     def _propagate_func_type_hint(
         self, value_node: MoltValue, source_expr: ast.AST | None
@@ -646,23 +687,16 @@ class LocalBindingMixin(_MixinBase):
         hint = source_info.type_hint
         if not isinstance(hint, str):
             return
-        if hint.startswith(
-            (
-                "AsyncFunc:",
-                "AsyncClosureFunc:",
-                "AsyncGenFunc:",
-                "AsyncGenClosureFunc:",
-                "GenFunc:",
-                "GenClosureFunc:",
-            )
-        ):
-            symbol = hint.split(":")[1]
-            base_symbol = (
-                symbol[: -len("_poll")] if symbol.endswith("_poll") else symbol
+        stateful_hint = parse_stateful_function_type_hint(hint)
+        if stateful_hint is not None:
+            target = self.funcs_map.get(stateful_hint.poll_symbol)
+            frame_plan = (
+                target.get("stateful_frame_plan") if target is not None else None
             )
             if (
-                base_symbol in self.func_default_specs
-                or self._known_function_symbol_target(base_symbol) is not None
+                frame_plan is not None
+                and frame_plan.kind == stateful_hint.kind
+                and frame_plan.has_closure == stateful_hint.has_closure
             ):
                 value_node.type_hint = hint
             return
@@ -752,15 +786,8 @@ class LocalBindingMixin(_MixinBase):
             return self._emit_global_get(name)
         namespace = scope.ns
         if namespace is None and scope.annotation_namespace_cell is not None:
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            namespace = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[scope.annotation_namespace_cell, zero],
-                    result=namespace,
-                )
+            namespace = self._emit_cell_get(
+                scope.annotation_namespace_cell, type_hint="Any"
             )
         if namespace is not None:
             key_val = MoltValue(self.next_var(), type_hint="str")
@@ -830,18 +857,27 @@ class LocalBindingMixin(_MixinBase):
         # below so genuine locals/cells/globals still resolve.  (P0 #50.)
         class_scope = self._active_class_ns_scope(name)
         if class_scope is not None:
-            return self._class_ns_load(class_scope, name)
+            value = self._class_ns_load(class_scope, name)
+            if value is None:
+                return None
+            return MoltValue(value.name, type_hint=value.type_hint)
         if name in self.comp_shadow_locals:
             binding = self.comprehension_bindings.get(name)
             if binding is None:
-                return self.locals.get(name)
+                value = self.locals.get(name)
+                if value is None:
+                    return None
+                result = MoltValue(value.name, type_hint=value.type_hint)
+                exact_class = self._exact_class_for_name(name)
+                if exact_class is not None:
+                    self._stamp_exact_class(result, exact_class)
+                return result
             value = self._load_comprehension_slot(binding)
             if binding.is_cell:
-                index = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=index))
-                result = MoltValue(self.next_var(), type_hint=binding.type_hint)
-                self.emit(MoltOp(kind="INDEX", args=[value, index], result=result))
-                value = result
+                value = self._emit_cell_get(value, type_hint=binding.type_hint)
+            exact_class = self._exact_class_for_name(name)
+            if exact_class is not None:
+                self._stamp_exact_class(value, exact_class)
             if guard_unbound and not binding.definitely_bound:
                 self._emit_unbound_local_guard(value, name)
             return value
@@ -849,13 +885,11 @@ class LocalBindingMixin(_MixinBase):
             return self._emit_global_get(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            res = MoltValue(self.next_var())
             hint = self.boxed_local_hints.get(name)
-            if hint is not None:
-                res.type_hint = hint
-            self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
+            res = self._emit_cell_get(cell, type_hint=hint or "Any")
+            exact_class = self._exact_class_for_name(name)
+            if exact_class is not None:
+                self._stamp_exact_class(res, exact_class)
             self._copy_container_hints_for_name_load(name, res.name)
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
@@ -865,6 +899,9 @@ class LocalBindingMixin(_MixinBase):
         ):
             offset = self._async_binding_slot(name).offset
             res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
+            exact_class = self._exact_class_for_name(name)
+            if exact_class is not None:
+                self._stamp_exact_class(res, exact_class)
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
@@ -880,6 +917,7 @@ class LocalBindingMixin(_MixinBase):
             and name in self.scope_assigned
             and name not in self.boxed_locals
         ):
+            exact_class = self._exact_class_for_name(name)
             res = MoltValue(self.next_var(), type_hint=cached.type_hint)
             self.emit(
                 MoltOp(
@@ -889,11 +927,18 @@ class LocalBindingMixin(_MixinBase):
                     metadata={"var": name},
                 )
             )
+            if exact_class is not None:
+                self._stamp_exact_class(res, exact_class)
+                self._publish_exact_local(name, exact_class)
             self._copy_container_hints_for_name_load(name, res.name)
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
-        return cached
+        result = MoltValue(cached.name, type_hint=cached.type_hint)
+        exact_class = self._exact_class_for_name(name)
+        if exact_class is not None:
+            self._stamp_exact_class(result, exact_class)
+        return result
 
     def _capture_plain_local_del_boundary(
         self, name: str, value: MoltValue | None
@@ -975,8 +1020,11 @@ class LocalBindingMixin(_MixinBase):
         # `alias = local` gives the alias its own frame-owned reference in
         # CPython. Model that as a value-producing alias so TIR ownership sees a
         # distinct droppable root instead of a side-effect retain on shared bits.
+        exact_class = self._exact_class_for_value(value)
         retained = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(MoltOp(kind="BINDING_ALIAS", args=[value], result=retained))
+        if exact_class is not None:
+            self._stamp_exact_class(retained, exact_class)
         return retained
 
     def _plain_local_scope_exit_bindings(self) -> list[tuple[str, MoltValue]]:
@@ -1120,7 +1168,6 @@ class LocalBindingMixin(_MixinBase):
     def _publish_import_binding(self, name: str, value: MoltValue) -> None:
         """Publish an imported value exactly once to its Python binding owner."""
         self.exact_locals.pop(name, None)
-        self.exact_builtin_locals.pop(name, None)
         module_owned = self._binding_targets_module_namespace(name)
         if self._active_class_ns_scope(name) is not None:
             self._store_local_value(name, value)
@@ -1153,6 +1200,8 @@ class LocalBindingMixin(_MixinBase):
         emit_rebind_boundary: bool = True,
         publish_module: bool = False,
     ) -> None:
+        exact_class = self._exact_class_for_value(value)
+
         def update_locals_cache() -> None:
             self._emit_locals_cache_update(name, value)
 
@@ -1203,15 +1252,7 @@ class LocalBindingMixin(_MixinBase):
             self.unbound_check_names.discard(name)
         cell = self._load_boxed_cell(name)
         if cell is not None:
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, idx, value],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, value)
             if value.type_hint:
                 self.boxed_local_hints[name] = value.type_hint
             update_locals_cache()
@@ -1292,6 +1333,13 @@ class LocalBindingMixin(_MixinBase):
             )
         update_locals_cache()
         self._emit_plain_local_del_boundary(name, boundary_value)
+        if boundary_value is None and exact_class is not None:
+            # The generated STORE_VAR/heap effect is deliberately coarse. A
+            # first publication (or same-value publication) has displaced no
+            # callback-capable owner, so the producer fact remains valid after
+            # emission cleared the ambient cursor.
+            self._stamp_exact_class(value, exact_class)
+            self._publish_exact_local(name, exact_class)
 
     def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None:
         # Compiler bindings have a separate typed origin and never enter
@@ -1341,7 +1389,7 @@ class LocalBindingMixin(_MixinBase):
 
     def _load_comprehension_slot(self, binding: ComprehensionBinding) -> MoltValue:
         value = MoltValue(
-            self.next_var(), type_hint="list" if binding.is_cell else binding.type_hint
+            self.next_var(), type_hint="cell" if binding.is_cell else binding.type_hint
         )
         if binding.async_slot is not None:
             self.emit(
@@ -1399,8 +1447,7 @@ class LocalBindingMixin(_MixinBase):
         old_locals = {name: self.locals.get(name) for name in names}
         old_unbound = self.unbound_check_names & names
         restore_projections = (
-            _mask_binding_projection(self.exact_locals, names),
-            _mask_binding_projection(self.exact_builtin_locals, names),
+            self._mask_exact_binding_projection(names),
             _mask_binding_projection(self.boxed_local_hints, names),
             _mask_binding_projection(self.explicit_type_hints, names),
             _mask_binding_projection(self.container_elem_hints, names),
@@ -1421,8 +1468,7 @@ class LocalBindingMixin(_MixinBase):
                 value = missing
                 is_cell = name in captured
                 if is_cell:
-                    value = MoltValue(self.next_var(), type_hint="list")
-                    self.emit(MoltOp(kind="LIST_NEW", args=[missing], result=value))
+                    value = self._emit_cell_new(missing)
                 slot = (
                     self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
                     if self.is_async()
@@ -1469,15 +1515,7 @@ class LocalBindingMixin(_MixinBase):
             self._update_python_argument_zero(name, value)
             if binding.is_cell:
                 cell = self._load_comprehension_slot(binding)
-                index = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[0], result=index))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_INDEX",
-                        args=[cell, index, value],
-                        result=MoltValue("none"),
-                    )
-                )
+                self._emit_cell_set(cell, value)
             else:
                 self._store_comprehension_slot(binding, value)
             self.locals[name] = value
@@ -1486,15 +1524,7 @@ class LocalBindingMixin(_MixinBase):
         cell = self._load_boxed_cell(name)
         if cell is not None:
             self.locals[name] = value
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, idx, value],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, value)
             if value.type_hint:
                 self.boxed_local_hints[name] = value.type_hint
             return

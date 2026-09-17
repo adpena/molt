@@ -5,26 +5,24 @@ from __future__ import annotations
 from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _intrinsics import runtime_active as _runtime_active
 
-try:
+if _runtime_active():
     _MOLT_MSGPACK_PARSE_SCALAR_OBJ = _require_intrinsic(
         "molt_msgpack_parse_scalar_obj", globals()
     )
-except RuntimeError:
-    _MOLT_MSGPACK_PARSE_SCALAR_OBJ = None
-
-try:
     _MOLT_CBOR_PARSE_SCALAR_OBJ = _require_intrinsic(
         "molt_cbor_parse_scalar_obj", globals()
     )
-except RuntimeError:
+else:
+    _MOLT_MSGPACK_PARSE_SCALAR_OBJ = None
     _MOLT_CBOR_PARSE_SCALAR_OBJ = None
 
 
 def _require_msgpack_module() -> Any:
     try:
         import msgpack  # type: ignore[import-not-found]
-    except Exception as exc:  # pragma: no cover - environment dependent
+    except ImportError as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("msgpack is required for parse_msgpack fallback") from exc
     return msgpack
 
@@ -32,7 +30,7 @@ def _require_msgpack_module() -> Any:
 def _require_cbor_module() -> Any:
     try:
         import cbor2  # type: ignore[import-not-found]
-    except Exception as exc:  # pragma: no cover - environment dependent
+    except ImportError as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("cbor2 is required for parse_cbor fallback") from exc
     return cbor2
 

@@ -1128,7 +1128,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 29: passthrough preserves task_kind + container_type
+    // Test 29: passthrough preserves task metadata + container_type
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -1157,6 +1157,29 @@ mod tests {
             Some("list"),
             "container_type must be preserved"
         );
+    }
+
+    #[test]
+    fn roundtrip_func_new_preserves_typed_task_constructor_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "func_new".to_string(),
+                s_value: Some("worker_poll".into()),
+                value: Some(0),
+                out: Some("callable".into()),
+                task_kind: Some("async_generator".into()),
+                task_closure_size: Some(48),
+                ..OpIR::default()
+            },
+            op_args("ret", &["callable"]),
+        ];
+        let result = roundtrip_no_opt(ops);
+        let constructor = result
+            .iter()
+            .find(|op| op.kind == "func_new")
+            .expect("func_new must survive round-trip");
+        assert_eq!(constructor.task_kind.as_deref(), Some("async_generator"));
+        assert_eq!(constructor.task_closure_size, Some(48));
     }
 
     #[test]

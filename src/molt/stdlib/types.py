@@ -59,7 +59,6 @@ DynamicClassAttribute = type
 
 del _f, _g
 
-coroutine: object
 get_original_bases: object
 new_class: object
 prepare_class: object
@@ -109,7 +108,7 @@ __all__ = [
 # Remaining stdlib `types` gaps are tracked in STATUS/ROADMAP.
 
 
-def _bootstrap() -> None:
+def _bootstrap() -> dict:
     intrinsic = _require_intrinsic("molt_types_bootstrap")
     data = intrinsic()
     if not isinstance(data, dict):
@@ -120,7 +119,97 @@ def _bootstrap() -> None:
 
     mod = sys.modules[__name__]
     for key, val in data.items():
+        if key == "coroutine":
+            continue
         setattr(mod, key, val)
+    return data
 
 
-_bootstrap()
+_coroutine_intrinsic = _bootstrap()["coroutine"]
+
+
+class _GeneratorWrapper:
+    """Awaitable adapter for generator-like results from general callables."""
+
+    def __init__(self, gen):
+        self.__wrapped = gen
+        self.__isgen = gen.__class__ is GeneratorType
+        self.__name__ = getattr(gen, "__name__", None)
+        self.__qualname__ = getattr(gen, "__qualname__", None)
+
+    def send(self, val):
+        return self.__wrapped.send(val)
+
+    def throw(self, *args):
+        return self.__wrapped.throw(*args)
+
+    def close(self):
+        return self.__wrapped.close()
+
+    @property
+    def gi_code(self):
+        return self.__wrapped.gi_code
+
+    @property
+    def gi_frame(self):
+        return self.__wrapped.gi_frame
+
+    @property
+    def gi_running(self):
+        return self.__wrapped.gi_running
+
+    @property
+    def gi_yieldfrom(self):
+        return self.__wrapped.gi_yieldfrom
+
+    cr_code = gi_code
+    cr_frame = gi_frame
+    cr_running = gi_running
+    cr_await = gi_yieldfrom
+
+    def __next__(self):
+        return next(self.__wrapped)
+
+    def __iter__(self):
+        if self.__isgen:
+            return self.__wrapped
+        return self
+
+    __await__ = __iter__
+
+
+def coroutine(func):
+    """Convert a generator function, or adapt a general callable, to awaitable form."""
+
+    if not callable(func):
+        raise TypeError("types.coroutine() expects a callable")
+
+    if (
+        func.__class__ is FunctionType
+        and getattr(func, "__code__", None).__class__ is CodeType
+    ):
+        flags = func.__code__.co_flags
+        if flags & 0x180:
+            return func
+        if flags & 0x20:
+            return _coroutine_intrinsic(func)
+
+    import _collections_abc
+    import functools
+
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if result.__class__ is CoroutineType:
+            return result
+        if result.__class__ is GeneratorType:
+            code = getattr(result, "gi_code", None)
+            if code is not None and code.co_flags & 0x100:
+                return result
+        if isinstance(result, _collections_abc.Generator) and not isinstance(
+            result, _collections_abc.Coroutine
+        ):
+            return _GeneratorWrapper(result)
+        return result
+
+    return wrapped

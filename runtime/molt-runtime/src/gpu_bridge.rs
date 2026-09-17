@@ -132,10 +132,14 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
     name_ptr: *const u8,
     name_len: usize,
     value_bits: u64,
-) -> i64 {
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_ptr.is_null() || (name_ptr.is_null() && name_len != 0) {
-            return -1;
+            return crate::raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "invalid attribute receiver or name",
+            );
         }
         let bytes = if name_len == 0 {
             &[]
@@ -143,7 +147,7 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
             unsafe { std::slice::from_raw_parts(name_ptr, name_len) }
         };
         let Ok(name) = std::str::from_utf8(bytes) else {
-            return crate::raise_exception::<i64>(_py, "TypeError", "attribute name must be UTF-8");
+            return crate::raise_exception::<u64>(_py, "TypeError", "attribute name must be UTF-8");
         };
         unsafe {
             crate::builtins::attributes::object_setattr_raw(

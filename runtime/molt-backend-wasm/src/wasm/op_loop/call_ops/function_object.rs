@@ -1,3 +1,4 @@
+use super::super::result_sink::store_owned_result_or_release;
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -54,7 +55,6 @@ pub(super) fn emit_function_object_call_op(
         "function_closure_bits" => {
             let args = op.args.as_ref().unwrap();
             let func_bits = call_ctx.locals[&args[0]];
-            let out = call_ctx.locals[op.out.as_ref().unwrap()];
             func.instruction(&Instruction::LocalGet(func_bits));
             emit_call(
                 func,
@@ -62,13 +62,19 @@ pub(super) fn emit_function_object_call_op(
                 call_ctx.import_ids
                     [crate::wasm_abi_generated::WasmRuntimeImport::FunctionClosureBits],
             );
-            func.instruction(&Instruction::LocalSet(out));
-            func.instruction(&Instruction::LocalGet(out));
-            emit_call(
-                func,
-                call_ctx.reloc_enabled,
-                call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-            );
+            if let Some(out) = op.out.as_ref() {
+                let out = call_ctx.locals[out];
+                func.instruction(&Instruction::LocalSet(out));
+                func.instruction(&Instruction::LocalGet(out));
+                emit_call(
+                    func,
+                    call_ctx.reloc_enabled,
+                    call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+                );
+            } else {
+                // Discard the borrowed bits, not an owned object reference.
+                func.instruction(&Instruction::Drop);
+            }
             CallOpEmission::Handled
         }
         _ => CallOpEmission::NotHandled,
@@ -143,10 +149,11 @@ fn emit_function_constructor(
         func.instruction(&Instruction::LocalGet(local));
     }
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    if let Some(out) = op.out.as_ref() {
-        let res = call_ctx.locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_owned_result_or_release(
+        func,
+        op,
+        call_ctx.locals,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+    );
 }

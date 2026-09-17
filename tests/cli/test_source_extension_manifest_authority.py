@@ -1724,6 +1724,7 @@ def test_structural_receipt_rejects_missing_direct_callable_symbol(
             "binding": "direct_symbol",
             "symbol": "molt_missing_direct_callable",
             "abi": "molt.object_call_v1",
+            "arity": 1,
             "effects": [],
             "deterministic": True,
         }

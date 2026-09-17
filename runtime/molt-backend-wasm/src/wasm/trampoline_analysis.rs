@@ -23,7 +23,7 @@ pub(super) fn analyze_wasm_trampolines_with_source(
     ir: &SimpleIR,
     mut source: CallableMetadata,
 ) -> WasmTrampolineAnalysis {
-    source.merge(CallableMetadata::from_definitions(&ir.functions));
+    source.merge(CallableMetadata::from_functions(&ir.functions));
     let CallableMetadata {
         escaped_callable_targets,
         trampoline_specs: func_trampoline_spec,
@@ -68,7 +68,7 @@ pub(super) fn analyze_wasm_trampolines_with_source(
 }
 
 // The final ABI catalog must include generated partitions while source
-// callable marker facts survive removal/separation by body optimization.
+// callable constructor facts survive removal/separation by body optimization.
 #[cfg(test)]
 mod tests {
     use super::*;

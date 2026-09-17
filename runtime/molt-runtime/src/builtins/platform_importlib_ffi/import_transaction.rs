@@ -917,20 +917,18 @@ pub(super) fn importlib_transaction_package_from_globals(
     _py: &PyToken<'_>,
     globals_bits: u64,
 ) -> Result<Option<String>, u64> {
-    let Some(globals_ptr) = obj_from_bits(globals_bits).as_ptr() else {
+    let Some(globals_ptr) =
+        crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
+    else {
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
         return Err(raise_exception::<_>(
             _py,
             "TypeError",
             "globals must be a dict",
         ));
     };
-    if unsafe { object_type_id(globals_ptr) } != TYPE_ID_DICT {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "globals must be a dict",
-        ));
-    }
 
     let package_name = intern_runtime_static_name(_py, b"__package__");
     if let Some(package_bits) = unsafe { dict_get_in_place(_py, globals_ptr, package_name) } {

@@ -524,11 +524,15 @@ source search.
   checksum, ABI, target, platform, capabilities, `python_exports`
   entries that map source-recompiled package-level imports to the owning native
   artifact, and
-  optional `callable_exports` entries that name direct native call bindings
-  before backend dispatch. Each callable export declares `module`, `name`,
+  optional `callable_exports` entries that publish Python-visible callables.
+  Each callable export declares `module`, `name`,
   `binding` (`module_attr` or `direct_symbol`), `abi`, optional `effects`,
   optional `deterministic`, optional `provider_module` for `module_attr`, and a
-  required native `symbol` for `direct_symbol`. A `module_attr` export without
+  required native `symbol` for `direct_symbol`. Direct `molt.object_call_v1`
+  exports also require an explicit non-negative `arity`; call sites never infer
+  the native signature. Other ABIs obtain their payload arity from
+  `runtime/native_callable_abi.toml`. Bootstrap-only `molt.pyinit_module_v1`
+  is not a public callable-export ABI. A `module_attr` export without
   `provider_module` is backed by the extension module itself and must name a
   callable present in the admitted extension source `PyMethodDef` table. A
   `provider_module` export derives checksummed upstream `.py` provider support
@@ -548,7 +552,23 @@ source search.
   `molt.object_callargs_v1` for the canonical CallArgs-builder handle used by
   keyword, star-arg, and C-extension call-protocol dispatch, or
   `molt.forward_f32_v1` for the unary bytes-backed Float32Array/browser lane.
-  The validated callable export map is the native ABI dispatch authority; import
+  The validated callable export map owns publication and the native ABI, not
+  Python call-site dispatch. Direct-symbol exports publish ordinary compiled
+  wrapper functions whose bodies use `invoke_ffi`; object-call wrappers bind
+  their declared positional-only arguments, and CallArgs wrappers bind normal
+  `*args, **kwargs` before constructing the ABI payload. Call sites evaluate the
+  live callable once and use normal call/binding operations, so captured
+  references survive rebinding and replacements are called normally. Import
+  assembly matches source/native owners by canonical module identity, never a
+  sanitized init-symbol spelling. Distinct body owners that collide at linkage
+  fail before source-body mutation; registry aliases own no body symbol. Local
+  direct-symbol wrappers publish before provider initialization can call back
+  into the module. Both export kinds publish once during initialization, not on
+  cached re-entry, preserving later user rebinding. A failed generated
+  publication deletes its owned cache entry through the shared module-cache
+  authority (including registry and `sys.modules` projections); pre-publication
+  and cached-hit failures do not delete an existing module.
+  Import
   visibility through `known_modules` cannot create Python `module__function`
   symbols for native packages. WASM lowers reachable `direct_symbol`
   object-call exports into deterministic `molt_native` imports and direct call
@@ -557,10 +577,9 @@ source search.
   objects can share one callable-export contract. The corresponding
   `invoke_ffi` IR stores callable identity only in native callable metadata; its
   `args` vector is the ABI payload, never a synthesized Python callee/module
-  attribute. `module_attr` callable exports with object-call ABIs are executable
-  runtime FFI dispatch: lowering loads the real module attribute handle and the
-  WASM backend calls the runtime `invoke_ffi` IC with canonical CallArgs or
-  positional payloads, while `module_attr` + memory-buffer ABIs still fail
+  attribute. `module_attr` exports retain the actual provider or PyMethodDef
+  callable and use the normal runtime call protocol; no spelling-based FFI
+  substitution occurs. `module_attr` + memory-buffer ABIs still fail
   closed because pointer/byte-buffer calls require an addressable
   `direct_symbol`. Split-runtime browser packages project only
   remaining `app.wasm` `molt_native` imports into `manifest.json` at

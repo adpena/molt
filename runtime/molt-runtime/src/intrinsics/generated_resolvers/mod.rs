@@ -8,6 +8,7 @@ mod atexit_resolver;
 mod base64_resolver;
 mod binascii_resolver;
 mod bisect_resolver;
+mod buffer_resolver;
 mod cancel_resolver;
 mod chan_resolver;
 mod cmath_resolver;
@@ -143,6 +144,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = bisect_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
+    if let Some(v) = buffer_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = cancel_resolver::resolve_symbol(symbol) {

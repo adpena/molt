@@ -1,13 +1,16 @@
 # Getting Started
 
-This is the shortest path to a real Molt install and first successful run.
+Start from a source checkout and compile a small program. Molt is under active
+development; consult [current status](spec/STATUS.md) for compatibility limits.
 
 ## Prerequisites
 
-- Python 3.12+
-- Rust toolchain
+- Python 3.12+ (the examples select 3.12 through `uv`)
+- Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
-- A C toolchain (`clang` on macOS/Linux, MSVC or clang on Windows)
+- A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
+  Build Tools with the Windows SDK on Windows. Run Windows builds from a shell
+  with that toolchain available.
 
 Platform details and pitfalls live in:
 
@@ -17,56 +20,73 @@ Platform details and pitfalls live in:
 
 ## Install
 
-### Package install
+### Release packages
 
-- Homebrew / installer / packaging paths: [../packaging/README.md](../packaging/README.md)
+Installer and package-manager definitions live in
+[packaging](../packaging/README.md). Templates in this repository do not by
+themselves establish that a release is available or accepted for your target.
 
 ### Local repo workflow
 
+Run from the cloned repository root. The commands below work in PowerShell and
+POSIX shells without activating a virtual environment:
+
 ```bash
 uv sync --group dev --python 3.12
-./.venv/bin/molt doctor --json
 ```
 
 ## Verify The Toolchain
 
 ```bash
-molt doctor --json
+uv run --python 3.12 molt doctor --json
 ```
 
-Expected: JSON output with exit code `0`.
+Resolve any reported toolchain errors before building. Exit code `0` means the
+doctor checks passed; it does not prove program semantics or target parity.
 
 ## Build And Run Hello World
 
-`uv sync` installs the `molt` command into `.venv` and onto your path. The
-fastest first run is the drop-in form — it builds and runs in one step, just
-like `python examples/hello.py`:
+`uv sync` installs `molt` into the project environment; it does not add it to
+your current shell's PATH. `uv run` selects that environment. Build and run in
+one step:
 
 ```bash
-molt run examples/hello.py
+uv run --python 3.12 molt run examples/hello.py
 ```
 
-To produce a standalone optimized binary and run it directly:
+The first build may compile the compiler backend and runtime. To produce an
+optimized binary at an explicit path and run it directly on macOS/Linux:
 
 ```bash
-molt build examples/hello.py --release
-./hello_molt
+uv run --python 3.12 molt build examples/hello.py --release --output hello
+./hello
 ```
+
+On Windows (PowerShell):
+
+```powershell
+uv run --python 3.12 molt build examples/hello.py --release --output hello.exe
+.\hello.exe
+```
+
+Explicit `--output` paths above are relative to the project root. Without it,
+use the output path reported by the build; do not assume a binary beside the
+source file. Standalone means no host Python interpreter is required, not that
+every binary is statically linked or independent of platform libraries.
 
 ## Build And Run Profiles
 
-`molt run` defaults to the fast **`dev`** profile (quick iteration) and `molt
-build` defaults to the optimized **`release`** profile (shipping artifact). This
-is the same convention as Rust's `cargo run` (dev) and `cargo build --release`,
-and it is intentional, not a hidden surprise:
+`molt run` defaults to **`dev`** for iteration; `molt build` defaults to the
+optimized **`release`** profile. A release-profile build is not release
+acceptance or certification.
 
 - The default is documented at both `molt run --help` and `molt build --help`.
 - The verb does **not** lock the profile. Both verbs accept either profile, so
   you can always override with one additive flag:
 
 ```bash
-molt run app.py --release         # iterate against an optimized build
-molt build app.py --profile dev   # fast unoptimized build artifact
+uv run --python 3.12 molt run examples/hello.py --release
+uv run --python 3.12 molt build examples/hello.py --profile dev
 ```
 
 `--release` is shorthand for `--profile release`.
@@ -74,35 +94,35 @@ molt build app.py --profile dev   # fast unoptimized build artifact
 ## Compare Against CPython
 
 ```bash
-molt compare examples/hello.py
+uv run --python 3.12 molt compare examples/hello.py
 ```
+
+This compares one program, not the whole verified subset. The compiler host
+interpreter and target semantics are separate: `molt build --python-version`
+selects a supported target policy (`3.12`, `3.13`, or `3.14`). See
+[compatibility](spec/areas/compat/README.md) for version- and target-scoped proof.
 
 ## Benchmark A Script
 
 ```bash
-molt bench --script examples/hello.py
+uv run --python 3.12 molt bench --script examples/hello.py
 ```
 
-## Running From A Source Checkout
+## Alternate Entry Point
 
-If you are working in the repository and have not activated `.venv`, prefix any
-command with `uv run --python 3.12` so it uses the project's pinned interpreter:
-
-```bash
-uv run --python 3.12 molt run examples/hello.py
-```
-
-The module form is equivalent and is what the contributor proof lanes use:
+The module entry point is equivalent to the installed `molt` command:
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli run examples/hello.py
+uv run --python 3.12 python -m molt.cli run examples/hello.py
 ```
 
 ## Common Pitfalls
 
-- macOS arm64 + Python 3.14: uv-managed 3.14 can hang; use system `python3.14`
-  or stay on 3.12/3.13.
-- WASM linked builds require `wasm-ld` and `wasm-tools`.
+- For a Python/toolchain failure, retain the exact version, platform, command,
+  and diagnostic; do not assume a failure on one version applies to all builds.
+- WASM linked builds require `wasm-ld` and `wasm-tools`; running WASM also
+  requires the appropriate host, such as Wasmtime for `molt run --target wasm`.
+  A native build does not verify the WASM cell.
 - After changing `pyproject.toml` or dependency groups, rerun `uv sync` so the
   editable `molt` install in `.venv` stays current.
 

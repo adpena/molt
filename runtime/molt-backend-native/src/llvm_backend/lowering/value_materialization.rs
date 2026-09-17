@@ -1,4 +1,6 @@
 use super::*;
+use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_REGISTER_TOKEN_OWNED};
+use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     // ── Representation authority ──
@@ -1110,11 +1112,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         poll_addr: inkwell::values::IntValue<'ctx>,
         closure_size: i64,
-        kind_bits: i64,
-        payload_base: i32,
+        layout: TaskConstructorLayout,
         payload_operands: &[ValueId],
         call_name: &str,
     ) -> BasicValueEnum<'ctx> {
+        layout.validate_closure_size(
+            closure_size,
+            payload_operands.len(),
+            false,
+            crate::GENERATOR_CONTROL_BYTES,
+        );
+        let kind_bits = crate::native_task_runtime_kind_bits(layout.runtime_kind());
+        let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
         let i64_ty = self.backend.context.i64_type();
         let task_new_fn = self.ensure_runtime_import(MOLT_TASK_NEW);
         let task_bits = self
@@ -1132,6 +1141,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
+        // A failed task allocation returns boxed None with an exception pending.
+        // It is not a task address and must not acquire payload/token ownership.
+        // Rejoin with the allocator's exact result rather than returning here:
+        // the surrounding TIR owns exception dispatch, frame exits, and drops.
+        let initialized = self.backend.context.append_basic_block(
+            self.llvm_fn,
+            &format!("task_init{}", self.synthetic_block_counter),
+        );
+        self.synthetic_block_counter += 1;
+        let continuation = self.backend.context.append_basic_block(
+            self.llvm_fn,
+            &format!("task_ready{}", self.synthetic_block_counter),
+        );
+        self.synthetic_block_counter += 1;
+        self.all_llvm_blocks.push(initialized);
+        self.all_llvm_blocks.push(continuation);
+        let allocated = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                self.ensure_i64(task_bits),
+                i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
+                "task_allocated",
+            )
+            .unwrap();
+        let allocation_block = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(allocation_block, initialized);
+        self.record_llvm_edge(allocation_block, continuation);
+        self.backend
+            .builder
+            .build_conditional_branch(allocated, initialized, continuation)
+            .unwrap();
+        self.backend.builder.position_at_end(initialized);
         let ptr_ty = self
             .backend
             .context
@@ -1170,6 +1213,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .build_call(inc_fn, &[arg_bits.into()], "task_payload_inc_ref")
                 .unwrap();
         }
+        match layout.completion() {
+            TaskCompletion::ReturnTask => {}
+            TaskCompletion::RegisterCancelToken => {
+                let get_token = self.ensure_runtime_import(MOLT_CANCEL_TOKEN_GET_CURRENT);
+                let token = self
+                    .backend
+                    .builder
+                    .build_call(get_token, &[], "task_current_token")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                let register = self.ensure_runtime_import(MOLT_TASK_REGISTER_TOKEN_OWNED);
+                self.backend
+                    .builder
+                    .build_call(register, &[task_bits.into(), token.into()], "")
+                    .unwrap();
+            }
+            TaskCompletion::WrapAsyncGen => {
+                panic!("LLVM async-generator wrappers must use the callable trampoline")
+            }
+        }
+        let initialized_end = self.backend.builder.get_insert_block().unwrap();
+        self.record_llvm_edge(initialized_end, continuation);
+        self.backend
+            .builder
+            .build_unconditional_branch(continuation)
+            .unwrap();
+        self.backend.builder.position_at_end(continuation);
         task_bits
     }
 }

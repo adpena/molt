@@ -261,14 +261,16 @@
       "weakref": "deny"
     },
     {
-      "acyclic_capability": "none",
-      "acyclic_slots": {},
+      "acyclic_capability": "int_cells",
+      "acyclic_slots": {
+        "cell": "int"
+      },
       "cycle": "never",
       "drop": "buffer2d",
-      "edges": "none",
+      "edges": "dynamic",
       "external_gc": "none",
       "id": 216,
-      "layout": "boxed",
+      "layout": "inline_rust",
       "metrics": "none",
       "name": "BUFFER2D",
       "publication": "python",
@@ -680,7 +682,9 @@
       "acyclic_capability": "code_metadata",
       "acyclic_slots": {
         "arg_names": "str_tuple",
+        "cellvars": "str_tuple",
         "filename": "str",
+        "freevars": "str_tuple",
         "kwonly": "str_tuple",
         "linetable": "bytes_or_none",
         "name": "str",
@@ -922,6 +926,22 @@
       "layout": "fixed_bits",
       "metrics": "none",
       "name": "NATIVE_DESCRIPTOR",
+      "publication": "python",
+      "shape": "fixed",
+      "track": "always",
+      "weakref": "deny"
+    },
+    {
+      "acyclic_capability": "none",
+      "acyclic_slots": {},
+      "cycle": "always",
+      "drop": "cell",
+      "edges": "fixed",
+      "external_gc": "none",
+      "id": 258,
+      "layout": "fixed_bits",
+      "metrics": "none",
+      "name": "CELL",
       "publication": "python",
       "shape": "fixed",
       "track": "always",

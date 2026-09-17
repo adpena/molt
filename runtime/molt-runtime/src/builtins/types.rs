@@ -125,6 +125,15 @@ define_types_runtime_state! {
     dynamic_class_attribute_deleter_fn,
     capsule_new_fn,
     cell_new_fn,
+    cell_eq_fn,
+    cell_ne_fn,
+    cell_lt_fn,
+    cell_le_fn,
+    cell_gt_fn,
+    cell_ge_fn,
+    cell_contents_get_fn,
+    cell_contents_set_fn,
+    cell_contents_delete_fn,
     method_new_fn,
     method_init_fn,
     types_coroutine_fn,
@@ -234,7 +243,7 @@ fn init_cached_runtime_class_configured(
     name: &str,
     layout_size: i64,
     instance_shape: Option<crate::object::ObjectShapeId>,
-    configure: impl FnOnce(*mut u8) -> bool,
+    configure: impl FnOnce(u64, *mut u8) -> bool,
 ) -> u64 {
     if exception_pending(_py) {
         return 0;
@@ -300,7 +309,7 @@ fn init_cached_runtime_class_configured(
         unsafe { dict_set_in_place(_py, dict_ptr, layout_name, layout_bits) };
         if exception_pending(_py)
             || unsafe { dict_get_in_place(_py, dict_ptr, layout_name) } != Some(layout_bits)
-            || !configure(dict_ptr)
+            || !configure(class_bits, dict_ptr)
         {
             return runtime_class_init_failed(_py, class_bits, name);
         }
@@ -381,32 +390,45 @@ pub(crate) fn init_cached_runtime_class(
     instance_shape: Option<crate::object::ObjectShapeId>,
     methods: &[RuntimeClassMethodSpec<'_>],
 ) -> u64 {
-    init_cached_runtime_class_configured(_py, slot, name, layout_size, instance_shape, |dict_ptr| {
-        for method in methods {
-            let bits = if let Some(signature) = method.signature {
-                crate::builtins::methods::builtin_func_bits_with_signature(
-                    _py,
-                    method.slot,
-                    method.fn_ptr,
-                    method.arity,
-                    signature.arg_names,
-                    signature.has_vararg,
-                    signature.has_varkw,
-                )
-            } else {
-                crate::builtins::methods::builtin_func_bits(
-                    _py,
-                    method.slot,
-                    method.fn_ptr,
-                    method.arity,
-                )
-            };
-            if !set_class_method(_py, dict_ptr, method.name, bits) {
-                return false;
-            }
+    init_cached_runtime_class_configured(
+        _py,
+        slot,
+        name,
+        layout_size,
+        instance_shape,
+        |_class_bits, dict_ptr| configure_runtime_class_methods(_py, dict_ptr, methods),
+    )
+}
+
+pub(crate) fn configure_runtime_class_methods(
+    _py: &PyToken<'_>,
+    dict_ptr: *mut u8,
+    methods: &[RuntimeClassMethodSpec<'_>],
+) -> bool {
+    for method in methods {
+        let bits = if let Some(signature) = method.signature {
+            crate::builtins::methods::builtin_func_bits_with_signature(
+                _py,
+                method.slot,
+                method.fn_ptr,
+                method.arity,
+                signature.arg_names,
+                signature.has_vararg,
+                signature.has_varkw,
+            )
+        } else {
+            crate::builtins::methods::builtin_func_bits(
+                _py,
+                method.slot,
+                method.fn_ptr,
+                method.arity,
+            )
+        };
+        if !set_class_method(_py, dict_ptr, method.name, bits) {
+            return false;
         }
-        true
-    })
+    }
+    true
 }
 
 #[must_use]
@@ -464,16 +486,73 @@ pub extern "C" fn molt_stdlib_probe() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__molt_is_coroutine__") else {
-            return MoltObject::none().bits();
-        };
-        let _ = molt_object_setattr(func_bits, name_bits, MoltObject::from_bool(true).bits());
-        dec_ref_bits(_py, name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+        if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
+            return raise_exception::<_>(_py, "TypeError", "types.coroutine() expects a callable");
         }
-        inc_ref_bits(_py, func_bits);
-        func_bits
+        let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "types.coroutine() expects a function");
+        };
+        unsafe {
+            if object_type_id(func_ptr) != crate::TYPE_ID_FUNCTION {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "types.coroutine() runtime path expects a function",
+                );
+            }
+            let code_bits = crate::function_code_bits(func_ptr);
+            let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "types.coroutine() function has no code object",
+                );
+            };
+            if object_type_id(code_ptr) != crate::TYPE_ID_CODE {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "types.coroutine() function has invalid code object",
+                );
+            }
+            match crate::object::layout::code_execution_kind(code_ptr) {
+                crate::object::layout::CodeExecutionKind::Coroutine => {
+                    inc_ref_bits(_py, func_bits);
+                    func_bits
+                }
+                crate::object::layout::CodeExecutionKind::Generator => {
+                    if crate::object::layout::code_protocol_flags(code_ptr)
+                        & crate::object::layout::CO_ITERABLE_COROUTINE
+                        != 0
+                    {
+                        inc_ref_bits(_py, func_bits);
+                        return func_bits;
+                    }
+                    let clone = crate::object::builders::clone_code_obj_with_protocol_flags(
+                        _py,
+                        code_ptr,
+                        crate::object::layout::CO_ITERABLE_COROUTINE,
+                    );
+                    if clone.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let clone_bits = MoltObject::from_ptr(clone).bits();
+                    let attached = crate::function_set_code_bits(_py, func_ptr, clone_bits);
+                    dec_ref_bits(_py, clone_bits);
+                    if !attached {
+                        return MoltObject::none().bits();
+                    }
+                    inc_ref_bits(_py, func_bits);
+                    func_bits
+                }
+                crate::object::layout::CodeExecutionKind::Direct
+                | crate::object::layout::CodeExecutionKind::AsyncGenerator => raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "types.coroutine() runtime path expects a generator or coroutine function",
+                ),
+            }
+        }
     })
 }
 
@@ -858,7 +937,7 @@ mod tests {
                 "FailureAtomicClass",
                 0,
                 None,
-                |_dict| false,
+                |_class, _dict| false,
             );
             assert_eq!(class_bits, 0);
             assert_eq!(slot.load(Ordering::Acquire), 0);
@@ -919,6 +998,286 @@ mod tests {
                     "non-self vararg helpers still need an explicit empty arg-name tuple"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn types_coroutine_clones_generator_code_without_mutating_shared_authority() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                use crate::object::layout::{
+                    CO_GENERATOR, CO_ITERABLE_COROUTINE, CodeExecutionKind, code_arg_names_bits,
+                    code_argcount, code_callable_arity, code_callable_fn_ptr,
+                    code_callable_identity, code_callable_trampoline_ptr, code_execution_kind,
+                    code_filename_bits, code_firstlineno, code_flags, code_frame_slot_id,
+                    code_kwonly_names_bits, code_kwonlyargcount, code_linetable_bits,
+                    code_name_bits, code_names_bits, code_posonlyargcount,
+                    code_publish_execution_kind, code_set_frame_slot_id, code_set_signature_bits,
+                    code_signature_posonly_bits, code_vararg_bits, code_varkw_bits,
+                    code_varnames_bits, function_code_bits, function_set_code_bits,
+                    function_set_trampoline_ptr,
+                };
+
+                let filename = alloc_string(_py, b"coroutine_clone.py");
+                let name = alloc_string(_py, b"shared_generator");
+                let arg_name = alloc_string(_py, b"arg");
+                let vararg = alloc_string(_py, b"args");
+                let varkw = alloc_string(_py, b"kwargs");
+                let empty = alloc_tuple(_py, &[]);
+                assert!(
+                    !filename.is_null()
+                        && !name.is_null()
+                        && !arg_name.is_null()
+                        && !vararg.is_null()
+                        && !varkw.is_null()
+                        && !empty.is_null()
+                );
+                let filename_bits = MoltObject::from_ptr(filename).bits();
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let arg_name_bits = MoltObject::from_ptr(arg_name).bits();
+                let vararg_bits = MoltObject::from_ptr(vararg).bits();
+                let varkw_bits = MoltObject::from_ptr(varkw).bits();
+                let empty_bits = MoltObject::from_ptr(empty).bits();
+                let arg_names = alloc_tuple(_py, &[arg_name_bits]);
+                assert!(!arg_names.is_null());
+                let arg_names_bits = MoltObject::from_ptr(arg_names).bits();
+                let posonly_bits = MoltObject::from_int(1).bits();
+
+                let original = crate::alloc_code_obj(
+                    _py,
+                    filename_bits,
+                    name_bits,
+                    37,
+                    MoltObject::none().bits(),
+                    arg_names_bits,
+                    empty_bits,
+                    1,
+                    1,
+                    0,
+                );
+                assert!(!original.is_null());
+                let original_bits = MoltObject::from_ptr(original).bits();
+                let first = crate::alloc_function_obj(_py, 0x101, 1);
+                let sibling = crate::alloc_function_obj(_py, 0x303, 9);
+                assert!(!first.is_null() && !sibling.is_null());
+                let first_bits = MoltObject::from_ptr(first).bits();
+                let sibling_bits = MoltObject::from_ptr(sibling).bits();
+
+                function_set_trampoline_ptr(first, 0x202);
+                assert!(function_set_code_bits(_py, first, original_bits));
+                code_set_signature_bits(
+                    _py,
+                    original,
+                    arg_names_bits,
+                    posonly_bits,
+                    empty_bits,
+                    vararg_bits,
+                    varkw_bits,
+                )
+                .expect("valid compiled signature");
+                code_set_frame_slot_id(original, 23);
+                assert_eq!(
+                    code_publish_execution_kind(original, CodeExecutionKind::Generator),
+                    Ok(())
+                );
+
+                // A different function cannot attach after publication or rewrite the
+                // shared code object's callable or signature metadata.
+                function_set_trampoline_ptr(sibling, 0x404);
+                assert!(!function_set_code_bits(_py, sibling, original_bits));
+                assert!(exception_pending(_py));
+                crate::clear_exception(_py);
+                assert_eq!(function_code_bits(sibling), 0);
+                code_set_signature_bits(
+                    _py,
+                    original,
+                    empty_bits,
+                    MoltObject::from_int(0).bits(),
+                    arg_names_bits,
+                    MoltObject::none().bits(),
+                    MoltObject::none().bits(),
+                )
+                .expect("published signature remains immutable");
+                assert_eq!(code_callable_fn_ptr(original), 0x101);
+                assert_eq!(code_callable_trampoline_ptr(original), 0x202);
+                assert_eq!(code_callable_arity(original), 1);
+                assert_eq!(
+                    code_callable_identity(original).unwrap().call_abi,
+                    crate::FunctionCallAbi::Positional
+                );
+                assert_eq!(code_arg_names_bits(original), arg_names_bits);
+                assert_eq!(code_signature_posonly_bits(original), posonly_bits);
+                assert_eq!(code_kwonly_names_bits(original), empty_bits);
+                assert_eq!(code_vararg_bits(original), vararg_bits);
+                assert_eq!(code_varkw_bits(original), varkw_bits);
+
+                let decorated_result = molt_types_coroutine(first_bits);
+                assert_eq!(decorated_result, first_bits);
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, decorated_result);
+
+                let clone_bits = function_code_bits(first);
+                assert_ne!(clone_bits, original_bits);
+                assert_eq!(function_code_bits(sibling), 0);
+                let clone = obj_from_bits(clone_bits)
+                    .as_ptr()
+                    .expect("cloned code object");
+                assert_eq!(code_execution_kind(original), CodeExecutionKind::Generator);
+                assert_eq!(code_execution_kind(clone), CodeExecutionKind::Generator);
+                assert_eq!(
+                    code_flags(original) & (CO_GENERATOR | CO_ITERABLE_COROUTINE),
+                    CO_GENERATOR
+                );
+                assert_eq!(
+                    code_flags(clone) & (CO_GENERATOR | CO_ITERABLE_COROUTINE),
+                    CO_GENERATOR | CO_ITERABLE_COROUTINE
+                );
+
+                assert_eq!(code_filename_bits(clone), code_filename_bits(original));
+                assert_eq!(code_name_bits(clone), code_name_bits(original));
+                assert_eq!(code_firstlineno(clone), code_firstlineno(original));
+                assert_eq!(code_linetable_bits(clone), code_linetable_bits(original));
+                assert_eq!(code_varnames_bits(clone), code_varnames_bits(original));
+                assert_eq!(code_names_bits(clone), code_names_bits(original));
+                assert_eq!(code_argcount(clone), code_argcount(original));
+                assert_eq!(code_posonlyargcount(clone), code_posonlyargcount(original));
+                assert_eq!(code_kwonlyargcount(clone), code_kwonlyargcount(original));
+                assert_eq!(code_callable_fn_ptr(clone), code_callable_fn_ptr(original));
+                assert_eq!(
+                    code_callable_trampoline_ptr(clone),
+                    code_callable_trampoline_ptr(original)
+                );
+                assert_eq!(code_callable_arity(clone), code_callable_arity(original));
+                assert_eq!(
+                    code_callable_identity(clone),
+                    code_callable_identity(original)
+                );
+                assert_eq!(code_frame_slot_id(clone), code_frame_slot_id(original));
+                assert_eq!(code_arg_names_bits(clone), code_arg_names_bits(original));
+                assert_eq!(
+                    code_signature_posonly_bits(clone),
+                    code_signature_posonly_bits(original)
+                );
+                assert_eq!(
+                    code_kwonly_names_bits(clone),
+                    code_kwonly_names_bits(original)
+                );
+                assert_eq!(code_vararg_bits(clone), code_vararg_bits(original));
+                assert_eq!(code_varkw_bits(clone), code_varkw_bits(original));
+
+                let repeated_result = molt_types_coroutine(first_bits);
+                assert_eq!(repeated_result, first_bits);
+                assert_eq!(function_code_bits(first), clone_bits);
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, repeated_result);
+
+                dec_ref_bits(_py, first_bits);
+                dec_ref_bits(_py, sibling_bits);
+                dec_ref_bits(_py, original_bits);
+                dec_ref_bits(_py, arg_names_bits);
+                dec_ref_bits(_py, empty_bits);
+                dec_ref_bits(_py, varkw_bits);
+                dec_ref_bits(_py, vararg_bits);
+                dec_ref_bits(_py, arg_name_bits);
+                dec_ref_bits(_py, name_bits);
+                dec_ref_bits(_py, filename_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn types_coroutine_is_identity_for_coroutines_and_rejects_noncallables() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                use crate::object::layout::{
+                    CodeExecutionKind, code_publish_execution_kind, function_set_code_bits,
+                };
+
+                let name = alloc_string(_py, b"native_coroutine");
+                let empty = alloc_tuple(_py, &[]);
+                assert!(!name.is_null() && !empty.is_null());
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let empty_bits = MoltObject::from_ptr(empty).bits();
+                let code = crate::alloc_code_obj(
+                    _py,
+                    name_bits,
+                    name_bits,
+                    1,
+                    MoltObject::none().bits(),
+                    empty_bits,
+                    empty_bits,
+                    0,
+                    0,
+                    0,
+                );
+                let function = crate::alloc_function_obj(_py, 0x505, 0);
+                assert!(!code.is_null() && !function.is_null());
+                let code_bits = MoltObject::from_ptr(code).bits();
+                let function_bits = MoltObject::from_ptr(function).bits();
+                assert!(function_set_code_bits(_py, function, code_bits));
+                assert_eq!(
+                    code_publish_execution_kind(code, CodeExecutionKind::Coroutine),
+                    Ok(())
+                );
+
+                let result = molt_types_coroutine(function_bits);
+                assert_eq!(result, function_bits);
+                assert!(!exception_pending(_py));
+                dec_ref_bits(_py, result);
+
+                let rejected = molt_types_coroutine(MoltObject::from_int(7).bits());
+                assert!(obj_from_bits(rejected).is_none());
+                assert!(exception_pending(_py));
+                clear_exception(_py);
+
+                dec_ref_bits(_py, function_bits);
+                dec_ref_bits(_py, code_bits);
+                dec_ref_bits(_py, empty_bits);
+                dec_ref_bits(_py, name_bits);
+            }
+        });
+    }
+
+    #[test]
+    fn cell_class_publishes_comparison_hash_and_contents_protocol() {
+        init_runtime();
+        crate::with_gil_entry_nopanic!(py, {
+            let class_bits = cell_class(py);
+            assert_ne!(class_bits, 0);
+            assert!(!exception_pending(py));
+            let class = obj_from_bits(class_bits).as_ptr().unwrap();
+            let dict_bits = unsafe { class_dict_bits(class) };
+            let dict = obj_from_bits(dict_bits).as_ptr().unwrap();
+
+            for name in ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"] {
+                let key = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+                let method = unsafe { dict_get_in_place(py, dict, key) }.unwrap();
+                assert!(crate::builtins::callable::is_callable_impl(py, method));
+                dec_ref_bits(py, key);
+            }
+
+            let hash_key = attr_name_bits_from_bytes(py, b"__hash__").unwrap();
+            assert!(
+                obj_from_bits(unsafe { dict_get_in_place(py, dict, hash_key) }.unwrap()).is_none()
+            );
+            dec_ref_bits(py, hash_key);
+
+            let contents_key = attr_name_bits_from_bytes(py, b"cell_contents").unwrap();
+            let descriptor = unsafe { dict_get_in_place(py, dict, contents_key) }.unwrap();
+            let descriptor_ptr = obj_from_bits(descriptor).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_flavor(descriptor_ptr) },
+                Some(NativeDescriptorFlavor::GetSet),
+            );
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_owner_bits(descriptor_ptr) },
+                class_bits,
+            );
+            dec_ref_bits(py, contents_key);
         });
     }
 }

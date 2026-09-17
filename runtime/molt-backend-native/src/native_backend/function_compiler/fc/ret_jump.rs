@@ -552,9 +552,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let target_id = op.value.unwrap_or(0);
             let target_block = label_blocks[&target_id];
-            let origin_block = builder
-                .current_block()
-                .expect("br_if requires an active block");
 
             let fallthrough_block = builder.create_block();
             let fallthrough_transport = if op_idx + 1 < func_ops.len() {
@@ -668,6 +665,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     nbc,
                 )
             };
+
+            // Dynamic truthiness expands an internal mini-CFG and carries the
+            // origin's cleanup roots to its own merge. The semantic branch must
+            // drain that final continuation, not the predecessor that the
+            // truthiness authority has already retired.
+            let origin_block = builder
+                .current_block()
+                .expect("br_if requires an active block after condition lowering");
 
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough_block);

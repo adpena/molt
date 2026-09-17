@@ -9,7 +9,6 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "func_new_closure",
     "code_new",
     "code_slot_set",
-    "fn_ptr_code_set",
     "asyncgen_locals_register",
     "gen_locals_register",
     "code_slots_init",
@@ -34,6 +33,30 @@ pub(in crate::native_backend::function_compiler) const GPU_INTRINSIC_HANDLED_KIN
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
+#[cfg(feature = "native-backend")]
+fn metadata_target_signature(
+    module: &ObjectModule,
+    op_kind: &str,
+    target: &str,
+    arities: &BTreeMap<String, usize>,
+    returns: &BTreeMap<String, bool>,
+) -> cranelift_codegen::ir::Signature {
+    let arity = *arities
+        .get(target)
+        .unwrap_or_else(|| panic!("{op_kind} missing target signature for `{target}`"));
+    let returns_value = *returns
+        .get(target)
+        .unwrap_or_else(|| panic!("{op_kind} missing target return ABI for `{target}`"));
+    let mut signature = module.make_signature();
+    for _ in 0..arity {
+        signature.params.push(AbiParam::new(types::I64));
+    }
+    if returns_value {
+        signature.returns.push(AbiParam::new(types::I64));
+    }
+    signature
+}
+
 /// Cranelift codegen handlers for function objects, code metadata, frame trace
 /// metadata, and adjacent pre-call runtime intrinsics. Extracted from
 /// `compile_func_inner` as a move-only function split: backend state is threaded
@@ -44,6 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     op: &OpIR,
     op_idx: usize,
     owned_frame_entered: Option<Variable>,
+    leading_frame_entry_preemitted: bool,
     has_frame_slot: bool,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
@@ -58,6 +82,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     task_kinds: &BTreeMap<String, TrampolineKind>,
     task_closure_sizes: &BTreeMap<String, i64>,
     defined_functions: &BTreeSet<String>,
+    known_function_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     declared_func_arities: &mut BTreeMap<String, usize>,
@@ -174,26 +199,22 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     .call(local_callee, &[func_addr, tramp_addr, arity_val])
             };
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "func_new" => {
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
             let arity = op.value.unwrap_or(0);
-            let kind = if func_name.ends_with("_poll") {
-                task_kinds
-                    .get(func_name)
-                    .copied()
-                    .unwrap_or(TrampolineKind::Plain)
-            } else {
-                TrampolineKind::Plain
-            };
+            let kind = task_kinds
+                .get(func_name)
+                .copied()
+                .unwrap_or(TrampolineKind::Plain);
             let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
             let closure_size = if is_task {
-                *task_closure_sizes.get(func_name).unwrap_or(&0)
+                *task_closure_sizes
+                    .get(func_name)
+                    .expect("task constructor requires frame size")
             } else {
                 0
             };
@@ -256,26 +277,22 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .ins()
                 .call(local_callee, &[func_addr, tramp_addr, arity_val]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "func_new_closure" => {
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
             let arity = op.value.unwrap_or(0);
-            let kind = if func_name.ends_with("_poll") {
-                task_kinds
-                    .get(func_name)
-                    .copied()
-                    .unwrap_or(TrampolineKind::Plain)
-            } else {
-                TrampolineKind::Plain
-            };
+            let kind = task_kinds
+                .get(func_name)
+                .copied()
+                .unwrap_or(TrampolineKind::Plain);
             let is_task = matches!(kind.behavior(), TrampolineBehavior::Task(_));
             let closure_size = if is_task {
-                *task_closure_sizes.get(func_name).unwrap_or(&0)
+                *task_closure_sizes
+                    .get(func_name)
+                    .expect("task constructor requires frame size")
             } else {
                 0
             };
@@ -368,9 +385,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if let Some(out_name) = op.out.as_ref() {
                 local_closure_envs.insert(func_name.clone(), out_name.clone());
             }
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "code_new" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -506,9 +521,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 ],
             );
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "code_slot_set" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -523,70 +536,30 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("code bits not found");
-            let code_id = op.value.unwrap_or(0);
-            let code_id_val = builder.ins().iconst(types::I64, code_id);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_code_slot_set",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let _ = builder.ins().call(local_callee, &[code_id_val, *code_bits]);
-        }
-        "fn_ptr_code_set" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let code_bits = var_get_boxed_overflow_safe(
+            let globals_bits = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                &args[0],
+                &args[1],
                 representation_plan,
             )
-            .expect("code bits not found");
-            let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
-            let mut func_sig = module.make_signature();
-            let arity = op.value.unwrap_or(0);
-            if arity > 0 {
-                for _ in 0..arity {
-                    func_sig.params.push(AbiParam::new(types::I64));
-                }
-            } else if func_name.ends_with("_poll") {
-                func_sig.params.push(AbiParam::new(types::I64));
-            }
-            func_sig.returns.push(AbiParam::new(types::I64));
-            // Use Export only when the target is defined in this
-            // compilation unit; otherwise Import (resolved at link
-            // time). Using unconditional Export here caused
-            // "Export must be defined" panics when dead function
-            // elimination removed the target.
-            let linkage = if defined_functions.contains(func_name) {
-                Linkage::Export
-            } else {
-                Linkage::Import
-            };
-            let func_id = declare_function_object_target(
-                &mut *module,
-                "fn_ptr_code_set",
-                func_name,
-                linkage,
-                &func_sig,
-            );
-            let func_ref = module.declare_func_in_func(func_id, builder.func);
-            let func_addr = builder.ins().func_addr(types::I64, func_ref);
+            .expect("code globals not found");
+            let code_id = op.value.unwrap_or(0);
+            let code_id_val = builder.ins().iconst(types::I64, code_id);
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                "molt_fn_ptr_code_set",
-                &[types::I64, types::I64],
+                "molt_code_slot_set",
+                &[types::I64, types::I64, types::I64],
                 &[types::I64],
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
-            let _ = builder.ins().call(local_callee, &[func_addr, *code_bits]);
+            let _ = builder
+                .ins()
+                .call(local_callee, &[code_id_val, *code_bits, *globals_bits]);
         }
         "asyncgen_locals_register" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -616,16 +589,13 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .s_value
                 .as_ref()
                 .expect("asyncgen_locals_register expects symbol");
-            let mut func_sig = module.make_signature();
-            let arity = op.value.unwrap_or(0);
-            if arity > 0 {
-                for _ in 0..arity {
-                    func_sig.params.push(AbiParam::new(types::I64));
-                }
-            } else if func_name.ends_with("_poll") {
-                func_sig.params.push(AbiParam::new(types::I64));
-            }
-            func_sig.returns.push(AbiParam::new(types::I64));
+            let func_sig = metadata_target_signature(
+                module,
+                &op.kind,
+                func_name,
+                known_function_arities,
+                function_has_ret,
+            );
             let linkage = if defined_functions.contains(func_name) {
                 Linkage::Export
             } else {
@@ -680,17 +650,15 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .s_value
                 .as_ref()
                 .expect("gen_locals_register expects symbol");
-            // Build the signature from the op's declared arity.
-            let mut func_sig = module.make_signature();
-            let arity = op.value.unwrap_or(0);
-            if arity > 0 {
-                for _ in 0..arity {
-                    func_sig.params.push(AbiParam::new(types::I64));
-                }
-            } else if func_name.ends_with("_poll") {
-                func_sig.params.push(AbiParam::new(types::I64));
-            }
-            func_sig.returns.push(AbiParam::new(types::I64));
+            // Pointer metadata refers to the target's physical ABI, not the
+            // Python callable arity or the spelling of the symbol.
+            let func_sig = metadata_target_signature(
+                module,
+                &op.kind,
+                func_name,
+                known_function_arities,
+                function_has_ret,
+            );
             let linkage = if defined_functions.contains(func_name) {
                 Linkage::Export
             } else {
@@ -733,19 +701,17 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         "trace_enter_slot" => {
             let entered = owned_frame_entered
                 .expect("trace_enter_slot requires local execution-context ownership");
-            let code_id = op.value.unwrap_or(0);
-            let code_id_val = builder.ins().iconst(types::I64, code_id);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_trace_enter_slot",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let _ = builder.ins().call(local_callee, &[code_id_val]);
-            let active = builder.ins().iconst(types::I8, 1);
-            builder.def_var(entered, active);
+            if leading_frame_entry_preemitted {
+                debug_assert_eq!(op_idx, 0);
+            } else {
+                emit_owned_execution_frame_enter(
+                    entered,
+                    op.value.unwrap_or(0),
+                    module,
+                    import_ids,
+                    builder,
+                );
+            }
         }
         "trace_exit" => {}
         "frame_locals_set" => {
@@ -936,8 +902,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
             let res = builder.inst_results(call)[0];
-            emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
             if let Some(out__) = op.out.as_ref() {
+                // The runtime borrows the function's closure edge. Acquire an
+                // owner only for a bound result; discarding it needs no RC.
+                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

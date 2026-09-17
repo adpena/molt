@@ -16,6 +16,10 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
+#[cfg(feature = "llvm")]
+use molt_ir::runtime_boxed_abi_generated::{
+    RuntimeBoxedAbi, RuntimeBoxedReturn, runtime_boxed_abi,
+};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
@@ -450,23 +454,6 @@ struct PhiIncomingEdge<'ctx> {
     target: BlockId,
     edge_name: &'static str,
     args: Vec<ValueId>,
-}
-
-/// Preserved SimpleIR ops lowered by the LLVM generic runtime-call path whose
-/// runtime ABI returns `void` rather than a boxed i64 sentinel. They are still
-/// real side effects and must be claimed before the terminal Copy fail-loud
-/// guard, but declaring them through `ensure_runtime_i64_fn` would give LLVM the
-/// wrong C ABI. Each entry is `(kind, runtime_symbol, boxed_operand_arity)`.
-const PRESERVED_VOID_RUNTIME_OPS: &[(&str, &str, usize)] = &[
-    ("print_newline", "molt_print_newline", 0),
-    ("spawn", "molt_spawn", 1),
-];
-
-fn preserved_void_runtime_call_abi(kind: &str) -> Option<(&'static str, usize)> {
-    PRESERVED_VOID_RUNTIME_OPS
-        .iter()
-        .find(|(k, _, _)| *k == kind)
-        .map(|(_, symbol, arity)| (*symbol, *arity))
 }
 
 /// Lower a TIR function to LLVM IR.

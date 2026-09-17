@@ -28,6 +28,7 @@ from molt.frontend._types import (
     AsyncFrameSlot,
     ClassInfo,
     ComprehensionBinding,
+    ExactClassFact,
     FormatToken,
     FuncInfo,
     MoltOp,
@@ -43,7 +44,6 @@ if TYPE_CHECKING:
 
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
-    _STUB_IMPORT_MODULES: frozenset[str]
     _active_midend_function_name: Any
     _class_body_depth: int
     _class_ns_stack: list[_ClassNsScope]
@@ -61,6 +61,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
     _module_provenance_flow_stack: list[tuple[list[dict[str, frozenset[str]]], bool]]
+    _next_exact_class_token: int
     _op_by_result: dict[str, MoltOp]
     _sema: SemaResult | None
     _source_is_stdlib_module: Any
@@ -116,8 +117,8 @@ class _GeneratorProtocolAttrs(Protocol):
     eager_annotations: Any
     enable_phi: Any
     entry_module: Any
-    exact_builtin_locals: dict[str, str]
-    exact_locals: dict[str, str]
+    exact_class_token: int
+    exact_locals: dict[str, ExactClassFact]
     exception_stack_depth_baseline: MoltValue | None
     exception_stack_prev_baseline: MoltValue | None
     explicit_type_hints: dict[str, str]
@@ -147,4 +148,3 @@ class _GeneratorProtocolAttrs(Protocol):
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
-    imported_module_provenance: dict[str, frozenset[str]]

@@ -2,6 +2,7 @@
 // fused super dispatch, C-ABI IC entry points, and cache lifecycle.
 
 use super::*;
+use crate::object::layout::function_mutation_version;
 use crate::{attr_name_bits_from_bytes, molt_super_new};
 fn trace_call_bind_ic_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -49,6 +50,8 @@ pub(super) fn type_resolution_epoch_is_stable(recorded: u64) -> bool {
 #[derive(Clone, Copy)]
 pub(super) struct CallBindIcEntry {
     pub(super) fn_ptr: u64,
+    /// Shared executable/signature/defaults epoch, independent of class mutation.
+    pub(super) function_version: u64,
     pub(super) target_bits: u64,
     pub(super) class_bits: u64,
     pub(super) class_version: u64,
@@ -120,34 +123,15 @@ pub(crate) fn clear_call_bind_ic_cache(_py: &PyToken<'_>) -> bool {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().call,
-            [(
-                0u64,
-                CallBindIcEntry {
-                    fn_ptr: 0,
-                    target_bits: 0,
-                    class_bits: 0,
-                    class_version: 0,
-                    type_version: 0,
-                    cached_alloc_size: 0,
-                    arity: 0,
-                    kind: 0,
-                },
-            ); IC_TLS_SIZE],
+            [(0, EMPTY_CALL_IC_ENTRY); IC_TLS_SIZE],
         )
     });
-    let mut detached = false;
-    for (_, entry) in previous {
-        if call_bind_ic_owns_target(entry) {
-            detached = true;
-            dec_ref_bits(_py, entry.target_bits);
-        }
-    }
-    detached
+    release_call_ic_entries(_py, &previous)
 }
 
 /// Per-site inline cache for fused method / super-method dispatch.
 ///
-/// Keyed on the call-site id, validated against `(class_bits, class_version)`.
+/// Keyed on the call-site id, validated against class and function mutation epochs.
 /// On a hit the resolved class function and the pre-interned attribute name are
 /// reused, eliminating the per-call name interning + MRO walk + descriptor-cache
 /// probe.  `can_shadow` records whether an instance of this class could possibly
@@ -159,6 +143,7 @@ struct MethodIcEntry {
     pub(super) class_version: u64,
     type_version: u64,
     func_bits: u64,
+    function_version: u64,
     attr_bits: u64,
     can_shadow: bool,
     /// Fixed positional parameter count of `func_bits` INCLUDING `self` (the
@@ -179,6 +164,48 @@ struct MethodIcEntry {
     /// `call arity mismatch`. Positional defaults alone do NOT set this.
     pub(super) needs_binder: bool,
     valid: bool,
+}
+
+impl MethodIcEntry {
+    fn pin<'a, 'py>(self, py: &'a PyToken<'py>) -> PinnedMethodIcEntry<'a, 'py> {
+        if self.valid {
+            inc_ref_bits(py, self.attr_bits);
+            inc_ref_bits(py, self.func_bits);
+        }
+        PinnedMethodIcEntry { py, entry: self }
+    }
+
+    /// Shadow lookup can run Python equality and change every lookup authority.
+    /// Compare fresh receiver/type facts before dereferencing the recorded class.
+    unsafe fn matches_receiver(self, recv_ptr: *mut u8) -> bool {
+        unsafe {
+            self.valid
+                && type_epoch_matches(self.type_version)
+                && object_class_bits(recv_ptr) == self.class_bits
+                && cached_function_version_matches(self.func_bits, self.function_version)
+                && obj_from_bits(self.class_bits)
+                    .as_ptr()
+                    .is_some_and(|class_ptr| {
+                        class_layout_version_bits(class_ptr) == self.class_version
+                    })
+        }
+    }
+}
+
+/// Own the selected method and name across shadow lookup, cache replacement,
+/// and callee reentry. TLS residency alone cannot provide that lifetime.
+struct PinnedMethodIcEntry<'a, 'py> {
+    py: &'a PyToken<'py>,
+    entry: MethodIcEntry,
+}
+
+impl Drop for PinnedMethodIcEntry<'_, '_> {
+    fn drop(&mut self) {
+        if self.entry.valid {
+            dec_ref_bits(self.py, self.entry.attr_bits);
+            dec_ref_bits(self.py, self.entry.func_bits);
+        }
+    }
 }
 
 /// Static call-shape plan for a resolved method, used by the fused method-call
@@ -244,13 +271,16 @@ pub(super) unsafe fn method_ic_call_plan(
 const METHOD_IC_TLS_SIZE: usize = 256; // Must be power of 2.
 
 #[inline]
-fn method_ic_lookup(site_id: u64) -> Option<MethodIcEntry> {
+fn method_ic_lookup<'a, 'py>(
+    py: &'a PyToken<'py>,
+    site_id: u64,
+) -> Option<PinnedMethodIcEntry<'a, 'py>> {
     REF_OWNING_IC_TLS.with(|cache| {
         let cache = cache.borrow();
         let idx = (site_id as usize) & (METHOD_IC_TLS_SIZE - 1);
         let (stored_id, entry) = cache.method[idx];
         if stored_id == site_id && entry.valid {
-            Some(entry)
+            Some(entry.pin(py))
         } else {
             None
         }
@@ -285,37 +315,10 @@ pub(crate) fn clear_method_ic_cache(_py: &PyToken<'_>) -> bool {
     let previous = REF_OWNING_IC_TLS.with(|cache| {
         std::mem::replace(
             &mut cache.borrow_mut().method,
-            [(
-                0u64,
-                MethodIcEntry {
-                    class_bits: 0,
-                    class_version: 0,
-                    type_version: 0,
-                    func_bits: 0,
-                    attr_bits: 0,
-                    can_shadow: true,
-                    fixed_arity: 0,
-                    n_pos_defaults: 0,
-                    needs_binder: true,
-                    valid: false,
-                },
-            ); METHOD_IC_TLS_SIZE],
+            [(0, EMPTY_METHOD_IC_ENTRY); METHOD_IC_TLS_SIZE],
         )
     });
-    let mut detached = false;
-    for (_, entry) in previous {
-        if entry.valid {
-            if entry.attr_bits != 0 {
-                detached = true;
-                dec_ref_bits(_py, entry.attr_bits);
-            }
-            if entry.func_bits != 0 {
-                detached = true;
-                dec_ref_bits(_py, entry.func_bits);
-            }
-        }
-    }
-    detached
+    release_method_ic_entries(_py, &previous)
 }
 
 /// Per-site super dispatch cache. The start class is a live call operand,
@@ -327,6 +330,7 @@ struct SuperIcEntry {
     self_class_version: u64,
     type_version: u64,
     func_bits: u64,
+    function_version: u64,
     attr_bits: u64,
     valid: bool,
 }
@@ -377,6 +381,7 @@ impl Drop for PinnedSuperIcEntry<'_, '_> {
 
 const EMPTY_CALL_IC_ENTRY: CallBindIcEntry = CallBindIcEntry {
     fn_ptr: 0,
+    function_version: 0,
     target_bits: 0,
     class_bits: 0,
     class_version: 0,
@@ -390,6 +395,7 @@ const EMPTY_METHOD_IC_ENTRY: MethodIcEntry = MethodIcEntry {
     class_version: 0,
     type_version: 0,
     func_bits: 0,
+    function_version: 0,
     attr_bits: 0,
     can_shadow: true,
     fixed_arity: 0,
@@ -403,6 +409,7 @@ const EMPTY_SUPER_IC_ENTRY: SuperIcEntry = SuperIcEntry {
     self_class_version: 0,
     type_version: 0,
     func_bits: 0,
+    function_version: 0,
     attr_bits: 0,
     valid: false,
 };
@@ -435,6 +442,75 @@ impl Drop for RefOwningIcTls {
 thread_local! {
     static REF_OWNING_IC_TLS: std::cell::RefCell<RefOwningIcTls> =
         const { std::cell::RefCell::new(RefOwningIcTls::new()) };
+}
+
+/// Owned cache edges detached without running any decref or callback. The caller
+/// publishes all derived function state before explicitly retiring this receipt.
+#[must_use = "detached cache ownership must be released under a live PyToken"]
+pub(crate) struct DetachedCallableIcCaches {
+    entries: RefOwningIcTls,
+}
+
+impl DetachedCallableIcCaches {
+    pub(crate) fn release(self, py: &PyToken<'_>) -> bool {
+        let mut detached = release_call_ic_entries(py, &self.entries.call);
+        detached |= release_method_ic_entries(py, &self.entries.method);
+        detached |= release_super_ic_entries(py, &self.entries.super_method);
+        detached
+    }
+}
+
+/// One callback-free publication removes every callable cache on this thread.
+/// Other threads reject old plans through the shared function mutation epoch.
+pub(crate) fn detach_callable_ic_caches() -> DetachedCallableIcCaches {
+    crate::gil_assert();
+    let entries = REF_OWNING_IC_TLS
+        .with(|cache| std::mem::replace(&mut *cache.borrow_mut(), RefOwningIcTls::new()));
+    DetachedCallableIcCaches { entries }
+}
+
+fn release_call_ic_entries(py: &PyToken<'_>, entries: &[(u64, CallBindIcEntry)]) -> bool {
+    let mut detached = false;
+    for &(_, entry) in entries {
+        if call_bind_ic_owns_target(entry) {
+            detached = true;
+            dec_ref_bits(py, entry.target_bits);
+        }
+    }
+    detached
+}
+
+fn release_method_ic_entries(py: &PyToken<'_>, entries: &[(u64, MethodIcEntry)]) -> bool {
+    let mut detached = false;
+    for &(_, entry) in entries {
+        if entry.valid {
+            for bits in [entry.attr_bits, entry.func_bits] {
+                if bits != 0 {
+                    detached = true;
+                    dec_ref_bits(py, bits);
+                }
+            }
+        }
+    }
+    detached
+}
+
+fn release_super_ic_entries(py: &PyToken<'_>, entries: &[(u64, SuperIcEntry)]) -> bool {
+    let mut detached = false;
+    for &(_, entry) in entries {
+        detached |= entry.valid;
+        entry.release(py);
+    }
+    detached
+}
+
+/// Only dereference a live call operand or a cache-owned function edge.
+unsafe fn cached_function_version_matches(func_bits: u64, recorded: u64) -> bool {
+    unsafe {
+        obj_from_bits(func_bits).as_ptr().is_some_and(|ptr| {
+            object_type_id(ptr) == TYPE_ID_FUNCTION && function_mutation_version(ptr) == recorded
+        })
+    }
 }
 
 #[inline]
@@ -486,12 +562,7 @@ pub(crate) fn clear_super_ic_cache(_py: &PyToken<'_>) -> bool {
             [(0, EMPTY_SUPER_IC_ENTRY); METHOD_IC_TLS_SIZE],
         )
     });
-    let mut detached = false;
-    for (_, entry) in previous {
-        detached |= entry.valid;
-        entry.release(_py);
-    }
-    detached
+    release_super_ic_entries(_py, &previous)
 }
 
 fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
@@ -554,6 +625,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     }
                     Some(CallBindIcEntry {
                         fn_ptr: function_fn_ptr(call_ptr),
+                        function_version: function_mutation_version(call_ptr),
                         target_bits: call_bits,
                         class_bits: 0,
                         class_version: 0,
@@ -589,6 +661,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 if fn_ptr == fn_addr!(molt_list_append) {
                     Some(CallBindIcEntry {
                         fn_ptr,
+                        function_version: function_mutation_version(func_ptr),
                         target_bits: func_bits,
                         class_bits: 0,
                         class_version: 0,
@@ -602,6 +675,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     if (1..=5).contains(&arity) {
                         Some(CallBindIcEntry {
                             fn_ptr,
+                            function_version: function_mutation_version(func_ptr),
                             target_bits: func_bits,
                             class_bits: 0,
                             class_version: 0,
@@ -697,6 +771,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 }
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(init_ptr),
+                    function_version: function_mutation_version(init_ptr),
                     target_bits: init_bits,
                     class_bits,
                     class_version: class_layout_version_bits(call_ptr),
@@ -736,6 +811,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                 }
                 Some(CallBindIcEntry {
                     fn_ptr: function_fn_ptr(func_ptr),
+                    function_version: function_mutation_version(func_ptr),
                     target_bits: func_bits,
                     class_bits,
                     class_version: class_layout_version_bits(class_ptr),
@@ -768,7 +844,8 @@ pub(super) unsafe fn try_call_bind_ic_fast(
         let call_ptr = call_obj.as_ptr()?;
 
         // Class epochs do not change when a function's own metadata changes.
-        // Revalidate the live binder flag before any cached already-bound ABI.
+        // Revalidate the shared executable/signature/defaults epoch and binder
+        // flag before any cached already-bound ABI, including cross-thread hits.
         let metadata_target = match entry.kind {
             CALL_BIND_IC_KIND_DIRECT_FUNC => Some(call_ptr),
             CALL_BIND_IC_KIND_LIST_APPEND | CALL_BIND_IC_KIND_BOUND_DIRECT_FUNC
@@ -782,7 +859,9 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             _ => None,
         };
         if metadata_target.is_some_and(|ptr| {
-            object_type_id(ptr) == TYPE_ID_FUNCTION && function_requires_binder_flag(ptr)
+            object_type_id(ptr) == TYPE_ID_FUNCTION
+                && (function_mutation_version(ptr) != entry.function_version
+                    || function_requires_binder_flag(ptr))
         }) {
             return None;
         }
@@ -980,20 +1059,18 @@ pub(super) unsafe fn try_call_bind_ic_fast(
                 };
                 call_target
             };
-            let closure_bits = function_closure_bits(init_ptr);
-            let code_bits = ensure_function_code_bits(_py, init_ptr);
-            if !recursion_guard_enter() {
+            let closure_bits = function_execution_closure_bits(init_ptr);
+            let Some(_recursion) = RecursionGuard::enter(_py) else {
                 dec_ref_bits(_py, inst_bits);
-                return Some(raise_exception::<_>(
-                    _py,
-                    "RecursionError",
-                    "maximum recursion depth exceeded",
-                ));
-            }
+                return Some(MoltObject::none().bits());
+            };
             // Direct IC calls borrow `self` exactly like the generic function
             // call path. The freshly allocated instance's original ref remains
             // the constructor result; no extra callee-owned self lane exists.
-            frame_stack_push_function(_py, code_bits, init_ptr);
+            let Some(_invocation) = FrameInvocationGuard::for_function(_py, init_ptr) else {
+                dec_ref_bits(_py, inst_bits);
+                return Some(MoltObject::none().bits());
+            };
             let init_result = if closure_bits != 0 {
                 match args.pos.len() {
                     0 => {
@@ -1068,8 +1145,8 @@ pub(super) unsafe fn try_call_bind_ic_fast(
                     }
                 }
             };
-            frame_stack_pop(_py);
-            recursion_guard_exit();
+            drop(_invocation);
+            drop(_recursion);
             // Same post-`__init__` resolution as every other constructor path:
             // consume and validate the owned result, then drop the instance and
             // yield `none` on either a pending exception or a non-None return.
@@ -1244,17 +1321,19 @@ unsafe fn call_method_ic_dispatch(
             // default-pad cannot complete (stale gate vs a shrunk __defaults__),
             // transparently fall back to the binder so the correct error/result
             // is produced.
-            let dispatch = |_py: &PyToken<'_>, func_bits: u64, plan: MethodIcCallPlan| -> u64 {
-                if direct_ok(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder)
-                    && obj_from_bits(func_bits)
-                        .as_ptr()
-                        .is_some_and(|ptr| !function_requires_binder_flag(ptr))
-                    && let Some(res) = call_direct(_py, func_bits, plan.fixed_arity)
-                {
-                    return res;
-                }
-                cached_bind(_py, func_bits)
-            };
+            let dispatch =
+                |_py: &PyToken<'_>, func_bits: u64, version: u64, plan: MethodIcCallPlan| -> u64 {
+                    if cached_function_version_matches(func_bits, version)
+                        && direct_ok(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder)
+                        && obj_from_bits(func_bits)
+                            .as_ptr()
+                            .is_some_and(|ptr| !function_requires_binder_flag(ptr))
+                        && let Some(res) = call_direct(_py, func_bits, plan.fixed_arity)
+                    {
+                        return res;
+                    }
+                    cached_bind(_py, func_bits)
+                };
 
             // Per-site IC: on a hit, validate the receiver class + layout
             // version, run the (cheap) shadow check only when the class permits
@@ -1263,19 +1342,17 @@ unsafe fn call_method_ic_dispatch(
             // call shape: positional-default methods take the allocation-free
             // direct path (padding defaults inline); kw-only/`*args`/`**kwargs`
             // methods take `cached_bind`, which still reuses the cached
-            // resolution (no re-resolve). Only a class/version mismatch, or an
-            // instance that shadows the method, falls through to the genuine
+            // resolution (no re-resolve). A class/function-version mismatch, or
+            // an instance that shadows the method, falls through to the genuine
             // resolve+insert below — preserving invalidation and stale-shape
             // semantics exactly.
             if let Some(site_id) = ic_site_from_bits(site_bits)
-                && let Some(entry) = method_ic_lookup(site_id)
+                && let Some(selected) = method_ic_lookup(_py, site_id)
             {
-                let class_bits = object_class_bits(recv_ptr);
-                if type_epoch_matches(entry.type_version)
-                    && class_bits == entry.class_bits
+                let entry = selected.entry;
+                if entry.matches_receiver(recv_ptr)
                     && cached_attr_matches_bytes(entry.attr_bits, name)
-                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && class_layout_version_bits(class_ptr) == entry.class_version
+                    && let Some(class_ptr) = obj_from_bits(entry.class_bits).as_ptr()
                 {
                     let shadowed = entry.can_shadow
                         && crate::builtins::attr::object_instance_shadows(
@@ -1284,10 +1361,14 @@ unsafe fn call_method_ic_dispatch(
                             class_ptr,
                             entry.attr_bits,
                         );
-                    if !shadowed {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    if !shadowed && entry.matches_receiver(recv_ptr) {
                         return dispatch(
                             _py,
                             entry.func_bits,
+                            entry.function_version,
                             MethodIcCallPlan {
                                 fixed_arity: entry.fixed_arity,
                                 n_pos_defaults: entry.n_pos_defaults,
@@ -1295,9 +1376,8 @@ unsafe fn call_method_ic_dispatch(
                             },
                         );
                     }
-                    // Shadowed instance: the cached class method does not apply
-                    // for THIS instance; fall through to real resolution (which
-                    // finds the instance attribute).
+                    // A shadow or callback-mutated authority invalidates this
+                    // selection. Resolve again while the snapshot stays pinned.
                 }
             }
 
@@ -1307,6 +1387,33 @@ unsafe fn call_method_ic_dispatch(
                 let info =
                     crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
                 if let Some(info) = info {
+                    // Pin before the instance dictionary can execute equality.
+                    // The resolver's function reference is borrowed from a class
+                    // that the callback is allowed to mutate or remove.
+                    let plan =
+                        method_ic_call_plan(_py, info.func_bits).unwrap_or(MethodIcCallPlan {
+                            fixed_arity: 0,
+                            n_pos_defaults: 0,
+                            needs_binder: true,
+                        });
+                    let function_version = obj_from_bits(info.func_bits)
+                        .as_ptr()
+                        .filter(|ptr| object_type_id(*ptr) == TYPE_ID_FUNCTION)
+                        .map_or(0, |ptr| function_mutation_version(ptr));
+                    let selected = MethodIcEntry {
+                        class_bits: info.class_bits,
+                        class_version: info.class_version,
+                        type_version,
+                        func_bits: info.func_bits,
+                        function_version,
+                        attr_bits,
+                        can_shadow: info.can_shadow,
+                        fixed_arity: plan.fixed_arity,
+                        n_pos_defaults: plan.n_pos_defaults,
+                        needs_binder: plan.needs_binder,
+                        valid: true,
+                    }
+                    .pin(_py);
                     let shadowed = info.can_shadow
                         && crate::builtins::attr::object_instance_shadows(
                             _py,
@@ -1316,46 +1423,24 @@ unsafe fn call_method_ic_dispatch(
                                 .unwrap_or(std::ptr::null_mut()),
                             attr_bits,
                         );
-                    if !shadowed && type_resolution_epoch_is_stable(type_version) {
-                        // Compute the call plan once and record it in the IC so
-                        // future hits decide the path with a couple of integer
-                        // compares. A method needing the full binder (kw-only/
-                        // varargs) is cached with `needs_binder` set so subsequent
-                        // hits take the `cached_bind` path (binder, but no
-                        // re-resolve); positional-default methods stay on the
-                        // direct path.
-                        let plan =
-                            method_ic_call_plan(_py, info.func_bits).unwrap_or(MethodIcCallPlan {
-                                fixed_arity: 0,
-                                n_pos_defaults: 0,
-                                needs_binder: true,
-                            });
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, attr_bits);
+                        return MoltObject::none().bits();
+                    }
+                    if !shadowed && selected.entry.matches_receiver(recv_ptr) {
                         if let Some(site_id) = ic_site_from_bits(site_bits) {
                             // Transfer the owned `attr_bits` ref into the IC; it
                             // is released by `method_ic_insert`/`clear` on reuse.
-                            method_ic_insert(
-                                _py,
-                                site_id,
-                                MethodIcEntry {
-                                    class_bits: info.class_bits,
-                                    class_version: info.class_version,
-                                    type_version,
-                                    func_bits: info.func_bits,
-                                    attr_bits,
-                                    can_shadow: info.can_shadow,
-                                    fixed_arity: plan.fixed_arity,
-                                    n_pos_defaults: plan.n_pos_defaults,
-                                    needs_binder: plan.needs_binder,
-                                    valid: true,
-                                },
-                            );
+                            // Replacing an owned cache entry can run a finalizer
+                            // that mutates this function or removes its class edge.
+                            method_ic_insert(_py, site_id, selected.entry);
                             // `attr_bits` ownership was transferred to the IC; do
                             // NOT dec-ref it here.
-                            return dispatch(_py, info.func_bits, plan);
+                            return dispatch(_py, info.func_bits, function_version, plan);
                         }
                         // No stable site id — cannot cache; dispatch then release
                         // the name ref we own (it was never cached).
-                        let res = dispatch(_py, info.func_bits, plan);
+                        let res = dispatch(_py, info.func_bits, function_version, plan);
                         dec_ref_bits(_py, attr_bits);
                         return res;
                     } else {
@@ -1375,7 +1460,7 @@ unsafe fn call_method_ic_dispatch(
         // plain method (custom `__getattribute__`, data descriptor, instance
         // shadow, non-function attr), or when name interning fails.
         let recv_ptr = recv_obj.as_ptr().unwrap_or(std::ptr::null_mut());
-        let method_bits = crate::molt_get_attr_generic(recv_ptr, name_ptr, name_len as u64) as u64;
+        let method_bits = crate::molt_get_attr_generic(recv_ptr, name_ptr, name_len as u64);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1576,7 +1661,10 @@ unsafe fn call_super_method_ic_dispatch(
             for (idx, a) in args.iter().copied().enumerate() {
                 argv[idx + 1] = a;
             }
-            call_function_obj_bound_vec(_py, func_bits, &argv[..args.len() + 1])
+            // These are raw user positionals, not the binder's physical argv.
+            // Code replacement may change keyword-only/variadic shape without
+            // changing machine arity; every hit and miss shares raw admission.
+            crate::call::function::call_function_obj_vec(_py, func_bits, &argv[..args.len() + 1])
         };
 
         // Per-site super IC: validate `type(self)` + layout version and
@@ -1589,6 +1677,7 @@ unsafe fn call_super_method_ic_dispatch(
             let self_class_bits = type_of_bits(_py, self_bits);
             if start_class_bits == entry.start_class_bits
                 && type_epoch_matches(entry.type_version)
+                && cached_function_version_matches(entry.func_bits, entry.function_version)
                 && self_class_bits == entry.self_class_bits
                 && cached_attr_matches_bytes(entry.attr_bits, name)
                 && let Some(self_class_ptr) = obj_from_bits(self_class_bits).as_ptr()
@@ -1616,6 +1705,11 @@ unsafe fn call_super_method_ic_dispatch(
                     self_class_version: info.self_class_version,
                     type_version,
                     func_bits: info.func_bits,
+                    function_version: function_mutation_version(
+                        obj_from_bits(info.func_bits)
+                            .as_ptr()
+                            .expect("resolved super function"),
+                    ),
                     attr_bits,
                     valid: true,
                 }
@@ -1637,7 +1731,7 @@ unsafe fn call_super_method_ic_dispatch(
         let super_ptr = obj_from_bits(super_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut());
-        let method_bits = crate::molt_get_attr_generic(super_ptr, name_ptr, name_len as u64) as u64;
+        let method_bits = crate::molt_get_attr_generic(super_ptr, name_ptr, name_len as u64);
         if exception_pending(_py) {
             dec_ref_bits(_py, super_bits);
             return MoltObject::none().bits();
@@ -1941,6 +2035,350 @@ pub extern "C" fn molt_invoke_ffi_ic(
 #[cfg(test)]
 mod super_cache_tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static SHADOW_ARMED: AtomicBool = AtomicBool::new(false);
+    static SHADOW_CLASS: AtomicU64 = AtomicU64::new(0);
+    static SHADOW_NAME: AtomicU64 = AtomicU64::new(0);
+    static SHADOW_HASH: AtomicU64 = AtomicU64::new(0);
+    static SHADOW_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn colliding_shadow_hash(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let bits = SHADOW_HASH.load(Ordering::SeqCst);
+            inc_ref_bits(py, bits);
+            bits
+        })
+    }
+
+    extern "C" fn colliding_shadow_eq(_self: u64, _other: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            if SHADOW_ARMED.swap(false, Ordering::SeqCst) {
+                SHADOW_CALLS.fetch_add(1, Ordering::SeqCst);
+                let result = crate::molt_del_attr_name(
+                    SHADOW_CLASS.load(Ordering::SeqCst),
+                    SHADOW_NAME.load(Ordering::SeqCst),
+                );
+                dec_ref_bits(py, result);
+                detach_callable_ic_caches().release(py);
+            }
+            MoltObject::from_bool(false).bits()
+        })
+    }
+
+    extern "C" fn return_second(_self: u64, value: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            inc_ref_bits(py, value);
+            value
+        })
+    }
+
+    unsafe fn signature_function(py: &PyToken<'_>, shape: &str) -> u64 {
+        unsafe {
+            let pointer = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "cache_replacement_return_second",
+                    return_second as *const (),
+                ),
+                2,
+            );
+            assert!(!pointer.is_null());
+            let self_name = attr_name_bits_from_bytes(py, b"self").unwrap();
+            let arg_name = attr_name_bits_from_bytes(py, b"replacement_arg").unwrap();
+            let positional_names = if shape == "positional" {
+                vec![self_name, arg_name]
+            } else {
+                vec![self_name]
+            };
+            let keyword_names = if shape == "kwonly" {
+                vec![arg_name]
+            } else {
+                vec![]
+            };
+            let positional = crate::alloc_tuple(py, &positional_names);
+            let keyword = crate::alloc_tuple(py, &keyword_names);
+            assert!(!positional.is_null() && !keyword.is_null());
+            let positional_bits = MoltObject::from_ptr(positional).bits();
+            let keyword_bits = MoltObject::from_ptr(keyword).bits();
+            for (name, value) in [
+                (b"__molt_arg_names__".as_slice(), positional_bits),
+                (b"__molt_posonly__", MoltObject::from_int(0).bits()),
+                (b"__molt_kwonly_names__", keyword_bits),
+                (
+                    b"__molt_vararg__",
+                    if shape == "vararg" {
+                        arg_name
+                    } else {
+                        MoltObject::none().bits()
+                    },
+                ),
+                (b"__molt_varkw__", MoltObject::none().bits()),
+            ] {
+                assert!(crate::call::class_init::function_set_attr_name(
+                    py, pointer, name, value
+                ));
+            }
+            for bits in [self_name, arg_name, positional_bits, keyword_bits] {
+                dec_ref_bits(py, bits);
+            }
+            MoltObject::from_ptr(pointer).bits()
+        }
+    }
+
+    #[test]
+    fn super_code_replacement_binds_raw_arguments_on_cold_and_warm_sites() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                for warm in [false, true] {
+                    for shape in ["positional", "kwonly", "vararg"] {
+                        detach_callable_ic_caches().release(py);
+                        let base =
+                            make_class(py, b"RawSuperBase", builtin_classes(py).object, None);
+                        let leaf = make_class(py, b"RawSuperLeaf", base, None);
+                        let receiver = crate::call::class_init::alloc_instance_for_class(
+                            py,
+                            obj_from_bits(leaf).as_ptr().unwrap(),
+                        );
+                        let target = signature_function(py, "positional");
+                        let source = signature_function(py, shape);
+                        let method_name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                        crate::molt_set_attr_name(base, method_name, target);
+                        let default = MoltObject::from_int(41).bits();
+                        let defaults =
+                            MoltObject::from_ptr(crate::alloc_tuple(py, &[default])).bits();
+                        let arg_name = attr_name_bits_from_bytes(py, b"replacement_arg").unwrap();
+                        let kwdefaults = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
+                            py,
+                            &[arg_name, MoltObject::from_int(73).bits()],
+                        ))
+                        .bits();
+                        for (name, value) in [
+                            (b"__defaults__".as_slice(), defaults),
+                            (b"__kwdefaults__", kwdefaults),
+                        ] {
+                            let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                            crate::molt_set_attr_name(target, name_bits, value);
+                            dec_ref_bits(py, name_bits);
+                        }
+                        let site = MoltObject::from_int(821).bits();
+                        let call = |args: &[u64]| {
+                            call_super_method_ic_dispatch(
+                                py,
+                                site,
+                                leaf,
+                                receiver,
+                                b"value".as_ptr(),
+                                5,
+                                args,
+                            )
+                        };
+                        let arg = MoltObject::from_int(9).bits();
+                        if warm {
+                            let result = call(&[arg]);
+                            assert_eq!(obj_from_bits(result).as_int(), Some(9));
+                            dec_ref_bits(py, result);
+                            assert!(super_ic_lookup(py, 821).is_some());
+                        }
+                        let code = crate::object::layout::ensure_function_code_bits(
+                            py,
+                            obj_from_bits(source).as_ptr().unwrap(),
+                        );
+                        let code_name = attr_name_bits_from_bytes(py, b"__code__").unwrap();
+                        crate::molt_set_attr_name(target, code_name, code);
+                        assert!(!exception_pending(py));
+                        for _ in 0..2 {
+                            for args in [&[][..], &[arg][..]] {
+                                let result = call(args);
+                                if shape == "kwonly" && !args.is_empty() {
+                                    let error =
+                                        crate::builtins::exceptions::molt_exception_last_pending();
+                                    assert!(
+                                        crate::builtins::exceptions::exception_matches_builtin_name(
+                                            py,
+                                            error,
+                                            "TypeError"
+                                        )
+                                    );
+                                    crate::molt_exception_clear();
+                                    dec_ref_bits(py, error);
+                                } else if shape == "vararg" {
+                                    assert!(!exception_pending(py));
+                                    let tuple = obj_from_bits(result).as_ptr().unwrap();
+                                    assert_eq!(object_type_id(tuple), TYPE_ID_TUPLE);
+                                    let values =
+                                        crate::object::seq_access::pin_tuple(py, tuple).unwrap();
+                                    assert_eq!(values.len(), args.len());
+                                    assert!(values.iter().copied().eq(args.iter().copied()));
+                                } else {
+                                    assert!(!exception_pending(py));
+                                    let expected = if shape == "kwonly" {
+                                        73
+                                    } else if args.is_empty() {
+                                        41
+                                    } else {
+                                        9
+                                    };
+                                    assert_eq!(obj_from_bits(result).as_int(), Some(expected));
+                                }
+                                dec_ref_bits(py, result);
+                                assert!(super_ic_lookup(py, 821).is_some());
+                            }
+                        }
+                        detach_callable_ic_caches().release(py);
+                        for bits in [
+                            code_name,
+                            arg_name,
+                            defaults,
+                            kwdefaults,
+                            method_name,
+                            target,
+                            source,
+                            receiver,
+                            leaf,
+                            base,
+                        ] {
+                            dec_ref_bits(py, bits);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn method_shadow_equality_can_delete_selected_function_and_detach_caches() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                for warm in [false, true] {
+                    detach_callable_ic_caches().release(py);
+                    let class = make_class(
+                        py,
+                        b"ShadowReentryOwner",
+                        builtin_classes(py).object,
+                        Some(base_value as *const ()),
+                    );
+                    let receiver = crate::call::class_init::alloc_instance_for_class(
+                        py,
+                        obj_from_bits(class).as_ptr().unwrap(),
+                    );
+                    let key_class =
+                        make_class(py, b"ShadowReentryKey", builtin_classes(py).object, None);
+                    for (name, target, arity) in [
+                        (
+                            b"__hash__".as_slice(),
+                            colliding_shadow_hash as *const (),
+                            1,
+                        ),
+                        (b"__eq__".as_slice(), colliding_shadow_eq as *const (), 2),
+                    ] {
+                        let name_bits = attr_name_bits_from_bytes(py, name).unwrap();
+                        let function = crate::builtins::functions::alloc_runtime_function_obj(
+                            py,
+                            crate::provenance::abi::expose_function_address(target),
+                            arity,
+                        );
+                        assert!(!function.is_null());
+                        let function_bits = MoltObject::from_ptr(function).bits();
+                        crate::molt_set_attr_name(key_class, name_bits, function_bits);
+                        dec_ref_bits(py, name_bits);
+                        dec_ref_bits(py, function_bits);
+                    }
+                    let key = crate::call::class_init::alloc_instance_for_class(
+                        py,
+                        obj_from_bits(key_class).as_ptr().unwrap(),
+                    );
+                    let name = attr_name_bits_from_bytes(py, b"value").unwrap();
+                    let hash = crate::molt_hash_builtin(name);
+                    SHADOW_HASH.store(hash, Ordering::SeqCst);
+                    SHADOW_CLASS.store(class, Ordering::SeqCst);
+                    SHADOW_NAME.store(name, Ordering::SeqCst);
+                    SHADOW_CALLS.store(0, Ordering::SeqCst);
+                    SHADOW_ARMED.store(false, Ordering::SeqCst);
+                    let dict_name = attr_name_bits_from_bytes(py, b"__dict__").unwrap();
+                    let dictionary = crate::molt_get_attr_name(receiver, dict_name);
+                    let dict_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
+                    assert_eq!(object_type_id(dict_ptr), TYPE_ID_DICT);
+                    crate::dict_set_in_place(py, dict_ptr, key, MoltObject::none().bits());
+                    assert!(!exception_pending(py));
+                    let call = || {
+                        molt_call_method_ic0(
+                            MoltObject::from_int(822).bits(),
+                            receiver,
+                            b"value".as_ptr(),
+                            5,
+                        )
+                    };
+                    if warm {
+                        let result = call();
+                        assert_eq!(obj_from_bits(result).as_int(), Some(1));
+                        dec_ref_bits(py, result);
+                        assert!(method_ic_lookup(py, 822).is_some());
+                    }
+                    SHADOW_ARMED.store(true, Ordering::SeqCst);
+                    let result = call();
+                    assert_eq!(SHADOW_CALLS.load(Ordering::SeqCst), 1);
+                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "AttributeError"
+                    ));
+                    crate::molt_exception_clear();
+                    dec_ref_bits(py, error);
+                    dec_ref_bits(py, result);
+                    assert!(method_ic_lookup(py, 822).is_none());
+                    detach_callable_ic_caches().release(py);
+                    for bits in [
+                        dictionary, dict_name, hash, name, key, key_class, receiver, class,
+                    ] {
+                        dec_ref_bits(py, bits);
+                    }
+                    SHADOW_HASH.store(0, Ordering::SeqCst);
+                    SHADOW_CLASS.store(0, Ordering::SeqCst);
+                    SHADOW_NAME.store(0, Ordering::SeqCst);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn method_cache_snapshot_pins_selected_edges_across_detachment() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            detach_callable_ic_caches().release(py);
+            let pointer = crate::alloc_list(py, &[]);
+            assert!(!pointer.is_null());
+            let bits = MoltObject::from_ptr(pointer).bits();
+            let count =
+                || unsafe { (*crate::object::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+            inc_ref_bits(py, bits); // The name owner transfers into the cache.
+            method_ic_insert(
+                py,
+                823,
+                MethodIcEntry {
+                    func_bits: bits,
+                    attr_bits: bits,
+                    valid: true,
+                    ..EMPTY_METHOD_IC_ENTRY
+                },
+            );
+            assert_eq!(count(), 3);
+            let selected = method_ic_lookup(py, 823).unwrap();
+            assert_eq!(count(), 5);
+            detach_callable_ic_caches().release(py);
+            assert_eq!(
+                count(),
+                3,
+                "the selected name and callable outlive TLS residency"
+            );
+            drop(selected);
+            assert_eq!(count(), 1);
+            dec_ref_bits(py, bits);
+        });
+    }
 
     #[test]
     fn cached_direct_call_rechecks_live_metadata_after_set_and_delete() {
@@ -1972,13 +2410,154 @@ mod super_cache_tests {
                 assert!(try_call_bind_ic_fast(py, entry, function, args).is_none());
                 crate::molt_del_attr_name(function, name);
                 assert!(!exception_pending(py));
+                assert!(try_call_bind_ic_fast(py, entry, function, args).is_none());
+                let refreshed = call_bind_ic_entry_for_call(py, function).unwrap();
                 assert_eq!(
-                    try_call_bind_ic_fast(py, entry, function, args),
+                    try_call_bind_ic_fast(py, refreshed, function, args),
                     Some(MoltObject::from_int(1).bits())
                 );
                 for bits in [name, builder, function] {
                     dec_ref_bits(py, bits);
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn callable_cache_detach_publishes_all_empty_before_releasing_any_edge() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            detach_callable_ic_caches().release(py);
+            let pointer = crate::alloc_list(py, &[]);
+            assert!(!pointer.is_null());
+            let bits = MoltObject::from_ptr(pointer).bits();
+            let count =
+                || unsafe { (*crate::object::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+            ic_tls_insert(
+                py,
+                811,
+                CallBindIcEntry {
+                    target_bits: bits,
+                    kind: CALL_BIND_IC_KIND_HEAP_CALL_SIMPLE_BOUND_FUNC,
+                    ..EMPTY_CALL_IC_ENTRY
+                },
+            );
+            inc_ref_bits(py, bits); // Transfer the method cache's owned name edge.
+            method_ic_insert(
+                py,
+                812,
+                MethodIcEntry {
+                    func_bits: bits,
+                    attr_bits: bits,
+                    valid: true,
+                    ..EMPTY_METHOD_IC_ENTRY
+                },
+            );
+            let selected = SuperIcEntry {
+                start_class_bits: bits,
+                self_class_bits: bits,
+                func_bits: bits,
+                attr_bits: bits,
+                valid: true,
+                ..EMPTY_SUPER_IC_ENTRY
+            }
+            .pin(py);
+            super_ic_insert(py, 813, &selected);
+            drop(selected);
+            assert_eq!(count(), 8);
+
+            let detached = detach_callable_ic_caches();
+            assert!(ic_tls_lookup(811).is_none());
+            assert!(method_ic_lookup(py, 812).is_none());
+            assert!(super_ic_lookup(py, 813).is_none());
+            assert_eq!(count(), 8, "detachment cannot run a finalizer");
+            assert!(detached.release(py));
+            assert_eq!(
+                count(),
+                1,
+                "retirement releases each displaced owner exactly once"
+            );
+            assert!(!detach_callable_ic_caches().release(py));
+            dec_ref_bits(py, bits);
+        });
+    }
+
+    #[test]
+    fn method_and_super_cache_versions_reject_mutation_without_tls_flush() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            detach_callable_ic_caches().release(py);
+            let base = make_class(
+                py,
+                b"VersionedCacheBase",
+                builtin_classes(py).object,
+                Some(base_value as *const ()),
+            );
+            let leaf = make_class(py, b"VersionedCacheLeaf", base, None);
+            let receiver = unsafe {
+                crate::call::class_init::alloc_instance_for_class(
+                    py,
+                    obj_from_bits(leaf).as_ptr().unwrap(),
+                )
+            };
+            let name = b"value";
+            let method_site = MoltObject::from_int(814).bits();
+            let super_site = MoltObject::from_int(815).bits();
+            let method_call =
+                || molt_call_method_ic0(method_site, receiver, name.as_ptr(), name.len() as u64);
+            let super_call = || {
+                molt_call_super_method_ic0(
+                    super_site,
+                    leaf,
+                    receiver,
+                    name.as_ptr(),
+                    name.len() as u64,
+                )
+            };
+            for result in [method_call(), super_call()] {
+                assert_eq!(obj_from_bits(result).as_int(), Some(1));
+                dec_ref_bits(py, result);
+            }
+            assert!(!exception_pending(py));
+            let selected = method_ic_lookup(py, 814).expect("must warm method shape");
+            let cached = selected.entry;
+            let defaults_name = attr_name_bits_from_bytes(py, b"__defaults__").unwrap();
+            let defaults_ptr = crate::alloc_tuple(py, &[MoltObject::from_int(99).bits()]);
+            assert!(!defaults_ptr.is_null());
+            let defaults = MoltObject::from_ptr(defaults_ptr).bits();
+            crate::molt_set_attr_name(cached.func_bits, defaults_name, defaults);
+            assert!(!exception_pending(py));
+            let version = unsafe {
+                function_mutation_version(obj_from_bits(cached.func_bits).as_ptr().unwrap())
+            };
+            assert_ne!(version, cached.function_version);
+            // Deliberately retain stale TLS entries, just as a different thread's
+            // cache survives a shared function mutation on the publishing thread.
+            assert_eq!(
+                method_ic_lookup(py, 814).unwrap().entry.function_version,
+                cached.function_version
+            );
+            assert_eq!(
+                super_ic_lookup(py, 815).unwrap().entry.function_version,
+                cached.function_version
+            );
+            for result in [method_call(), super_call()] {
+                assert_eq!(obj_from_bits(result).as_int(), Some(1));
+                dec_ref_bits(py, result);
+            }
+            assert!(!exception_pending(py));
+            assert_eq!(
+                method_ic_lookup(py, 814).unwrap().entry.function_version,
+                version
+            );
+            assert_eq!(
+                super_ic_lookup(py, 815).unwrap().entry.function_version,
+                version
+            );
+            assert_eq!(method_ic_lookup(py, 814).unwrap().entry.n_pos_defaults, 1);
+            detach_callable_ic_caches().release(py);
+            for bits in [defaults_name, defaults, receiver, leaf, base] {
+                dec_ref_bits(py, bits);
             }
         });
     }
@@ -2103,6 +2682,7 @@ mod super_cache_tests {
                 self_class_version: 0,
                 type_version: 0,
                 func_bits: bits,
+                function_version: 0,
                 attr_bits: bits,
                 valid: true,
             }
