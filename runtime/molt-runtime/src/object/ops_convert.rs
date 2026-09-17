@@ -6,7 +6,7 @@ use crate::const_data_cache::{
 };
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::inc_ref_ptr;
-use crate::object::ops::{as_float_extended, float_result_bits, is_float_extended};
+use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -518,21 +518,11 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
             unsafe { inc_ref_ptr(_py, ptr) };
             return val_bits;
         }
-        if complex_ptr_from_bits(val_bits).is_some() {
-            let type_label = type_name(_py, obj);
-            let msg =
-                format!("float() argument must be a string or a real number, not '{type_label}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        if let Some(value) = crate::builtins::numbers::float_from_number_protocol(_py, val_bits) {
+            return float_result_bits(_py, value);
         }
-        if let Some(i) = to_i64(obj) {
-            return MoltObject::from_float(i as f64).bits();
-        }
-        if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-            let big = unsafe { bigint_ref(ptr) };
-            if let Some(val) = big.to_f64() {
-                return MoltObject::from_float(val).bits();
-            }
-            return raise_exception::<_>(_py, "OverflowError", "int too large to convert to float");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
             unsafe {
@@ -567,50 +557,11 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     let msg = format!("could not convert string to float: {rendered}");
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
-                let float_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    let res_obj = obj_from_bits(res_bits);
-                    if is_float_extended(res_obj) {
-                        return res_bits;
-                    }
-                    let owner = class_name_for_error(type_of_bits(_py, val_bits));
-                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let index_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-                if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    let res_obj = obj_from_bits(res_bits);
-                    if let Some(i) = to_i64(res_obj) {
-                        return MoltObject::from_float(i as f64).bits();
-                    }
-                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    let msg = format!("__index__ returned non-int (type {res_type})");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
             }
         }
         let msg = format!(
             "float() argument must be a string or a real number, not '{}'",
-            type_name(_py, obj)
+            class_name_for_error(type_of_bits(_py, val_bits))
         );
         raise_exception::<_>(_py, "TypeError", &msg)
     })
@@ -978,29 +929,10 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
-            unsafe {
-                let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_STRING
-                    || type_id == TYPE_ID_BYTES
-                    || type_id == TYPE_ID_BYTEARRAY
-                {
-                    let msg = format!(
-                        "must be real number, not {}",
-                        type_name(_py, obj_from_bits(val_bits))
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if complex_ptr_from_bits(val_bits).is_some() {
-            let msg = format!(
-                "must be real number, not {}",
-                type_name(_py, obj_from_bits(val_bits))
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        let out_bits = molt_float_from_obj(val_bits);
+        let Some(value) = crate::builtins::numbers::float_as_double(_py, val_bits) else {
+            return MoltObject::none().bits();
+        };
+        let out_bits = float_result_bits(_py, value);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1009,6 +941,7 @@ pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
             return out_bits;
         }
         if !issubclass_bits(cls_bits, builtins.float) {
+            dec_ref_bits(_py, out_bits);
             return raise_exception::<_>(
                 _py,
                 "TypeError",

@@ -54,24 +54,12 @@ pub(crate) fn decode_slice_bound(
     len: isize,
     default: isize,
 ) -> Result<isize, SliceError> {
-    if obj.is_none() {
-        return Ok(default);
-    }
-    let msg = "slice indices must be integers or None or have an __index__ method";
-    let Some(mut idx) = index_bigint_from_obj(_py, obj.bits(), msg) else {
-        return Err(SliceError::Type);
-    };
-    let len_big = BigInt::from(len);
-    if idx.is_negative() {
-        idx += &len_big;
-    }
-    if idx < BigInt::zero() {
-        return Ok(0);
-    }
-    if idx > len_big {
-        return Ok(len);
-    }
-    Ok(idx.to_isize().unwrap_or(len))
+    Ok(adjust_slice_bound(
+        decode_slice_index(_py, obj)?.as_ref(),
+        len,
+        default,
+        false,
+    ))
 }
 
 pub(crate) fn decode_slice_bound_neg(
@@ -80,25 +68,50 @@ pub(crate) fn decode_slice_bound_neg(
     len: isize,
     default: isize,
 ) -> Result<isize, SliceError> {
+    Ok(adjust_slice_bound(
+        decode_slice_index(_py, obj)?.as_ref(),
+        len,
+        default,
+        true,
+    ))
+}
+
+fn decode_slice_index(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<BigInt>, SliceError> {
     if obj.is_none() {
-        return Ok(default);
+        return Ok(None);
     }
-    let msg = "slice indices must be integers or None or have an __index__ method";
-    let Some(mut idx) = index_bigint_from_obj(_py, obj.bits(), msg) else {
-        return Err(SliceError::Type);
+    index_bigint_from_obj(
+        py,
+        obj.bits(),
+        "slice indices must be integers or None or have an __index__ method",
+    )
+    .map(Some)
+    .ok_or(SliceError::Type)
+}
+
+fn adjust_slice_bound(
+    index: Option<&BigInt>,
+    len: isize,
+    default: isize,
+    backwards: bool,
+) -> isize {
+    let Some(index) = index else {
+        return default;
     };
+    let mut idx = index.clone();
     let len_big = BigInt::from(len);
     if idx.is_negative() {
         idx += &len_big;
     }
-    let neg_one = BigInt::from(-1);
-    if idx < neg_one {
-        return Ok(-1);
+    let lower = if backwards { -1 } else { 0 };
+    let upper = if backwards { len - 1 } else { len };
+    if idx < BigInt::from(lower) {
+        return lower;
     }
-    if idx >= len_big {
-        return Ok(len - 1);
+    if idx > BigInt::from(upper) {
+        return upper;
     }
-    Ok(idx.to_isize().unwrap_or(len - 1))
+    idx.to_isize().unwrap_or(upper)
 }
 
 pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<isize, SliceError> {
@@ -112,13 +125,53 @@ pub(crate) fn decode_slice_step(_py: &PyToken<'_>, obj: MoltObject) -> Result<is
     if step.is_zero() {
         return Err(SliceError::Value);
     }
-    if let Some(step) = step.to_i64() {
-        return Ok(step as isize);
+    if let Some(step) = step.to_isize() {
+        return Ok(step.max(-isize::MAX));
     }
     if step.is_negative() {
-        return Ok(-(i64::MAX as isize));
+        return Ok(-isize::MAX);
     }
-    Ok(i64::MAX as isize)
+    Ok(isize::MAX)
+}
+
+/// Slice coercions may re-enter and mutate their receiver. Store only decoded
+/// integers across callbacks; normalize against the receiver's live length
+/// after every callback/RHS conversion has finished.
+pub(crate) struct DecodedSlice {
+    start: Option<BigInt>,
+    stop: Option<BigInt>,
+    step: isize,
+}
+
+impl DecodedSlice {
+    pub(crate) fn decode(
+        py: &PyToken<'_>,
+        start: MoltObject,
+        stop: MoltObject,
+        step: MoltObject,
+    ) -> Result<Self, SliceError> {
+        let step = decode_slice_step(py, step)?;
+        let start = decode_slice_index(py, start)?;
+        let stop = decode_slice_index(py, stop)?;
+        Ok(Self { start, stop, step })
+    }
+
+    pub(crate) fn adjust(&self, len: isize) -> (isize, isize, isize) {
+        let backwards = self.step < 0;
+        let start = adjust_slice_bound(
+            self.start.as_ref(),
+            len,
+            if backwards { len - 1 } else { 0 },
+            backwards,
+        );
+        let stop = adjust_slice_bound(
+            self.stop.as_ref(),
+            len,
+            if backwards { -1 } else { len },
+            backwards,
+        );
+        (start, stop, self.step)
+    }
 }
 
 pub(crate) fn normalize_slice_indices(
@@ -128,17 +181,7 @@ pub(crate) fn normalize_slice_indices(
     stop_obj: MoltObject,
     step_obj: MoltObject,
 ) -> Result<(isize, isize, isize), SliceError> {
-    let step = decode_slice_step(_py, step_obj)?;
-    if step > 0 {
-        let start = decode_slice_bound(_py, start_obj, len, 0)?;
-        let stop = decode_slice_bound(_py, stop_obj, len, len)?;
-        return Ok((start, stop, step));
-    }
-    let start_default = if len == 0 { -1 } else { len - 1 };
-    let stop_default = -1;
-    let start = decode_slice_bound_neg(_py, start_obj, len, start_default)?;
-    let stop = decode_slice_bound_neg(_py, stop_obj, len, stop_default)?;
-    Ok((start, stop, step))
+    Ok(DecodedSlice::decode(_py, start_obj, stop_obj, step_obj)?.adjust(len))
 }
 
 pub(crate) fn collect_slice_indices(start: isize, stop: isize, step: isize) -> Vec<usize> {

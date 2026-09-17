@@ -3095,7 +3095,6 @@ dependencies = [
  "trybuild",
  "tungstenite",
  "unicode-casefold",
- "unicode-ident",
  "unicode_names2 3.1.0",
  "webpki-roots 1.0.8",
  "windows-sys 0.61.2",

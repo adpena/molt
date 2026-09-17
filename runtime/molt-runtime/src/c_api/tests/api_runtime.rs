@@ -174,6 +174,547 @@ fn array_buffer_export_lease_blocks_resize_until_release() {
 }
 
 #[test]
+fn buffer_export_contract_all_bytearray_resize_families() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        for operation in 0..15 {
+            let owner = unsafe { molt_bytearray_from(b"abc".as_ptr(), 3) };
+            let view = crate::molt_memoryview_new(owner);
+            let payload = unsafe { molt_bytes_from(b"xy".as_ptr(), 2) };
+            let slice = crate::molt_slice_new(
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_int(1).bits(),
+                none_bits(),
+            );
+            let stride =
+                crate::molt_slice_new(none_bits(), none_bits(), MoltObject::from_int(2).bits());
+            let empty = unsafe { molt_bytes_from(std::ptr::null(), 0) };
+            let run = || match operation {
+                0 => crate::molt_bytearray_append(owner, MoltObject::from_int(100).bits()),
+                1 => crate::molt_bytearray_extend(owner, payload),
+                2 => crate::molt_bytearray_clear(owner),
+                3 => crate::molt_bytearray_insert(
+                    owner,
+                    MoltObject::from_int(1).bits(),
+                    MoltObject::from_int(100).bits(),
+                ),
+                4 => crate::molt_bytearray_pop(owner, none_bits()),
+                5 => crate::molt_bytearray_remove(owner, MoltObject::from_int(97).bits()),
+                6 => crate::molt_bytearray_resize(owner, MoltObject::from_int(1).bits()),
+                7 => crate::molt_bytearray_resize(owner, MoltObject::from_int(4096).bits()),
+                8 => crate::molt_inplace_add(owner, payload),
+                9 => crate::molt_inplace_mul(owner, MoltObject::from_int(0).bits()),
+                10 => crate::molt_inplace_mul(owner, MoltObject::from_int(2).bits()),
+                11 => crate::molt_store_index(owner, slice, payload),
+                12 => crate::molt_del_index(owner, MoltObject::from_int(0).bits()),
+                13 => crate::molt_del_index(owner, slice),
+                _ => crate::molt_store_index(owner, stride, empty),
+            };
+            let _ = run();
+            assert_pending_exception_class(py, "BufferError");
+            assert_eq!(
+                unsafe { crate::bytearray_vec_ref(obj_from_bits(owner).as_ptr().unwrap()) }
+                    .as_slice(),
+                b"abc",
+                "operation {operation}"
+            );
+            crate::molt_memoryview_release(view);
+            let result = run();
+            assert!(
+                !exception_pending(py),
+                "resize after release: operation {operation}"
+            );
+            // Mutating operators return their receiver with an owned ref.
+            if (8..=10).contains(&operation) {
+                dec_ref_bits(py, result);
+            }
+            for bits in [view, owner, payload, slice, stride, empty] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_derived_views_release_and_drop_independently() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let owner = unsafe { molt_bytearray_from(b"abcd".as_ptr(), 4) };
+        let root = crate::molt_memoryview_new(owner);
+        let clone = crate::molt_memoryview_new(root);
+        let readonly = crate::molt_memoryview_toreadonly(root);
+        let format = MoltObject::from_ptr(alloc_string(py, b"H")).bits();
+        let cast = crate::molt_memoryview_cast(
+            root,
+            format,
+            none_bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        let slice = crate::molt_slice_new(none_bits(), none_bits(), MoltObject::from_int(2).bits());
+        let sliced = crate::molt_index(root, slice);
+        assert!(!exception_pending(py));
+        crate::molt_memoryview_release(root);
+        crate::molt_memoryview_release(root);
+        for derived in [clone, readonly, cast, sliced] {
+            crate::molt_bytearray_append(owner, MoltObject::from_int(120).bits());
+            assert_pending_exception_class(py, "BufferError");
+            // Destruction without explicit release must discharge its pin.
+            dec_ref_bits(py, derived);
+        }
+        crate::molt_bytearray_append(owner, MoltObject::from_int(120).bits());
+        assert!(!exception_pending(py));
+        for bits in [root, owner, format, slice] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_c_exports_block_release_and_pin_imported_views() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let owner = unsafe { molt_bytearray_from(b"abc".as_ptr(), 3) };
+        let root = crate::molt_memoryview_new(owner);
+        let mut first = MoltBufferView::default();
+        let mut second = MoltBufferView::default();
+        assert_eq!(unsafe { molt_buffer_acquire(root, &mut first) }, 0);
+        assert_eq!(unsafe { molt_buffer_acquire(owner, &mut second) }, 0);
+        let imported = unsafe { molt_memoryview_from_buffer(&first) };
+        assert!(!exception_pending(py));
+        crate::molt_memoryview_release(root);
+        assert_pending_exception_class(py, "BufferError");
+        assert!(!unsafe { crate::memoryview_released(obj_from_bits(root).as_ptr().unwrap()) });
+        assert_eq!(unsafe { molt_buffer_release(&mut first) }, 0);
+        assert_eq!(unsafe { molt_buffer_release(&mut first) }, 0);
+        crate::molt_memoryview_release(root);
+        assert!(!exception_pending(py));
+        assert_eq!(unsafe { molt_buffer_release(&mut second) }, 0);
+        crate::molt_bytearray_clear(owner);
+        assert_pending_exception_class(py, "BufferError");
+        crate::molt_memoryview_release(imported);
+        crate::molt_bytearray_clear(owner);
+        assert!(!exception_pending(py));
+        for bits in [owner, root, imported] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_same_size_edits_and_noops_preserve_address() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let owner = unsafe { molt_bytearray_from(b"abc".as_ptr(), 3) };
+        let mut export = MoltBufferView::default();
+        assert_eq!(unsafe { molt_buffer_acquire(owner, &mut export) }, 0);
+        crate::molt_store_index(
+            owner,
+            MoltObject::from_int(0).bits(),
+            MoltObject::from_int(122).bits(),
+        );
+        crate::molt_bytearray_reverse(owner);
+        crate::molt_bytearray_resize(owner, MoltObject::from_int(3).bits());
+        let empty = unsafe { molt_bytes_from(std::ptr::null(), 0) };
+        crate::molt_bytearray_extend(owner, empty);
+        let result = crate::molt_inplace_mul(owner, MoltObject::from_int(1).bits());
+        dec_ref_bits(py, result);
+        let slice = crate::molt_slice_new(
+            MoltObject::from_int(1).bits(),
+            MoltObject::from_int(1).bits(),
+            none_bits(),
+        );
+        crate::molt_del_index(owner, slice);
+        assert!(!exception_pending(py));
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(export.data, 3) },
+            b"cbz"
+        );
+        assert_eq!(
+            unsafe { molt_bytearray_as_ptr(owner, std::ptr::null_mut()) },
+            export.data
+        );
+        assert_eq!(unsafe { molt_buffer_release(&mut export) }, 0);
+        for bits in [owner, empty, slice] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_allocation_failure_unwinds_only_its_own_export() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::array_mod::{
+            array_buffer_owner_bits, molt_array_append, molt_array_new,
+        };
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        let typecode = MoltObject::from_ptr(alloc_string(py, b"i")).bits();
+        let array = molt_array_new(typecode);
+        molt_array_append(array, MoltObject::from_int(1).bits());
+        let mut export = MoltBufferView::default();
+        assert_eq!(unsafe { molt_buffer_acquire(array, &mut export) }, 0);
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_allocations: Some(0),
+            ..Default::default()
+        })));
+        let failed = array_buffer_owner_bits(py, array);
+        set_tracker(Box::new(UnlimitedTracker));
+        assert!(failed.is_err());
+        let _ = molt_err_clear();
+        molt_array_append(array, MoltObject::from_int(2).bits());
+        assert_pending_exception_class(py, "BufferError");
+        assert_eq!(unsafe { molt_buffer_release(&mut export) }, 0);
+        molt_array_append(array, MoltObject::from_int(2).bits());
+        assert!(!exception_pending(py));
+
+        let owner = unsafe { molt_bytearray_from(b"abc".as_ptr(), 3) };
+        for allocations in 0..5 {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(allocations),
+                ..Default::default()
+            })));
+            let view = crate::molt_memoryview_new(owner);
+            set_tracker(Box::new(UnlimitedTracker));
+            let _ = molt_err_clear();
+            dec_ref_bits(py, view);
+            assert!(!unsafe {
+                crate::object::buffer_exports::bytearray_is_exported(
+                    obj_from_bits(owner).as_ptr().unwrap(),
+                )
+            });
+        }
+        crate::molt_bytearray_clear(owner);
+        assert!(!exception_pending(py));
+        for bits in [owner, array, typecode] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_scoped_consumer_and_gc_detach_share_lifetime() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::object::buffer_exports::{ScopedBufferExport, bytearray_is_exported};
+        use crate::object::heap_lifecycle::{
+            DetachedEdgeSink, detach_terminal_owned_edges, terminal_detach_capacity,
+        };
+        let owner = unsafe { molt_bytearray_from(b"abc".as_ptr(), 3) };
+        let owner_ptr = obj_from_bits(owner).as_ptr().unwrap();
+        let view = crate::molt_memoryview_new(owner);
+        let view_ptr = obj_from_bits(view).as_ptr().unwrap();
+        {
+            let _consumer = ScopedBufferExport::new(py, view).expect("consumer export");
+            crate::molt_memoryview_release(view);
+            assert_pending_exception_class(py, "BufferError");
+            crate::molt_bytearray_clear(owner);
+            assert_pending_exception_class(py, "BufferError");
+        }
+        let (edges, resources) = unsafe { terminal_detach_capacity(py, view_ptr) };
+        let mut sink = DetachedEdgeSink::try_with_capacities(edges, resources).unwrap();
+        unsafe {
+            detach_terminal_owned_edges(py, view_ptr, &mut sink);
+        }
+        assert!(unsafe { crate::memoryview_released(view_ptr) });
+        assert!(!unsafe { bytearray_is_exported(owner_ptr) });
+        sink.release_all(py);
+        crate::molt_memoryview_release(view);
+        crate::molt_bytearray_clear(owner);
+        assert!(!exception_pending(py));
+        for bits in [view, owner] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::io::{
+            file_handle_is_closed, molt_bytesio_new, molt_file_close, molt_file_flush,
+            molt_file_getbuffer, molt_file_getvalue, molt_file_truncate, molt_file_write,
+        };
+        let initial = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
+        let payload = unsafe { molt_bytes_from(b"Z".as_ptr(), 1) };
+        let empty = unsafe { molt_bytes_from(std::ptr::null(), 0) };
+        let stream = molt_bytesio_new(none_bits(), initial);
+        let view = molt_file_getbuffer(stream);
+        assert!(!exception_pending(py));
+        for bytes in [payload, empty] {
+            molt_file_write(stream, bytes);
+            assert_pending_exception_class(py, "BufferError");
+        }
+        molt_file_truncate(stream, MoltObject::from_int(3).bits());
+        assert_pending_exception_class(py, "BufferError");
+        molt_file_close(stream);
+        assert_pending_exception_class(py, "BufferError");
+        let handle = unsafe { crate::file_handle_ptr(obj_from_bits(stream).as_ptr().unwrap()) };
+        assert!(!file_handle_is_closed(unsafe { &*handle }));
+        // Exercise the real buffered flush failure/retry path over the same
+        // storage without bypassing write or flush admission.
+        unsafe {
+            (*handle).buffer_size = 8;
+        }
+        molt_file_write(stream, payload);
+        assert!(!exception_pending(py));
+        molt_file_flush(stream);
+        assert_pending_exception_class(py, "BufferError");
+        assert_eq!(unsafe { &(*handle).write_buf }.as_slice(), b"Z");
+        crate::molt_memoryview_release(view);
+        molt_file_flush(stream);
+        assert!(!exception_pending(py));
+        assert!(unsafe { &(*handle).write_buf }.is_empty());
+        let value = molt_file_getvalue(stream);
+        assert_eq!(
+            unsafe { crate::bytes_like_slice_raw(obj_from_bits(value).as_ptr().unwrap()).unwrap() },
+            b"Zbc"
+        );
+        molt_file_close(stream);
+        assert!(!exception_pending(py));
+        assert!(file_handle_is_closed(unsafe { &*handle }));
+        for bits in [initial, payload, empty, stream, view, value] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_array_root_and_lease_survive_source_drop() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::array_mod::{molt_array_append, molt_array_new};
+        let format = MoltObject::from_ptr(alloc_string(py, b"i")).bits();
+        let owner = molt_array_new(format);
+        molt_array_append(owner, MoltObject::from_int(123).bits());
+        let root = crate::molt_memoryview_new(owner);
+        assert!(!exception_pending(py));
+        let clone = crate::molt_memoryview_new(root);
+        dec_ref_bits(py, owner);
+        crate::molt_memoryview_release(root);
+        let mut exported = MoltBufferView::default();
+        assert_eq!(unsafe { molt_buffer_acquire(clone, &mut exported) }, 0);
+        assert_eq!(exported.len, 4);
+        assert_eq!(
+            unsafe { std::ptr::read_unaligned(exported.data.cast::<i32>()) },
+            123
+        );
+        assert_eq!(unsafe { molt_buffer_release(&mut exported) }, 0);
+        let value = crate::molt_index(clone, MoltObject::from_int(0).bits());
+        assert_eq!(to_i64(obj_from_bits(value)), Some(123));
+        assert!(!exception_pending(py));
+        for bits in [format, root, clone, value] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_writable_consumer_uses_typed_shaped_byte_capacity() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::io::{molt_bytesio_new, molt_file_readinto};
+        use crate::object::buffer_exports::ScopedWritableBuffer;
+        for (format_bytes, itemsize, shape, strides, expected_len) in [
+            (b"H".as_slice(), 2, vec![4], vec![2], 8),
+            (b"H".as_slice(), 2, vec![2, 2], vec![4, 2], 8),
+            (b"B".as_slice(), 1, vec![2, 4], vec![4, 1], 8),
+            (b"H".as_slice(), 2, vec![], vec![], 2),
+            (b"B".as_slice(), 1, vec![0, 2], vec![4, 1], 0),
+        ] {
+            let owner = unsafe { molt_bytearray_from(b"............".as_ptr(), 12) };
+            let format = MoltObject::from_ptr(alloc_string(py, format_bytes)).bits();
+            let view_ptr = alloc_shaped_memoryview_for_test(
+                py, owner, 2, itemsize, false, format, shape, strides,
+            );
+            assert!(!view_ptr.is_null());
+            let view = MoltObject::from_ptr(view_ptr).bits();
+            let source = unsafe { molt_bytes_from(b"abcdefgh".as_ptr(), 8) };
+            let stream = molt_bytesio_new(none_bits(), source);
+            {
+                let buffer = ScopedWritableBuffer::new(py, view).expect("writable byte span");
+                assert_eq!(buffer.len(), expected_len);
+                assert!(!buffer.as_mut_ptr().is_null());
+                crate::molt_memoryview_release(view);
+                assert_pending_exception_class(py, "BufferError");
+                let copied = molt_file_readinto(stream, view);
+                assert_eq!(to_i64(obj_from_bits(copied)), Some(expected_len as i64));
+                assert!(!exception_pending(py));
+                let owner_bytes =
+                    unsafe { crate::bytearray_vec_ref(obj_from_bits(owner).as_ptr().unwrap()) };
+                assert_eq!(&owner_bytes[..2], b"..");
+                assert_eq!(
+                    &owner_bytes[2..2 + expected_len],
+                    &b"abcdefgh"[..expected_len]
+                );
+                assert!(
+                    owner_bytes[2 + expected_len..]
+                        .iter()
+                        .all(|&byte| byte == b'.')
+                );
+                crate::molt_bytearray_clear(owner);
+                assert_pending_exception_class(py, "BufferError");
+            }
+            crate::molt_memoryview_release(view);
+            crate::molt_bytearray_clear(owner);
+            assert!(!exception_pending(py), "last consumer pin must be released");
+            for bits in [owner, format, view, source, stream] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_bytesio_readinto_accepts_overlapping_exports() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::io::{
+            molt_bytesio_new, molt_file_getbuffer, molt_file_getvalue, molt_file_readinto,
+            molt_file_seek,
+        };
+        for (source_offset, destination_offset, count, expected) in [
+            (0, 1, 5, b"aabcde".as_slice()),
+            (1, 0, 5, b"bcdeff".as_slice()),
+            (0, 0, 6, b"abcdef".as_slice()),
+        ] {
+            let initial = unsafe { molt_bytes_from(b"abcdef".as_ptr(), 6) };
+            let stream = molt_bytesio_new(none_bits(), initial);
+            let root = molt_file_getbuffer(stream);
+            let root_ptr = obj_from_bits(root).as_ptr().unwrap();
+            let base = unsafe { crate::memoryview_base_bits(root_ptr) };
+            let format = MoltObject::from_ptr(alloc_string(py, b"B")).bits();
+            let destination = MoltObject::from_ptr(alloc_shaped_memoryview_for_test(
+                py,
+                base,
+                destination_offset,
+                1,
+                false,
+                format,
+                vec![count],
+                vec![1],
+            ))
+            .bits();
+            molt_file_seek(
+                stream,
+                MoltObject::from_int(source_offset).bits(),
+                MoltObject::from_int(0).bits(),
+            );
+            let copied = molt_file_readinto(stream, destination);
+            assert_eq!(to_i64(obj_from_bits(copied)), Some(count as i64));
+            assert!(!exception_pending(py));
+            let value = molt_file_getvalue(stream);
+            assert_eq!(
+                unsafe { crate::bytes_like_slice_raw(obj_from_bits(value).as_ptr().unwrap()) },
+                Some(expected)
+            );
+            for bits in [destination, root] {
+                crate::molt_memoryview_release(bits);
+                dec_ref_bits(py, bits);
+            }
+            for bits in [format, initial, stream, value] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::array_mod::{molt_array_append, molt_array_new, molt_array_tobytes};
+        use crate::builtins::io::{molt_bytesio_new, molt_file_readinto};
+        use crate::object::buffer_exports::ScopedWritableBuffer;
+        let format = MoltObject::from_ptr(alloc_string(py, b"H")).bits();
+        let owner = molt_array_new(format);
+        for _ in 0..4 {
+            molt_array_append(owner, MoltObject::from_int(0).bits());
+        }
+        let source = unsafe { molt_bytes_from(b"abcdefgh".as_ptr(), 8) };
+        let stream = molt_bytesio_new(none_bits(), source);
+        {
+            let buffer = ScopedWritableBuffer::new(py, owner).expect("typed array byte span");
+            assert_eq!(buffer.len(), 8);
+            molt_array_append(owner, MoltObject::from_int(1).bits());
+            assert_pending_exception_class(py, "BufferError");
+            let copied = molt_file_readinto(stream, owner);
+            assert_eq!(to_i64(obj_from_bits(copied)), Some(8));
+            assert!(!exception_pending(py));
+            assert_eq!(
+                unsafe { std::slice::from_raw_parts(buffer.as_mut_ptr(), 8) },
+                b"abcdefgh"
+            );
+        }
+        molt_array_append(owner, MoltObject::from_int(1).bits());
+        assert!(!exception_pending(py), "all consumer pins must be released");
+        let bytes = molt_array_tobytes(owner);
+        let buffer = ScopedWritableBuffer::new(py, owner).expect("array lease");
+        dec_ref_bits(py, owner);
+        assert_eq!(buffer.len(), 10);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(buffer.as_mut_ptr(), buffer.len()) },
+            unsafe { crate::bytes_like_slice_raw(obj_from_bits(bytes).as_ptr().unwrap()).unwrap() },
+        );
+        drop(buffer);
+        for bits in [format, source, stream, bytes] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::object::buffer_exports::{ScopedWritableBuffer, WritableBufferError};
+        for (readonly, offset, shape, strides) in [
+            (true, 0, vec![8], vec![1]),
+            (false, 0, vec![4], vec![2]),
+            (false, 7, vec![8], vec![-1]),
+            (false, 0, vec![0], vec![2]),
+            (false, 0, vec![2, 2], vec![4, 1]),
+        ] {
+            let owner = unsafe { molt_bytearray_from(b"abcdefgh".as_ptr(), 8) };
+            let format = MoltObject::from_ptr(alloc_string(py, b"B")).bits();
+            let view_ptr = alloc_shaped_memoryview_for_test(
+                py, owner, offset, 1, readonly, format, shape, strides,
+            );
+            assert!(!view_ptr.is_null());
+            let view = MoltObject::from_ptr(view_ptr).bits();
+            assert!(matches!(
+                ScopedWritableBuffer::new(py, view),
+                Err(WritableBufferError::Invalid)
+            ));
+            assert!(!exception_pending(py));
+            // Failed admission releases only its own export, so explicit view
+            // release succeeds and discharges the final bytearray resize pin.
+            crate::molt_memoryview_release(view);
+            crate::molt_bytearray_clear(owner);
+            assert!(!exception_pending(py));
+            assert!(matches!(
+                ScopedWritableBuffer::new(py, view),
+                Err(WritableBufferError::Pending)
+            ));
+            assert_pending_exception_class(py, "ValueError");
+            for bits in [view, owner, format] {
+                dec_ref_bits(py, bits);
+            }
+        }
+        let readonly = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
+        for value in [readonly, MoltObject::from_int(1).bits(), none_bits()] {
+            assert!(matches!(
+                ScopedWritableBuffer::new(py, value),
+                Err(WritableBufferError::Invalid)
+            ));
+            assert!(!exception_pending(py));
+        }
+        dec_ref_bits(py, readonly);
+    });
+}
+
+#[test]
 fn buffer_acquire_exports_shaped_memoryview_descriptor() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {

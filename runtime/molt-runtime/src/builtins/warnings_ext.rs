@@ -82,6 +82,15 @@ fn i64_from_bits_default(bits: u64, default: i64) -> i64 {
     default
 }
 
+fn category_name_from_bits(py: &PyToken<'_>, bits: u64, default: &str) -> String {
+    if let Some(ptr) = obj_from_bits(bits).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_TYPE
+    {
+        return class_name_for_error(bits);
+    }
+    string_from_bits_or(py, bits, default)
+}
+
 fn bool_from_bits_default(bits: u64, default: bool) -> bool {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -212,35 +221,78 @@ fn should_suppress(action: &str, message: &str, category: &str, lineno: i64) -> 
 
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
-/// Issue a warning. Determines the action based on the current filter list
-/// and either raises an exception (for "error"), suppresses the warning,
-/// or formats and emits it to stderr.
-///
-/// Arguments:
-///   message_bits: The warning message (str)
-///   category_bits: The warning category name (str), e.g., "UserWarning"
-///   stacklevel_bits: Stack level for determining the caller location (int)
-///
-/// Returns None.
-/// Emit a DeprecationWarning to stderr.  Used by runtime checks that
-/// detect deprecated patterns (e.g. `~bool`).  Deduplicates by message
-/// so the same warning is only printed once per process.
-pub(crate) fn emit_deprecation_warning(_py: &crate::PyToken<'_>, message: &str) {
-    use std::sync::{LazyLock, Mutex};
-    static SEEN: LazyLock<Mutex<std::collections::HashSet<u64>>> =
-        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
-    let hash = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        message.hash(&mut hasher);
-        hasher.finish()
-    };
-    if let Ok(mut seen) = SEEN.lock()
-        && !seen.insert(hash)
-    {
-        return; // Already emitted
+/// One filter/emission authority for native warnings and warning intrinsics.
+/// No Python callback executes while the warnings-state mutex is held.
+fn emit_warning(
+    py: &PyToken<'_>,
+    message: &str,
+    category: &str,
+    module: &str,
+    filename: &str,
+    lineno: i64,
+) -> bool {
+    let action = action_for(message, category, module, lineno);
+    if !is_valid_action(&action) {
+        raise_exception::<()>(
+            py,
+            "ValueError",
+            &format!("invalid warnings action: {action:?}"),
+        );
+        return false;
     }
-    eprintln!("DeprecationWarning: {message}");
+    if action == "error" {
+        raise_exception::<()>(py, category, message);
+        return false;
+    }
+    if !should_suppress(&action, message, category, lineno) {
+        eprintln!("{filename}:{lineno}: {category}: {message}");
+    }
+    true
+}
+
+/// Runtime deprecations use the active public warnings module when loaded so
+/// record/custom-display hooks observe them. Before that module is loaded, the
+/// same intrinsic filter/emission authority applies; there is no private cache.
+/// False means a pending warning/callback exception which callers must preserve.
+pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool {
+    let Some(name) = attr_name_bits_from_bytes(py, b"warnings") else {
+        return false;
+    };
+    let module = molt_module_cache_get(name);
+    dec_ref_bits(py, name);
+    if exception_pending(py) {
+        dec_ref_bits(py, module);
+        return false;
+    }
+    if obj_from_bits(module).is_none() {
+        return emit_warning(py, message, "DeprecationWarning", "__main__", "<string>", 1);
+    }
+    let Some(name) = attr_name_bits_from_bytes(py, b"warn") else {
+        dec_ref_bits(py, module);
+        return false;
+    };
+    let warn = molt_get_attr_name(module, name);
+    dec_ref_bits(py, name);
+    if exception_pending(py) {
+        dec_ref_bits(py, warn);
+        dec_ref_bits(py, module);
+        return false;
+    }
+    let category =
+        crate::builtins::exceptions::exception_type_bits_from_name(py, "DeprecationWarning");
+    let message = alloc_string_result(py, message);
+    if exception_pending(py) || category == 0 {
+        dec_ref_bits(py, message);
+        dec_ref_bits(py, warn);
+        dec_ref_bits(py, module);
+        return false;
+    }
+    let result =
+        unsafe { call_callable3(py, warn, message, category, MoltObject::from_int(1).bits()) };
+    for bits in [result, message, warn, module] {
+        dec_ref_bits(py, bits);
+    }
+    !exception_pending(py)
 }
 
 #[unsafe(no_mangle)]
@@ -251,28 +303,10 @@ pub extern "C" fn molt_warnings_warn(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
-        let category = string_from_bits_or(_py, category_bits, "UserWarning");
+        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let _stacklevel = i64_from_bits_default(stacklevel_bits, 1);
 
-        // Determine action
-        let action = action_for(&message, &category, "__main__", 0);
-
-        if !is_valid_action(&action) {
-            let msg = format!("invalid warnings action: {action:?}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
-        }
-
-        if action == "error" {
-            return raise_exception::<_>(_py, &category, &message);
-        }
-
-        if should_suppress(&action, &message, &category, 0) {
-            return MoltObject::none().bits();
-        }
-
-        // Format and emit to stderr
-        let formatted = format!("<string>:1: {category}: {message}\n");
-        eprint!("{}", formatted);
+        emit_warning(_py, &message, &category, "__main__", "<string>", 1);
 
         MoltObject::none().bits()
     })
@@ -303,28 +337,12 @@ pub extern "C" fn molt_warnings_warn_explicit(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
-        let category = string_from_bits_or(_py, category_bits, "UserWarning");
+        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
         let lineno = i64_from_bits_default(lineno_bits, 1);
         let module = string_from_bits_or(_py, module_bits, "__main__");
 
-        let action = action_for(&message, &category, &module, lineno);
-
-        if !is_valid_action(&action) {
-            let msg = format!("invalid warnings action: {action:?}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
-        }
-
-        if action == "error" {
-            return raise_exception::<_>(_py, &category, &message);
-        }
-
-        if should_suppress(&action, &message, &category, lineno) {
-            return MoltObject::none().bits();
-        }
-
-        let formatted = format!("{filename}:{lineno}: {category}: {message}\n");
-        eprint!("{}", formatted);
+        emit_warning(_py, &message, &category, &module, &filename, lineno);
 
         MoltObject::none().bits()
     })
@@ -351,7 +369,7 @@ pub extern "C" fn molt_warnings_formatwarning(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
-        let category = string_from_bits_or(_py, category_bits, "UserWarning");
+        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
         let lineno = i64_from_bits_default(lineno_bits, 1);
         let line = string_from_bits(_py, line_bits);
@@ -393,7 +411,7 @@ pub extern "C" fn molt_warnings_showwarning(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let message = string_from_bits_or(_py, message_bits, "");
-        let category = string_from_bits_or(_py, category_bits, "UserWarning");
+        let category = category_name_from_bits(_py, category_bits, "UserWarning");
         let filename = string_from_bits_or(_py, filename_bits, "<string>");
         let lineno = i64_from_bits_default(lineno_bits, 1);
         let line = string_from_bits(_py, line_bits);
@@ -440,7 +458,7 @@ pub extern "C" fn molt_warnings_simplefilter(
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
 
-        let category = string_from_bits_or(_py, category_bits, "Warning");
+        let category = category_name_from_bits(_py, category_bits, "Warning");
         let lineno = i64_from_bits_default(lineno_bits, 0);
         let append = bool_from_bits_default(append_bits, false);
 
@@ -492,7 +510,7 @@ pub extern "C" fn molt_warnings_filterwarnings(
         }
 
         let message = string_from_bits_or(_py, message_bits, "");
-        let category = string_from_bits_or(_py, category_bits, "Warning");
+        let category = category_name_from_bits(_py, category_bits, "Warning");
         let module = string_from_bits_or(_py, module_bits, "");
         let lineno = i64_from_bits_default(lineno_bits, 0);
         let append = bool_from_bits_default(append_bits, false);

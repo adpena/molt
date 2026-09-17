@@ -536,34 +536,13 @@ pub extern "C" fn molt_socket_recv_into(
             Ok(val) => val,
             Err(_) => return MoltObject::from_int(0).bits(),
         };
-        let buffer_obj = obj_from_bits(_buffer_bits);
-        let buffer_ptr = buffer_obj.as_ptr();
-        if buffer_ptr.is_none() {
-            return raise_exception::<_>(_py, "TypeError", "recv_into requires a writable buffer");
-        }
-        let buffer_ptr = buffer_ptr.unwrap();
+        let buffer =
+            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, _buffer_bits) {
+                Ok(buffer) => buffer,
+                Err(err) => return err.raise(_py, "recv_into requires a writable buffer"),
+            };
         let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(-1);
-        let target_len;
-        let mut use_memoryview = false;
-        let type_id = unsafe { object_type_id(buffer_ptr) };
-        if type_id == TYPE_ID_BYTEARRAY {
-            target_len = unsafe { bytearray_len(buffer_ptr) };
-        } else if type_id == TYPE_ID_MEMORYVIEW {
-            if unsafe { memoryview_released(buffer_ptr) } {
-                return raise_released_memoryview(_py);
-            }
-            if unsafe { memoryview_readonly(buffer_ptr) } {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recv_into requires a writable buffer",
-                );
-            }
-            target_len = unsafe { memoryview_len(buffer_ptr) };
-            use_memoryview = true;
-        } else {
-            return raise_exception::<_>(_py, "TypeError", "recv_into requires a writable buffer");
-        }
+        let target_len = buffer.len();
         let size = if size < 0 {
             target_len
         } else {
@@ -575,45 +554,8 @@ pub extern "C" fn molt_socket_recv_into(
         #[cfg(not(unix))]
         let dontwait = false;
         loop {
-            let rc = if use_memoryview {
-                if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
-                    let len = size.min(slice.len());
-                    unsafe {
-                        crate::molt_socket_recv_host(
-                            handle,
-                            slice.as_mut_ptr() as u32,
-                            len as u32,
-                            flags,
-                        )
-                    }
-                } else {
-                    let mut tmp = vec![0u8; size];
-                    let res = unsafe {
-                        crate::molt_socket_recv_host(
-                            handle,
-                            tmp.as_mut_ptr() as u32,
-                            tmp.len() as u32,
-                            flags,
-                        )
-                    };
-                    if res >= 0
-                        && let Err(msg) =
-                            unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
-                    {
-                        return raise_exception::<u64>(_py, "TypeError", &msg);
-                    }
-                    res
-                }
-            } else {
-                let buf = unsafe { bytearray_vec(buffer_ptr) };
-                unsafe {
-                    crate::molt_socket_recv_host(
-                        handle,
-                        buf.as_mut_ptr() as u32,
-                        size as u32,
-                        flags,
-                    )
-                }
+            let rc = unsafe {
+                crate::molt_socket_recv_host(handle, buffer.as_mut_ptr() as u32, size as u32, flags)
             };
             if rc >= 0 {
                 return MoltObject::from_int(rc as i64).bits();
@@ -935,43 +877,13 @@ pub extern "C" fn molt_socket_recvfrom_into(
             Ok(val) => val,
             Err(_) => return MoltObject::none().bits(),
         };
-        let buffer_obj = obj_from_bits(_buffer_bits);
-        let buffer_ptr = match buffer_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recvfrom_into requires a writable buffer",
-                );
-            }
-        };
+        let buffer =
+            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, _buffer_bits) {
+                Ok(buffer) => buffer,
+                Err(err) => return err.raise(_py, "recvfrom_into requires a writable buffer"),
+            };
         let size = to_i64(obj_from_bits(_size_bits)).unwrap_or(-1);
-        let target_len;
-        let mut use_memoryview = false;
-        let type_id = unsafe { object_type_id(buffer_ptr) };
-        if type_id == TYPE_ID_BYTEARRAY {
-            target_len = unsafe { bytearray_len(buffer_ptr) };
-        } else if type_id == TYPE_ID_MEMORYVIEW {
-            if unsafe { memoryview_released(buffer_ptr) } {
-                return raise_released_memoryview(_py);
-            }
-            if unsafe { memoryview_readonly(buffer_ptr) } {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recvfrom_into requires a writable buffer",
-                );
-            }
-            target_len = unsafe { memoryview_len(buffer_ptr) };
-            use_memoryview = true;
-        } else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "recvfrom_into requires a writable buffer",
-            );
-        }
+        let target_len = buffer.len();
         let size = if size < 0 {
             target_len
         } else {
@@ -986,55 +898,16 @@ pub extern "C" fn molt_socket_recvfrom_into(
         let mut addr_buf = vec![0u8; 128];
         let mut addr_len: u32 = 0;
         loop {
-            let rc = if use_memoryview {
-                if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
-                    let recv_len = size.min(slice.len());
-                    unsafe {
-                        crate::molt_socket_recvfrom_host(
-                            handle,
-                            slice.as_mut_ptr() as u32,
-                            recv_len as u32,
-                            flags,
-                            addr_buf.as_mut_ptr() as u32,
-                            addr_buf.len() as u32,
-                            (&mut addr_len) as *mut u32 as u32,
-                        )
-                    }
-                } else {
-                    let mut tmp = vec![0u8; size];
-                    let res = unsafe {
-                        crate::molt_socket_recvfrom_host(
-                            handle,
-                            tmp.as_mut_ptr() as u32,
-                            tmp.len() as u32,
-                            flags,
-                            addr_buf.as_mut_ptr() as u32,
-                            addr_buf.len() as u32,
-                            (&mut addr_len) as *mut u32 as u32,
-                        )
-                    };
-                    if res >= 0
-                        && let Err(msg) =
-                            unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..res as usize]) }
-                    {
-                        return raise_exception::<u64>(_py, "TypeError", &msg);
-                    }
-                    res
-                }
-            } else {
-                let buf = unsafe { bytearray_vec(buffer_ptr) };
-                let recv_len = size.min(buf.len());
-                unsafe {
-                    crate::molt_socket_recvfrom_host(
-                        handle,
-                        buf.as_mut_ptr() as u32,
-                        recv_len as u32,
-                        flags,
-                        addr_buf.as_mut_ptr() as u32,
-                        addr_buf.len() as u32,
-                        (&mut addr_len) as *mut u32 as u32,
-                    )
-                }
+            let rc = unsafe {
+                crate::molt_socket_recvfrom_host(
+                    handle,
+                    buffer.as_mut_ptr() as u32,
+                    size as u32,
+                    flags,
+                    addr_buf.as_mut_ptr() as u32,
+                    addr_buf.len() as u32,
+                    (&mut addr_len) as *mut u32 as u32,
+                )
             };
             if rc >= 0 {
                 let n_bits = MoltObject::from_int(rc as i64).bits();
@@ -1350,10 +1223,7 @@ pub extern "C" fn molt_socket_recvmsg_into(
                 } else {
                     MoltObject::none().bits()
                 };
-                if let Err(bits) = write_recvmsg_into_targets(_py, &targets, &tmp[..rc as usize]) {
-                    dec_ref_bits(_py, addr_bits);
-                    return bits;
-                }
+                write_recvmsg_into_targets(&targets, &tmp[..rc as usize]);
                 if (anc_len as usize) > anc_buf.len() {
                     dec_ref_bits(_py, addr_bits);
                     return raise_os_error_errno::<u64>(_py, libc::ENOMEM as i64, "recvmsg_into");

@@ -2133,6 +2133,26 @@ pub(crate) fn alloc_memoryview_from_storage(
     {
         return std::ptr::null_mut();
     }
+    // Descriptor edges must survive allocation-triggered release of the source
+    // view as well as the backing bytes. Transfer only distinct owned edges.
+    inc_ref_bits(_py, storage.base_bits);
+    let mut base_guard = PtrDropGuard::new(
+        obj_from_bits(storage.base_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut()),
+    );
+    inc_ref_bits(_py, storage.format_bits);
+    let mut format_guard = PtrDropGuard::new(
+        obj_from_bits(storage.format_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut()),
+    );
+    // Acquire before any object allocation/finalizer reentry, not after the
+    // descriptor has already borrowed potentially resizable backing storage.
+    let owner = match super::buffer_exports::ScopedBufferExport::new(_py, storage.owner_bits) {
+        Ok(owner) => owner,
+        Err(()) => return std::ptr::null_mut(),
+    };
     let data = unsafe {
         if !storage.data.is_null() {
             storage.data
@@ -2186,8 +2206,8 @@ pub(crate) fn alloc_memoryview_from_storage(
             return std::ptr::null_mut();
         };
         let mv_ptr = memoryview_ptr(ptr);
-        (*mv_ptr).owner_bits = storage.base_bits;
-        (*mv_ptr).base_bits = storage.base_bits;
+        (*mv_ptr).owner_bits = 0;
+        (*mv_ptr).base_bits = 0;
         (*mv_ptr).data = data;
         (*mv_ptr).offset = storage.offset;
         (*mv_ptr).len = storage.memoryview_len_field();
@@ -2200,11 +2220,19 @@ pub(crate) fn alloc_memoryview_from_storage(
         (*mv_ptr).format_bits = storage.format_bits;
         (*mv_ptr).shape_ptr = shape_ptr;
         (*mv_ptr).strides_ptr = strides_ptr;
+        (*mv_ptr).exports = super::buffer_exports::BufferExports::new();
     }
-    if storage.base_bits != 0 {
-        inc_ref_bits(_py, storage.base_bits);
+    format_guard.release();
+    // Transfer the already-counted lease only after initialization succeeded.
+    // Every earlier return drops the scoped guard exactly once.
+    let owner = owner.into_owner();
+    if storage.base_bits != 0 && storage.base_bits != owner {
+        base_guard.release();
     }
-    inc_ref_bits(_py, storage.format_bits);
+    unsafe {
+        (*memoryview_ptr(ptr)).owner_bits = owner;
+        (*memoryview_ptr(ptr)).base_bits = storage.base_bits;
+    }
     ptr
 }
 

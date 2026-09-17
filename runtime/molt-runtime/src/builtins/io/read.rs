@@ -1148,42 +1148,38 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             let msg = format!("{name}() unsupported for text files");
             return raise_exception::<_>(_py, "OSError", &msg);
         }
-        let mut export = MoltBufferView::default();
-        if molt_buffer_export(buffer_bits, &mut export) != 0 {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let msg = format!("{name}() argument must be a writable bytes-like object");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        let buffer =
+            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
+                Ok(buffer) => buffer,
+                Err(crate::object::buffer_exports::WritableBufferError::Pending) => {
+                    return MoltObject::none().bits();
+                }
+                Err(err) => {
+                    let type_name = class_name_for_error(type_of_bits(_py, buffer_bits));
+                    let msg = format!(
+                        "{name}() argument must be read-write bytes-like object, not {type_name}"
+                    );
+                    return err.raise(_py, &msg);
+                }
+            };
+        // Acquiring an array export can allocate and run finalizers. End the
+        // earlier handle borrow and revalidate before touching the backend.
+        let handle = &mut *handle_ptr;
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
         }
-        if export.readonly != 0 {
-            let msg = format!("{name}() argument must be a writable bytes-like object");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        if file_handle_is_closed(handle) {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         }
-        if export.ndim != 1 || export.itemsize != 1 || export.strides[0] != 1 {
-            let msg = format!("{name}() argument must be a writable bytes-like object");
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        let Ok(len) = usize::try_from(export.len) else {
-            return raise_exception::<_>(
-                _py,
-                "OverflowError",
-                "buffer length exceeds the active address space",
-            );
-        };
-        if len == 0 {
+        if buffer.len() == 0 {
             return MoltObject::from_int(0).bits();
         }
-        if export.data.is_null() {
-            return raise_exception::<_>(_py, "BufferError", "buffer data pointer is null");
-        }
-        let buf = std::slice::from_raw_parts_mut(export.data, len);
         let backend_state = Arc::clone(&handle.state);
         let mut guard = backend_state.backend.lock().unwrap();
         let Some(backend) = guard.as_mut() else {
             return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
         };
-        let n = match buffered_read_into(_py, handle, backend, buf) {
+        let n = match buffered_read_into(_py, handle, backend, &buffer) {
             Ok(n) => n,
             Err(bits) => return bits,
         };
@@ -1264,11 +1260,16 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
             if unread_bytes(handle) == 0 {
                 let buf_size = handle.buffer_size as usize;
                 handle.read_buf.resize(buf_size, 0);
-                let n =
-                    match backend_read_bytes(_py, handle.mem_bits, backend, &mut handle.read_buf) {
-                        Ok(n) => n,
-                        Err(bits) => return bits,
-                    };
+                let n = match backend_read_bytes(
+                    _py,
+                    handle.mem_bits,
+                    backend,
+                    handle.read_buf.as_mut_ptr(),
+                    handle.read_buf.len(),
+                ) {
+                    Ok(n) => n,
+                    Err(bits) => return bits,
+                };
                 handle.read_buf.truncate(n);
                 handle.read_pos = 0;
             }

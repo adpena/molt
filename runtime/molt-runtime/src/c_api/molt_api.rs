@@ -1790,26 +1790,29 @@ pub unsafe extern "C" fn molt_buffer_acquire(
         if out_view.is_null() {
             return raise_i32(_py, "TypeError", "out_view cannot be null");
         }
+        let owner_bits = match crate::object::buffer_exports::acquire_owner(_py, obj_bits) {
+            Ok(owner_bits) => owner_bits,
+            Err(()) => return -1,
+        };
+        // Pin before describing storage: creating an array lease can allocate
+        // and re-enter finalizers. Describe that exact pinned cell, not a second
+        // lookup of an object's possibly changed array handle.
         let mut export = MoltBufferView::default();
-        if unsafe { molt_buffer_export(obj_bits, &mut export as *mut MoltBufferView) } != 0 {
+        let source = if owner_bits != 0 {
+            owner_bits
+        } else {
+            obj_bits
+        };
+        if unsafe { molt_buffer_export(source, &mut export as *mut MoltBufferView) } != 0 {
+            crate::object::buffer_exports::release_owner(_py, owner_bits);
             return -1;
         }
-        // Pin the exporter's backing store for the buffer's lifetime. For an
-        // `array.array`, `array_buffer_owner_bits` mints an export lease that
-        // also blocks resize (it increments the array's export counter and
-        // returns a lease handle whose `Drop` decrements it); for every other
-        // exporter the pin is a strong ref on the object itself. Either way
-        // `molt_buffer_release` drops this single owner ref.
-        let owner_bits = match crate::builtins::array_mod::array_buffer_owner_bits(_py, obj_bits) {
-            Ok(Some(owner_bits)) => owner_bits,
-            Ok(None) => {
-                inc_ref_bits(_py, obj_bits);
-                obj_bits
-            }
-            Err(()) => {
-                return raise_i32(_py, "BufferError", "cannot pin array buffer for export");
-            }
-        };
+        if owner_bits != obj_bits {
+            export.base = obj_bits;
+        }
+        if export.base != 0 && export.base != owner_bits {
+            inc_ref_bits(_py, export.base);
+        }
         unsafe {
             export.owner = owner_bits;
             *out_view = export;
@@ -1825,9 +1828,8 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
             return -1;
         }
         unsafe {
-            if (*view).owner != 0 {
-                dec_ref_bits(_py, (*view).owner);
-            }
+            let owner = (*view).owner;
+            let base = (*view).base;
             (*view).data = std::ptr::null_mut();
             (*view).len = 0;
             (*view).backing_capacity = 0;
@@ -1841,6 +1843,12 @@ pub unsafe extern "C" fn molt_buffer_release(view: *mut MoltBufferView) -> i32 {
             (*view).strides = [0; MOLT_BUFFER_MAX_NDIM];
             (*view).format = [0; MOLT_BUFFER_FORMAT_CAP];
             (*view).format[0] = b'B';
+            // Invalidate first, then discharge exactly one counted owner and
+            // the distinct descriptor base edge. Repeated release is inert.
+            crate::object::buffer_exports::release_owner(_py, owner);
+            if owner != 0 && base != 0 && base != owner {
+                dec_ref_bits(_py, base);
+            }
         }
         0
     })
@@ -1862,7 +1870,8 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         if view.is_null() {
             return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
         }
-        let view = unsafe { &*view };
+        // Never retain a borrowed C descriptor across allocation/reentry.
+        let view = unsafe { *view };
         if view.data.is_null() && view.len != 0 {
             return raise_exception::<u64>(
                 _py,
@@ -1897,6 +1906,34 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 "buffer itemsize exceeds the active address space",
             );
         };
+        inc_ref_bits(_py, view.base);
+        let _base = crate::object::builders::PtrDropGuard::new(
+            obj_from_bits(view.base)
+                .as_ptr()
+                .unwrap_or(std::ptr::null_mut()),
+        );
+        // Derived views retain the root exporter, not an export on the source
+        // view. Pin the exact storage before format allocation can run Python.
+        let owner = if view.owner == 0 {
+            view.base
+        } else {
+            view.owner
+        };
+        let owner = unsafe {
+            match obj_from_bits(owner).as_ptr() {
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_MEMORYVIEW => {
+                    if memoryview_released(ptr) {
+                        return raise_released_memoryview(_py);
+                    }
+                    memoryview_owner_bits(ptr)
+                }
+                _ => owner,
+            }
+        };
+        let pinned = match crate::object::buffer_exports::ScopedBufferExport::new(_py, owner) {
+            Ok(pinned) => pinned,
+            Err(()) => return none_bits(),
+        };
         let ndim = view.ndim as usize;
         let shape = view.shape[..ndim].to_vec();
         let strides = view.strides[..ndim].to_vec();
@@ -1920,10 +1957,12 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             format_bits,
             shape,
             strides,
-        );
+        )
+        .map(|storage| storage.with_owner(pinned.owner_bits()));
         let out_ptr = match storage {
             Some(storage) => {
                 let Ok(logical_len) = u64::try_from(storage.len) else {
+                    dec_ref_bits(_py, format_bits);
                     return raise_exception::<u64>(
                         _py,
                         "BufferError",
@@ -1933,11 +1972,22 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 let valid = if view.base != 0 {
                     unsafe {
                         let base = crate::object::obj_from_bits(view.base);
-                        base.as_ptr()
+                        let backing = base
+                            .as_ptr()
                             .and_then(|base_ptr| {
                                 crate::object::memoryview::bytes_like_slice_raw(base_ptr)
+                                    .map(|bytes| (bytes.as_ptr(), bytes.len()))
                             })
-                            .map(|base_slice| {
+                            .or_else(|| {
+                                crate::builtins::array_mod::array_storage_from_object_bits(
+                                    _py,
+                                    pinned.owner_bits(),
+                                )
+                                .ok()
+                                .map(|storage| (storage.data.cast_const(), storage.len))
+                            });
+                        backing
+                            .map(|(base_data, base_len)| {
                                 let data_matches_base = if view.data.is_null() {
                                     storage.span_len == 0
                                 } else if storage.offset < 0 {
@@ -1945,13 +1995,11 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                                 } else {
                                     usize::try_from(storage.offset)
                                         .ok()
-                                        .filter(|&offset| offset <= base_slice.len())
-                                        .map(|offset| {
-                                            base_slice.as_ptr().add(offset).cast_mut() == view.data
-                                        })
+                                        .filter(|&offset| offset <= base_len)
+                                        .map(|offset| base_data.add(offset).cast_mut() == view.data)
                                         .unwrap_or(false)
                                 };
-                                data_matches_base && storage.fits_in_base_len(base_slice.len())
+                                data_matches_base && storage.fits_in_base_len(base_len)
                             })
                             .unwrap_or(false)
                     }
@@ -1968,6 +2016,9 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         };
         dec_ref_bits(_py, format_bits);
         if out_ptr.is_null() {
+            if exception_pending(_py) {
+                return none_bits();
+            }
             return raise_exception::<u64>(
                 _py,
                 "BufferError",

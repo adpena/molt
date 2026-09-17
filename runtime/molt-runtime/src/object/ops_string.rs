@@ -6,7 +6,6 @@
 use crate::*;
 use molt_obj_model::MoltObject;
 use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
-use unicode_ident::{is_xid_continue, is_xid_start};
 
 use super::ops::{
     bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, dict_like_bits_from_ptr,
@@ -14,7 +13,42 @@ use super::ops::{
     simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
     simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable,
     simd_is_all_ascii_text_whitespace, slice_bounds_from_args, slice_match,
+    unicode_classification_table,
 };
+
+#[path = "ops_string_predicates.rs"]
+mod ops_string_predicates;
+pub use ops_string_predicates::{
+    molt_string_isalnum, molt_string_isalpha, molt_string_isascii, molt_string_isdecimal,
+    molt_string_isdigit, molt_string_isidentifier, molt_string_islower, molt_string_isnumeric,
+    molt_string_isprintable, molt_string_isspace, molt_string_istitle, molt_string_isupper,
+};
+
+/// Admit a str descriptor without invoking conversion or any user protocol.
+///
+/// TYPE_ID_STRING also covers str subclasses. The pointer is borrowed from
+/// the receiver, which the caller must keep live through the GIL entry.
+pub(super) fn validate_string_receiver(
+    py: &PyToken<'_>,
+    hay_bits: u64,
+    method: &str,
+) -> Option<*mut u8> {
+    let hay = obj_from_bits(hay_bits);
+    if let Some(ptr) = hay.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
+    {
+        return Some(ptr);
+    }
+    raise_exception::<()>(
+        py,
+        "TypeError",
+        &format!(
+            "descriptor '{method}' for 'str' objects doesn't apply to a '{}' object",
+            class_name_for_error(type_of_bits(py, hay_bits))
+        ),
+    );
+    None
+}
 
 #[path = "ops_string_affix.rs"]
 mod ops_string_affix;
@@ -1609,165 +1643,6 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isidentifier(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut chars = hay_str.chars();
-            let Some(first) = chars.next() else {
-                return MoltObject::from_bool(false).bits();
-            };
-            if !(first == '_' || is_xid_start(first)) {
-                return MoltObject::from_bool(false).bits();
-            }
-            for ch in chars {
-                if ch == '_' || is_xid_continue(ch) {
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(true).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure-ASCII strings use bulk digit range check
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_digit(hay_bytes)).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if unicode_digit_table::is_digit(ch as u32) {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isdecimal(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: ASCII decimals are exactly '0'-'9'
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_digit(hay_bytes)).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if unicode_decimal_table::is_decimal(ch as u32) {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isnumeric(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if unicode_numeric_table::is_numeric(ch as u32) {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure-ASCII strings use bulk whitespace check
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_text_whitespace(hay_bytes)).bits();
-            }
-            MoltObject::from_bool(
-                !hay_bytes.is_empty()
-                    && wtf8_from_bytes(hay_bytes)
-                        .code_points()
-                        .all(|code| unicode_space_table::is_space(code.to_u32())),
-            )
-            .bits()
-        }
-    })
-}
-
-#[inline]
-fn string_char_is_cased(ch: char) -> bool {
-    let lower: String = ch.to_lowercase().collect();
-    let upper: String = ch.to_uppercase().collect();
-    lower != upper
-}
-
 #[inline]
 fn string_push_titlecase(out: &mut String, ch: char) {
     if let Some(mapped) = unicode_titlecase_table::titlecase(ch as u32) {
@@ -1775,227 +1650,6 @@ fn string_push_titlecase(out: &mut String, ch: char) {
     } else {
         out.extend(ch.to_uppercase());
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure-ASCII strings use bulk alpha range check
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_alpha(hay_bytes)).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if ch.is_alphabetic() {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: pure-ASCII strings use bulk alnum range check
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_alnum(hay_bytes)).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if ch.is_alphanumeric() {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path for pure-ASCII: no uppercase letters + has lowercase
-            if hay_bytes.is_ascii() {
-                let has_lower = hay_bytes.iter().any(|b| b.is_ascii_lowercase());
-                let has_upper = simd_has_any_ascii_upper(hay_bytes);
-                return MoltObject::from_bool(has_lower && !has_upper).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if ch.is_lowercase() {
-                    seen = true;
-                    continue;
-                }
-                if ch.is_uppercase() || string_char_is_cased(ch) {
-                    return MoltObject::from_bool(false).bits();
-                }
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path for pure-ASCII: no lowercase letters + has uppercase
-            if hay_bytes.is_ascii() {
-                let has_upper = hay_bytes.iter().any(|b| b.is_ascii_uppercase());
-                let has_lower = simd_has_any_ascii_lower(hay_bytes);
-                return MoltObject::from_bool(has_upper && !has_lower).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if ch.is_uppercase() {
-                    seen = true;
-                    continue;
-                }
-                if ch.is_lowercase() || string_char_is_cased(ch) {
-                    return MoltObject::from_bool(false).bits();
-                }
-            }
-            MoltObject::from_bool(seen).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            MoltObject::from_bool(hay_bytes.is_ascii()).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen_cased = false;
-            let mut prev_cased = false;
-            for ch in hay_str.chars() {
-                if !string_char_is_cased(ch) {
-                    prev_cased = false;
-                    continue;
-                }
-                if !prev_cased {
-                    if ch.is_lowercase() {
-                        return MoltObject::from_bool(false).bits();
-                    }
-                    seen_cased = true;
-                    prev_cased = true;
-                    continue;
-                }
-                if !ch.is_lowercase() {
-                    return MoltObject::from_bool(false).bits();
-                }
-            }
-            MoltObject::from_bool(seen_cased).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            // SIMD fast path: for ASCII, printable is [0x20..0x7E]
-            if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_printable(hay_bytes)).bits();
-            }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            for ch in hay_str.chars() {
-                if !unicode_printable_table::is_printable(ch as u32) {
-                    return MoltObject::from_bool(false).bits();
-                }
-            }
-            MoltObject::from_bool(true).bits()
-        }
-    })
 }
 
 #[unsafe(no_mangle)]
@@ -2153,7 +1807,7 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
             let mut out = String::with_capacity(hay_str.len());
             let mut prev_cased = false;
             for ch in hay_str.chars() {
-                if string_char_is_cased(ch) {
+                if unicode_classification_table::is_cased(ch as u32) {
                     if prev_cased {
                         out.extend(ch.to_lowercase());
                     } else {

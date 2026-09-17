@@ -141,11 +141,6 @@ fn percent_raise_integer_type_error(
     raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
 }
 
-fn percent_raise_real_type_error_f(_py: &PyToken<'_>, obj: MoltObject) -> Option<f64> {
-    let msg = format!("must be real number, not {}", type_name(_py, obj));
-    raise_exception::<Option<f64>>(_py, "TypeError", &msg)
-}
-
 fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<char> {
     let _ = obj;
     raise_exception::<Option<char>>(_py, "TypeError", "%c requires int or char")
@@ -394,108 +389,6 @@ fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<char> {
     percent_raise_char_type_error(_py, obj)
 }
 
-fn percent_float_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<f64> {
-    let obj = obj_from_bits(value_bits);
-    if let Some(f) = as_float_extended(obj) {
-        return Some(f);
-    }
-    if let Some(i) = to_i64(obj) {
-        return Some(i as f64);
-    }
-    if let Some(big_ptr) = bigint_ptr_from_bits(value_bits) {
-        return match unsafe { bigint_ref(big_ptr) }.to_f64() {
-            Some(v) => Some(v),
-            None => raise_exception::<Option<f64>>(
-                _py,
-                "OverflowError",
-                "int too large to convert to float",
-            ),
-        };
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_COMPLEX
-                || type_id == TYPE_ID_STRING
-                || type_id == TYPE_ID_BYTES
-                || type_id == TYPE_ID_BYTEARRAY
-            {
-                return percent_raise_real_type_error_f(_py, obj);
-            }
-            let float_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.float_name, b"__float__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, float_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(f) = res_obj.as_float() {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return Some(f);
-                }
-                let owner = class_name_for_error(type_of_bits(_py, value_bits));
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("{owner}.__float__ returned non-float (type {res_type})");
-                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) = attr_lookup_ptr_allow_missing(_py, ptr, index_name_bits) {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
-                    if res_obj.as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    return Some(i as f64);
-                }
-                if let Some(res_big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let out = bigint_ref(res_big_ptr).to_f64();
-                    dec_ref_bits(_py, res_bits);
-                    return match out {
-                        Some(v) => Some(v),
-                        None => raise_exception::<Option<f64>>(
-                            _py,
-                            "OverflowError",
-                            "int too large to convert to float",
-                        ),
-                    };
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<f64>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-        }
-    }
-    percent_raise_real_type_error_f(_py, obj)
-}
-
 fn percent_numeric_prefix(is_negative: bool, flags: PercentFormatFlags) -> Option<char> {
     if is_negative {
         Some('-')
@@ -604,7 +497,7 @@ fn percent_format_float(
     flags: PercentFormatFlags,
     conv: u8,
 ) -> Option<String> {
-    let value = percent_float_from_obj(_py, value_bits)?;
+    let value = crate::builtins::numbers::float_as_double(_py, value_bits)?;
     let sign = if flags.sign_plus {
         Some('+')
     } else if flags.sign_space {

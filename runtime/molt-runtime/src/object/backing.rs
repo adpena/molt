@@ -24,6 +24,7 @@ struct TrackedVecBox<T> {
     /// mutation generation removes full-sequence rescans from scalar mutation
     /// hot paths.
     heap_edge_count: AtomicUsize,
+    buffer_exports: super::buffer_exports::BufferExports,
     vec: Vec<T>,
 }
 
@@ -72,6 +73,10 @@ impl<T> Drop for TrackedVecOwner<T> {
     fn drop(&mut self) {
         unsafe {
             let boxed = Box::from_raw(self.ptr.as_ptr());
+            if boxed.buffer_exports.is_exported() {
+                eprintln!("molt fatal: destroying storage with live buffer exports");
+                std::process::abort();
+            }
             let charge = boxed.charge;
             drop(boxed);
             release_alloc(charge.owner_bytes.saturating_add(charge.buffer_bytes));
@@ -224,6 +229,7 @@ pub(crate) fn tracked_vec_box_with_capacity<T>(capacity: usize) -> Option<*mut V
                 mutation_epoch: AtomicU64::new(0),
                 mutation_lock: AtomicBool::new(false),
                 heap_edge_count: AtomicUsize::new(0),
+                buffer_exports: super::buffer_exports::BufferExports::new(),
                 vec,
             },
         );
@@ -266,6 +272,13 @@ pub(crate) unsafe fn tracked_vec_mutation_lock<T>(ptr: *mut Vec<T>) -> TrackedVe
 pub(crate) unsafe fn tracked_vec_mutation_epoch<T>(ptr: *mut Vec<T>) -> u64 {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
     unsafe { (*owner).mutation_epoch.load(Ordering::Acquire) }
+}
+
+/// Export state lives with the stable allocation, never in an address registry.
+pub(crate) unsafe fn tracked_vec_buffer_exports<T>(
+    ptr: *mut Vec<T>,
+) -> &'static super::buffer_exports::BufferExports {
+    unsafe { &(*owner_ptr_from_vec(ptr)).buffer_exports }
 }
 
 /// Publish one in-place mutation and return the new generation.
@@ -327,6 +340,8 @@ pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut Vec<T>, staged: *mu
     let live_owner = unsafe { owner_ptr_from_vec(live) };
     let staged_owner = unsafe { owner_ptr_from_vec(staged) };
     unsafe {
+        assert!(!(*live_owner).buffer_exports.is_exported());
+        assert!(!(*staged_owner).buffer_exports.is_exported());
         std::mem::swap(
             &mut (*live_owner).charge.buffer_bytes,
             &mut (*staged_owner).charge.buffer_bytes,
@@ -350,6 +365,7 @@ pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut Vec<T>, staged: *mu
 /// `ptr` must be a live tracked Vec pointer under exclusive mutation custody.
 pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut Vec<T>) -> TrackedVecContents<T> {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
+    assert!(!unsafe { (*owner).buffer_exports.is_exported() });
     let vec = unsafe { std::mem::take(&mut (*owner).vec) };
     let buffer_bytes = unsafe { std::mem::take(&mut (*owner).charge.buffer_bytes) };
     unsafe { (*owner).heap_edge_count.store(0, Ordering::Release) };
@@ -395,6 +411,9 @@ pub(crate) unsafe fn tracked_vec_reserve_for_len<T>(ptr: *mut Vec<T>, required_l
     let vec = unsafe { &mut *ptr };
     if required_len <= vec.capacity() {
         return true;
+    }
+    if unsafe { (*owner).buffer_exports.is_exported() } {
+        return false;
     }
     let old_capacity = vec.capacity();
     let target_capacity = amortized_target_capacity(old_capacity, required_len);
@@ -483,7 +502,7 @@ mod tests {
     #[test]
     fn tracked_vec_capacity_is_charged_and_released() {
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-            max_memory: Some(128),
+            max_memory: Some(vec_charge::<u64>(8).unwrap()),
             ..Default::default()
         })));
         let ptr = tracked_vec_box_with_capacity::<u64>(8).expect("tracked vec");
