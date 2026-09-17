@@ -210,20 +210,33 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         ("property_new", 3),
         ("bound_method_new", 2),
     ] {
-        let ctx = Context::create();
-        let mut backend = make_backend(&ctx);
         let symbol = format!("molt_{kind}");
-        backend.runtime_callable_symbols.remove(&symbol);
-        let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
-            .expect_err("descriptor construction must require the linked runtime symbol");
-        assert_lowering_error_contains(&error, "is unavailable in the selected runtime");
-        assert!(backend.module.get_function(&symbol).is_none());
-
-        backend.runtime_callable_symbols.insert(symbol.clone());
-        for supplied in [arity - 1, arity + 1] {
-            let error = lower_preserved_kind_ir(&backend, kind, supplied, false, None)
-                .expect_err("descriptor construction must use exact generated arity");
-            assert_lowering_error_contains(&error, "no positional boxed-value ABI classification");
+        for (available, supplied, diagnostic) in [
+            (false, arity, "is unavailable in the selected runtime"),
+            (
+                true,
+                arity - 1,
+                "no positional boxed-value ABI classification",
+            ),
+            (
+                true,
+                arity + 1,
+                "no positional boxed-value ABI classification",
+            ),
+        ] {
+            // A lowering failure leaves the attempted function body in its
+            // module. Each independent admission case owns a fresh backend;
+            // it must not test accidental function redefinition instead.
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            if available {
+                backend.runtime_callable_symbols.insert(symbol.clone());
+            } else {
+                backend.runtime_callable_symbols.remove(&symbol);
+            }
+            let error = lower_preserved_kind_ir(&backend, kind, supplied, true, None)
+                .expect_err("descriptor construction must enforce generated ABI admission");
+            assert_lowering_error_contains(&error, diagnostic);
             assert!(backend.module.get_function(&symbol).is_none());
         }
 
