@@ -9,10 +9,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// runtime symbol fails closed instead of borrowing operand-zero semantics.
     pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
         let symbol = format!("molt_{kind}");
-        if !self.backend.runtime_callable_symbols.contains(&symbol) {
-            return false;
-        }
         let Some(abi) = runtime_boxed_abi(&symbol, op.operands.len()) else {
+            if !self.backend.runtime_callable_symbols.contains(&symbol) {
+                return false;
+            }
             self.record_fatal(format!(
                 "preserved SimpleIR op `{kind}` maps to runtime symbol `{symbol}`, \
                  but that symbol has no positional boxed-value ABI classification"
@@ -27,6 +27,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// CALL or a preserved operation. Both routes share boxing and return rules.
     pub(super) fn emit_boxed_runtime_call(&mut self, op: &TirOp, abi: &RuntimeBoxedAbi) {
         let symbol = abi.symbol;
+        // Semantic classification is not availability in the selected runtime.
+        // Direct calls and preserved operations must share this admission before
+        // declaring symbols or materializing any temporary argument owners.
+        if !self.backend.runtime_callable_symbols.contains(symbol) {
+            self.record_fatal(format!(
+                "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
+            ));
+            return;
+        }
         if op.operands.len() != abi.arity {
             self.record_fatal(format!(
                 "boxed runtime symbol `{symbol}` has mismatched arity"
