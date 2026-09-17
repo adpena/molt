@@ -19,9 +19,7 @@ use crate::builtins::types::{
     molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
 use crate::object::layout::{
-    code_arg_names_bits, code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr,
-    code_kwonly_names_bits, code_name_bits, code_set_signature_bits, code_signature_posonly_bits,
-    code_vararg_bits, code_varkw_bits, function_call_target_ptr, function_defaults_version,
+    code_freevars_bits, code_name_bits, function_call_target_ptr, function_mutation_version,
     function_set_call_target_ptr, function_set_code_bits,
 };
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
@@ -34,20 +32,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
-    PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
-    TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_code_obj,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
+    FunctionCallAbi, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_FUNCTION, TYPE_ID_MODULE,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_code_obj, alloc_dict_with_pairs,
+    alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1,
     call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits, exception_pending,
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
-    function_set_globals_override_enabled, function_set_trampoline_ptr, inc_ref_bits, is_truthy,
-    missing_bits, module_dict_bits, molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin,
-    molt_getitem_method, molt_iter, molt_iter_next, molt_trace_enter_slot, obj_from_bits,
-    object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
+    function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
+    molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin, molt_getitem_method, molt_iter,
+    molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits, object_type_id,
+    raise_exception, string_obj_to_owned, to_i64, type_name,
 };
 mod compile_codeop;
 mod function_abi;

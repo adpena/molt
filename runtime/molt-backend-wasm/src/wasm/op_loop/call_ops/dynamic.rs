@@ -1,4 +1,4 @@
-use super::direct::normalize_direct_call_result;
+use super::super::result_sink::{store_owned_result_or_release, store_result_or_drop};
 use super::site::{
     build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
     emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
@@ -39,73 +39,109 @@ pub(super) fn emit_dynamic_call_op(
             let target_name = op.s_value.as_ref().unwrap();
             let args_names = op.args.as_ref().unwrap();
             let callee_bits = locals[&args_names[0]];
-            let out = locals[op.out.as_ref().unwrap()];
-            let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
+            let out = op.out.as_ref().map_or_else(
+                || locals.synthetic(WasmFrameSyntheticLocal::DeadSink),
+                |name| locals[name],
+            );
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
             let arity = args_names.len().saturating_sub(1);
-            let escaped_target = call_site_abi.is_escaped_callable(target_name);
-            let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
-            let func_idx = call_site_abi.function_index(target_name, "call_guarded");
-            let table_target = call_site_abi.table_target(target_name, "call_guarded");
-            if escaped_target {
+            let direct_shape = !call_site_abi.is_escaped_callable(target_name)
+                && call_site_abi.positional_arity(target_name) == Some(arity);
+            if direct_shape {
+                let has_closure = call_site_abi.is_closure_function(target_name);
+                let func_idx = call_site_abi.function_index(target_name, "call_guarded");
+                let table_target = call_site_abi.table_target(target_name, "call_guarded");
                 func.instruction(&Instruction::LocalGet(callee_bits));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsFunctionObj],
-                );
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
-                );
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::I64Ne);
-                func.instruction(&Instruction::If(BlockType::Empty));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardEnter],
-                );
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::I64Ne);
-                func.instruction(&Instruction::If(BlockType::Empty));
-                let code_id = op.value.unwrap_or(0);
-                func.instruction(&Instruction::I64Const(code_id));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceEnterSlot],
-                );
-                func.instruction(&Instruction::Drop);
-                let spill_base = call_site_abi.call_func_spill_offset();
-                spill_call_args(func, locals, spill_base, &args_names[1..]);
-                func.instruction(&Instruction::LocalGet(callee_bits));
-                func.instruction(&Instruction::I64Const(spill_base as i64));
                 func.instruction(&Instruction::I64Const(arity as i64));
-                func.instruction(&Instruction::I64Const(code_id));
+                func.instruction(&Instruction::I64Const(i64::from(has_closure)));
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
+                    import_ids[WasmRuntimeImport::FunctionDirectCallEligible],
                 );
-                func.instruction(&Instruction::LocalSet(out));
+                func.instruction(&Instruction::I64Const(0));
+                func.instruction(&Instruction::I64Ne);
+                func.instruction(&Instruction::If(BlockType::Result(
+                    wasm_encoder::ValType::I32,
+                )));
+                // The shared gate proves this is a function with an exact raw
+                // positional ABI; target identity is the remaining site guard.
+                func.instruction(&Instruction::LocalGet(callee_bits));
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceExit],
+                    import_ids[WasmRuntimeImport::HandleResolve],
+                );
+                func.instruction(&Instruction::I64Load(MemArg {
+                    align: 3,
+                    offset: 0,
+                    memory_index: 0,
+                }));
+                call_ctx.table_relocations.emit_i64(
+                    reloc_enabled,
+                    call_ctx.func_import_count,
+                    call_ctx.func_index,
+                    func,
+                    &table_target,
+                );
+                func.instruction(&Instruction::I64Eq);
+                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::I32Const(0));
+                func.instruction(&Instruction::End);
+                func.instruction(&Instruction::If(BlockType::Empty));
+
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[WasmRuntimeImport::RecursionGuardEnter],
+                );
+                func.instruction(&Instruction::I64Const(0));
+                func.instruction(&Instruction::I64Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::LocalGet(callee_bits));
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[WasmRuntimeImport::FrameInvocationEnter],
+                );
+                func.instruction(&Instruction::LocalTee(tmp_ptr));
+                func.instruction(&Instruction::I64Const(0));
+                func.instruction(&Instruction::I64Ne);
+                func.instruction(&Instruction::If(BlockType::Empty));
+                if has_closure {
+                    func.instruction(&Instruction::LocalGet(callee_bits));
+                    emit_call(
+                        func,
+                        reloc_enabled,
+                        import_ids[WasmRuntimeImport::FunctionClosureBits],
+                    );
+                }
+                for arg_name in &args_names[1..] {
+                    func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                }
+                emit_call(func, reloc_enabled, func_idx);
+                if !call_site_abi.function_abi_returns_value(target_name) {
+                    crate::wasm_values::emit_boxed_none(func);
+                }
+                func.instruction(&Instruction::LocalSet(out));
+                func.instruction(&Instruction::LocalGet(tmp_ptr));
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[WasmRuntimeImport::FrameInvocationExit],
                 );
                 func.instruction(&Instruction::Drop);
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardExit],
+                    import_ids[WasmRuntimeImport::RecursionGuardExit],
                 );
                 func.instruction(&Instruction::Else);
-                // Recursion guard failed — exception is already pending.
-                // Return immediately so the pending RecursionError
-                // propagates to the caller instead of being silently
-                // swallowed as None (which caused TypeError downstream).
+                emit_call(
+                    func,
+                    reloc_enabled,
+                    import_ids[WasmRuntimeImport::RecursionGuardExit],
+                );
                 emit_pending_exception_return(
                     func,
                     const_cache,
@@ -115,177 +151,40 @@ pub(super) fn emit_dynamic_call_op(
                 );
                 func.instruction(&Instruction::End);
                 func.instruction(&Instruction::Else);
-                build_positional_callargs(
+                emit_pending_exception_return(
                     func,
+                    const_cache,
+                    call_ctx.frame,
                     import_ids,
                     reloc_enabled,
-                    locals,
-                    callargs_tmp,
-                    &args_names[1..],
                 );
-                emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
-                func.instruction(&Instruction::LocalGet(callee_bits));
-                func.instruction(&Instruction::LocalGet(callargs_tmp));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
-                );
-                func.instruction(&Instruction::LocalSet(out));
                 func.instruction(&Instruction::End);
-                return CallOpEmission::Handled;
+                func.instruction(&Instruction::Else);
             }
-            func.instruction(&Instruction::LocalGet(callee_bits));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsFunctionObj],
-            );
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
-            );
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
-            func.instruction(&Instruction::If(BlockType::Empty));
 
-            // callee is a function object: resolve and compare against expected target
+            // Shared positional dispatch binds only when the actual callable
+            // requires it. Escaped exact calls must not allocate a callargs
+            // builder merely because they need a trampoline. Never inject
+            // lexical defaults or an ABI closure into Python arguments.
+            let spill_base = call_site_abi.call_func_spill_offset();
+            spill_call_args(func, locals, spill_base, &args_names[1..]);
             func.instruction(&Instruction::LocalGet(callee_bits));
+            func.instruction(&Instruction::I64Const(spill_base as i64));
+            func.instruction(&Instruction::I64Const(arity as i64));
+            func.instruction(&Instruction::I64Const(op.value.unwrap_or(0)));
             emit_call(
                 func,
                 reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::HandleResolve],
-            );
-            func.instruction(&Instruction::I64ExtendI32U);
-            func.instruction(&Instruction::LocalSet(tmp_ptr));
-            func.instruction(&Instruction::LocalGet(tmp_ptr));
-            func.instruction(&Instruction::I32WrapI64);
-            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {
-                align: 3,
-                offset: 0,
-                memory_index: 0,
-            }));
-            func.instruction(&Instruction::LocalSet(tmp_ptr));
-            func.instruction(&Instruction::LocalGet(tmp_ptr));
-            call_ctx.table_relocations.emit_i64(
-                reloc_enabled,
-                call_ctx.func_import_count,
-                call_ctx.func_index,
-                func,
-                &table_target,
-            );
-            func.instruction(&Instruction::I64Eq);
-            func.instruction(&Instruction::If(BlockType::Empty));
-
-            // fast path: callee matches expected target
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardEnter],
-            );
-            func.instruction(&Instruction::I64Const(0));
-            func.instruction(&Instruction::I64Ne);
-            func.instruction(&Instruction::If(BlockType::Empty));
-            let code_id = op.value.unwrap_or(0);
-            func.instruction(&Instruction::I64Const(code_id));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceEnterSlot],
-            );
-            func.instruction(&Instruction::Drop);
-            // For closure functions, extract the closure environment
-            // from the callee object and push it as the leading arg.
-            // The WASM signature of closure functions is
-            //   (closure_env, arg1, arg2, …) → i64
-            // so we must prepend the env before the user arguments.
-            if call_site_abi.is_closure_function(target_name) {
-                func.instruction(&Instruction::LocalGet(callee_bits));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FunctionClosureBits],
-                );
-            }
-            for arg_name in &args_names[1..] {
-                let arg = locals[arg_name];
-                func.instruction(&Instruction::LocalGet(arg));
-            }
-            emit_call(func, reloc_enabled, func_idx);
-            normalize_direct_call_result(func, abi_returns_value, true);
-            func.instruction(&Instruction::LocalSet(out));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TraceExit],
-            );
-            func.instruction(&Instruction::Drop);
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RecursionGuardExit],
-            );
-            func.instruction(&Instruction::Else);
-            // Recursion guard failed — exception is already pending.
-            // Return immediately so the pending RecursionError
-            // propagates to the caller instead of being silently
-            // swallowed as None (which caused TypeError downstream).
-            emit_pending_exception_return(
-                func,
-                const_cache,
-                call_ctx.frame,
-                import_ids,
-                reloc_enabled,
-            );
-            func.instruction(&Instruction::End);
-
-            // slow path: function object does not match expected target
-            func.instruction(&Instruction::Else);
-            build_positional_callargs(
-                func,
-                import_ids,
-                reloc_enabled,
-                locals,
-                callargs_tmp,
-                &args_names[1..],
-            );
-            emit_call_site_id(
-                func,
-                func_ir.name.as_str(),
-                op_idx,
-                "call_guarded_slow_match_miss",
-            );
-            func.instruction(&Instruction::LocalGet(callee_bits));
-            func.instruction(&Instruction::LocalGet(callargs_tmp));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
+                import_ids[WasmRuntimeImport::CallFuncDispatch],
             );
             func.instruction(&Instruction::LocalSet(out));
-            func.instruction(&Instruction::End);
-
-            // not a function object: fallback to call_bind
-            func.instruction(&Instruction::Else);
-            build_positional_callargs(
-                func,
-                import_ids,
-                reloc_enabled,
-                locals,
-                callargs_tmp,
-                &args_names[1..],
-            );
-            emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_guarded_nonfunc");
-            func.instruction(&Instruction::LocalGet(callee_bits));
-            func.instruction(&Instruction::LocalGet(callargs_tmp));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
-            );
-            func.instruction(&Instruction::LocalSet(out));
-            func.instruction(&Instruction::End);
+            if direct_shape {
+                func.instruction(&Instruction::End);
+            }
+            if op.out.is_none() {
+                func.instruction(&Instruction::LocalGet(out));
+                store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            }
         }
         "call_func" => {
             let args_names = op.args.as_ref().unwrap();
@@ -299,7 +198,6 @@ pub(super) fn emit_dynamic_call_op(
             if args_names.len() == 3 && runtime_lookup_only_vars.contains(&args_names[0]) {
                 let name_bits = locals[&args_names[1]];
                 let namespace_bits = locals[&args_names[2]];
-                let out = locals[op.out.as_ref().unwrap()];
                 func.instruction(&Instruction::LocalGet(name_bits));
                 func.instruction(&Instruction::LocalGet(namespace_bits));
                 emit_call(
@@ -308,14 +206,13 @@ pub(super) fn emit_dynamic_call_op(
                     import_ids
                         [crate::wasm_abi_generated::WasmRuntimeImport::RequireIntrinsicRuntime],
                 );
-                func.instruction(&Instruction::LocalSet(out));
+                store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
             }
             // Outlined: spill args to linear memory, then delegate
             // to molt_call_func_dispatch runtime helper.
             let func_bits = locals[&args_names[0]];
-            let out = locals[op.out.as_ref().unwrap()];
             let nargs = args_names.len().saturating_sub(1);
             let spill_base = call_site_abi.call_func_spill_offset();
 
@@ -332,7 +229,7 @@ pub(super) fn emit_dynamic_call_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
             );
-            func.instruction(&Instruction::LocalSet(out));
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "invoke_ffi" => {
@@ -360,7 +257,6 @@ pub(super) fn emit_dynamic_call_op(
                     );
                     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                     let func_bits = locals[&args_names[0]];
-                    let out = locals[op.out.as_ref().unwrap()];
                     let callargs_local = if abi_contract.uses_callargs() {
                         if args_names.len() != 2 {
                             panic!(
@@ -394,7 +290,7 @@ pub(super) fn emit_dynamic_call_op(
                         reloc_enabled,
                         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
                     );
-                    func.instruction(&Instruction::LocalSet(out));
+                    store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
                     release_live_object_locals(
                         func,
                         import_ids,
@@ -420,21 +316,36 @@ pub(super) fn emit_dynamic_call_op(
                     op.out.as_ref(),
                 );
                 retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-                let out = locals[op.out.as_ref().unwrap()];
                 match native_import.abi_contract.lowering() {
-                    NativeCallableLowering::ForwardF32 => emit_forward_f32_native_call(
-                        func,
-                        import_ids,
-                        reloc_enabled,
-                        locals,
-                        args_names,
-                        out,
-                        native_import,
-                    ),
+                    NativeCallableLowering::ForwardF32 => {
+                        let out = op.out.as_ref().map_or_else(
+                            || locals.synthetic(WasmFrameSyntheticLocal::DeadSink),
+                            |name| locals[name],
+                        );
+                        emit_forward_f32_native_call(
+                            func,
+                            import_ids,
+                            reloc_enabled,
+                            locals,
+                            args_names,
+                            out,
+                            native_import,
+                        );
+                        if op.out.is_none() {
+                            func.instruction(&Instruction::LocalGet(out));
+                            store_owned_result_or_release(
+                                func,
+                                op,
+                                locals,
+                                import_ids,
+                                reloc_enabled,
+                            );
+                        }
+                    }
                     NativeCallableLowering::PyinitModule => {
                         emit_call(func, reloc_enabled, native_import.function_index);
                         func.instruction(&Instruction::I64ExtendI32U);
-                        func.instruction(&Instruction::LocalSet(out));
+                        store_result_or_drop(func, op, locals);
                     }
                     NativeCallableLowering::ObjectValues
                     | NativeCallableLowering::ObjectCallargs => {
@@ -443,7 +354,7 @@ pub(super) fn emit_dynamic_call_op(
                             func.instruction(&Instruction::LocalGet(arg));
                         }
                         emit_call(func, reloc_enabled, native_import.function_index);
-                        func.instruction(&Instruction::LocalSet(out));
+                        store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
                     }
                 }
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
@@ -458,7 +369,6 @@ pub(super) fn emit_dynamic_call_op(
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
             let func_bits = locals[&args_names[0]];
-            let out = locals[op.out.as_ref().unwrap()];
             let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             build_positional_callargs(
                 func,
@@ -484,14 +394,13 @@ pub(super) fn emit_dynamic_call_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
             );
-            func.instruction(&Instruction::LocalSet(out));
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_bind" | "call_indirect" => {
             let args_names = op.args.as_ref().unwrap();
             let func_bits = locals[&args_names[0]];
             let builder_ptr = locals[&args_names[1]];
-            let out = op.out.as_ref().and_then(|name| locals.get(name).copied());
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
                 call_liveness,
@@ -520,17 +429,12 @@ pub(super) fn emit_dynamic_call_op(
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
                 );
             }
-            if let Some(out_local) = out {
-                func.instruction(&Instruction::LocalSet(out_local));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_method" => {
             let args_names = op.args.as_ref().unwrap();
             let method_bits = locals[&args_names[0]];
-            let out = locals[op.out.as_ref().unwrap()];
             let live_object_locals = collect_live_object_locals_for_call(
                 locals,
                 call_liveness,
@@ -645,7 +549,7 @@ pub(super) fn emit_dynamic_call_op(
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
                 );
             }
-            func.instruction(&Instruction::LocalSet(out));
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         _ => return CallOpEmission::NotHandled,

@@ -9,7 +9,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    GEN_CONTROL_SIZE,
     INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
     MOLT_DIRECT_CALLS,
     MOLT_REEXPORT_FUNCTIONS,
@@ -24,15 +23,6 @@ from molt.frontend.sema import (
     FunctionKind,
     normalize_function_kind,
     parse_stateful_function_type_hint,
-    stateful_function_frame_plan,
-    stateful_function_result_type_hint,
-)
-from molt.native_callable_abi import (
-    native_callable_abi_choices,
-    native_callable_fixed_arity,
-    native_callable_requires_direct_symbol_binding,
-    native_callable_uses_callargs,
-    normalize_native_callable_abi,
 )
 
 if TYPE_CHECKING:
@@ -149,110 +139,65 @@ class CallModuleDispatchMixin(_MixinBase):
             ),
         )
 
-    def _try_emit_native_callable_export_call(
-        self,
-        target_module: str,
-        attr_name: str,
-        node: ast.Call,
-    ) -> MoltValue | None:
-        spec = self._native_callable_export(target_module, attr_name)
-        if spec is None:
-            return None
-
-        qualified_name = f"{target_module}.{attr_name}"
-        binding = spec.get("binding")
-        abi = spec.get("abi")
-        symbol = spec.get("symbol")
-        normalized_abi = normalize_native_callable_abi(abi)
-        if binding not in {"module_attr", "direct_symbol"} or normalized_abi is None:
-            raise FrontendRejection(
-                Diagnostic.IMPORT_RESOLUTION,
-                f"native callable export '{qualified_name}' has incomplete ABI metadata",
-                "declare binding and a supported abi in the native artifact manifest",
-                (
-                    "native callable exports must fail closed before lowering; known "
-                    f"ABI tokens: {native_callable_abi_choices()}"
-                ),
-            )
-        if binding == "module_attr" and native_callable_requires_direct_symbol_binding(
-            normalized_abi
-        ):
-            raise FrontendRejection(
-                Diagnostic.IMPORT_RESOLUTION,
-                f"native callable export '{qualified_name}' uses module_attr direct-symbol ABI",
-                (
-                    "use direct_symbol for memory-buffer or extension-init native "
-                    "callables, or an object-call ABI for module attributes"
-                ),
-                (
-                    "module_attr dispatch calls a loaded module attribute through Molt "
-                    "value handles; pointer, byte-buffer, and PyInit ABIs require an "
-                    "addressable direct native symbol"
-                ),
-            )
-        if binding == "direct_symbol" and not isinstance(symbol, str):
-            raise FrontendRejection(
-                Diagnostic.IMPORT_RESOLUTION,
-                f"native callable export '{qualified_name}' is missing a direct symbol",
-                "declare symbol for direct_symbol native exports",
-                "direct native symbols cannot be invented as Python call targets",
-            )
-        metadata: dict[str, Any] = {
-            "native_callable_export": qualified_name,
-            "native_callable_binding": binding,
-            "native_callable_abi": normalized_abi,
-        }
-        if isinstance(symbol, str):
-            metadata["native_callable_symbol"] = symbol
-
-        module_attr_func: MoltValue | None = None
-        if binding == "module_attr":
-            module_attr_func = self._emit_module_attr_get_on(target_module, attr_name)
-
-        if native_callable_uses_callargs(normalized_abi):
-            callargs = self._emit_call_args_builder(node)
-            res = MoltValue(self.next_var(), type_hint="Any")
-            op_args = (
-                [callargs] if module_attr_func is None else [module_attr_func, callargs]
-            )
-            self.emit(
-                MoltOp(
-                    kind="INVOKE_FFI",
-                    args=op_args,
-                    result=res,
-                    metadata=metadata,
+    def _validate_native_python_call_candidate(self, node: ast.Call) -> None:
+        candidate: tuple[str, str] | None = None
+        if isinstance(node.func, ast.Name):
+            binding_name = node.func.id
+            imported_from = self.imported_names.get(binding_name)
+            if imported_from is None:
+                imported_from = self.global_imported_names.get(binding_name)
+            if imported_from is not None:
+                target_module = self._normalize_allowlist_module(imported_from)
+                candidate = (
+                    target_module or imported_from,
+                    self._imported_attr_name(binding_name),
                 )
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                target_module = self._imported_module_binding_target(node.func.value.id)
+                if target_module is not None:
+                    normalized = self._normalize_allowlist_module(target_module)
+                    candidate = (normalized or target_module, node.func.attr)
+            if candidate is None:
+                parts = self._dotted_attribute_parts(node.func)
+                if parts is not None and len(parts) >= 3:
+                    target_module = self._dotted_imported_module_target(parts[:-1])
+                    if target_module is not None:
+                        normalized = self._normalize_allowlist_module(target_module)
+                        candidate = (normalized or target_module, parts[-1])
+        if candidate is None:
+            return
+        target_module, attr_name = candidate
+        if self._native_callable_export(target_module, attr_name) is not None:
+            return
+        if self._is_native_python_export(target_module, attr_name):
+            self._raise_native_python_export_missing_callable_metadata(
+                target_module,
+                attr_name,
+                node,
             )
-            return res
 
-        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
-            raise FrontendRejection(
-                Diagnostic.CALL_SIGNATURE,
-                f"native callable export '{qualified_name}' with dynamic call arguments",
-                "call the export with positional arguments supported by its ABI",
-                "native callable ABI dispatch does not lower keyword, *args, or **kwargs packing",
-            )
-        fixed_arity = native_callable_fixed_arity(normalized_abi)
-        if fixed_arity is not None and len(node.args) != fixed_arity:
-            raise FrontendRejection(
-                Diagnostic.CALL_SIGNATURE,
-                f"native callable export '{qualified_name}' has invalid ABI payload arity",
-                f"call the export with {fixed_arity} positional ABI payload argument(s)",
-                f"{normalized_abi} expects {fixed_arity} ABI payload argument(s), got {len(node.args)}",
-            )
-
-        args = self._emit_call_args(node.args)
-        if module_attr_func is not None:
-            args = [module_attr_func, *args]
+    def _emit_stateful_callable_call(
+        self,
+        callee: MoltValue,
+        node: ast.Call,
+        *,
+        needs_bind: bool,
+    ) -> MoltValue:
+        # The callable owns its live defaults, exact code, namespaces, closure,
+        # and task layout. A static poll hint is never construction authority.
+        if (
+            needs_bind
+            or node.keywords
+            or any(isinstance(arg, ast.Starred) for arg in node.args)
+        ):
+            args = [callee, self._emit_call_args_builder(node)]
+            call_kind = "CALL_BIND"
+        else:
+            args = [callee, *self._emit_call_args(node.args)]
+            call_kind = "CALL_FUNC"
         res = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(
-                kind="INVOKE_FFI",
-                args=args,
-                result=res,
-                metadata=metadata,
-            )
-        )
+        self.emit(MoltOp(kind=call_kind, args=args, result=res))
         return res
 
     def _emit_stateful_function_value_call(
@@ -269,100 +214,18 @@ class CallModuleDispatchMixin(_MixinBase):
         if stateful_hint is None:
             return None
 
-        def target_value_for_call() -> MoltValue:
-            if (
-                self.current_func_name != "molt_main"
-                and func_id not in self.locals
-                and func_id not in self.async_locals
-            ):
-                return self._emit_module_attr_get(func_id)
-            return target_info
-
-        def emit_bind_call() -> MoltValue:
-            callargs = self._emit_call_args_builder(node)
-            res = MoltValue(self.next_var(), type_hint=stateful_hint.result_type_hint)
-            self.emit(
-                MoltOp(
-                    kind="CALL_BIND",
-                    args=[target_value_for_call(), callargs],
-                    result=res,
-                )
-            )
-            return res
-
-        if needs_bind or stateful_hint.poll_symbol == self.current_func_name:
-            return emit_bind_call()
-
-        func_symbol = (
-            stateful_hint.poll_symbol[: -len("_poll")]
-            if stateful_hint.poll_symbol.endswith("_poll")
-            else stateful_hint.poll_symbol
+        callee = target_info
+        if (
+            self.current_func_name != "molt_main"
+            and func_id not in self.locals
+            and func_id not in self.async_locals
+        ):
+            callee = self._emit_module_attr_get(func_id)
+        return self._emit_stateful_callable_call(
+            callee,
+            node,
+            needs_bind=needs_bind,
         )
-        args, _ = self._emit_direct_call_args_for_symbol(func_symbol, node)
-        if args is None:
-            return emit_bind_call()
-
-        if stateful_hint.has_closure and stateful_hint.kind != FunctionKind.GENERATOR:
-            res = MoltValue(self.next_var(), type_hint=stateful_hint.result_type_hint)
-            self.emit(
-                MoltOp(
-                    kind="CALL_FUNC",
-                    args=[target_value_for_call()] + args,
-                    result=res,
-                )
-            )
-            return res
-
-        task_args = args
-        if stateful_hint.has_closure:
-            closure_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="FUNCTION_CLOSURE_BITS",
-                    args=[target_value_for_call()],
-                    result=closure_val,
-                )
-            )
-            task_args = [closure_val] + args
-        frame_plan = stateful_hint.frame_plan(
-            param_count=len(args),
-            gen_control_size=GEN_CONTROL_SIZE,
-        )
-        closure_size = max(
-            stateful_hint.closure_size,
-            self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            ),
-        )
-        if stateful_hint.kind == FunctionKind.ASYNC:
-            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-            self.emit(
-                MoltOp(
-                    kind="ALLOC_TASK",
-                    args=[stateful_hint.poll_symbol, closure_size] + task_args,
-                    result=res,
-                    metadata={"task_kind": frame_plan.task_kind},
-                )
-            )
-            return res
-        gen_val = MoltValue(
-            self.next_var(),
-            type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
-        )
-        self.emit(
-            MoltOp(
-                kind="ALLOC_TASK",
-                args=[stateful_hint.poll_symbol, closure_size] + task_args,
-                result=gen_val,
-                metadata={"task_kind": frame_plan.task_kind},
-            )
-        )
-        if stateful_hint.kind == FunctionKind.GENERATOR:
-            return gen_val
-        res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-        self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-        return res
 
     def _emit_known_module_task_func_call(
         self,
@@ -384,76 +247,15 @@ class CallModuleDispatchMixin(_MixinBase):
                 kind = raw_kind
         if kind is None:
             return None
-        result_hint = stateful_function_result_type_hint(kind)
-        if info is None:
-            if needs_bind or node.keywords:
-                return self._emit_call_bind_for_known_module_func(
-                    node,
-                    result_hint=result_hint,
-                )
-            args = self._emit_call_args(node.args)
-            params = len(args)
-        else:
-            decorated = bool(info.get("has_decorators"))
-            if needs_bind or decorated or info.get("has_vararg"):
-                bind_hint = "Any" if decorated else result_hint
-                return self._emit_call_bind_for_known_module_func(
-                    node,
-                    result_hint=bind_hint,
-                )
-            else:
-                params = info.get("params")
-                if not isinstance(params, int):
-                    return self._emit_call_bind_for_known_module_func(
-                        node,
-                        result_hint=result_hint,
-                    )
-                args = self._emit_direct_call_args(target_module, func_id, node)
-                if args is None:
-                    return self._emit_call_bind_for_known_module_func(
-                        node,
-                        result_hint=result_hint,
-                    )
-        poll_func = f"{self._sanitize_module_name(target_module)}__{func_id}_poll"
-        frame_plan = stateful_function_frame_plan(
-            kind=kind,
-            poll_symbol=poll_func,
-            param_count=params,
-            has_closure=False,
-            gen_control_size=GEN_CONTROL_SIZE,
+        decorated = info is not None and bool(info.get("has_decorators"))
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return self._emit_stateful_callable_call(
+            callee,
+            node,
+            needs_bind=needs_bind or decorated,
         )
-        closure_size = self._task_closure_size(
-            frame_plan.payload_slots,
-            include_gen_control=frame_plan.include_gen_control,
-        )
-        if kind == FunctionKind.ASYNC:
-            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-            self.emit(
-                MoltOp(
-                    kind="ALLOC_TASK",
-                    args=[poll_func, closure_size] + args,
-                    result=res,
-                    metadata={"task_kind": frame_plan.task_kind},
-                )
-            )
-            return res
-        gen_val = MoltValue(
-            self.next_var(),
-            type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
-        )
-        self.emit(
-            MoltOp(
-                kind="ALLOC_TASK",
-                args=[poll_func, closure_size] + args,
-                result=gen_val,
-                metadata={"task_kind": frame_plan.task_kind},
-            )
-        )
-        if kind == FunctionKind.GENERATOR:
-            return gen_val
-        res = MoltValue(self.next_var(), type_hint="async_generator")
-        self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-        return res
 
     def _try_emit_imported_module_direct_or_task_call(
         self,
@@ -469,19 +271,17 @@ class CallModuleDispatchMixin(_MixinBase):
     ) -> MoltValue | None:
         if target_module is None:
             return None
-        native_callable_export_call = self._try_emit_native_callable_export_call(
-            target_module,
-            original_attr,
-            node,
-        )
-        if native_callable_export_call is not None:
-            return native_callable_export_call
         if self._is_native_python_export(target_module, original_attr):
-            self._raise_native_python_export_missing_callable_metadata(
-                target_module,
-                original_attr,
-                node,
-            )
+            if self._native_callable_export(target_module, original_attr) is None:
+                self._raise_native_python_export_missing_callable_metadata(
+                    target_module,
+                    original_attr,
+                    node,
+                )
+            # Static native manifests publish a real callable object. Its live
+            # module attribute, not a synthesized module__function symbol, owns
+            # dispatch and rebinding semantics.
+            return None
         target_kind = self._lookup_func_kind(target_module, original_attr)
         known_direct_target = self._lookup_func_defaults(target_module, original_attr)
         has_known_direct_target = known_direct_target is not None
@@ -542,18 +342,22 @@ class CallModuleDispatchMixin(_MixinBase):
                 node,
                 result_hint="Any",
             )
-        if allow_speculative_internal_direct and not has_known_direct_target:
-            args = None if node.keywords else self._emit_call_args(node.args)
-        else:
-            args = self._emit_direct_call_args(target_module, original_attr, node)
-        if args is None:
-            return self._emit_call_bind_for_known_module_func(
-                node,
-                result_hint="Any",
-            )
+        # Registry and module stability facts identify a candidate code symbol,
+        # not an immutable Python function/defaults ABI. Keep its live operand.
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        args = self._emit_call_args(node.args)
         res = MoltValue(self.next_var(), type_hint="Any")
         target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"
-        self.emit(MoltOp(kind="CALL", args=[target_name] + args, result=res))
+        self.emit(
+            MoltOp(
+                kind="CALL_GUARDED",
+                args=[callee] + args,
+                result=res,
+                metadata={"target": target_name},
+            )
+        )
         return res
 
     def _try_emit_intrinsic_handle_class_constructor(
@@ -572,7 +376,7 @@ class CallModuleDispatchMixin(_MixinBase):
 
         runtime_args: list[MoltValue]
         if node.args:
-            arg_hint = self._static_expr_type_hint_without_emitting(node.args[0])
+            arg_hint = self._builtin_exact_type_from_expr(node.args[0])
             if arg_hint not in spec.iterable_types:
                 return None
             intrinsic_name = spec.iterable_intrinsic

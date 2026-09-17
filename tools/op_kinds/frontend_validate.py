@@ -304,6 +304,18 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 f"frontend_effect_kind {kind}: effect must be one of "
                 f"{sorted(_FRONTEND_EFFECT_VALUES)}, got {effect!r}"
             )
+        if "may_access_arbitrary_heap" in row:
+            arbitrary_heap = row["may_access_arbitrary_heap"]
+            if type(arbitrary_heap) is not bool:
+                raise OpKindTableError(
+                    f"frontend_effect_kind {kind}: 'may_access_arbitrary_heap' "
+                    "must be a bool"
+                )
+            if arbitrary_heap and effect == "pure":
+                raise OpKindTableError(
+                    f"frontend_effect_kind {kind}: pure operations cannot "
+                    "access arbitrary heap"
+                )
         if not isinstance(row.get("reason"), str) or not row["reason"]:
             raise OpKindTableError(
                 f"frontend_effect_kind {kind}: 'reason' must be a non-empty string"

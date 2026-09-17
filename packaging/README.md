@@ -1,6 +1,9 @@
 # Packaging & Release Notes
 
 This folder holds release assets, install scripts, and packaging templates.
+Their presence does not mean a package has been published or that a target has
+passed release acceptance. For a source-checkout install, use
+[getting started](../docs/getting-started.md).
 
 ## Layout
 
@@ -12,7 +15,7 @@ This folder holds release assets, install scripts, and packaging templates.
 
 ## Release workflow
 
-`PACKAGING.md` defines the executable candidate → verify → attest → promote
+[PACKAGING.md](PACKAGING.md) defines the executable candidate → verify → attest → promote
 authority. Tag the exact version from `pyproject.toml`; every target must prove
 reproducibility and clean-consumer native execution before the one protected
 promotion job can make a draft GitHub Release public.
@@ -42,7 +45,7 @@ signed release manifest. They do not rebuild, rehash, or republish artifacts.
 After a release, download `release_manifest.json` and run:
 
 ```bash
-python3 tools/release/update_manifests.py release_manifest.json
+uv run --python 3.12 python tools/release/update_manifests.py release_manifest.json
 ```
 
 Rendered files land in `packaging/out/` for copy/paste into external repos.

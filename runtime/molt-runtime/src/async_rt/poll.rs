@@ -430,6 +430,20 @@ pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
 
 pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr: *mut u8) -> i64 {
     unsafe {
+        // Resumption transports creation-time code and namespace into the compiler's
+        // real frame entry; it must not introduce a second visible Python frame.
+        let [globals_bits, builtins_bits, code_bits] =
+            crate::object::aux_header::object_frame_context_bits(task_ptr);
+        let Some(_frame_invocation) =
+            crate::builtins::frames::FrameInvocationGuard::for_suspended_namespace(
+                _py,
+                code_bits,
+                globals_bits,
+                builtins_bits,
+            )
+        else {
+            return MoltObject::none().bits() as i64;
+        };
         let addr = task_ptr.expose_provenance() as u64;
         #[cfg(target_arch = "wasm32")]
         {
@@ -512,7 +526,6 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 };
                 let mut code_name = "<none>".to_string();
                 let mut code_file = "<none>".to_string();
-                let code_bits = crate::fn_ptr_code_get(_py, poll_fn_addr);
                 if code_bits != 0
                     && let Some(code_ptr) = crate::maybe_ptr_from_bits(code_bits)
                 {
@@ -650,6 +663,280 @@ pub(crate) unsafe fn poll_future_with_task_stack(
 #[cfg(test)]
 mod tests {
     use super::async_sleep_poll_fn_addr;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn namespace_probe_poll(task_address: u64) -> i64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            crate::molt_trace_enter_slot(0);
+            let globals = crate::builtins::frames::frame_stack_active_globals_bits();
+            let task = std::ptr::with_exposed_provenance_mut::<u8>(task_address as usize);
+            assert_eq!(
+                crate::builtins::frames::frame_stack_active_code_bits(),
+                crate::object::aux_header::object_frame_code_bits(task),
+                "resume must use the retained code object despite symbol rebinding",
+            );
+            assert_eq!(
+                crate::builtins::frames::frame_stack_active_builtins_bits(),
+                crate::object::aux_header::object_frame_builtins_bits(task),
+                "resume must use captured builtins, not the mutated globals entry",
+            );
+            crate::molt_trace_exit();
+            globals as i64
+        })
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn suspended_tasks_keep_creation_namespace_across_callers_and_frame_views() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use crate::builtins::frames::FrameInvocationGuard;
+            use crate::object::aux_header::{
+                object_frame_builtins_bits, object_frame_globals_bits,
+            };
+            use crate::{MoltObject, alloc_dict_with_pairs, dec_ref_bits};
+
+            let lexical = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let rebound = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let caller = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let builtins = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let replacement = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let builtins_key = crate::attr_name_bits_from_bytes(py, b"__builtins__").unwrap();
+            let builtins_baseline = unsafe {
+                (*crate::header_from_obj_ptr(crate::obj_from_bits(builtins).as_ptr().unwrap()))
+                    .ref_count_snapshot()
+            };
+            let name =
+                MoltObject::from_ptr(crate::alloc_string(py, b"<suspended-namespace>")).bits();
+            let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            let code = crate::object::builders::alloc_code_obj(
+                py,
+                name,
+                name,
+                1,
+                MoltObject::none().bits(),
+                empty,
+                empty,
+                0,
+                0,
+                0,
+            );
+            let code_bits = MoltObject::from_ptr(code).bits();
+            let replacement_code = crate::object::builders::alloc_code_obj(
+                py,
+                name,
+                name,
+                1,
+                MoltObject::none().bits(),
+                empty,
+                empty,
+                0,
+                0,
+                0,
+            );
+            let replacement_code_bits = MoltObject::from_ptr(replacement_code).bits();
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, empty);
+            crate::molt_code_slots_init(1);
+            crate::molt_code_slot_set(0, code_bits, lexical);
+            let poll = namespace_probe_poll as *const () as usize as u64;
+            for bits in [code_bits, replacement_code_bits] {
+                let function = crate::builtins::functions::alloc_runtime_function_obj(py, poll, 0);
+                assert!(!function.is_null());
+                assert!(unsafe {
+                    crate::object::layout::function_set_code_bits(py, function, bits)
+                });
+                dec_ref_bits(py, MoltObject::from_ptr(function).bits());
+            }
+            let baseline = unsafe {
+                (*crate::header_from_obj_ptr(crate::obj_from_bits(rebound).as_ptr().unwrap()))
+                    .ref_count_snapshot()
+            };
+
+            for kind in [
+                crate::TASK_KIND_GENERATOR,
+                crate::TASK_KIND_COROUTINE,
+                crate::TASK_KIND_FUTURE,
+            ] {
+                crate::molt_code_slot_set(0, code_bits, lexical);
+                unsafe {
+                    crate::dict_set_in_place(
+                        py,
+                        crate::obj_from_bits(rebound).as_ptr().unwrap(),
+                        builtins_key,
+                        builtins,
+                    );
+                }
+                let creation = FrameInvocationGuard::for_namespace(py, code_bits, rebound).unwrap();
+                let task = crate::molt_task_new(poll, crate::GEN_CONTROL_SIZE as u64, kind);
+                drop(creation);
+                let ptr = crate::obj_from_bits(task).as_ptr().unwrap();
+                assert_eq!(object_frame_globals_bits(ptr), rebound);
+                assert_eq!(object_frame_builtins_bits(ptr), builtins);
+                assert_eq!(
+                    crate::object::aux_header::object_frame_code_bits(ptr),
+                    code_bits
+                );
+                crate::molt_code_slot_set(0, replacement_code_bits, lexical);
+                unsafe {
+                    crate::dict_set_in_place(
+                        py,
+                        crate::obj_from_bits(rebound).as_ptr().unwrap(),
+                        builtins_key,
+                        replacement,
+                    );
+                }
+                let mut visited = Vec::new();
+                unsafe {
+                    crate::object::heap_lifecycle::visit_owned_values(py, ptr, &mut |bits| {
+                        visited.push(bits)
+                    });
+                }
+                assert!(
+                    visited.contains(&rebound),
+                    "captured globals must be visible to GC"
+                );
+                assert!(
+                    visited.contains(&builtins),
+                    "captured builtins must be visible to GC"
+                );
+                assert!(
+                    visited.contains(&code_bits),
+                    "retained code must be visible to GC"
+                );
+
+                let calling = FrameInvocationGuard::for_namespace(py, code_bits, caller).unwrap();
+                crate::molt_trace_enter_slot(0);
+                for _ in 0..2 {
+                    assert_eq!(
+                        unsafe { super::call_poll_fn(py, poll, ptr) } as u64,
+                        rebound
+                    );
+                    assert_eq!(
+                        crate::builtins::frames::frame_stack_active_globals_bits(),
+                        caller
+                    );
+                }
+                let mut views = Vec::new();
+                if kind == crate::TASK_KIND_GENERATOR {
+                    views.push((task, b"gi_frame".as_slice()));
+                    views.push((crate::molt_asyncgen_new(task), b"ag_frame".as_slice()));
+                } else if kind == crate::TASK_KIND_COROUTINE {
+                    views.push((task, b"cr_frame".as_slice()));
+                }
+                for (owner, field) in views {
+                    let code_field = match field {
+                        b"gi_frame" => b"gi_code".as_slice(),
+                        b"ag_frame" => b"ag_code".as_slice(),
+                        b"cr_frame" => b"cr_code".as_slice(),
+                        _ => unreachable!(),
+                    };
+                    let code_attr = crate::attr_name_bits_from_bytes(py, code_field).unwrap();
+                    let viewed_code = unsafe {
+                        crate::builtins::attributes::attr_lookup_ptr(
+                            py,
+                            crate::obj_from_bits(owner).as_ptr().unwrap(),
+                            code_attr,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(viewed_code, code_bits);
+                    dec_ref_bits(py, viewed_code);
+                    dec_ref_bits(py, code_attr);
+                    let attr = crate::attr_name_bits_from_bytes(py, field).unwrap();
+                    let frame = unsafe {
+                        crate::builtins::attributes::attr_lookup_ptr(
+                            py,
+                            crate::obj_from_bits(owner).as_ptr().unwrap(),
+                            attr,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(
+                        unsafe {
+                            crate::object_class_bits(crate::obj_from_bits(frame).as_ptr().unwrap())
+                        },
+                        crate::builtin_classes(py).frame,
+                        "every suspended view must use the canonical Python frame class"
+                    );
+                    for (name, expected) in [
+                        (b"f_globals".as_slice(), rebound),
+                        (b"f_builtins".as_slice(), builtins),
+                        (b"f_code".as_slice(), code_bits),
+                        (b"f_back".as_slice(), MoltObject::none().bits()),
+                        (b"f_lineno".as_slice(), MoltObject::from_int(1).bits()),
+                    ] {
+                        let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                        let value = unsafe {
+                            crate::builtins::attributes::attr_lookup_ptr(
+                                py,
+                                crate::obj_from_bits(frame).as_ptr().unwrap(),
+                                name,
+                            )
+                        }
+                        .unwrap();
+                        assert_eq!(value, expected);
+                        dec_ref_bits(py, value);
+                        dec_ref_bits(py, name);
+                    }
+                    dec_ref_bits(py, frame);
+                    dec_ref_bits(py, attr);
+                    if owner != task {
+                        dec_ref_bits(py, owner);
+                    }
+                }
+                crate::molt_trace_exit();
+                drop(calling);
+                dec_ref_bits(py, task);
+                assert_eq!(
+                    unsafe {
+                        (*crate::header_from_obj_ptr(
+                            crate::obj_from_bits(rebound).as_ptr().unwrap(),
+                        ))
+                        .ref_count_snapshot()
+                    },
+                    baseline,
+                    "task and frame namespace owners must retire exactly once"
+                );
+                assert_eq!(
+                    unsafe {
+                        (*crate::header_from_obj_ptr(
+                            crate::obj_from_bits(builtins).as_ptr().unwrap(),
+                        ))
+                        .ref_count_snapshot()
+                    },
+                    builtins_baseline,
+                    "captured builtins must retire exactly once"
+                );
+            }
+            let calling = FrameInvocationGuard::for_namespace(py, code_bits, caller).unwrap();
+            crate::molt_trace_enter_slot(0);
+            let native_task = crate::molt_task_new(
+                poll,
+                crate::GEN_CONTROL_SIZE as u64,
+                crate::TASK_KIND_FUTURE,
+            );
+            let native_ptr = crate::obj_from_bits(native_task).as_ptr().unwrap();
+            assert_eq!(object_frame_globals_bits(native_ptr), 0);
+            assert_eq!(object_frame_builtins_bits(native_ptr), 0);
+            assert_eq!(
+                crate::object::aux_header::object_frame_code_bits(native_ptr),
+                0
+            );
+            crate::molt_trace_exit();
+            drop(calling);
+            dec_ref_bits(py, native_task);
+            dec_ref_bits(py, code_bits);
+            dec_ref_bits(py, replacement_code_bits);
+            dec_ref_bits(py, lexical);
+            dec_ref_bits(py, rebound);
+            dec_ref_bits(py, caller);
+            dec_ref_bits(py, builtins);
+            dec_ref_bits(py, replacement);
+            dec_ref_bits(py, builtins_key);
+            assert!(!crate::exception_pending(py));
+        });
+    }
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]

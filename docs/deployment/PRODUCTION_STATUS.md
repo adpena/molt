@@ -1,6 +1,13 @@
-# Production Status — 2026-04-22
+# Deployment Snapshot — 2026-04-22 (Historical)
 
-## Live Endpoints
+This page preserves a dated OCR deployment report, not current Molt compiler
+support or release acceptance. Endpoints, assets, timings, and configuration
+below have not been revalidated for the current revision. Use
+[compiler status](../spec/STATUS.md), the
+[compatibility authorities](../spec/areas/compat/README.md), and the
+[release acceptance contract](../../packaging/PACKAGING.md) for current claims.
+
+## Endpoints Reported At The Snapshot Date
 | Endpoint | URL | Status |
 |----------|-----|--------|
 | Worker | falcon-ocr.adpena.workers.dev | Live |
@@ -12,8 +19,11 @@
 | Health | falcon-ocr.adpena.workers.dev/health | Live (503 while loading, 200 when ready) |
 
 ## Differential Test Results
-- **72/72 pass** — full parity across native, WASM, and LLVM backends
-- All edge cases covered: NaN propagation, overflow, denormals, boundary conditions
+- The original report recorded **72/72 passing cases** across native, WASM,
+  and LLVM. It does not identify a replayable per-target receipt here; do not
+  use that count as current-source acceptance or full parity evidence.
+- Reported topics included NaN propagation, overflow, denormals, and boundary
+  conditions. A finite test selection does not establish coverage of all cases.
 
 ## OCR Quality
 | Engine | Quality | Speed | Location |

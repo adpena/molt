@@ -129,6 +129,10 @@ tests, measurements, and explicit user direction over stale prose.
 - Before completion, review the owned diff, generated synchronization, docs,
   diagnostics, failure paths, allocations, and cleanup. Fix newly exposed
   in-scope defects rather than converting them into a report.
+- Keep public documentation aligned in the same change: prioritize `README.md`
+  and onboarding, then the owning contract/status projections. Link to canonical
+  matrices instead of duplicating them; distinguish implementation, verified
+  cells, and release acceptance. Keep local proof history out of public overviews.
 
 ## Safety and custody
 

@@ -34,7 +34,7 @@ impl BuiltinCallBinding {
                         return MoltObject::none().bits();
                     };
                     crate::builtins::exceptions::molt_exception_init_owned(
-                        function_closure_bits(func_ptr),
+                        function_execution_closure_bits(func_ptr),
                         bound[0],
                         bound[1],
                         bound[2],

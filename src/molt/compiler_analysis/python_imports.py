@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 import ast
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Literal
 
@@ -51,6 +51,35 @@ ImportResolutionError = Literal[
     "unknown_name",
     "missing_globals",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class _PythonAstDigestAdmission:
+    """Digest fact for one exact, read-only scan generation.
+
+    Retaining the tree rejects substitution; this fact does not make a mutable
+    AST immutable and must not outlive the non-mutating scan that created it.
+    """
+
+    tree: ast.AST = field(repr=False, compare=False)
+    digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        from molt.compiler_analysis.python_binding_flow import python_ast_digest
+
+        object.__setattr__(self, "digest", python_ast_digest(self.tree))
+
+    @classmethod
+    def for_tree(
+        cls,
+        tree: ast.AST,
+        admission: _PythonAstDigestAdmission | None = None,
+    ) -> _PythonAstDigestAdmission:
+        if admission is None:
+            return cls(tree)
+        if admission.tree is not tree:
+            raise ValueError("AST digest admission belongs to a different tree")
+        return admission
 
 
 @dataclass(frozen=True, slots=True)
@@ -1699,13 +1728,14 @@ def _analyze_module_import_flow_uncached(
 def analyze_module_import_flow(
     tree: ast.AST,
     context: ModuleImportContext,
+    *,
+    ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> ModuleImportFlow:
     """Return import facts from the canonical binding/capability index."""
 
     from molt.compiler_analysis.python_binding_flow import (
         PythonBindingPolicy,
         analyze_python_bindings,
-        python_ast_digest,
     )
 
     context = _normalized_import_context(context)
@@ -1717,9 +1747,12 @@ def analyze_module_import_flow(
         module = ast.Module(body=[ast.Expr(value=tree)], type_ignores=[])
     else:
         module = ast.Module(body=[], type_ignores=[])
+    ast_digest_admission = _PythonAstDigestAdmission.for_tree(
+        tree, ast_digest_admission
+    )
     index = analyze_python_bindings(
         module,
-        source_digest=python_ast_digest(tree),
+        source_digest=ast_digest_admission.digest,
         policy=PythonBindingPolicy(
             target_python=context.target_python,
             module_name=context.module_name,

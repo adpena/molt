@@ -37,7 +37,7 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
                     raise FrontendRejection(
                         Diagnostic.CALL_TARGET, "Unsupported call target"
                     )
-                return self._emit_dynamic_call(node, callee, True)
+                return self._emit_dynamic_call(node, callee)
             arg = self.visit(node.args[0])
             res = MoltValue(self.next_var(), type_hint="type")
             self.emit(MoltOp(kind="TYPE_OF", args=[arg], result=res))
@@ -78,46 +78,6 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="object")
             self.emit(MoltOp(kind="OBJECT_NEW", args=[], result=res))
             return res
-        if func_id == "len":
-            if node.keywords:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "len does not support keywords"
-                )
-            if len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    f"len() takes exactly one argument ({len(node.args)} given)",
-                )
-            # Constant-fold len() on string/bytes literals and
-            # list/tuple literals with all-constant elements.
-            raw_arg = node.args[0]
-            if isinstance(raw_arg, ast.Constant) and isinstance(
-                raw_arg.value, (str, bytes)
-            ):
-                folded_len = len(raw_arg.value)
-                res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[folded_len], result=res))
-                return res
-            if isinstance(raw_arg, (ast.List, ast.Tuple)) and all(
-                isinstance(e, ast.Constant) for e in raw_arg.elts
-            ):
-                folded_len = len(raw_arg.elts)
-                res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[folded_len], result=res))
-                return res
-            arg = self.visit(node.args[0])
-            spec = self._intrinsic_handle_class_spec_for_value(arg)
-            if spec is not None and spec.len_intrinsic is not None:
-                return self._emit_intrinsic_handle_class_call(
-                    arg,
-                    spec,
-                    spec.len_intrinsic,
-                    [],
-                    result_hint="int",
-                )
-            res = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LEN", args=[arg], result=res))
-            return res
         if func_id == "id":
             if node.keywords or len(node.args) != 1:
                 raise FrontendRejection(
@@ -130,26 +90,6 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
                 )
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ID", args=[arg], result=res))
-            return res
-        if func_id == "bool":
-            if node.keywords or len(node.args) > 1:
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee, True)
-            if not node.args:
-                res = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=res))
-                return res
-            arg = self.visit(node.args[0])
-            if arg is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported bool argument"
-                )
-            res = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="BOOL", args=[arg], result=res))
             return res
         if func_id == "ord":
             if node.keywords or len(node.args) != 1:
@@ -215,56 +155,4 @@ class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="IS_CALLABLE", args=[arg], result=res))
             return res
-        if func_id == "str":
-            # CPython str() signatures:
-            #   str() → ''
-            #   str(object) → str(object)
-            #   str(object=x) → str(x)
-            #   str(bytes, encoding) → decoded str
-            #   str(bytes, encoding, errors) → decoded str
-            #   str(bytes, encoding=..., errors=...) → decoded str
-            kw_object = next(
-                (kw.value for kw in node.keywords if kw.arg == "object"), None
-            )
-            kw_encoding = next(
-                (kw.value for kw in node.keywords if kw.arg == "encoding"), None
-            )
-            known_kw = {"object", "encoding", "errors"}
-            has_unsupported_kw = any(
-                kw.arg not in known_kw for kw in node.keywords if kw.arg is not None
-            )
-            if has_unsupported_kw or len(node.args) > 3:
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee, True)
-            # str(bytes_obj, encoding[, errors]) — decode bytes to str
-            # Fall through to dynamic call which the runtime handles via
-            # the str() builtin's multi-arg path.
-            has_encoding = len(node.args) >= 2 or kw_encoding is not None
-            if has_encoding:
-                callee = self.visit(node.func)
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee, True)
-            # str() → ''
-            if not node.args and kw_object is None:
-                res = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[""], result=res))
-                return res
-            # str(object) or str(object=x)
-            if node.args:
-                arg = self.visit(node.args[0])
-            elif kw_object is not None:
-                arg = self.visit(kw_object)
-            else:
-                arg = None
-            if arg is None:
-                arg = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=arg))
-            return self._emit_str_from_obj(arg)
         return CALL_NOT_HANDLED

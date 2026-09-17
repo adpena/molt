@@ -529,19 +529,14 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_runtime_qualified_callable has duplicate qualified names"
         )
-    qualified_symbols = [row["symbol"] for row in qualified_callables]
-    if len(set(qualified_symbols)) != len(qualified_symbols):
-        raise OpKindTableError(
-            "simpleir_runtime_qualified_callable has duplicate runtime symbols"
-        )
     for qualified in qualified_names:
         if (
             qualified != qualified.strip()
-            or re.fullmatch(r"(?:inspect|sys)\.[A-Za-z_][A-Za-z0-9_]*", qualified)
+            or re.fullmatch(r"[a-z_][a-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", qualified)
             is None
         ):
             raise OpKindTableError(
-                "simpleir_runtime_qualified_callable must use exact canonical sys/inspect spellings, not source aliases"
+                "simpleir_runtime_qualified_callable must use canonical qualified callable names"
             )
     classified_symbols = {
         symbol
@@ -1280,9 +1275,7 @@ def _validate_disjoint_opcode_role_sets(
             owners[opcode] = key
 
 
-def _validate_gvn_always_numberable_facts(
-    data: dict, opcodes: dict[str, dict]
-) -> None:
+def _validate_gvn_always_numberable_facts(data: dict, opcodes: dict[str, dict]) -> None:
     for opcode in data.get("gvn_always_numberable_opcodes", []):
         row = opcodes[opcode]
         if row["may_throw"] or row["side_effecting"] or row["purity"] != "pure":

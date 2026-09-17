@@ -11,7 +11,7 @@ from molt.cli.extension_manifest import (
     _module_parts,
     _validate_extension_manifest,
 )
-from molt.cli.python_module_names import (
+from molt.python_module_names import (
     canonical_python_module_name,
     canonical_python_module_names,
     encode_python_module_names,

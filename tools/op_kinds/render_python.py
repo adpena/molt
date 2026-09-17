@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from .runtime_requirements import (
+    runtime_callable_attribute_requirement_masks,
+    runtime_symbol_requirement_masks,
+)
 from .primitive_effects import (
     comparison_warning_pairs,
     PRIMITIVE_FRONTEND_TYPES,
@@ -63,6 +67,12 @@ def _frontend_arbitrary_heap_map(data: dict) -> dict[str, bool]:
     # operands. Their membership is derived from the existing semantic and
     # control authorities; there is no parallel callback-control list.
     effects.update(dict.fromkeys(_frontend_truthiness_control_kinds(data), True))
+    # Pre-serialization transfer operations can have a narrower arbitrary-heap
+    # contract than their preserved Copy opcode or their local memory effects.
+    # Keep that distinction explicit in the existing frontend authority.
+    for row in data.get("frontend_effect_kind", []):
+        if "may_access_arbitrary_heap" in row:
+            effects[row["kind"]] = row["may_access_arbitrary_heap"]
     return effects
 
 
@@ -267,18 +277,23 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append("    }\n")
     out.append(")\n\n")
 
-    protected_acquisition_attrs = sorted(
-        set(protected_attrs)
-        | set(data.get("simpleir_runtime_protected_attribute_gateways", []))
-    )
+    out.append("SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS: dict[str, int] = {\n")
+    for symbol, bits in sorted(runtime_symbol_requirement_masks(data).items()):
+        out.append(f'    "{symbol}": {bits},\n')
+    out.append("}\n\n")
     out.append(
-        "SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS: frozenset[str] = frozenset(\n"
+        "SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS: dict[str, int] = {\n"
     )
-    out.append("    {\n")
-    for attr in protected_acquisition_attrs:
-        out.append(f'        "{attr}",\n')
-    out.append("    }\n")
-    out.append(")\n\n")
+    protected_bits = 0
+    for attr, bits in sorted(
+        runtime_callable_attribute_requirement_masks(data).items()
+    ):
+        out.append(f'    "{attr}": {bits},\n')
+        protected_bits |= bits
+    out.append("}\n\n")
+    out.append(
+        f"SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS: int = {protected_bits}\n\n"
+    )
 
     for effect, const_name in (
         ("pure", "FRONTEND_EFFECT_PURE_KINDS"),

@@ -1,5 +1,39 @@
 use super::*;
 
+#[test]
+fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let key = attr_name_bits_from_bytes(_py, b"bound").unwrap();
+        let value = MoltObject::from_int(1).bits();
+        let lexical = alloc_dict_with_pairs(_py, &[key, value]);
+        let active = alloc_dict_with_pairs(_py, &[key, value]);
+        assert!(!lexical.is_null() && !active.is_null());
+        let lexical_bits = MoltObject::from_ptr(lexical).bits();
+        let active_bits = MoltObject::from_ptr(active).bits();
+        inc_ref_bits(_py, active_bits);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, active_bits, 0);
+        assert!(obj_from_bits(molt_module_del_global(lexical_bits, key)).is_none());
+        assert_eq!(unsafe { dict_get_in_place(_py, active, key) }, None);
+        assert_eq!(unsafe { dict_get_in_place(_py, lexical, key) }, Some(value));
+        assert!(obj_from_bits(molt_module_del_global_if_present(lexical_bits, key)).is_none());
+        assert!(!exception_pending(_py));
+        molt_module_del_global(lexical_bits, key);
+        let error = molt_exception_last_pending();
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            _py,
+            error,
+            "NameError"
+        ));
+        clear_exception(_py);
+        dec_ref_bits(_py, error);
+        crate::builtins::frames::frame_stack_pop(_py);
+        for bits in [lexical_bits, active_bits, key] {
+            dec_ref_bits(_py, bits);
+        }
+    });
+}
+
 static DELETE_RESULT: AtomicU64 = AtomicU64::new(0);
 static DELETE_CALLS: AtomicU64 = AtomicU64::new(0);
 

@@ -1,4 +1,5 @@
 use super::*;
+use molt_tir::trampolines::TaskConstructorLayout;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_alloc_task(&mut self, op: &TirOp) {
@@ -12,20 +13,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 _ => None,
             })
             .unwrap_or(0);
-        let task_kind = op
-            .attrs
-            .get("task_kind")
-            .and_then(|v| match v {
-                AttrValue::Str(s) => Some(s.as_str()),
-                _ => None,
-            })
-            .unwrap_or("future");
-        let (kind_bits, payload_base) = match task_kind {
-            "generator" => (crate::TASK_KIND_GENERATOR, crate::GENERATOR_CONTROL_BYTES),
-            "future" => (crate::TASK_KIND_FUTURE, 0),
-            "coroutine" => (crate::TASK_KIND_COROUTINE, 0),
-            _ => panic!("unknown task kind: {task_kind}"),
-        };
+        let task_kind = op.attrs.get("task_kind").and_then(|v| match v {
+            AttrValue::Str(s) => Some(s.as_str()),
+            _ => None,
+        });
+        let layout = TaskConstructorLayout::for_alloc_kind(task_kind);
         let Some(poll_func_name) = op.attrs.get("s_value").and_then(|v| match v {
             AttrValue::Str(s) => Some(s.as_str()),
             _ => None,
@@ -48,8 +40,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
             closure_size,
-            kind_bits,
-            payload_base,
+            layout,
             &op.operands,
             "task_new",
         );
@@ -113,11 +104,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "call_async_poll_ptr",
             )
             .unwrap();
+        let layout = TaskConstructorLayout::for_call_async();
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
-            (op.operands.len() * 8) as i64,
-            crate::TASK_KIND_FUTURE,
-            0,
+            layout.required_closure_size(op.operands.len(), false, crate::GENERATOR_CONTROL_BYTES),
+            layout,
             &op.operands,
             "call_async_task_new",
         );

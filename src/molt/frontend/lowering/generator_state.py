@@ -18,6 +18,7 @@ from molt.frontend._types import (
     ClassInfo,
     CompatibilityReporter,
     ComprehensionBinding,
+    ExactClassFact,
     FallbackPolicy,
     FormatToken,
     FuncInfo,
@@ -27,6 +28,10 @@ from molt.frontend._types import (
     ScratchCell,
 )
 from molt.frontend.sema import FunctionKind, SemaResult
+from molt.native_callable_exports import (
+    NativeCallableExportError,
+    normalize_native_callable_export,
+)
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
@@ -62,7 +67,7 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "del_targets",
     "unbound_check_names",
     "exact_locals",
-    "exact_builtin_locals",
+    "exact_class_token",
 )
 
 FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS = (
@@ -130,7 +135,6 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
     "loop_static_class_counter",
     "return_label",
     "return_slot",
-    "return_slot_index",
     "return_slot_offset",
     "block_terminated",
 )
@@ -157,6 +161,11 @@ FUNCTION_STATE_SNAPSHOT_ATTRS = (
 class GeneratorStateMixin(_MixinBase):
     comprehension_bindings: dict[str, ComprehensionBinding]
     current_python_first_arg: str | MoltValue | None
+    _next_exact_class_token: int
+    exact_class_token: int
+    exact_locals: dict[str, ExactClassFact]
+    loop_layout_guards: list[dict[str, tuple[str, MoltValue, int]]]
+    loop_guard_assumptions: list[dict[str, tuple[str, bool, int]]]
 
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]:
         missing = [name for name in attrs if not hasattr(self, name)]
@@ -220,8 +229,8 @@ class GeneratorStateMixin(_MixinBase):
         if reset_del_targets:
             self.del_targets = set()
         self.unbound_check_names = set()
+        self.exact_class_token = self._advance_exact_class_token()
         self.exact_locals = {}
-        self.exact_builtin_locals = {}
 
     def _reset_import_resolution_state(
         self,
@@ -291,7 +300,6 @@ class GeneratorStateMixin(_MixinBase):
         self.finally_depth = 0
         self.return_label = None
         self.return_slot = None
-        self.return_slot_index = None
         self.return_slot_offset = None
         self.block_terminated = False
         self.range_loop_stack = []
@@ -357,6 +365,10 @@ class GeneratorStateMixin(_MixinBase):
         self.known_classes: dict[str, ClassInfo] = dict(known_classes or {})
         self.classes: dict[str, ClassInfo] = dict(self.known_classes)
         self.local_class_names: set[str] = set()
+        # Token allocation belongs to the generator, not to a restorable
+        # function scope. Restoring an outer scope must never recycle a token
+        # that was already used while lowering a nested function.
+        self._next_exact_class_token = 0
         self._reset_local_binding_state(
             reset_locals_cache=True,
             reset_del_targets=True,
@@ -381,8 +393,6 @@ class GeneratorStateMixin(_MixinBase):
         self.class_definition_pending: set[str] = set()
         self.module_global_mutations: set[str] = set()
         self.module_globals_dict_escaped = False
-        self.module_intrinsic_globals: dict[str, str] = {}
-        self.reserved_external_func_symbols: set[str] = set()
         # Track the last-known type hint for module-scope attributes.
         # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
         # Enables fast_int/fast_float paths for module-scope loop variables.
@@ -452,11 +462,21 @@ class GeneratorStateMixin(_MixinBase):
             known_func_defaults or {}
         )
         self.known_func_kinds: dict[str, dict[str, str]] = known_func_kinds or {}
-        self.native_callable_exports: dict[str, dict[str, Any]] = {
-            qualified_name: dict(spec)
-            for qualified_name, spec in (native_callable_exports or {}).items()
-            if isinstance(qualified_name, str) and isinstance(spec, dict)
-        }
+        self.native_callable_exports: dict[str, dict[str, Any]] = {}
+        for qualified_name, spec in (native_callable_exports or {}).items():
+            if not isinstance(qualified_name, str) or not isinstance(spec, dict):
+                raise ValueError(
+                    "native_callable_exports must map qualified names to objects"
+                )
+            try:
+                normalized = normalize_native_callable_export(
+                    spec, qualified_name=qualified_name
+                )
+            except NativeCallableExportError as exc:
+                raise ValueError(
+                    f"native callable export {qualified_name!r} is invalid: {exc}"
+                ) from exc
+            self.native_callable_exports[qualified_name] = normalized.digest_payload()
         self.native_python_exports: set[str] = {
             qualified_name
             for qualified_name in (native_python_exports or set())

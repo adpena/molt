@@ -110,7 +110,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_invoke_ffi_ic` | 1 | Moderate | FFI invocation |
 | `molt_handle_resolve` | 2 | Moderate | |
 
-#### Function/Closure/Code Objects (15 functions)
+#### Function/Closure/Code Objects (14 functions)
 
 | Function | Decl count | Hot? | Notes |
 |----------|-----------|------|-------|
@@ -120,7 +120,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_code_new` | 1 | Low | |
 | `molt_code_slot_set` | 1 | Low | |
 | `molt_code_slots_init` | 1 | Low | |
-| `molt_fn_ptr_code_set` | 1 | Low | |
 | `molt_function_closure_bits` | 2 | Low | |
 | `molt_function_default_kind` | 1 | Low | |
 | `molt_function_is_generator` | 1 | Low | |

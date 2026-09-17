@@ -33,7 +33,6 @@ from molt.frontend.sema import (
     function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
-    stateful_function_result_type_hint,
 )
 
 if TYPE_CHECKING:
@@ -300,6 +299,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
+        cell_vars = self._callable_cell_vars(item)
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.GENERATOR,
@@ -316,22 +316,20 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.next_var(),
             type_hint=frame_plan.function_type_hint(closure_size),
         )
-        if has_closure and closure_val is not None:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW_CLOSURE",
-                    args=[poll_symbol, len(params), closure_val],
-                    result=func_val,
-                )
-            )
-        else:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW",
-                    args=[poll_symbol, len(params)],
-                    result=func_val,
-                )
-            )
+        function_def = MoltOp(
+            kind=(
+                "FUNC_NEW_CLOSURE"
+                if has_closure and closure_val is not None
+                else "FUNC_NEW"
+            ),
+            args=(
+                [poll_symbol, len(params), closure_val]
+                if has_closure and closure_val is not None
+                else [poll_symbol, len(params)]
+            ),
+            result=func_val,
+        )
+        self.emit(function_def)
         func_spill = None
         if self.in_generator and signature_contains_yield(
             decorators=item.decorator_list,
@@ -349,6 +347,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=poll_symbol,
             name=method_name,
             qualname=self._qualname_for_def(method_name),
             trace_lineno=item.lineno,
@@ -360,8 +359,10 @@ class ClassMethodCompilationMixin(_MixinBase):
             default_exprs=[],
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
-            is_generator=True,
+            execution_kind=FunctionKind.GENERATOR,
             varnames=varnames,
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -374,6 +375,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
+            stateful_frame_plan=frame_plan,
             python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
@@ -408,6 +410,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
+        self._prebox_scope_cell_vars(cell_vars)
         if self.type_hint_policy == "check":
             for arg in arg_nodes:
                 hint = self.explicit_type_hints.get(arg.arg)
@@ -468,6 +471,11 @@ class ClassMethodCompilationMixin(_MixinBase):
         self._restore_function_state(prev_state)
         self.current_class = prev_class
         self.current_method_first_param = prev_first_param
+        # Publish the final spilled-frame extent on the defining op.
+        function_def.metadata = {
+            **(function_def.metadata or {}),
+            **frame_plan.callable_task_metadata(closure_size),
+        }
         func_val.type_hint = frame_plan.function_type_hint(closure_size)
         names_vals: list[MoltValue] = []
         offsets_vals: list[MoltValue] = []
@@ -486,15 +494,6 @@ class ClassMethodCompilationMixin(_MixinBase):
             MoltOp(
                 kind="GEN_LOCALS_REGISTER",
                 args=[poll_symbol, names_tuple, offsets_tuple],
-                result=MoltValue("none"),
-            )
-        )
-        closure_size_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[closure_size], result=closure_size_val))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[func_val, "__molt_closure_size__", closure_size_val],
                 result=MoltValue("none"),
             )
         )
@@ -543,6 +542,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
+        cell_vars = self._callable_cell_vars(item)
 
         func_hint = f"Func:{method_symbol}"
         if has_closure:
@@ -581,6 +581,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=method_symbol,
             name=method_name,
             qualname=self._qualname_for_def(method_name),
             trace_lineno=item.lineno,
@@ -593,6 +594,8 @@ class ClassMethodCompilationMixin(_MixinBase):
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
             varnames=varnames,
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -658,12 +661,9 @@ class ClassMethodCompilationMixin(_MixinBase):
                 hint = self.explicit_type_hints.get(arg.arg)
                 if hint is not None:
                     self._emit_guard_type(self.locals[arg.arg], hint)
-        self._prebox_scope_cell_vars(body=item.body, arg_nodes=arg_nodes)
-        # Box ALL scope-assigned variables into cell lists.
-        # Cell lists provide correct refcount management (inc_ref/
-        # dec_ref in molt_store_index). The TIR backend's Memory SSA
-        # rewrite converts cell store_index/index to store_var/load_var
-        # for SSA phi visibility when optimization is enabled.
+        self._prebox_scope_cell_vars(cell_vars)
+        # Class-method lowering retains its existing all-local boxing policy,
+        # now backed by the runtime's dedicated closure-cell primitive.
         for name in sorted(self.scope_assigned):
             self._box_local(name)
         for arg in arg_nodes:
@@ -765,9 +765,9 @@ class ClassMethodCompilationMixin(_MixinBase):
                 return_hint = return_hint[1:-1]
             if return_hint == "Self":
                 return_hint = class_node.name
-            wrapper_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
-            self._record_func_default_specs(wrapper_symbol, item.args)
-            poll_symbol = f"{wrapper_symbol}_poll"
+            method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+            poll_symbol = f"{method_symbol}_poll"
+            self._record_func_default_specs(poll_symbol, item.args)
             posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(
                 item.args
             )
@@ -785,6 +785,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             free_vars, free_var_hints, closure_val, has_closure = (
                 self._capture_lexical_closure(self._cached_free_vars_raw(item))
             )
+            cell_vars = self._callable_cell_vars(item)
             has_return = self._function_contains_return(item)
             frame_plan = stateful_function_frame_plan(
                 kind=FunctionKind.ASYNC_GENERATOR,
@@ -802,6 +803,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.current_method_first_param = params[0] if params else None
             self.start_function(
                 poll_symbol,
+                stateful_frame_plan=frame_plan,
                 python_first_arg=self._python_first_positional_arg(item.args),
                 params=["self"],
                 compiler_params={"self"},
@@ -837,6 +839,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._init_scope_async_locals(arg_nodes)
+            self._prebox_scope_cell_vars(cell_vars)
             if self.type_hint_policy == "check":
                 for arg in arg_nodes:
                     hint = self.explicit_type_hints.get(arg.arg)
@@ -900,26 +903,23 @@ class ClassMethodCompilationMixin(_MixinBase):
             self.current_class = prev_class
             self.current_method_first_param = prev_first_param
 
-            func_hint = f"Func:{wrapper_symbol}"
-            if has_closure:
-                func_hint = f"ClosureFunc:{wrapper_symbol}"
+            func_hint = frame_plan.function_type_hint(closure_size)
             func_val = MoltValue(self.next_var(), type_hint=func_hint)
-            if has_closure and closure_val is not None:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW_CLOSURE",
-                        args=[wrapper_symbol, len(params), closure_val],
-                        result=func_val,
-                    )
-                )
-            else:
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW",
-                        args=[wrapper_symbol, len(params)],
-                        result=func_val,
-                    )
-                )
+            function_def = MoltOp(
+                kind=(
+                    "FUNC_NEW_CLOSURE"
+                    if has_closure and closure_val is not None
+                    else "FUNC_NEW"
+                ),
+                args=(
+                    [poll_symbol, len(params), closure_val]
+                    if has_closure and closure_val is not None
+                    else [poll_symbol, len(params)]
+                ),
+                result=func_val,
+                metadata=frame_plan.callable_task_metadata(closure_size),
+            )
+            self.emit(function_def)
             func_spill = None
             if self.in_generator and signature_contains_yield(
                 decorators=item.decorator_list,
@@ -937,6 +937,7 @@ class ClassMethodCompilationMixin(_MixinBase):
             )
             self._emit_function_metadata(
                 func_val,
+                code_symbol=poll_symbol,
                 name=method_name,
                 qualname=self._qualname_for_def(method_name),
                 trace_lineno=item.lineno,
@@ -948,9 +949,10 @@ class ClassMethodCompilationMixin(_MixinBase):
                 default_exprs=[],
                 kw_default_exprs=[],
                 docstring=ast.get_docstring(item, clean=False),
-                is_async_generator=True,
-                poll_fn_symbol=poll_symbol,
+                execution_kind=FunctionKind.ASYNC_GENERATOR,
                 varnames=varnames,
+                freevars=free_vars,
+                cellvars=cell_vars,
             )
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
@@ -974,85 +976,6 @@ class ClassMethodCompilationMixin(_MixinBase):
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
-            closure_size_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(kind="CONST", args=[closure_size], result=closure_size_val)
-            )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_closure_size__", closure_size_val],
-                    result=MoltValue("none"),
-                )
-            )
-
-            prev_func = self.current_func_name
-            prev_state = self._capture_function_state()
-            wrapper_params, parameter_bindings = self._function_transport_params(
-                params,
-                has_closure=has_closure,
-            )
-            self.start_function(
-                wrapper_symbol,
-                python_first_arg=self._python_first_positional_arg(item.args),
-                params=wrapper_params,
-                type_facts_name=f"{class_node.name}.{method_name}",
-            )
-            self.parameter_bindings = parameter_bindings
-            if has_closure:
-                self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                    _MOLT_CLOSURE_PARAM, type_hint="tuple"
-                )
-            self.global_decls = set()
-            self.nonlocal_decls = set()
-            self.scope_assigned = set()
-            self.del_targets = set()
-            for idx, arg in enumerate(arg_nodes):
-                hint = self._class_method_receiver_hint(
-                    class_node.name, descriptor, idx
-                )
-                if self._hints_enabled():
-                    explicit = self.explicit_type_hints.get(arg.arg)
-                    if explicit is None:
-                        explicit = self._annotation_to_hint(arg.annotation)
-                        if explicit is not None:
-                            self.explicit_type_hints[arg.arg] = explicit
-                    if explicit is not None:
-                        hint = explicit
-                    elif hint is None:
-                        hint = "Any"
-                value = self._parameter_value(
-                    arg.arg,
-                    type_hint=hint or "Unknown",
-                )
-                if hint is not None:
-                    self._apply_hint_to_value(arg.arg, value, hint)
-                self.locals[arg.arg] = value
-            if self.type_hint_policy == "check":
-                for arg in arg_nodes:
-                    hint = self.explicit_type_hints.get(arg.arg)
-                    if hint is not None:
-                        self._emit_guard_type(self.locals[arg.arg], hint)
-            args = [self.locals[arg.arg] for arg in arg_nodes]
-            if has_closure:
-                args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
-            gen_val = MoltValue(
-                self.next_var(),
-                type_hint=stateful_function_result_type_hint(FunctionKind.GENERATOR),
-            )
-            self.emit(
-                MoltOp(
-                    kind="ALLOC_TASK",
-                    args=[poll_symbol, closure_size] + args,
-                    result=gen_val,
-                    metadata={"task_kind": frame_plan.task_kind},
-                )
-            )
-            res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-            self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
-            self._emit_normal_return_terminator(res)
-            self.resume_function(prev_func)
-            self._restore_function_state(prev_state)
 
             method_attr = func_val
             return {
@@ -1081,9 +1004,9 @@ class ClassMethodCompilationMixin(_MixinBase):
             return_hint = return_hint[1:-1]
         if return_hint == "Self":
             return_hint = class_node.name
-        wrapper_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
-        self._record_func_default_specs(wrapper_symbol, item.args)
-        poll_symbol = f"{wrapper_symbol}_poll"
+        method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
+        poll_symbol = f"{method_symbol}_poll"
+        self._record_func_default_specs(poll_symbol, item.args)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(item.args)
         posonly_names = [arg.arg for arg in posonly]
         pos_or_kw_names = [arg.arg for arg in pos_or_kw]
@@ -1099,6 +1022,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(self._cached_free_vars_raw(item))
         )
+        cell_vars = self._callable_cell_vars(item)
         has_return = self._function_contains_return(item)
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.ASYNC,
@@ -1116,6 +1040,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
+            stateful_frame_plan=frame_plan,
             python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
@@ -1150,6 +1075,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
         self._init_scope_async_locals(arg_nodes)
+        self._prebox_scope_cell_vars(cell_vars)
         if self.type_hint_policy == "check":
             for arg in arg_nodes:
                 hint = self.explicit_type_hints.get(arg.arg)
@@ -1182,26 +1108,23 @@ class ClassMethodCompilationMixin(_MixinBase):
         self.current_class = prev_class
         self.current_method_first_param = prev_first_param
 
-        func_hint = f"Func:{wrapper_symbol}"
-        if has_closure:
-            func_hint = f"ClosureFunc:{wrapper_symbol}"
+        func_hint = frame_plan.function_type_hint(closure_size)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
-        if has_closure and closure_val is not None:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW_CLOSURE",
-                    args=[wrapper_symbol, len(params), closure_val],
-                    result=func_val,
-                )
-            )
-        else:
-            self.emit(
-                MoltOp(
-                    kind="FUNC_NEW",
-                    args=[wrapper_symbol, len(params)],
-                    result=func_val,
-                )
-            )
+        function_def = MoltOp(
+            kind=(
+                "FUNC_NEW_CLOSURE"
+                if has_closure and closure_val is not None
+                else "FUNC_NEW"
+            ),
+            args=(
+                [poll_symbol, len(params), closure_val]
+                if has_closure and closure_val is not None
+                else [poll_symbol, len(params)]
+            ),
+            result=func_val,
+            metadata=frame_plan.callable_task_metadata(closure_size),
+        )
+        self.emit(function_def)
         func_spill = None
         if self.in_generator and signature_contains_yield(
             decorators=item.decorator_list,
@@ -1219,6 +1142,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         )
         self._emit_function_metadata(
             func_val,
+            code_symbol=poll_symbol,
             name=method_name,
             qualname=self._qualname_for_def(method_name),
             trace_lineno=item.lineno,
@@ -1230,81 +1154,13 @@ class ClassMethodCompilationMixin(_MixinBase):
             default_exprs=[],
             kw_default_exprs=[],
             docstring=ast.get_docstring(item, clean=False),
-            is_coroutine=True,
+            execution_kind=FunctionKind.ASYNC,
             varnames=varnames,
+            freevars=free_vars,
+            cellvars=cell_vars,
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
-        closure_size_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[closure_size], result=closure_size_val))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[func_val, "__molt_closure_size__", closure_size_val],
-                result=MoltValue("none"),
-            )
-        )
-
-        prev_func = self.current_func_name
-        prev_state = self._capture_function_state()
-        wrapper_params, parameter_bindings = self._function_transport_params(
-            params,
-            has_closure=has_closure,
-        )
-        self.start_function(
-            wrapper_symbol,
-            python_first_arg=self._python_first_positional_arg(item.args),
-            params=wrapper_params,
-            type_facts_name=f"{class_node.name}.{method_name}",
-        )
-        self.parameter_bindings = parameter_bindings
-        if has_closure:
-            self.compiler_bindings[_MOLT_CLOSURE_PARAM] = MoltValue(
-                _MOLT_CLOSURE_PARAM, type_hint="tuple"
-            )
-        self.global_decls = set()
-        self.nonlocal_decls = set()
-        self.scope_assigned = set()
-        self.del_targets = set()
-        for idx, arg in enumerate(arg_nodes):
-            hint = self._class_method_receiver_hint(class_node.name, descriptor, idx)
-            if self._hints_enabled():
-                explicit = self.explicit_type_hints.get(arg.arg)
-                if explicit is None:
-                    explicit = self._annotation_to_hint(arg.annotation)
-                    if explicit is not None:
-                        self.explicit_type_hints[arg.arg] = explicit
-                if explicit is not None:
-                    hint = explicit
-                elif hint is None:
-                    hint = "Any"
-            value = self._parameter_value(
-                arg.arg,
-                type_hint=hint or "Unknown",
-            )
-            if hint is not None:
-                self._apply_hint_to_value(arg.arg, value, hint)
-            self.locals[arg.arg] = value
-        if self.type_hint_policy == "check":
-            for arg in arg_nodes:
-                hint = self.explicit_type_hints.get(arg.arg)
-                if hint is not None:
-                    self._emit_guard_type(self.locals[arg.arg], hint)
-        args = [self.locals[arg.arg] for arg in arg_nodes]
-        if has_closure:
-            args = [self.compiler_bindings[_MOLT_CLOSURE_PARAM]] + args
-        res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-        self.emit(
-            MoltOp(
-                kind="ALLOC_TASK",
-                args=[poll_symbol, closure_size] + args,
-                result=res,
-                metadata={"task_kind": frame_plan.task_kind},
-            )
-        )
-        self._emit_normal_return_terminator(res)
-        self.resume_function(prev_func)
-        self._restore_function_state(prev_state)
 
         method_attr = func_val
         return {

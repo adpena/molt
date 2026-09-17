@@ -12,6 +12,9 @@ import ast
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
+from molt.compiler_analysis.python_effects_generated import (
+    NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
+)
 from molt.frontend._types import (
     _FAST_ARITH_OPS,
     CompatibilityError,
@@ -21,6 +24,7 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 from molt.frontend.lowering.op_kinds_generated import (
     CHECK_EXCEPTION_SKIP_KINDS,
+    FRONTEND_ARBITRARY_HEAP_EFFECT,
     FRONTEND_REPOLL_KINDS,
     RAISING_KIND_NAMES,
 )
@@ -48,14 +52,33 @@ class EmissionCoreMixin(_MixinBase):
             # that ops emitted during this visit carry the expression's
             # col_offset (not the statement's).
             if isinstance(node, ast.expr):
+                exact_token_before = self.exact_class_token
                 col = getattr(node, "col_offset", None)
                 end_col = getattr(node, "end_col_offset", None)
+                prev = getattr(self, "_expr_col", None)
                 if col is not None and end_col is not None:
-                    prev = getattr(self, "_expr_col", None)
                     self._expr_col = (col, end_col)
+                try:
                     result = super().visit(node)
-                    self._expr_col = prev
-                    return result
+                finally:
+                    if col is not None and end_col is not None:
+                        self._expr_col = prev
+                fact = (
+                    self.python_binding_index.expression_fact(node)
+                    if self.python_binding_index is not None
+                    else None
+                )
+                if fact is None or (
+                    fact.effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+                ):
+                    # Any transfer into Python can mutate a reachable
+                    # instance's ``__class__``. Emitted callback boundaries
+                    # normally advance the token in source order. This
+                    # aggregate fallback fires only when lowering emitted no
+                    # such boundary; it never re-mints a producer fact.
+                    if self.exact_class_token == exact_token_before:
+                        self._expire_exact_class_facts()
+                return result
             return super().visit(node)
         except CompatibilityError:
             raise
@@ -121,6 +144,11 @@ class EmissionCoreMixin(_MixinBase):
         if op.result is not None and op.result.name not in ("none", ""):
             self._op_by_result[op.result.name] = op
         self.current_ops.append(op)
+        if FRONTEND_ARBITRARY_HEAP_EFFECT.get(op.kind, True):
+            # This generated opcode-effect projection also covers callback
+            # boundaries synthesized by statement lowering. Unknown kinds fail
+            # closed instead of creating a second handwritten effect registry.
+            self._expire_exact_class_facts()
         if self.python_frame_context_active and (
             op.kind == "STATE_LABEL" or op.kind in FRONTEND_REPOLL_KINDS
         ):

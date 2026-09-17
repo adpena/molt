@@ -2,6 +2,7 @@ use crate::PyToken;
 use crate::builtins::exceptions::{
     exception_layout_kind_for_class, exception_typed_fields_replace_internal, molt_exception_init,
     molt_exception_init_owned, molt_exception_new_bound, molt_exceptiongroup_init,
+    record_memory_error_without_allocation,
 };
 use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
@@ -21,22 +22,30 @@ fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String>
     Some(text)
 }
 
+// A missing capacity is an allocation failure, never absent layout metadata.
+fn class_allocation_capacity<T>(_py: &PyToken<'_>, capacity: Option<T>) -> Option<T> {
+    if capacity.is_none() {
+        record_memory_error_without_allocation(_py);
+    }
+    capacity
+}
+
 unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8) -> Option<usize> {
     unsafe {
         if object_type_id(offsets_ptr) != TYPE_ID_DICT {
             return Some(0);
         }
         let mut max_end = 0usize;
-        let entries = dict_order(offsets_ptr).clone();
-        for pair in entries.chunks(2) {
+        for pair in dict_order(offsets_ptr).chunks(2) {
             if pair.len() != 2 {
                 continue;
             }
             if let Some(offset) = obj_from_bits(pair[1]).as_int()
                 && offset >= 0
             {
-                let offset = usize::try_from(offset).ok()?;
-                let end = offset.checked_add(std::mem::size_of::<u64>())?;
+                let offset = class_allocation_capacity(_py, usize::try_from(offset).ok())?;
+                let end =
+                    class_allocation_capacity(_py, offset.checked_add(std::mem::size_of::<u64>()))?;
                 if end > max_end {
                     max_end = end;
                 }
@@ -53,6 +62,9 @@ unsafe fn max_slot_end_from_mro_offsets(
 ) -> Option<usize> {
     unsafe {
         let mro = class_mro_view(_py, class_ptr);
+        if exception_pending(_py) {
+            return None;
+        }
         let mut max_end = 0usize;
         for mro_class_bits in mro.iter().copied() {
             let Some(mro_class_ptr) = obj_from_bits(mro_class_bits).as_ptr() else {
@@ -61,11 +73,15 @@ unsafe fn max_slot_end_from_mro_offsets(
             if object_type_id(mro_class_ptr) != TYPE_ID_TYPE {
                 continue;
             }
-            let Some(offsets_bits) = crate::builtins::attr::class_field_offsets_map_bits(
+            let offsets_bits = crate::builtins::attr::class_field_offsets_map_bits(
                 _py,
                 mro_class_ptr,
                 Some(fields_name_bits),
-            ) else {
+            );
+            if exception_pending(_py) {
+                return None;
+            }
+            let Some(offsets_bits) = offsets_bits else {
                 continue;
             };
             let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
@@ -104,11 +120,17 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
             &runtime_state(_py).interned.field_offsets_name,
             b"__molt_field_offsets__",
         );
+        if fields_name_bits == 0 || exception_pending(_py) {
+            return None;
+        }
         let size_name_bits = intern_static_name(
             _py,
             &runtime_state(_py).interned.molt_layout_size,
             b"__molt_layout_size__",
         );
+        if size_name_bits == 0 || exception_pending(_py) {
+            return None;
+        }
         let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
 
         // The Python-visible layout metadata is an input to validation, never
@@ -117,6 +139,9 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
         let builtins = builtin_classes(_py);
         let reserved_prefix = crate::object::class_reserved_layout_prefix(class_ptr);
         let reserved_tail = crate::object::class_reserved_layout_tail(_py, class_ptr);
+        if exception_pending(_py) {
+            return None;
+        }
         let mut size = 0usize;
         let mut has_own_layout = false;
         let mut own_has_offsets = false;
@@ -128,18 +153,28 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
                 && val > 0
             {
                 has_own_layout = true;
-                size = usize::try_from(val).ok()?;
+                size = class_allocation_capacity(_py, usize::try_from(val).ok())?;
+            }
+            if exception_pending(_py) {
+                return None;
             }
             if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits) {
                 own_has_offsets = obj_from_bits(offsets_bits)
                     .as_ptr()
                     .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
             }
+            if exception_pending(_py) {
+                return None;
+            }
         }
         // A sealed ancestor's private size cache is the only layout-size
         // authority. Namespace reads remain available solely for ancestors
         // that are themselves still under construction.
-        for ancestor_bits in class_mro_view(_py, class_ptr).iter().copied().skip(1) {
+        let mro = class_mro_view(_py, class_ptr);
+        if exception_pending(_py) {
+            return None;
+        }
+        for ancestor_bits in mro.iter().copied().skip(1) {
             let Some(ancestor) = obj_from_bits(ancestor_bits).as_ptr() else {
                 continue;
             };
@@ -158,17 +193,28 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
                 if object_type_id(dict) != TYPE_ID_DICT {
                     continue;
                 }
-                dict_get_in_place(_py, dict, size_name_bits)
+                let declared = dict_get_in_place(_py, dict, size_name_bits)
                     .and_then(|bits| obj_from_bits(bits).as_int())
-                    .filter(|&value| value > 0)
-                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|&value| value > 0);
+                if exception_pending(_py) {
+                    return None;
+                }
+                match declared {
+                    Some(value) => {
+                        Some(class_allocation_capacity(_py, usize::try_from(value).ok())?)
+                    }
+                    None => None,
+                }
             };
             if let Some(inherited) = inherited {
                 size = size.max(inherited);
             }
         }
         let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits)?;
-        let required = max_end.max(reserved_prefix).checked_add(reserved_tail)?;
+        let required = class_allocation_capacity(
+            _py,
+            max_end.max(reserved_prefix).checked_add(reserved_tail),
+        )?;
         if has_own_layout && own_has_offsets && size < required {
             raise_exception::<()>(
                 _py,
@@ -196,8 +242,8 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usi
         if needs_recompute
             && let Some(class_dict_ptr) = class_dict_ptr
             && object_type_id(class_dict_ptr) == TYPE_ID_DICT
-            && let Ok(size_i64) = i64::try_from(size)
         {
+            let size_i64 = class_allocation_capacity(_py, i64::try_from(size).ok())?;
             let size_bits = MoltObject::from_int(size_i64).bits();
             dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
             if exception_pending(_py) {
@@ -223,6 +269,7 @@ pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let Some(payload) = total_size.checked_sub(std::mem::size_of::<MoltHeader>()) else {
+            record_memory_error_without_allocation(_py);
             return MoltObject::none().bits();
         };
         let bits = crate::object::builders::alloc_class_instance(_py, payload, class_bits);
@@ -243,6 +290,7 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
             return MoltObject::none().bits();
         };
         let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
+            record_memory_error_without_allocation(_py);
             return MoltObject::none().bits();
         };
         alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
@@ -260,25 +308,10 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
         {
             return inst_bits;
         }
-        alloc_instance_for_class(_py, class_ptr)
-    }
-}
-
-pub(crate) unsafe fn alloc_instance_for_class_no_pool(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-) -> u64 {
-    unsafe {
-        if crate::object::class_finish_definition(_py, class_ptr).is_err() {
+        if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(payload_size) = class_layout_size_cached(_py, class_ptr) else {
-            return MoltObject::none().bits();
-        };
-        let Some(total_size) = payload_size.checked_add(std::mem::size_of::<MoltHeader>()) else {
-            return MoltObject::none().bits();
-        };
-        alloc_published_instance_for_class_with_total_size(_py, class_ptr, total_size)
+        alloc_instance_for_class(_py, class_ptr)
     }
 }
 
@@ -1217,81 +1250,22 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
     }
 }
 
-pub(crate) unsafe fn try_call_generator(
-    _py: &PyToken<'_>,
-    func_bits: u64,
-    args: &[u64],
-) -> Option<u64> {
-    unsafe {
-        let func_obj = obj_from_bits(func_bits);
-        let func_ptr = func_obj.as_ptr()?;
-        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return None;
-        }
-        let is_gen = function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_is_generator,
-                b"__molt_is_generator__",
-            ),
-        )
-        .is_some_and(|bits| is_truthy(_py, obj_from_bits(bits)));
-        if !is_gen {
-            return None;
-        }
-        let size_bits = function_attr_bits(
-            _py,
-            func_ptr,
-            intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_closure_size,
-                b"__molt_closure_size__",
-            ),
-        )
-        .unwrap_or_else(|| MoltObject::none().bits());
-        let Some(size_val) = obj_from_bits(size_bits).as_int() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
-        };
-        if size_val < 0 {
-            return raise_exception::<_>(_py, "TypeError", "closure size must be non-negative");
-        }
-        let closure_size = size_val as usize;
-        let fn_ptr = function_fn_ptr(func_ptr);
-        let closure_bits = function_closure_bits(func_ptr);
-        let mut payload: Vec<u64> =
-            Vec::with_capacity(args.len() + if closure_bits != 0 { 1 } else { 0 });
-        if closure_bits != 0 {
-            payload.push(closure_bits);
-        }
-        payload.extend(args.iter().copied());
-        let base = GEN_CONTROL_SIZE;
-        let needed = base + payload.len() * std::mem::size_of::<u64>();
-        if closure_size < needed {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
-        }
-        let obj_bits = molt_generator_new(fn_ptr, closure_size as u64);
-        let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() else {
-            return Some(MoltObject::none().bits());
-        };
-        let mut offset = base;
-        for val_bits in payload {
-            let slot = obj_ptr.add(offset) as *mut u64;
-            *slot = val_bits;
-            inc_ref_bits(_py, val_bits);
-            offset += std::mem::size_of::<u64>();
-        }
-        Some(obj_bits)
-    }
-}
-
 pub(crate) unsafe fn function_attr_bits(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
     attr_bits: u64,
 ) -> Option<u64> {
     unsafe {
+        if let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr()
+            && object_type_id(attr_ptr) == TYPE_ID_STRING
+        {
+            let name = std::slice::from_raw_parts(string_bytes(attr_ptr), string_len(attr_ptr));
+            if let Some(bits) =
+                crate::object::layout::function_code_signature_metadata_bits(func_ptr, name)
+            {
+                return Some(bits);
+            }
+        }
         let dict_bits = function_dict_bits(func_ptr);
         if dict_bits == 0 {
             return None;
@@ -1577,6 +1551,103 @@ mod tests {
             assert!(header.gc_is_published());
             assert_eq!(unsafe { object_class_bits(inst_ptr) }, class_bits);
             dec_ref_bits(_py, inst_bits);
+        });
+    }
+
+    #[test]
+    fn class_instance_allocation_capacity_failures_record_memory_error() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class_ptr = obj_from_bits(builtin_classes(py).object)
+                .as_ptr()
+                .expect("builtin object class");
+            for total_size in [0, usize::MAX] {
+                let result = unsafe {
+                    super::alloc_published_instance_for_class_with_total_size(
+                        py, class_ptr, total_size,
+                    )
+                };
+                assert!(obj_from_bits(result).is_none());
+                assert!(exception_pending(py));
+                // Emergency MemoryError is a non-allocating pending marker,
+                // not a heap exception object exposed by last_pending.
+                let error = molt_exception_last_pending();
+                assert!(obj_from_bits(error).is_none());
+                let _ = molt_exception_clear();
+                dec_ref_bits(py, error);
+            }
+        });
+    }
+
+    #[test]
+    fn class_instance_allocation_failure_preserves_class_owner_and_can_retry() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreTracker;
+        impl Drop for RestoreTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class_ptr = obj_from_bits(builtin_classes(py).object)
+                .as_ptr()
+                .expect("builtin object class");
+            unsafe {
+                let warm = alloc_instance_for_class(py, class_ptr);
+                assert!(obj_from_bits(warm).as_ptr().is_some());
+                dec_ref_bits(py, warm);
+                let owners = (*header_from_obj_ptr(class_ptr)).ref_count_snapshot();
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    ..Default::default()
+                })));
+                let reset = RestoreTracker;
+                let result = alloc_instance_for_class(py, class_ptr);
+                assert!(obj_from_bits(result).is_none());
+                assert!(exception_pending(py));
+                assert_eq!(
+                    (*header_from_obj_ptr(class_ptr)).ref_count_snapshot(),
+                    owners
+                );
+                drop(reset);
+                let _ = molt_exception_clear();
+                let result = alloc_instance_for_class(py, class_ptr);
+                let instance = obj_from_bits(result).as_ptr().expect("retry succeeds");
+                assert!((*header_from_obj_ptr(instance)).gc_is_published());
+                dec_ref_bits(py, result);
+                assert_eq!(
+                    (*header_from_obj_ptr(class_ptr)).ref_count_snapshot(),
+                    owners
+                );
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn class_instance_capacity_failure_preserves_pending_error_identity() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class_ptr = obj_from_bits(builtin_classes(py).object)
+                .as_ptr()
+                .expect("builtin object class");
+            raise_exception::<()>(py, "ValueError", "original allocation caller error");
+            let original = molt_exception_last_pending();
+            assert!(obj_from_bits(original).as_ptr().is_some());
+            unsafe {
+                for total_size in [0, usize::MAX] {
+                    let result = super::alloc_published_instance_for_class_with_total_size(
+                        py, class_ptr, total_size,
+                    );
+                    assert!(obj_from_bits(result).is_none());
+                }
+            }
+            let observed = molt_exception_last_pending();
+            assert_eq!(observed, original);
+            let _ = molt_exception_clear();
+            dec_ref_bits(py, observed);
+            dec_ref_bits(py, original);
         });
     }
 

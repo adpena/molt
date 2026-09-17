@@ -6,6 +6,7 @@ from tools import harness_memory_guard
 
 from .paths import ROOT
 from .primitive_effects import render_primitive_effects_rs
+from .runtime_requirements import runtime_symbol_requirement_masks
 from .schema import (
     _CALL_OPCODE_ROLES,
     _EXCEPTION_REGION_NESTING_ROLES,
@@ -1364,10 +1365,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             "    match symbol {\n",
         ]
     )
-    symbol_masks: dict[str, int] = {}
-    for role in data["simpleir_runtime_requirement_roles"]:
-        for symbol in role.get("runtime_symbols", []):
-            symbol_masks[symbol] = symbol_masks.get(symbol, 0) | (1 << role["bit"])
+    symbol_masks = runtime_symbol_requirement_masks(data)
     for symbol, bits in sorted(symbol_masks.items()):
         lines.append(f'        "{symbol}" => SimpleIrRuntimeRequirements({bits}),\n')
     lines.extend(
@@ -1549,6 +1547,16 @@ def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
         ]
     )
     lines.append(_render_matches_arm(data.get("async_work_poll_marker_kinds", [])))
+    lines.append("    )\n}\n\n")
+    lines.extend(
+        [
+            "/// Luau operations requiring a proven canonical ordered mapping operand.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_requires_luau_ordered_mapping(kind: &str) -> bool {\n",
+            "    matches!(\n        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(data["simpleir_luau_ordered_mapping_kinds"]))
     lines.append("    )\n}\n")
     return "".join(lines)
 

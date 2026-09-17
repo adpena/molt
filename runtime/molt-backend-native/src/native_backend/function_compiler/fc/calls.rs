@@ -1,4 +1,5 @@
 use super::super::*;
+use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 
 /// Single-source kind authority for [`handle_call_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -31,7 +32,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    emit_traces: bool,
     master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
@@ -46,7 +46,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
-    module_known_functions: &BTreeSet<String>,
     closure_functions: &BTreeSet<String>,
     leaf_functions: &BTreeSet<String>,
     local_closure_envs: &BTreeMap<String, String>,
@@ -69,7 +68,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         "call" => handle_call_direct_op(
             op,
             op_idx,
-            emit_traces,
             master_return_block,
             returns_value,
             rc_authority,
@@ -83,7 +81,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             param_name_set,
             last_use,
             alias_roots,
-            module_known_functions,
             closure_functions,
             leaf_functions,
             local_closure_envs,
@@ -113,6 +110,8 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             closure_functions,
             local_closure_envs,
+            known_function_arities,
+            declared_func_arities,
             function_has_ret,
             defined_functions,
             nbc,
@@ -121,7 +120,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             op,
             op_idx,
             func_name,
-            emit_traces,
             master_return_block,
             returns_value,
             &mut *module,
@@ -132,7 +130,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             vars,
             representation_plan,
             closure_functions,
-            local_closure_envs,
             known_function_arities,
             declared_func_arities,
             function_has_ret,
@@ -245,12 +242,35 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     }
 }
 
+/// Closure transport has already materialized any hidden argument. Both static
+/// call kinds must now obey the same declared ABI, irrespective of recursion.
+#[cfg(feature = "native-backend")]
+fn static_call_arity(
+    target: &str,
+    supplied: usize,
+    known: &BTreeMap<String, usize>,
+    declared: &BTreeMap<String, usize>,
+) -> usize {
+    let arity = declared
+        .get(target)
+        .or_else(|| known.get(target))
+        .copied()
+        .unwrap_or(supplied);
+    if let (Some(known), Some(declared)) = (known.get(target), declared.get(target)) {
+        assert_eq!(known, declared, "conflicting static call ABI for {target}");
+    }
+    assert_eq!(
+        supplied, arity,
+        "static call argument ABI mismatch for {target}"
+    );
+    arity
+}
+
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_direct_op(
     op: &OpIR,
     op_idx: usize,
-    emit_traces: bool,
     master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
@@ -264,7 +284,6 @@ fn handle_call_direct_op(
     param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
-    module_known_functions: &BTreeSet<String>,
     closure_functions: &BTreeSet<String>,
     leaf_functions: &BTreeSet<String>,
     local_closure_envs: &BTreeMap<String, String>,
@@ -425,17 +444,26 @@ fn handle_call_direct_op(
         let env_bits = builder.inst_results(extract_call)[0];
         args.insert(0, env_bits);
     }
-    // Declare the target function.
-    // Use the previously-declared arity if available, so the
-    // Cranelift signature matches the definition even when the
-    // call site passes a different number of arguments (e.g.
-    // expanded keyword arguments).
-    let sig_arity = declared_func_arities
-        .get(target_name)
-        .copied()
-        .or_else(|| known_function_arities.get(target_name).copied())
-        .unwrap_or(args.len());
-    let target_ret = function_has_ret.get(target_name).copied().unwrap_or(true);
+    // Static calls must satisfy the declared machine ABI after closure-env
+    // transport. Python argument binding belongs to the callable dispatch ops;
+    // an arity mismatch cannot be repaired by an unchecked function-pointer cast.
+    let sig_arity = static_call_arity(
+        target_name,
+        args.len(),
+        known_function_arities,
+        declared_func_arities,
+    );
+    let runtime_result = runtime_boxed_abi(target_name, sig_arity).map(|abi| abi.result);
+    assert!(
+        runtime_result != Some(RuntimeBoxedReturn::Void) || op.out.is_none(),
+        "runtime void call cannot bind an output: {target_name}"
+    );
+    let target_ret = runtime_result.map_or_else(
+        || function_has_ret.get(target_name).copied().unwrap_or(true),
+        |result| result == RuntimeBoxedReturn::OwnedValue,
+    );
+    let owns_result = runtime_result == Some(RuntimeBoxedReturn::OwnedValue)
+        || (runtime_result.is_none() && function_has_ret.contains_key(target_name) && target_ret);
     let mut target_sig = module.make_signature();
     for _ in 0..sig_arity {
         target_sig.params.push(AbiParam::new(types::I64));
@@ -458,42 +486,12 @@ fn handle_call_direct_op(
         });
     let local_callee = module.declare_func_in_func(callee, builder.func);
 
-    // --- Fast path: direct call for known defined non-closure functions ---
-    // When the target is a defined function in this module (not a closure),
-    // emit a direct Cranelift call with a lightweight recursion guard.
-    // This avoids: arg spill/reload, match-on-arity dispatch, indirect call.
-    //
-    // The caller's exception-handling state (`has_exc_handling`) does NOT
-    // gate the direct call: the direct dispatch is semantically identical
-    // regardless of whether the caller carries a function-level exception
-    // label.  Post-call exception routing is handled by the separate
-    // CHECK_EXCEPTION op the frontend inserts after the call (lowered to a
-    // pending-flag test + branch to the handler), and the recursion-limit
-    // path inside this fast path already returns early to propagate a
-    // pending RecursionError.  Gating on `has_exc_handling` would disable
-    // the fast path for *every* call now that all functions carry an
-    // exception label (foundation C2), which is the exact perf regression
-    // this exclusion exists to avoid.
-    let use_direct_call = (module_known_functions.contains(target_name)
-        || matches!(linkage, Linkage::Import))
-        && !closure_functions.contains(target_name)
-        && args.len() == sig_arity
-        && !emit_traces;
-
-    if std::env::var("MOLT_DEBUG_DIRECT_CALL").is_ok() {
-        eprintln!(
-            "call {} -> direct={} (module_known={} closure={} arity_match={} traces={})",
-            target_name,
-            use_direct_call,
-            module_known_functions.contains(target_name),
-            closure_functions.contains(target_name),
-            args.len() == sig_arity,
-            emit_traces,
-        );
-    }
-
-    let is_leaf_call = use_direct_call && leaf_functions.contains(target_name);
-    let _callee_has_ret = function_has_ret.get(target_name).copied().unwrap_or(true);
+    // Every static target has an exact call signature, including closures and
+    // void imports. Execution-frame tracing is callee-owned; routing through the
+    // value-only guarded dispatcher adds no trace and corrupts a void ABI.
+    // CHECK_EXCEPTION owns post-call routing; the recursion-limit arm returns
+    // immediately to preserve the pending exception.
+    let is_leaf_call = leaf_functions.contains(target_name);
     let res = if is_leaf_call {
         // Leaf function: no user-level calls inside, so it
         // cannot recurse.  Skip the recursion guard entirely
@@ -505,7 +503,7 @@ fn handle_call_direct_op(
         } else {
             results[0]
         }
-    } else if use_direct_call {
+    } else {
         // Lightweight recursion guard using global atomics
         // (no TLS on the hot path). The data-symbol inline
         // approach was reverted because Cranelift global_value
@@ -584,46 +582,6 @@ fn handle_call_direct_op(
         // a branch, and discards the FunctionBuilder variable state needed by
         // unrelated live SSA temporaries after the call.
         call_res
-    } else {
-        // --- Outlined guarded call via molt_guarded_call ---
-        // Fallback for imported functions, closures, arity mismatches,
-        // or when tracing is enabled.
-        let fn_ptr_val = builder.ins().func_addr(types::I64, local_callee);
-
-        // Spill args to a stack slot for the outlined helper.
-        let nargs_count = args.len();
-        let slot_size = std::cmp::max(nargs_count, 1) * 8;
-        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            slot_size as u32,
-            3, // align_shift: 2^3 = 8-byte alignment
-        ));
-        for (i, arg) in args.iter().enumerate() {
-            builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
-        }
-        let args_ptr_val = builder.ins().stack_addr(types::I64, args_slot, 0);
-        let nargs_val = builder.ins().iconst(types::I64, nargs_count as i64);
-        let code_id_val = if emit_traces {
-            builder.ins().iconst(types::I64, op.value.unwrap_or(0))
-        } else {
-            builder.ins().iconst(types::I64, -1i64)
-        };
-
-        // Declare and call molt_guarded_call.
-        let gc_local = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            "molt_guarded_call",
-            &[types::I64, types::I64, types::I64, types::I64],
-            &[types::I64],
-        );
-        let gc_call = builder.ins().call(
-            gc_local,
-            &[fn_ptr_val, args_ptr_val, nargs_val, code_id_val],
-        );
-        builder.inst_results(gc_call)[0]
     };
 
     // Tracked-value cleanup (stays inline — varies per site).
@@ -746,7 +704,9 @@ fn handle_call_direct_op(
             !origin_ptr_cleanup_roots.contains(alias_root_name(alias_roots, name))
         });
     }
-    if let Some(out__) = op.out.as_ref() {
+    if owns_result {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+    } else if let Some(out__) = op.out.as_ref() {
         def_var_named(&mut *builder, vars, out__, res);
     }
 }
@@ -764,6 +724,8 @@ fn handle_call_internal_op(
     representation_plan: &ScalarRepresentationPlan,
     closure_functions: &BTreeSet<String>,
     local_closure_envs: &BTreeMap<String, String>,
+    known_function_arities: &BTreeMap<String, usize>,
+    declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
@@ -839,9 +801,21 @@ fn handle_call_internal_op(
         let env_bits = builder.inst_results(extract_call)[0];
         args.insert(0, env_bits);
     }
-    let target_returns = function_has_ret.get(target_name).copied().unwrap_or(true);
+    assert!(
+        runtime_boxed_abi(target_name, args.len()).is_none(),
+        "call_internal requires a compiled function, not runtime target `{target_name}`"
+    );
+    let target_returns = *function_has_ret.get(target_name).unwrap_or_else(|| {
+        panic!("call_internal target `{target_name}` has no compiled function ABI")
+    });
+    let sig_arity = static_call_arity(
+        target_name,
+        args.len(),
+        known_function_arities,
+        declared_func_arities,
+    );
     let mut sig = module.make_signature();
-    for _ in 0..args.len() {
+    for _ in 0..sig_arity {
         sig.params.push(AbiParam::new(types::I64));
     }
     if target_returns {
@@ -867,9 +841,7 @@ fn handle_call_internal_op(
     let call = builder.ins().call(local_callee, &args);
     if target_returns {
         let res = builder.inst_results(call)[0];
-        if let Some(out__) = op.out.as_ref() {
-            def_var_named(&mut *builder, vars, out__, res);
-        }
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     } else {
         // Target doesn't return -- assign None if output var requested.
         if let Some(out__) = op.out.as_ref() {
@@ -885,12 +857,71 @@ fn handle_call_internal_op(
 }
 
 #[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn emit_positional_call_bind(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    callee_bits: Value,
+    args: &[Value],
+    func_name: &str,
+    op_idx: usize,
+) -> Value {
+    let callargs_new_local = import_func_ref(
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        "molt_callargs_new",
+        &[types::I64, types::I64],
+        &[types::I64],
+    );
+    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
+    let kw_capacity = builder.ins().iconst(types::I64, 0);
+    let callargs_call = builder
+        .ins()
+        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
+    let callargs_ptr = builder.inst_results(callargs_call)[0];
+    let callargs_push_local = import_func_ref(
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        "molt_callargs_push_pos",
+        &[types::I64, types::I64],
+        &[types::I64],
+    );
+    for arg in args {
+        builder
+            .ins()
+            .call(callargs_push_local, &[callargs_ptr, *arg]);
+    }
+    let call_bind_local = import_func_ref(
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        "molt_call_bind_ic",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    let site_bits = builder.ins().iconst(
+        types::I64,
+        box_int(stable_ic_site_id(func_name, op_idx, "call_guarded")),
+    );
+    let fallback_call = builder
+        .ins()
+        .call(call_bind_local, &[site_bits, callee_bits, callargs_ptr]);
+    builder.inst_results(fallback_call)[0]
+}
+
+#[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_guarded_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    emit_traces: bool,
     master_return_block: Block,
     returns_value: bool,
     module: &mut ObjectModule,
@@ -901,7 +932,6 @@ fn handle_call_guarded_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     closure_functions: &BTreeSet<String>,
-    local_closure_envs: &BTreeMap<String, String>,
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
@@ -962,33 +992,7 @@ fn handle_call_guarded_op(
         );
     }
 
-    // For direct calls to closures, extract env from function object
-    if closure_functions.contains(target_name)
-        && let Some(func_obj_var) = local_closure_envs.get(target_name)
-    {
-        let func_obj_bits = *var_get_boxed_overflow_safe(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            &mut *sealed_blocks,
-            vars,
-            func_obj_var,
-            representation_plan,
-        )
-        .expect("Closure func obj not found for direct call");
-        let extract_fn = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            "molt_function_closure_bits",
-            &[types::I64],
-            &[types::I64],
-        );
-        let extract_local = module.declare_func_in_func(extract_fn, builder.func);
-        let extract_call = builder.ins().call(extract_local, &[func_obj_bits]);
-        let env_bits = builder.inst_results(extract_call)[0];
-        args.insert(0, env_bits);
-    }
+    let has_closure = closure_functions.contains(target_name);
     // Use the previously-declared arity if available so the
     // Cranelift signature matches the definition even when the
     // call site passes a different number of arguments.
@@ -996,7 +1000,22 @@ fn handle_call_guarded_op(
         .get(target_name)
         .copied()
         .or_else(|| known_function_arities.get(target_name).copied())
-        .unwrap_or(args.len());
+        .unwrap_or(args.len() + usize::from(has_closure));
+    // A Python argument mismatch must reach binding, not an invalid static ABI.
+    if sig_arity != args.len() + usize::from(has_closure) {
+        let result = emit_positional_call_bind(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            *callee_bits,
+            &args,
+            func_name,
+            op_idx,
+        );
+        bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+        return;
+    }
     let target_returns = function_has_ret.get(target_name).copied().unwrap_or(true);
     let mut sig = module.make_signature();
     for _ in 0..sig_arity {
@@ -1027,17 +1046,8 @@ fn handle_call_guarded_op(
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_is_function_obj",
-        &[types::I64],
-        &[types::I64],
-    );
-    let truthy_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_is_truthy",
-        &[types::I64],
+        "molt_function_direct_call_eligible",
+        &[types::I64, types::I64, types::I64],
         &[types::I64],
     );
     let guard_enter_local = import_func_ref(
@@ -1058,29 +1068,31 @@ fn handle_call_guarded_op(
         &[],
         &[],
     );
-    let trace_enter_local = import_func_ref(
+    let invocation_enter_local = import_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_trace_enter",
+        "molt_frame_invocation_enter",
         &[types::I64],
         &[types::I64],
     );
-    let trace_exit_local = import_func_ref(
+    let invocation_exit_local = import_func_ref(
         &mut *module,
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_trace_exit",
-        &[],
+        "molt_frame_invocation_exit",
+        &[types::I64],
         &[types::I64],
     );
-    let is_func_call = builder.ins().call(is_func_local, &[*callee_bits]);
-    let is_func_bits = builder.inst_results(is_func_call)[0];
-    let truthy_call = builder.ins().call(truthy_local, &[is_func_bits]);
-    let truthy_bits = builder.inst_results(truthy_call)[0];
-    let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, truthy_bits, 0);
+    let supplied = builder.ins().iconst(types::I64, args.len() as i64);
+    let closure_shape = builder.ins().iconst(types::I64, i64::from(has_closure));
+    let eligible_call = builder
+        .ins()
+        .call(is_func_local, &[*callee_bits, supplied, closure_shape]);
+    let eligible = builder.inst_results(eligible_call)[0];
+    let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, eligible, 0);
 
     let resolve_local = import_func_ref(
         &mut *module,
@@ -1101,53 +1113,16 @@ fn handle_call_guarded_op(
         .brif(is_func_bool, func_block, &[], fallback_block, &[]);
 
     switch_to_block_materialized(&mut *builder, fallback_block);
-    seal_block_once(&mut *builder, &mut *sealed_blocks, fallback_block);
-    let callargs_new_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_callargs_new",
-        &[types::I64, types::I64],
-        &[types::I64],
+    let fallback_res = emit_positional_call_bind(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        *callee_bits,
+        &args,
+        func_name,
+        op_idx,
     );
-    let pos_capacity = builder.ins().iconst(types::I64, args.len() as i64);
-    let kw_capacity = builder.ins().iconst(types::I64, 0);
-    let callargs_call = builder
-        .ins()
-        .call(callargs_new_local, &[pos_capacity, kw_capacity]);
-    let callargs_ptr = builder.inst_results(callargs_call)[0];
-    let callargs_push_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_callargs_push_pos",
-        &[types::I64, types::I64],
-        &[types::I64],
-    );
-    for arg in &args {
-        builder
-            .ins()
-            .call(callargs_push_local, &[callargs_ptr, *arg]);
-    }
-    let call_bind_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_call_bind_ic",
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
-    );
-    let site_bits = builder.ins().iconst(
-        types::I64,
-        box_int(stable_ic_site_id(func_name, op_idx, "call_guarded")),
-    );
-    let fallback_call = builder
-        .ins()
-        .call(call_bind_local, &[site_bits, *callee_bits, callargs_ptr]);
-    let fallback_res = builder.inst_results(fallback_call)[0];
     jump_block(&mut *builder, merge_block, &[fallback_res]);
 
     switch_to_block_materialized(&mut *builder, func_block);
@@ -1159,10 +1134,10 @@ fn handle_call_guarded_op(
         .load(types::I64, MemFlagsData::trusted(), func_ptr, 0);
     let matches = builder.ins().icmp(IntCC::Equal, fn_ptr, expected_addr);
     let then_block = builder.create_block();
-    let else_block = builder.create_block();
     builder
         .ins()
-        .brif(matches, then_block, &[], else_block, &[]);
+        .brif(matches, then_block, &[], fallback_block, &[]);
+    seal_block_once(builder, sealed_blocks, fallback_block);
 
     switch_to_block_materialized(&mut *builder, then_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_block);
@@ -1177,21 +1152,64 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_call_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_call_block);
-    if emit_traces {
-        let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
+    let invocation_call = builder.ins().call(invocation_enter_local, &[*callee_bits]);
+    let invocation_token = builder.inst_results(invocation_call)[0];
+    let invocation_ok = builder.ins().icmp_imm(IntCC::NotEqual, invocation_token, 0);
+    let then_invoke_block = builder.create_block();
+    let then_invocation_fail_block = builder.create_block();
+    builder.ins().brif(
+        invocation_ok,
+        then_invoke_block,
+        &[],
+        then_invocation_fail_block,
+        &[],
+    );
+
+    switch_to_block_materialized(&mut *builder, then_invoke_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, then_invoke_block);
+    // Closure is an ABI argument, never a Python positional argument. Its owner
+    // is the admitted actual callable, not the lexical target's first object.
+    let mut direct_args = args;
+    if has_closure {
+        let extract_local = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_function_closure_bits",
+            &[types::I64],
+            &[types::I64],
+        );
+        let extract_call = builder.ins().call(extract_local, &[*callee_bits]);
+        let env_bits = builder.inst_results(extract_call)[0];
+        direct_args.insert(0, env_bits);
     }
-    let direct_call = builder.ins().call(local_callee, &args);
+    let direct_call = builder.ins().call(local_callee, &direct_args);
     let direct_results = builder.inst_results(direct_call);
     let direct_res = if direct_results.is_empty() {
         builder.ins().iconst(types::I64, box_none())
     } else {
         direct_results[0]
     };
-    if emit_traces {
-        let _ = builder.ins().call(trace_exit_local, &[]);
-    }
+    let _ = builder
+        .ins()
+        .call(invocation_exit_local, &[invocation_token]);
     let _ = builder.ins().call(guard_exit_local, &[]);
     jump_block(&mut *builder, merge_block, &[direct_res]);
+
+    switch_to_block_materialized(&mut *builder, then_invocation_fail_block);
+    seal_block_once(
+        &mut *builder,
+        &mut *sealed_blocks,
+        then_invocation_fail_block,
+    );
+    let _ = builder.ins().call(guard_exit_local, &[]);
+    if returns_value {
+        let none_bits = builder.ins().iconst(types::I64, box_none());
+        jump_block(builder, master_return_block, &[none_bits]);
+    } else {
+        jump_block(builder, master_return_block, &[]);
+    }
 
     switch_to_block_materialized(&mut *builder, then_fail_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_fail_block);
@@ -1207,53 +1225,10 @@ fn handle_call_guarded_op(
         jump_block(builder, master_return_block, &[]);
     }
 
-    switch_to_block_materialized(&mut *builder, else_block);
-    seal_block_once(&mut *builder, &mut *sealed_blocks, else_block);
-    let guard_call = builder.ins().call(guard_enter_local, &[]);
-    let guard_val = builder.inst_results(guard_call)[0];
-    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
-    let else_call_block = builder.create_block();
-    let else_fail_block = builder.create_block();
-    builder
-        .ins()
-        .brif(guard_ok, else_call_block, &[], else_fail_block, &[]);
-
-    switch_to_block_materialized(&mut *builder, else_call_block);
-    seal_block_once(&mut *builder, &mut *sealed_blocks, else_call_block);
-    if emit_traces {
-        let _ = builder.ins().call(trace_enter_local, &[*callee_bits]);
-    }
-    let sig_ref = builder.import_signature(sig);
-    let fallback_call = builder.ins().call_indirect(sig_ref, fn_ptr, &args);
-    let fallback_results = builder.inst_results(fallback_call);
-    let fallback_res = if fallback_results.is_empty() {
-        builder.ins().iconst(types::I64, box_none())
-    } else {
-        fallback_results[0]
-    };
-    if emit_traces {
-        let _ = builder.ins().call(trace_exit_local, &[]);
-    }
-    let _ = builder.ins().call(guard_exit_local, &[]);
-    jump_block(&mut *builder, merge_block, &[fallback_res]);
-
-    switch_to_block_materialized(&mut *builder, else_fail_block);
-    seal_block_once(&mut *builder, &mut *sealed_blocks, else_fail_block);
-    // Same as then_fail_block: return immediately on recursion
-    // guard failure so the pending RecursionError propagates.
-    if returns_value {
-        let none_bits = builder.ins().iconst(types::I64, box_none());
-        jump_block(builder, master_return_block, &[none_bits]);
-    } else {
-        jump_block(builder, master_return_block, &[]);
-    }
-
     switch_to_block_materialized(&mut *builder, merge_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
     let res = builder.block_params(merge_block)[0];
-    if let Some(out__) = op.out.as_ref() {
-        def_var_named(&mut *builder, vars, out__, res);
-    }
+    bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
 }
 
 #[cfg(feature = "native-backend")]
@@ -1296,18 +1271,8 @@ fn handle_call_func_op(
             nbc,
         )
     };
-    // Inline probe fast-path: for 0–3 positional args with no tracing,
-    // emit Cranelift IR that checks the callable's type/arity/closure
-    // inline and calls through fn_ptr via call_indirect.  This avoids
-    // ALL function-call overhead for the common case (non-closure,
-    // exact arity, TYPE_ID_FUNCTION).  On the fast path, the generated
-    // code does: tag check -> load type_id -> load closure_bits ->
-    // load arity -> load fn_ptr -> recursion guard -> call_indirect.
-    // All loads hit the same cache line, so this is very cheap.
-    //
-    // Slow path: falls back to molt_call_func_fast{N} for closures,
-    // bound methods, arity mismatches; or molt_call_func_dispatch
-    // for >3 args or tracing.
+    // Inline codegen and runtime dispatch share one Python-call admission gate.
+    // The admitted no-closure path retains direct call_indirect dispatch.
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let func_bits = var_get_boxed_overflow_safe(
         &mut *module,
@@ -1354,134 +1319,42 @@ fn handle_call_func_op(
     };
 
     let res = if use_inline_probe {
-        // --- Inline probe: check tag, type_id, closure, arity ---
-        let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-        let expected_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
-        let ptr_mask_val = builder.ins().iconst(types::I64, nbc.pointer_mask);
-
         let merge_block = builder.create_block();
         builder.append_block_param(merge_block, types::I64);
-        append_live_through_params(&mut *builder, merge_block, &inline_live_through);
+        append_live_through_params(builder, merge_block, &inline_live_through);
         let slow_block = builder.create_block();
-
-        // Step 1: Check TAG_PTR
-        let tag = builder.ins().band(*func_bits, tag_mask);
-        let is_ptr = builder.ins().icmp(IntCC::Equal, tag, expected_ptr_tag);
-        let probe_block = builder.create_block();
-        brif_block(&mut *builder, is_ptr, probe_block, &[], slow_block, &[]);
-
-        // Step 2: Extract pointer, check TYPE_ID_FUNCTION
-        switch_to_block_materialized(&mut *builder, probe_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, probe_block);
-        let raw_ptr = builder.ins().band(*func_bits, ptr_mask_val);
-        let shift16 = builder.ins().iconst(types::I64, 16);
-        let shifted = builder.ins().ishl(raw_ptr, shift16);
-        let ptr_val = builder.ins().sshr(shifted, shift16);
-        let type_id = builder
-            .ins()
-            .load(types::I32, MemFlagsData::trusted(), ptr_val, -16i32);
-        let expected_type = builder
-            .ins()
-            .iconst(types::I32, i64::from(TYPE_ID_FUNCTION));
-        let type_ok = builder.ins().icmp(IntCC::Equal, type_id, expected_type);
-        let closure_check_block = builder.create_block();
-        brif_block(
-            &mut *builder,
-            type_ok,
-            closure_check_block,
-            &[],
-            slow_block,
-            &[],
-        );
-
-        // Step 3: Check closure_bits == 0 (at ptr+24)
-        switch_to_block_materialized(&mut *builder, closure_check_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, closure_check_block);
-        let closure_bits_v =
-            builder
-                .ins()
-                .load(types::I64, MemFlagsData::trusted(), ptr_val, 24i32);
-        let zero = builder.ins().iconst(types::I64, 0);
-        let no_closure = builder.ins().icmp(IntCC::Equal, closure_bits_v, zero);
-        let trampoline_check_block = builder.create_block();
-        brif_block(
-            &mut *builder,
-            no_closure,
-            trampoline_check_block,
-            &[],
-            slow_block,
-            &[],
-        );
-
-        // Step 4: Reject trampoline-backed functions. Those are
-        // lowered through the canonical runtime trampoline path
-        // rather than a raw fn_ptr call.
-        switch_to_block_materialized(&mut *builder, trampoline_check_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, trampoline_check_block);
-        let tramp_ptr_v = builder
-            .ins()
-            .load(types::I64, MemFlagsData::trusted(), ptr_val, 40i32);
-        let no_trampoline = builder.ins().icmp(IntCC::Equal, tramp_ptr_v, zero);
-        let binder_check_block = builder.create_block();
-        let arity_check_block = builder.create_block();
-        brif_block(
-            &mut *builder,
-            no_trampoline,
-            binder_check_block,
-            &[],
-            slow_block,
-            &[],
-        );
-
-        // Step 5: Reject functions whose Python call shape must
-        // be bound before ABI dispatch (`*args`, keyword-only
-        // params/defaults, `**kwargs`, or a builtin bind kind).
-        // The runtime owns this shape bit because metadata can
-        // be attached after function allocation.
-        switch_to_block_materialized(&mut *builder, binder_check_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, binder_check_block);
-        let requires_binder_ref = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            "molt_function_requires_binder_fast",
-            &[types::I64],
-            &[types::I64],
-        );
-        let requires_binder_call = builder.ins().call(requires_binder_ref, &[*func_bits]);
-        let requires_binder = builder.inst_results(requires_binder_call)[0];
-        let no_binder = builder.ins().icmp_imm(IntCC::Equal, requires_binder, 0);
-        brif_block(
-            &mut *builder,
-            no_binder,
-            arity_check_block,
-            &[],
-            slow_block,
-            &[],
-        );
-
-        // Step 6: Check arity (at ptr+8)
-        switch_to_block_materialized(&mut *builder, arity_check_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, arity_check_block);
-        let arity = builder
-            .ins()
-            .load(types::I64, MemFlagsData::trusted(), ptr_val, 8i32);
-        let expected_arity = builder.ins().iconst(types::I64, nargs as i64);
-        let arity_ok = builder.ins().icmp(IntCC::Equal, arity, expected_arity);
         let direct_call_block = builder.create_block();
-        brif_block(
-            &mut *builder,
-            arity_ok,
-            direct_call_block,
-            &[],
-            slow_block,
-            &[],
+        let eligibility_ref = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_function_direct_call_eligible",
+            &[types::I64, types::I64, types::I64],
+            &[types::I64],
         );
+        let supplied = builder.ins().iconst(types::I64, nargs as i64);
+        let no_closure = builder.ins().iconst(types::I64, 0);
+        let eligibility_call = builder
+            .ins()
+            .call(eligibility_ref, &[*func_bits, supplied, no_closure]);
+        let eligible = builder.inst_results(eligibility_call)[0];
+        let admitted = builder.ins().icmp_imm(IntCC::NotEqual, eligible, 0);
+        brif_block(builder, admitted, direct_call_block, &[], slow_block, &[]);
 
-        // Step 7: Load fn_ptr (at ptr+0), recursion guard, call_indirect
-        switch_to_block_materialized(&mut *builder, direct_call_block);
-        seal_block_once(&mut *builder, &mut *sealed_blocks, direct_call_block);
+        switch_to_block_materialized(builder, direct_call_block);
+        seal_block_once(builder, sealed_blocks, direct_call_block);
+        let resolve_ref = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_handle_resolve",
+            &[types::I64],
+            &[types::I64],
+        );
+        let resolve_call = builder.ins().call(resolve_ref, &[*func_bits]);
+        let ptr_val = builder.inst_results(resolve_call)[0];
         let fn_ptr_v = builder
             .ins()
             .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
@@ -1529,6 +1402,47 @@ fn handle_call_func_op(
         // Direct call via call_indirect
         switch_to_block_materialized(&mut *builder, call_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
+        let guard_exit = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_recursion_exit_fast",
+            &[],
+            &[],
+        );
+        let invocation_enter = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_frame_invocation_enter",
+            &[types::I64],
+            &[types::I64],
+        );
+        let invocation_call = builder.ins().call(invocation_enter, &[*func_bits]);
+        let invocation_token = builder.inst_results(invocation_call)[0];
+        let invocation_ok = builder.ins().icmp_imm(IntCC::NotEqual, invocation_token, 0);
+        let invoke_block = builder.create_block();
+        let invocation_fail_block = builder.create_block();
+        brif_block(
+            builder,
+            invocation_ok,
+            invoke_block,
+            &[],
+            invocation_fail_block,
+            &[],
+        );
+
+        switch_to_block_materialized(builder, invocation_fail_block);
+        seal_block_once(builder, sealed_blocks, invocation_fail_block);
+        builder.ins().call(guard_exit, &[]);
+        let none = builder.ins().iconst(types::I64, box_none());
+        let fail_args = merge_args_with_live_through(none, &inline_live_through);
+        jump_block(builder, merge_block, &fail_args);
+
+        switch_to_block_materialized(builder, invoke_block);
+        seal_block_once(builder, sealed_blocks, invoke_block);
         let mut call_sig = module.make_signature();
         for _ in 0..nargs {
             call_sig.params.push(AbiParam::new(types::I64));
@@ -1537,15 +1451,16 @@ fn handle_call_func_op(
         let sig_ref = builder.import_signature(call_sig);
         let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
         let direct_res = builder.inst_results(indirect_call)[0];
-        let guard_exit = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            "molt_recursion_exit_fast",
-            &[],
-            &[],
+        let invocation_exit = import_func_ref(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            "molt_frame_invocation_exit",
+            &[types::I64],
+            &[types::I64],
         );
+        builder.ins().call(invocation_exit, &[invocation_token]);
         builder.ins().call(guard_exit, &[]);
         let merge_args = merge_args_with_live_through(direct_res, &inline_live_through);
         jump_block(&mut *builder, merge_block, &merge_args);
@@ -1628,6 +1543,8 @@ fn handle_call_func_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 }
 
@@ -1958,6 +1875,10 @@ fn handle_invoke_ffi_op(
                     out,
                     result,
                 );
+            } else if abi_contract.lowering()
+                != molt_ir::native_callable_abi::NativeCallableLowering::PyinitModule
+            {
+                bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
             }
             return;
         }
@@ -2106,6 +2027,8 @@ fn handle_invoke_ffi_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 }
 
@@ -2231,6 +2154,8 @@ fn handle_call_bind_indirect_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 
     // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
@@ -2385,6 +2310,8 @@ fn handle_call_method_ic_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 }
 
@@ -2526,6 +2453,8 @@ fn handle_call_super_method_ic_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 }
 
@@ -2763,6 +2692,8 @@ fn handle_call_method_op(
             out__,
             res,
         );
+    } else {
+        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     }
 }
 

@@ -754,6 +754,8 @@ fn null_receiver_is_a_layout_guard_miss_without_header_access() {
 }
 
 fn assert_and_clear_attribute_error(_py: &PyToken<'_>) {
+    assert!(exception_pending(_py));
+    assert_eq!(crate::builtins::exceptions::molt_exception_pending(), 1);
     let error = crate::builtins::exceptions::molt_exception_last_pending();
     assert!(crate::builtins::exceptions::exception_matches_builtin_name(
         _py,
@@ -762,6 +764,7 @@ fn assert_and_clear_attribute_error(_py: &PyToken<'_>) {
     ));
     crate::clear_exception(_py);
     dec_ref_bits(_py, error);
+    assert_eq!(crate::builtins::exceptions::molt_exception_pending(), 0);
 }
 
 #[test]
@@ -772,26 +775,13 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
         let version = MoltObject::from_int(0).bits();
         let class_attr = b"__class__";
 
-        let int_bits = MoltObject::from_int(3).bits();
-        let result = unsafe {
-            molt_guarded_field_get(
-                int_bits,
-                builtins.int,
-                version,
-                0,
-                crate::provenance::abi::expose_address(class_attr.as_ptr()),
-                class_attr.len() as u64,
-            )
-        };
-        assert_eq!(result, builtins.int);
-        dec_ref_bits(_py, result);
-        assert!(!exception_pending(_py));
-
         let missing_attr = b"missing";
         for (name, scalar, class) in [
-            ("int", int_bits, builtins.int),
+            ("int", MoltObject::from_int(3).bits(), builtins.int),
             ("bool", MoltObject::from_bool(true).bits(), builtins.bool),
             ("float", MoltObject::from_float(1.5).bits(), builtins.float),
+            ("+0.0", MoltObject::from_float(0.0).bits(), builtins.float),
+            ("-0.0", MoltObject::from_float(-0.0).bits(), builtins.float),
             ("None", MoltObject::none().bits(), builtins.none_type),
         ] {
             assert_eq!(
@@ -801,6 +791,42 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             );
             assert!(!exception_pending(_py), "{name} layout guard");
 
+            let generic_class = unsafe {
+                crate::molt_get_attr_object(scalar, class_attr.as_ptr(), class_attr.len() as u64)
+            };
+            assert_eq!(generic_class, class, "{name} generic class lookup");
+            assert!(!exception_pending(_py));
+            let guarded_class = unsafe {
+                molt_guarded_field_get(
+                    scalar,
+                    class,
+                    version,
+                    0,
+                    crate::provenance::abi::expose_address(class_attr.as_ptr()),
+                    class_attr.len() as u64,
+                )
+            };
+            assert_eq!(guarded_class, generic_class, "{name} guarded class lookup");
+            assert!(!exception_pending(_py));
+            dec_ref_bits(_py, generic_class);
+            dec_ref_bits(_py, guarded_class);
+
+            // These are value-returning intrinsics, not C status/pointer APIs.
+            // The generated exception predicate distinguishes failure from a
+            // successful None result; raw zero instead represents float +0.0.
+            let generic_get = unsafe {
+                crate::molt_get_attr_object(
+                    scalar,
+                    missing_attr.as_ptr(),
+                    missing_attr.len() as u64,
+                )
+            };
+            assert_eq!(
+                generic_get,
+                MoltObject::none().bits(),
+                "{name} generic get error value"
+            );
+            assert_and_clear_attribute_error(_py);
             let result = unsafe {
                 molt_guarded_field_get(
                     scalar,
@@ -811,9 +837,23 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
                     missing_attr.len() as u64,
                 )
             };
-            assert_eq!(result, 0, "{name} guarded get error sentinel");
+            assert_eq!(result, generic_get, "{name} guarded get error value");
             assert_and_clear_attribute_error(_py);
 
+            let generic_set = unsafe {
+                crate::molt_set_attr_object(
+                    scalar,
+                    missing_attr.as_ptr(),
+                    missing_attr.len() as u64,
+                    MoltObject::from_int(7).bits(),
+                )
+            };
+            assert_eq!(
+                generic_set,
+                MoltObject::none().bits(),
+                "{name} generic set error value"
+            );
+            assert_and_clear_attribute_error(_py);
             let result = unsafe {
                 molt_guarded_field_set(
                     scalar,
@@ -825,7 +865,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
                     missing_attr.len() as u64,
                 )
             };
-            assert_eq!(result, 0, "{name} guarded set error sentinel");
+            assert_eq!(result, generic_set, "{name} guarded set error value");
             assert_and_clear_attribute_error(_py);
         }
         assert!(!exception_pending(_py));

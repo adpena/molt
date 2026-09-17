@@ -55,27 +55,17 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
                         refs.insert(name.clone());
                     }
                 }
-                // alloc_task's s_value is the poll function name directly
-                // (e.g., "foo_poll"). generator_create/coro_create reference
-                // a base function whose companion _poll must also be kept.
-                "alloc_task" | "generator_create" | "coro_create" => {
-                    if let Some(name) = op.s_value.as_ref() {
-                        if defined.contains(name.as_str()) {
-                            refs.insert(name.clone());
-                        }
-                        // generator_create/coro_create reference the base
-                        // function; the backends derive "{base}_poll" at
-                        // compile time, so mark both.
-                        if !name.ends_with("_poll") {
-                            let poll_name = format!("{name}_poll");
-                            if defined.contains(poll_name.as_str()) {
-                                refs.insert(poll_name);
-                            }
-                        }
+                // Task creation retains the exact table-addressable target.
+                // No backend derives a companion symbol from this name.
+                "alloc_task" | "call_async" => {
+                    if let Some(name) = op.s_value.as_ref()
+                        && defined.contains(name.as_str())
+                    {
+                        refs.insert(name.clone());
                     }
                 }
                 // Ops that take a function pointer address via s_value.
-                "fn_ptr_code_set" | "asyncgen_locals_register" | "gen_locals_register" => {
+                "asyncgen_locals_register" | "gen_locals_register" => {
                     if let Some(name) = op.s_value.as_ref()
                         && defined.contains(name.as_str())
                     {

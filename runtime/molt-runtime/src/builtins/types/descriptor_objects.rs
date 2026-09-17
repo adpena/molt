@@ -127,15 +127,14 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
             return raise_exception::<_>(_py, "RuntimeError", "super(): no arguments");
         }
         PythonArgumentZero::Value(_) => None,
-        PythonArgumentZero::Cell(bits) => unsafe {
-            pin_item(
+        PythonArgumentZero::Cell(bits) => Some(unsafe {
+            crate::object::cells::pin_cell_value(
                 _py,
                 obj_from_bits(bits)
                     .as_ptr()
                     .expect("validated frame argument cell"),
-                0,
             )
-        },
+        }),
     };
     let argument_bits = match frame.context.argument_zero {
         PythonArgumentZero::Value(bits) => Some(bits),
@@ -149,17 +148,16 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
         return raise_exception::<_>(_py, "RuntimeError", "super(): __class__ cell not found");
     };
     let class_item = unsafe {
-        pin_item(
+        crate::object::cells::pin_cell_value(
             _py,
             obj_from_bits(cell_bits)
                 .as_ptr()
                 .expect("validated frame class cell"),
-            0,
         )
     };
-    let Some(class_item) = class_item.filter(|item| !is_missing_bits(_py, item.bits())) else {
+    if is_missing_bits(_py, class_item.bits()) {
         return raise_exception::<_>(_py, "RuntimeError", "super(): empty __class__ cell");
-    };
+    }
     super_construct(
         _py,
         class_item.bits(),
@@ -206,7 +204,7 @@ mod super_frame_tests {
     };
 
     fn cell(py: &PyToken<'_>, bits: u64) -> u64 {
-        let ptr = alloc_list(py, &[bits]);
+        let ptr = crate::object::cells::alloc_cell(py, bits);
         assert!(!ptr.is_null());
         MoltObject::from_ptr(ptr).bits()
     }
@@ -308,15 +306,9 @@ mod super_frame_tests {
                 );
                 dec_ref_bits(py, direct);
                 // Mutate the existing argument cell; no snapshot republishing is needed.
-                let changed = crate::molt_store_index(
-                    argument_cell,
-                    MoltObject::from_int(0).bits(),
-                    MoltObject::none().bits(),
-                );
+                let changed = crate::molt_cell_set(argument_cell, MoltObject::none().bits());
                 assert!(!exception_pending(py));
-                // StoreIndex is a statement; its runtime return aliases the
-                // borrowed container and does not create an owned reference.
-                assert_eq!(changed, argument_cell);
+                assert!(obj_from_bits(changed).is_none());
                 let args = molt_callargs_new(0, 0);
                 let bound = molt_call_bind(classes.super_type, args);
                 assert!(!exception_pending(py));
@@ -326,13 +318,9 @@ mod super_frame_tests {
                         .is_none()
                 );
                 dec_ref_bits(py, bound);
-                let changed = crate::molt_store_index(
-                    class_cell,
-                    MoltObject::from_int(0).bits(),
-                    MoltObject::from_int(42).bits(),
-                );
+                let changed = crate::molt_cell_set(class_cell, MoltObject::from_int(42).bits());
                 assert!(!exception_pending(py));
-                assert_eq!(changed, class_cell);
+                assert!(obj_from_bits(changed).is_none());
                 assert_error(
                     py,
                     call_callable0(py, classes.super_type),

@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_result_or_drop;
+use super::super::super::result_sink::store_owned_result_or_release;
 use crate::wasm::method_ic_select::selected_method_ic_runtime;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_binary::emit_call;
@@ -48,7 +48,7 @@ pub(super) fn emit_method_inline_cache_op(
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
             emit_call(func, reloc_enabled, import_ids[selected.import]);
-            store_result_or_drop(func, op, locals);
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
         }
         "call_super_method_ic" => {
             // Fused super().method() dispatch without super, bound-method, or
@@ -81,7 +81,7 @@ pub(super) fn emit_method_inline_cache_op(
                 func.instruction(&Instruction::LocalGet(locals[name]));
             }
             emit_call(func, reloc_enabled, import_ids[selected.import]);
-            store_result_or_drop(func, op, locals);
+            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
         }
         _ => return false,
     }

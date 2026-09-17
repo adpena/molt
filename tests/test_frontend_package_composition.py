@@ -123,7 +123,6 @@ EXPECTED_MIXINS = [
     "CallRuntimeHelperMixin",
     "CallMethodDispatchMixin",
     "CallModuleDispatchMixin",
-    "CallDefaultsMixin",
     "ClassMethodCompilationMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
@@ -218,7 +217,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_expr_list")
     assert hasattr(SimpleTIRGenerator, "_emit_compare_op")
     assert hasattr(SimpleTIRGenerator, "_emit_not")
-    assert hasattr(SimpleTIRGenerator, "_parse_molt_buffer_call")
     assert hasattr(SimpleTIRGenerator, "_emit_call_bound_or_func")
     # function lifecycle
     assert hasattr(SimpleTIRGenerator, "_function_contains_locals_call")
@@ -432,7 +430,6 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.lowering.type_annotations",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
-        "molt.frontend.visitors.call_defaults",
         "molt.frontend.visitors.call_dispatch_attribute",
         "molt.frontend.visitors.call_dispatch_builtin_constructors",
         "molt.frontend.visitors.call_dispatch_builtin_fallback",
@@ -640,6 +637,24 @@ def test_function_state_snapshot_matches_reset_authority() -> None:
     snapshot_attrs = set(FUNCTION_STATE_SNAPSHOT_ATTRS)
     assert len(FUNCTION_STATE_SNAPSHOT_ATTRS) == len(snapshot_attrs)
     assert snapshot_attrs == reset_attrs | set(FUNCTION_CONTEXT_STATE_ATTRS)
+
+
+def test_function_state_restore_cannot_recycle_exact_class_tokens() -> None:
+    gen = SimpleTIRGenerator()
+    outer_token = gen.exact_class_token
+    state = gen._capture_function_state()
+
+    gen.start_function("nested")
+    nested_value = gen._stamp_exact_class(MoltValue("nested_value"), "Point")
+    nested_token = gen.exact_class_token
+    assert nested_token > outer_token
+
+    gen._restore_function_state(state)
+    assert gen.exact_class_token == outer_token
+    assert gen._exact_class_for_value(nested_value) is None
+    gen._expire_exact_class_facts()
+    assert gen.exact_class_token > nested_token
+    assert gen._exact_class_for_value(nested_value) is None
 
 
 def test_function_state_isolates_and_restores_enclosing_class_storage() -> None:

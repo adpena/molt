@@ -6,6 +6,7 @@ use crate::wasm::task_runtime::{
     emit_task_payload_base,
 };
 use crate::wasm_binary::emit_call;
+use crate::wasm_values::emit_boxed_none;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_async_task_runtime_op(
@@ -22,6 +23,13 @@ pub(super) fn emit_async_task_runtime_op(
         "alloc_task" => {
             let total = op.value.unwrap_or(0);
             let layout = WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
+            molt_tir::trampolines::TaskConstructorLayout::for_alloc_kind(op.task_kind.as_deref())
+                .validate_closure_size(
+                    total,
+                    op.args.as_ref().map_or(0, Vec::len),
+                    false,
+                    crate::wasm_abi::GEN_CONTROL_SIZE,
+                );
             let target_name = op.s_value.as_ref().expect("alloc_task target missing");
             let table_target = call_site_abi.table_target(target_name, "alloc_task");
             layout.emit_task_new(
@@ -34,14 +42,16 @@ pub(super) fn emit_async_task_runtime_op(
                 &table_target,
                 total,
             );
-            let res = if let Some(out) = op.out.as_ref() {
-                let r = locals[out];
-                func.instruction(&Instruction::LocalSet(r));
-                r
-            } else {
-                func.instruction(&Instruction::Drop);
-                0
-            };
+            let out = op
+                .out
+                .as_ref()
+                .expect("alloc_task requires an owned result");
+            let res = locals[out];
+            func.instruction(&Instruction::LocalSet(res));
+            func.instruction(&Instruction::LocalGet(res));
+            emit_boxed_none(func);
+            func.instruction(&Instruction::I64Ne);
+            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
             // Resolve the task handle pointer once when we need to
             // materialize closure/argument payload slots after the
             // runtime-owned control block.
@@ -69,6 +79,7 @@ pub(super) fn emit_async_task_runtime_op(
             if layout.registers_cancel_token() {
                 emit_register_cancel_token(func, import_ids, reloc_enabled, res);
             }
+            func.instruction(&Instruction::End);
         }
         "state_yield" => {
             let args = op.args.as_ref().unwrap();

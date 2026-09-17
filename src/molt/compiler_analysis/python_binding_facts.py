@@ -14,11 +14,14 @@ from types import MappingProxyType
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
 
+from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
+    iterable_element_result,
+    join_static_expression_results,
 )
 
 if TYPE_CHECKING:
@@ -66,6 +69,21 @@ class PythonIdentity(IntFlag):
     UNBOUND = 1 << 31
     GLOBALS_SETITEM = 1 << 32
     GLOBALS_DELITEM = 1 << 33
+    BUILTIN_BOOL = 1 << 34
+    BUILTIN_INT = 1 << 35
+    BUILTIN_FLOAT = 1 << 36
+    BUILTIN_COMPLEX = 1 << 37
+    BUILTIN_STR = 1 << 38
+    BUILTIN_BYTES = 1 << 39
+    BUILTIN_BYTEARRAY = 1 << 40
+    BUILTIN_TUPLE = 1 << 41
+    BUILTIN_LIST = 1 << 42
+    BUILTIN_SET = 1 << 43
+    BUILTIN_FROZENSET = 1 << 44
+    BUILTIN_DICT = 1 << 45
+    BUILTIN_RANGE = 1 << 46
+    BUILTIN_LEN = 1 << 47
+    BUILTIN_OPEN = 1 << 48
 
 
 IdentityMask: TypeAlias = int
@@ -100,6 +118,7 @@ class PythonIterationFact:
 
     effects: EffectMask
     element_strings: PythonStringAlternatives | None = None
+    element_result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     empty: bool = False
     mutable: bool = True
     release_effects: EffectMask = 0
@@ -113,28 +132,47 @@ class PythonIterationFact:
     ) -> PythonIterationFact:
         # Effects are supplied by the existing iterable protocol authority.
         # Contents of an aliased mutable container are not stable value facts.
-        eligible = result.kind == "tuple" or result.fresh_container
+        eligible = result.kind in {"tuple", "frozenset"} or result.fresh_container
         pending = list(result.items or ())
+        expanded_seen: set[int] = set()
         strings: set[str] = set()
-        known = eligible and result.items is not None
-        while pending and known:
+        contents_known = eligible and result.items is not None
+        strings_known = contents_known
+        while pending and contents_known:
             item = pending.pop()
             if item.expanded:
+                identity = id(item.result)
+                if identity in expanded_seen:
+                    continue
+                expanded_seen.add(identity)
                 if item.result.items is None:
-                    known = False
+                    contents_known = False
                 else:
                     pending.extend(item.result.items)
-            elif item.result.kind == "str" and item.result.value_known:
-                strings.add(str(item.result.value))
             else:
-                known = False
+                if item.result.kind == "str" and item.result.value_known:
+                    strings.add(str(item.result.value))
+                else:
+                    strings_known = False
+        element_result = iterable_element_result(result) or UNKNOWN_EXPRESSION_RESULT
         return cls(
             effects=effects,
             element_strings=PythonStringAlternatives(frozenset(strings))
-            if known
+            if contents_known and strings_known
             else None,
+            element_result=element_result,
             empty=effects == 0 and result.truth is False,
-            mutable=result.kind != "tuple",
+            mutable=result.kind
+            not in {
+                "str",
+                "bytes",
+                "bytearray",
+                "tuple",
+                "frozenset",
+                "range",
+                "file_text",
+                "file_bytes",
+            },
             release_effects=release_effects,
         )
 
@@ -146,6 +184,9 @@ class PythonIterationFact:
                 PythonStringAlternatives(left.values | right.values)
                 if left is not None and right is not None
                 else None
+            ),
+            element_result=join_static_expression_results(
+                (self.element_result, other.element_result)
             ),
             empty=self.empty and other.empty,
             mutable=self.mutable or other.mutable,
@@ -169,11 +210,53 @@ class PythonMember(IntFlag):
     TYPING_TYPE_CHECKING = 1 << 10
     INTRINSICS_REQUIRE = 1 << 11
     SYS_PLATFORM = 1 << 12
+    BUILTINS_BOOL = 1 << 13
+    BUILTINS_INT = 1 << 14
+    BUILTINS_FLOAT = 1 << 15
+    BUILTINS_COMPLEX = 1 << 16
+    BUILTINS_STR = 1 << 17
+    BUILTINS_BYTES = 1 << 18
+    BUILTINS_BYTEARRAY = 1 << 19
+    BUILTINS_TUPLE = 1 << 20
+    BUILTINS_LIST = 1 << 21
+    BUILTINS_SET = 1 << 22
+    BUILTINS_FROZENSET = 1 << 23
+    BUILTINS_DICT = 1 << 24
+    BUILTINS_RANGE = 1 << 25
+    BUILTINS_LEN = 1 << 26
+    BUILTINS_OPEN = 1 << 27
 
 
 MemberMask: TypeAlias = int
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
 ALL_INVALID_MEMBERS: Final[MemberMask] = sum(int(member) for member in PythonMember)
+
+BUILTIN_SHAPE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
+    {
+        "bool": PythonIdentity.BUILTIN_BOOL,
+        "int": PythonIdentity.BUILTIN_INT,
+        "float": PythonIdentity.BUILTIN_FLOAT,
+        "complex": PythonIdentity.BUILTIN_COMPLEX,
+        "str": PythonIdentity.BUILTIN_STR,
+        "bytes": PythonIdentity.BUILTIN_BYTES,
+        "bytearray": PythonIdentity.BUILTIN_BYTEARRAY,
+        "tuple": PythonIdentity.BUILTIN_TUPLE,
+        "list": PythonIdentity.BUILTIN_LIST,
+        "set": PythonIdentity.BUILTIN_SET,
+        "frozenset": PythonIdentity.BUILTIN_FROZENSET,
+        "dict": PythonIdentity.BUILTIN_DICT,
+        "range": PythonIdentity.BUILTIN_RANGE,
+        "len": PythonIdentity.BUILTIN_LEN,
+    }
+)
+BUILTIN_SHAPE_MEMBERS: Final[Mapping[str, PythonMember]] = MappingProxyType(
+    {name: PythonMember[f"BUILTINS_{name.upper()}"] for name in BUILTIN_SHAPE_NAMES}
+)
+if frozenset(BUILTIN_SHAPE_IDENTITIES) != BUILTIN_SHAPE_NAMES:
+    raise RuntimeError("builtin shape identity catalog drift")
+_BUILTIN_SHAPE_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
+    {int(identity): name for name, identity in BUILTIN_SHAPE_IDENTITIES.items()}
+)
 
 
 def exact_identity(identity: PythonIdentity) -> IdentityMask:
@@ -576,6 +659,11 @@ class PythonCallSiteFact:
     callee_identities: IdentityMask
     result_identities: IdentityMask
     effects: EffectMask
+    evaluation_effects: EffectMask
+    invocation_effects: EffectMask
+    cleanup_effects: EffectMask
+    callee_elision_safe: bool
+    callee_retention_safe: bool
     maybe_invalidated_members_after: MemberMask
     definitely_invalidated_members_after: MemberMask
 
@@ -584,6 +672,9 @@ class PythonCallSiteFact:
 
     def callee_may_be(self, identity: PythonIdentity) -> bool:
         return identity_fact_may_be(self.callee_identities, identity)
+
+    def exact_builtin_name(self) -> str | None:
+        return _BUILTIN_SHAPE_NAMES_BY_IDENTITY.get(self.callee_identities)
 
     def possible_import_call_kinds(self) -> tuple[PythonImportCallKind, ...]:
         kinds: list[PythonImportCallKind] = []
@@ -611,6 +702,7 @@ class PythonScopeFact:
     global_names: tuple[str, ...]
     nonlocal_names: tuple[str, ...]
     binding_slots: tuple[tuple[str, int], ...]
+    activation_namespace_stable: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -639,6 +731,7 @@ class PythonBindingIndex:
     module_import_flow: ModuleImportFlow
     expressions: tuple[PythonExpressionFact, ...]
     statements: tuple[PythonStatementFact, ...]
+    iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...]
     calls: tuple[PythonCallSiteFact, ...]
     scopes: tuple[PythonScopeFact, ...]
     class_annotation_namespaces: frozenset[PythonNodeKey]
@@ -647,6 +740,7 @@ class PythonBindingIndex:
     slot_names: tuple[str, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
+    _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
     _call_lookup: Mapping[PythonNodeKey, PythonCallSiteFact]
 
     @classmethod
@@ -663,6 +757,7 @@ class PythonBindingIndex:
         module_import_flow: ModuleImportFlow,
         expressions: tuple[PythonExpressionFact, ...],
         statements: tuple[PythonStatementFact, ...],
+        iterations: tuple[tuple[PythonNodeKey, PythonIterationFact], ...],
         calls: tuple[PythonCallSiteFact, ...],
         scopes: tuple[PythonScopeFact, ...],
         class_annotation_namespaces: frozenset[PythonNodeKey],
@@ -681,6 +776,7 @@ class PythonBindingIndex:
             module_import_flow=module_import_flow,
             expressions=expressions,
             statements=statements,
+            iterations=iterations,
             calls=calls,
             scopes=scopes,
             class_annotation_namespaces=class_annotation_namespaces,
@@ -693,6 +789,7 @@ class PythonBindingIndex:
             _statement_lookup=MappingProxyType(
                 {fact.node: fact for fact in statements}
             ),
+            _iteration_lookup=MappingProxyType(dict(iterations)),
             _call_lookup=MappingProxyType({fact.node: fact for fact in calls}),
         )
 
@@ -709,6 +806,11 @@ class PythonBindingIndex:
 
     def statement_fact(self, node: ast.stmt) -> PythonStatementFact | None:
         return self._statement_lookup.get(PythonNodeKey.from_node(node))
+
+    def iteration_fact(self, node: ast.AST) -> PythonIterationFact | None:
+        """Return the canonical executed iterator/item fact for a loop clause."""
+
+        return self._iteration_lookup.get(PythonNodeKey.from_node(node))
 
     def statement_completions(self, node: ast.stmt) -> PythonCompletion | None:
         """None is absent analysis; NONE is proven absence of a successor."""
@@ -753,6 +855,8 @@ class PythonBindingIndex:
 
 __all__ = [
     "ALL_INVALID_MEMBERS",
+    "BUILTIN_SHAPE_IDENTITIES",
+    "BUILTIN_SHAPE_MEMBERS",
     "IdentityMask",
     "MemberMask",
     "NO_IDENTITIES",

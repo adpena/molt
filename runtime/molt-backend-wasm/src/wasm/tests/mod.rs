@@ -12,4 +12,5 @@ mod literal_ownership;
 mod native_callable;
 mod runtime_callable;
 mod task_trampoline;
+mod task_allocation;
 mod unpack_sequence;

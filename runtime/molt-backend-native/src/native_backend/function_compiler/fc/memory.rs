@@ -2,6 +2,7 @@ use super::super::*;
 use crate::runtime_import_abi::{
     MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
 };
+use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 /// Single-source kind authority for [`handle_memory_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -178,18 +179,22 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
         }
         "alloc_task" => {
             let closure_size = op.value.unwrap_or(0);
-            let task_kind = op.task_kind.as_deref().unwrap_or("future");
-            let (kind_bits, payload_base) = match task_kind {
-                "generator" => (TASK_KIND_GENERATOR, GENERATOR_CONTROL_BYTES),
-                "future" => (TASK_KIND_FUTURE, 0),
-                "coroutine" => (TASK_KIND_COROUTINE, 0),
-                _ => panic!("unknown task kind: {task_kind}"),
-            };
+            let layout = TaskConstructorLayout::for_alloc_kind(op.task_kind.as_deref());
+            let kind_bits = crate::native_task_runtime_kind_bits(layout.runtime_kind());
+            let payload_base = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
+            layout.validate_closure_size(
+                closure_size,
+                op.args.as_ref().map_or(0, Vec::len),
+                false,
+                GENERATOR_CONTROL_BYTES,
+            );
+            let out_name = op
+                .out
+                .as_ref()
+                .expect("alloc_task requires an owned result");
             let size = builder.ins().iconst(types::I64, closure_size);
 
-            let Some(poll_func_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
-            };
+            let poll_func_name = op.s_value.as_ref().expect("alloc_task target missing");
             let mut poll_sig = module.make_signature();
             poll_sig.params.push(AbiParam::new(types::I64));
             poll_sig.returns.push(AbiParam::new(types::I64));
@@ -214,6 +219,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let kind_val = builder.ins().iconst(types::I64, kind_bits);
             let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
             let obj = builder.inst_results(call)[0];
+            let tracking_origin = builder.current_block();
+            let initialized = begin_task_initialization(builder, sealed_blocks, obj);
             let obj_ptr = unbox_ptr_value(&mut *builder, obj, nbc);
             if let Some(args_names) = &op.args {
                 for (i, name) in args_names.iter().enumerate() {
@@ -235,7 +242,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     emit_inc_ref_obj(&mut *builder, *arg_val, local_inc_ref_obj);
                 }
             }
-            if matches!(task_kind, "future" | "coroutine") {
+            if layout.completion() == TaskCompletion::RegisterCancelToken {
                 let get_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -254,10 +261,17 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 builder.ins().call(reg_local, &[obj, current_token]);
             }
 
+            jump_block(builder, initialized, &[]);
+            switch_to_block_materialized(builder, initialized);
+            seal_block_once(builder, sealed_blocks, initialized);
+            carry_internal_cfg_tracking(
+                tracking_origin,
+                initialized,
+                block_tracked_obj,
+                block_tracked_ptr,
+            );
+
             *output_is_ptr = false;
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
             def_var_named(&mut *builder, vars, out_name, obj);
         }
         "store" => {

@@ -27,127 +27,81 @@ fn insert_consistent<T: std::fmt::Debug + PartialEq>(
     }
 }
 
+/// Merge immutable callable facts from source and partition custody. Conflicts
+/// indicate stale or inconsistent compiler inputs, never an override order.
+pub fn merge_callable_facts<T: std::fmt::Debug + PartialEq>(
+    retained: &mut BTreeMap<String, T>,
+    incoming: BTreeMap<String, T>,
+    fact: &str,
+) {
+    for (name, value) in incoming {
+        insert_consistent(retained, name, value, fact);
+    }
+}
+
 impl CallableMetadata {
     pub fn from_functions(functions: &[FunctionIR]) -> Self {
-        Self::from_functions_with_marker_filter(functions, |_| true)
-    }
-
-    /// Final bodies author constructor/escape facts, never source marker
-    /// values that optimization may have transported through physical frames.
-    pub fn from_definitions(functions: &[FunctionIR]) -> Self {
-        Self::from_functions_with_marker_filter(functions, |_| false)
-    }
-
-    /// Only compiler-produced partition provenance may suppress source marker
-    /// capture. The restrict-only codegen_partition flag is not provenance.
-    pub fn from_functions_with_marker_filter(
-        functions: &[FunctionIR],
-        capture_markers: impl Fn(&FunctionIR) -> bool,
-    ) -> Self {
         let mut metadata = Self::default();
         for function in functions.iter().filter(|function| !function.is_extern) {
-            let capture_markers = capture_markers(function);
-            // A binding records the callable visible at this program point.
-            // None means a formerly known callable was overwritten: later
-            // reserved markers must diagnose rather than reuse its old identity.
-            let mut callable_names: BTreeMap<&str, Option<&str>> = BTreeMap::new();
-            let mut constants = BTreeMap::new();
             for (op_index, op) in function.ops.iter().enumerate() {
-                if capture_markers
-                    && op.kind == "set_attr_generic_obj"
-                    && let Some(attr) = op.s_value.as_deref()
-                    && (attr == "__molt_closure_size__"
-                        || TrampolineTaskKind::from_marker_attr(attr).is_some())
-                {
-                    let args = op.args.as_deref().unwrap_or_default();
-                    assert!(
-                        args.len() == 2,
-                        "callable marker {attr} in {} at op {op_index} requires two operands",
-                        function.name
-                    );
-                    match callable_names.get(args[0].as_str()) {
-                        // Arbitrary runtime objects can carry these attributes;
-                        // only a statically constructed callable authors this
-                        // compile-time trampoline metadata.
-                        None => {}
-                        Some(None) => panic!(
-                            "callable marker {attr} in {} at op {op_index} uses overwritten callable binding {}",
-                            function.name, args[0]
-                        ),
-                        // Preserve the existing task-body eligibility gate:
-                        // ordinary callables' runtime attributes do not author
-                        // task metadata, regardless of their value.
-                        Some(Some(name))
-                            if attr != "__molt_closure_size__" && !name.ends_with("_poll") => {}
-                        Some(Some(name)) => {
-                            let value = constants.get(args[1].as_str()).copied().unwrap_or_else(|| panic!(
-                                "callable marker {attr} for {name} in {} at op {op_index} requires a source-point integer value; {} is unknown",
-                                function.name, args[1]
-                            ));
-                            if attr == "__molt_closure_size__" {
-                                assert!(value >= 0, "negative closure size for {name}");
-                                insert_consistent(
-                                    &mut metadata.task_closure_sizes,
-                                    name.to_string(),
-                                    value,
-                                    "callable closure size",
-                                );
-                            } else if value != 0 {
-                                // Existing task-body eligibility only. This
-                                // suffix never classifies generated ownership.
-                                let kind = TrampolineTaskKind::from_marker_attr(attr)
-                                    .expect("only task marker attributes are collected")
-                                    .trampoline_kind();
-                                insert_consistent(
-                                    &mut metadata.task_kinds,
-                                    name.to_string(),
-                                    kind,
-                                    "callable task kind",
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // Reads, including marker interpretation, precede writes in
-                // one operation. Every canonical definition invalidates stale
-                // facts, not only definitions emitted by the cases below.
-                if capture_markers {
-                    crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
-                        constants.remove(name);
-                        if let Some(binding) = callable_names.get_mut(name) {
-                            *binding = None;
-                        }
-                    });
-                }
                 match op.kind.as_str() {
-                    "const" | "const_int" | "const_bool" if capture_markers => {
-                        if let Some(name) = &op.out {
-                            let value = op.value.unwrap_or(0);
-                            constants.insert(
-                                name.as_str(),
-                                if op.kind == "const_bool" {
-                                    i64::from(value != 0)
-                                } else {
-                                    value
-                                },
-                            );
-                        }
-                    }
                     "func_new" | "func_new_closure" => {
-                        let Some(name) = &op.s_value else { continue };
+                        let name = op.s_value.as_ref().unwrap_or_else(|| {
+                            panic!(
+                                "{} in {} at op {op_index} requires a callable target",
+                                op.kind, function.name
+                            )
+                        });
                         let arity = usize::try_from(op.value.unwrap_or(0))
                             .unwrap_or_else(|_| panic!("negative callable arity for {name}"));
                         metadata.escaped_callable_targets.insert(name.clone());
-                        if capture_markers && let Some(out) = &op.out {
-                            callable_names.insert(out.as_str(), Some(name.as_str()));
-                        }
                         insert_consistent(
                             &mut metadata.trampoline_specs,
                             name.clone(),
                             (arity, op.kind == "func_new_closure"),
                             "callable trampoline specification",
                         );
+                        match (op.task_kind.as_deref(), op.task_closure_size) {
+                            (None, None) => {
+                                insert_consistent(
+                                    &mut metadata.task_kinds,
+                                    name.clone(),
+                                    TrampolineKind::Plain,
+                                    "callable task kind",
+                                );
+                            }
+                            (Some(kind), Some(size)) => {
+                                assert!(
+                                    size >= 0,
+                                    "negative callable task_closure_size for {name} in {} at op {op_index}",
+                                    function.name
+                                );
+                                let kind = TrampolineTaskKind::from_constructor_kind(kind)
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "unknown callable task_kind `{kind}` for {name} in {} at op {op_index}",
+                                            function.name
+                                        )
+                                    })
+                                    .trampoline_kind();
+                                insert_consistent(
+                                    &mut metadata.task_kinds,
+                                    name.clone(),
+                                    kind,
+                                    "callable task kind",
+                                );
+                                insert_consistent(
+                                    &mut metadata.task_closure_sizes,
+                                    name.clone(),
+                                    size,
+                                    "callable closure size",
+                                );
+                            }
+                            _ => panic!(
+                                "partial callable task metadata for {name} in {} at op {op_index}: task_kind and task_closure_size must be present together",
+                                function.name
+                            ),
+                        }
                     }
                     "builtin_func" => {
                         if let Some(name) = &op.s_value {
@@ -161,31 +115,23 @@ impl CallableMetadata {
         metadata
     }
 
-    /// Retain original facts across transformations that can separate the
-    /// producer and marker into different physical functions. Conflicting
-    /// facts are a compiler invariant violation, never last-writer-wins.
+    /// Retain original constructor facts across transformations that can move
+    /// or erase the producer in physical partitions. Conflicting facts are a
+    /// compiler invariant violation, never last-writer-wins.
     pub fn merge(&mut self, other: Self) {
         self.escaped_callable_targets
             .extend(other.escaped_callable_targets);
-        for (name, spec) in other.trampoline_specs {
-            insert_consistent(
-                &mut self.trampoline_specs,
-                name,
-                spec,
-                "callable trampoline specification",
-            );
-        }
-        for (name, kind) in other.task_kinds {
-            insert_consistent(&mut self.task_kinds, name, kind, "callable task kind");
-        }
-        for (name, size) in other.task_closure_sizes {
-            insert_consistent(
-                &mut self.task_closure_sizes,
-                name,
-                size,
-                "callable closure size",
-            );
-        }
+        merge_callable_facts(
+            &mut self.trampoline_specs,
+            other.trampoline_specs,
+            "callable trampoline specification",
+        );
+        merge_callable_facts(&mut self.task_kinds, other.task_kinds, "callable task kind");
+        merge_callable_facts(
+            &mut self.task_closure_sizes,
+            other.task_closure_sizes,
+            "callable closure size",
+        );
     }
 }
 
@@ -195,66 +141,80 @@ mod tests {
     use super::*;
     use crate::OpIR;
 
+    fn task_constructor(kind: &str, size: i64) -> OpIR {
+        OpIR {
+            kind: "func_new_closure".into(),
+            s_value: Some("worker_poll".into()),
+            value: Some(0),
+            out: Some("callable".into()),
+            task_kind: Some(kind.into()),
+            task_closure_size: Some(size),
+            ..OpIR::default()
+        }
+    }
+
     fn fixture() -> FunctionIR {
         FunctionIR {
             name: "source".into(),
-            ops: vec![
-                OpIR {
-                    kind: "func_new_closure".into(),
-                    s_value: Some("worker_poll".into()),
-                    value: Some(0),
-                    out: Some("callable".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_bool".into(),
-                    value: Some(7),
-                    out: Some("flag".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_int".into(),
-                    value: Some(3),
-                    out: Some("size".into()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "set_attr_generic_obj".into(),
-                    s_value: Some("__molt_is_coroutine__".into()),
-                    args: Some(vec!["callable".into(), "flag".into()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "set_attr_generic_obj".into(),
-                    s_value: Some("__molt_closure_size__".into()),
-                    args: Some(vec!["callable".into(), "size".into()]),
-                    ..OpIR::default()
-                },
-            ],
+            ops: vec![task_constructor("coroutine", 3)],
             ..FunctionIR::default()
         }
     }
 
     #[test]
-    fn source_metadata_survives_separated_producer_and_markers() {
-        let function = fixture();
-        let source = CallableMetadata::from_functions(std::slice::from_ref(&function));
-        let mut prefix = function.clone();
-        prefix.ops.truncate(3);
-        let mut suffix = function;
-        suffix.name = "physical_suffix".into();
-        suffix.ops.drain(..3);
-        let mut final_facts = CallableMetadata::from_definitions(&[prefix, suffix]);
-        assert!(final_facts.task_kinds.is_empty());
-        assert!(final_facts.task_closure_sizes.is_empty());
-        final_facts.merge(source);
+    fn constructor_metadata_survives_physical_partition_separation() {
+        let source = fixture();
+        let mut retained = CallableMetadata::from_functions(std::slice::from_ref(&source));
+        let physical = FunctionIR {
+            name: "physical_suffix".into(),
+            ops: vec![OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            }],
+            codegen_partition: true,
+            ..FunctionIR::default()
+        };
+        retained.merge(CallableMetadata::from_functions(&[physical]));
         assert_eq!(
-            final_facts.task_kinds["worker_poll"],
+            retained.task_kinds["worker_poll"],
             TrampolineKind::Coroutine
         );
-        assert_eq!(final_facts.task_closure_sizes["worker_poll"], 3);
-        assert_eq!(final_facts.trampoline_specs["worker_poll"], (0, true));
-        assert!(final_facts.escaped_callable_targets.contains("worker_poll"));
+        assert_eq!(retained.task_closure_sizes["worker_poll"], 3);
+        assert_eq!(retained.trampoline_specs["worker_poll"], (0, true));
+    }
+
+    #[test]
+    fn all_constructor_task_tokens_map_without_symbol_inference() {
+        for (token, expected) in [
+            ("generator", TrampolineKind::Generator),
+            ("coroutine", TrampolineKind::Coroutine),
+            ("async_generator", TrampolineKind::AsyncGen),
+        ] {
+            let function = FunctionIR {
+                ops: vec![task_constructor(token, 8)],
+                ..FunctionIR::default()
+            };
+            let facts = CallableMetadata::from_functions(&[function]);
+            assert_eq!(facts.task_kinds["worker_poll"], expected);
+            assert_eq!(facts.task_closure_sizes["worker_poll"], 8);
+        }
+    }
+
+    #[test]
+    fn direct_constructor_authors_no_task_facts() {
+        let function = FunctionIR {
+            ops: vec![OpIR {
+                kind: "func_new".into(),
+                s_value: Some("ordinary_callable".into()),
+                value: Some(2),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        };
+        let facts = CallableMetadata::from_functions(&[function]);
+        assert_eq!(facts.task_kinds["ordinary_callable"], TrampolineKind::Plain);
+        assert!(facts.task_closure_sizes.is_empty());
+        assert_eq!(facts.trampoline_specs["ordinary_callable"], (2, false));
     }
 
     #[test]
@@ -263,7 +223,7 @@ mod tests {
         let mut declaration = source.clone();
         declaration.name = "external".into();
         declaration.is_extern = true;
-        declaration.ops[0].value = Some(99);
+        declaration.ops[0].task_closure_size = Some(99);
         for functions in [
             vec![source.clone(), declaration.clone()],
             vec![declaration, source],
@@ -280,118 +240,43 @@ mod tests {
     fn metadata_merge_rejects_conflicting_sizes() {
         let source = fixture();
         let mut changed = source.clone();
-        changed.ops[2].value = Some(4);
+        changed.ops[0].task_closure_size = Some(4);
         let mut facts = CallableMetadata::from_functions(&[source]);
         facts.merge(CallableMetadata::from_functions(&[changed]));
     }
 
     #[test]
-    #[should_panic(expected = "requires two operands")]
-    fn malformed_marker_is_reported_with_function_context() {
-        let mut source = fixture();
-        source.ops[3].args = Some(vec!["callable".into()]);
-        CallableMetadata::from_functions(&[source]);
-    }
-    #[test]
-    fn marker_uses_earlier_value_and_callable_before_later_redefinitions() {
-        let mut source = fixture();
-        source.ops.push(OpIR {
-            kind: "const_int".into(),
-            value: Some(9),
-            out: Some("size".into()),
-            ..OpIR::default()
-        });
-        source.ops.push(OpIR {
-            kind: "func_new_closure".into(),
-            s_value: Some("other_poll".into()),
-            value: Some(0),
-            out: Some("callable".into()),
-            ..OpIR::default()
-        });
-        let facts = CallableMetadata::from_functions(&[source]);
-        assert_eq!(facts.task_closure_sizes["worker_poll"], 3);
-        assert_eq!(facts.task_kinds["worker_poll"], TrampolineKind::Coroutine);
-        assert!(!facts.task_closure_sizes.contains_key("other_poll"));
-        assert!(!facts.task_kinds.contains_key("other_poll"));
-    }
-
-    #[test]
-    #[should_panic(expected = "requires a source-point integer value")]
-    fn arbitrary_result_redefinition_invalidates_marker_constant() {
-        let mut source = fixture();
-        source.ops.insert(
-            4,
-            OpIR {
-                kind: "call".into(),
-                s_value: Some("dynamic_size".into()),
-                out: Some("size".into()),
-                ..OpIR::default()
-            },
-        );
-        CallableMetadata::from_functions(&[source]);
-    }
-
-    #[test]
-    #[should_panic(expected = "uses overwritten callable binding")]
-    fn arbitrary_result_redefinition_invalidates_callable_identity() {
-        let mut source = fixture();
-        source.ops.insert(
-            3,
-            OpIR {
-                kind: "call".into(),
-                s_value: Some("dynamic_callable".into()),
-                out: Some("callable".into()),
-                ..OpIR::default()
-            },
-        );
-        CallableMetadata::from_functions(&[source]);
-    }
-
-    #[test]
-    #[should_panic(expected = "requires a source-point integer value")]
-    fn forward_constant_definition_does_not_author_marker_metadata() {
-        let mut source = fixture();
-        let size = source.ops.remove(2);
-        source.ops.push(size);
-        CallableMetadata::from_functions(&[source]);
-    }
-
-    #[test]
-    fn optimization_restriction_flag_is_not_source_provenance() {
-        let mut source = fixture();
-        source.codegen_partition = true;
-        let facts = CallableMetadata::from_functions(&[source]);
-        assert_eq!(facts.task_closure_sizes["worker_poll"], 3);
-        assert_eq!(facts.task_kinds["worker_poll"], TrampolineKind::Coroutine);
-    }
-
-    #[test]
-    fn final_definition_scan_uses_retained_source_not_lowered_marker_values() {
+    #[should_panic(expected = "conflicting callable task kind")]
+    fn direct_and_task_constructors_cannot_disagree_across_partitions() {
         let source = fixture();
-        let mut final_body = source.clone();
-        final_body.ops[2] = OpIR {
-            kind: "index".into(),
-            args: Some(vec!["split_frame".into(), "slot".into()]),
-            out: Some("size".into()),
-            ..OpIR::default()
-        };
+        let mut direct = source.clone();
+        direct.ops[0].task_kind = None;
+        direct.ops[0].task_closure_size = None;
         let mut facts = CallableMetadata::from_functions(&[source]);
-        facts.merge(CallableMetadata::from_definitions(&[final_body]));
-        assert_eq!(facts.task_closure_sizes["worker_poll"], 3);
+        facts.merge(CallableMetadata::from_functions(&[direct]));
     }
 
     #[test]
-    fn ordinary_callable_runtime_task_attributes_do_not_require_static_values() {
+    #[should_panic(expected = "partial callable task metadata")]
+    fn partial_constructor_task_metadata_is_rejected() {
         let mut source = fixture();
-        source.ops[0].s_value = Some("ordinary_callable".into());
-        source.ops[1] = OpIR {
-            kind: "call".into(),
-            s_value: Some("runtime_flag".into()),
-            out: Some("flag".into()),
-            ..OpIR::default()
-        };
-        let facts = CallableMetadata::from_functions(&[source]);
-        assert!(facts.task_kinds.is_empty());
-        assert_eq!(facts.task_closure_sizes["ordinary_callable"], 3);
+        source.ops[0].task_closure_size = None;
+        CallableMetadata::from_functions(&[source]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown callable task_kind")]
+    fn unknown_constructor_task_kind_is_rejected() {
+        let mut source = fixture();
+        source.ops[0].task_kind = Some("future".into());
+        CallableMetadata::from_functions(&[source]);
+    }
+
+    #[test]
+    #[should_panic(expected = "negative callable task_closure_size")]
+    fn negative_constructor_task_closure_size_is_rejected() {
+        let mut source = fixture();
+        source.ops[0].task_closure_size = Some(-1);
+        CallableMetadata::from_functions(&[source]);
     }
 }

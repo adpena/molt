@@ -25,14 +25,14 @@ use crate::{
     dec_ref_bits, exception_clear_reason_set, exception_context_align_depth,
     exception_context_fallback_pop, exception_context_fallback_push, exception_pending,
     exception_stack_depth, exception_stack_set_depth, exception_type_bits_from_name,
-    fn_ptr_code_get, generator_context_stack_store, generator_context_stack_take,
-    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
-    header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr, is_truthy, issubclass_bits,
-    maybe_ptr_from_bits, missing_bits, molt_exception_clear, molt_exception_last,
-    molt_exception_set_last, molt_is_callable, molt_raise, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits,
-    raise_exception, register_task_token, resolve_task_ptr, runtime_state, set_generator_raise,
-    string_obj_to_owned, task_mark_done, task_waiting_on, to_i64, token_id_from_bits, type_name,
+    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
+    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
+    io_wait_poll_fn_addr, is_truthy, issubclass_bits, maybe_ptr_from_bits, missing_bits,
+    molt_exception_clear, molt_exception_last, molt_exception_set_last, molt_is_callable,
+    molt_raise, molt_str_from_obj, obj_from_bits, object_class_bits, object_mark_has_ptrs,
+    object_type_id, pending_bits_i64, ptr_from_bits, raise_exception, register_task_token,
+    resolve_task_ptr, runtime_state, set_generator_raise, string_obj_to_owned, task_mark_done,
+    task_waiting_on, to_i64, token_id_from_bits, type_name,
 };
 
 use crate::state::runtime_state::{AsyncGenLocalsEntry, GenLocalsEntry};
@@ -276,89 +276,118 @@ unsafe fn generator_method_result(_py: &PyToken<'_>, res_bits: u64) -> u64 {
     }
 }
 
+/// Allocate every task kind with explicitly selected code and namespace custody.
+fn task_new_with_context(
+    _py: &PyToken<'_>,
+    poll_fn_addr: u64,
+    closure_size: u64,
+    kind_bits: u64,
+    context: [u64; 3],
+) -> u64 {
+    let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
+        return raise_exception::<_>(
+            _py,
+            "MemoryError",
+            "task closure size exceeds the active address space",
+        );
+    };
+    let trace_alloc = matches!(
+        std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
+        Some("1")
+    );
+    if trace_alloc {
+        eprintln!(
+            "molt_task_new enter poll_fn=0x{:x} closure_size={} kind={}",
+            poll_fn_addr, closure_size, kind_bits
+        );
+    }
+    let (type_id, is_coroutine) = match kind_bits {
+        TASK_KIND_FUTURE => (TYPE_ID_OBJECT, false),
+        TASK_KIND_COROUTINE => (TYPE_ID_OBJECT, true),
+        TASK_KIND_GENERATOR => (TYPE_ID_GENERATOR, false),
+        _ => {
+            return raise_exception::<_>(_py, "TypeError", "unknown task kind");
+        }
+    };
+    if type_id == TYPE_ID_GENERATOR && closure_size < GEN_CONTROL_SIZE {
+        return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
+    }
+    let Some(total_size) = std::mem::size_of::<MoltHeader>().checked_add(closure_size) else {
+        return raise_exception::<_>(_py, "MemoryError", "task allocation size overflow");
+    };
+    let ptr = if type_id == TYPE_ID_OBJECT {
+        alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Sidecar)
+    } else {
+        // Generator kinds select a sidecar from their type authority.
+        alloc_object(_py, total_size, type_id)
+    };
+    if ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let slots = closure_size / std::mem::size_of::<u64>();
+        if slots > 0 {
+            let payload_ptr = ptr as *mut u64;
+            for idx in 0..slots {
+                *payload_ptr.add(idx) = MoltObject::none().bits();
+            }
+        }
+        let header = header_from_obj_ptr(ptr);
+        // Compiled task constructors populate tagged capture slots directly
+        // after this call. Their layout permits heap owners even while the
+        // current words are None; exclude non-owning field fast paths before
+        // any backend publishes captures into the payload.
+        crate::object::object_mark_has_ptrs(_py, ptr);
+        if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
+            || !object_init_shape_unpublished(ptr, object_shape_for_poll_fn(poll_fn_addr))
+            || !object_init_state_unpublished(ptr, 0)
+            || !crate::object::aux_header::object_init_frame_context_unpublished(
+                _py, ptr, context[0], context[1], context[2],
+            )
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            if !crate::exception_pending(_py) {
+                return raise_exception::<_>(_py, "MemoryError", "task context allocation failed");
+            }
+            return MoltObject::none().bits();
+        }
+        if is_coroutine {
+            (*header).fetch_or_flags(HEADER_FLAG_COROUTINE);
+        }
+        if type_id == TYPE_ID_GENERATOR && closure_size >= GEN_CONTROL_SIZE {
+            *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
+            *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
+            *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
+            *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(1).bits();
+        }
+    }
+    if trace_alloc {
+        eprintln!(
+            "molt_task_new ok ptr=0x{:x} bits=0x{:x} type_id={}",
+            ptr as usize,
+            MoltObject::from_ptr(ptr).bits(),
+            type_id
+        );
+    }
+    MoltObject::from_ptr(ptr).bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
-            return raise_exception::<_>(
-                _py,
-                "MemoryError",
-                "task closure size exceeds the active address space",
-            );
-        };
-        let trace_alloc = matches!(
-            std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
-            Some("1")
-        );
-        if trace_alloc {
-            eprintln!(
-                "molt_task_new enter poll_fn=0x{:x} closure_size={} kind={}",
-                poll_fn_addr, closure_size, kind_bits
-            );
-        }
-        let (type_id, is_coroutine) = match kind_bits {
-            TASK_KIND_FUTURE => (TYPE_ID_OBJECT, false),
-            TASK_KIND_COROUTINE => (TYPE_ID_OBJECT, true),
-            TASK_KIND_GENERATOR => (TYPE_ID_GENERATOR, false),
-            _ => {
-                return raise_exception::<_>(_py, "TypeError", "unknown task kind");
-            }
-        };
-        if type_id == TYPE_ID_GENERATOR && closure_size < GEN_CONTROL_SIZE {
-            return raise_exception::<_>(_py, "TypeError", "generator task closure too small");
-        }
-        let Some(total_size) = std::mem::size_of::<MoltHeader>().checked_add(closure_size) else {
-            return raise_exception::<_>(_py, "MemoryError", "task allocation size overflow");
-        };
-        let ptr = if type_id == TYPE_ID_OBJECT {
-            alloc_object_with_aux(_py, total_size, type_id, ObjectAuxPreselection::Sidecar)
-        } else {
-            // Generator kinds select a sidecar from their type authority.
-            alloc_object(_py, total_size, type_id)
-        };
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            let slots = closure_size / std::mem::size_of::<u64>();
-            if slots > 0 {
-                let payload_ptr = ptr as *mut u64;
-                for idx in 0..slots {
-                    *payload_ptr.add(idx) = MoltObject::none().bits();
-                }
-            }
-            let header = header_from_obj_ptr(ptr);
-            // Compiled task constructors populate tagged capture slots directly
-            // after this call. Their layout permits heap owners even while the
-            // current words are None; exclude non-owning field fast paths before
-            // any backend publishes captures into the payload.
-            crate::object::object_mark_has_ptrs(_py, ptr);
-            if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
-                || !object_init_shape_unpublished(ptr, object_shape_for_poll_fn(poll_fn_addr))
-                || !object_init_state_unpublished(ptr, 0)
-            {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return MoltObject::none().bits();
-            }
-            if is_coroutine {
-                (*header).fetch_or_flags(HEADER_FLAG_COROUTINE);
-            }
-            if type_id == TYPE_ID_GENERATOR && closure_size >= GEN_CONTROL_SIZE {
-                *generator_slot_ptr(ptr, GEN_SEND_OFFSET) = MoltObject::none().bits();
-                *generator_slot_ptr(ptr, GEN_THROW_OFFSET) = MoltObject::none().bits();
-                *generator_slot_ptr(ptr, GEN_CLOSED_OFFSET) = MoltObject::from_bool(false).bits();
-                *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = MoltObject::from_int(1).bits();
+        let pending =
+            crate::builtins::frames::acquire_pending_invocation_context(_py, poll_fn_addr);
+        // Generated callable trampolines carry the exact invocation context.
+        // Runtime-native tasks have no Python code owner; ambient caller frames
+        // are not a substitute for an actual callable handoff.
+        let context = pending.unwrap_or([0; 3]);
+        let result = task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, context);
+        if let Some(context) = pending {
+            for bits in context {
+                dec_ref_bits(_py, bits);
             }
         }
-        if trace_alloc {
-            eprintln!(
-                "molt_task_new ok ptr=0x{:x} bits=0x{:x} type_id={}",
-                ptr as usize,
-                MoltObject::from_ptr(ptr).bits(),
-                type_id
-            );
-        }
-        MoltObject::from_ptr(ptr).bits()
+        result
     })
 }
 
@@ -402,13 +431,6 @@ pub unsafe extern "C" fn molt_task_register_token_owned(task_bits: u64, token_bi
         };
         register_task_token(_py, task_ptr, id);
         MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        molt_task_new(poll_fn_addr, closure_size, TASK_KIND_GENERATOR)
     })
 }
 
@@ -1224,9 +1246,7 @@ pub(crate) unsafe fn asyncgen_code_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 
         if object_type_id(gen_ptr) != TYPE_ID_GENERATOR {
             return MoltObject::none().bits();
         }
-        let _header = header_from_obj_ptr(gen_ptr);
-        let poll_fn_addr = crate::object::object_poll_fn(gen_ptr);
-        let code_bits = fn_ptr_code_get(_py, poll_fn_addr);
+        let code_bits = crate::object::aux_header::object_frame_code_bits(gen_ptr);
         if code_bits == 0 {
             return MoltObject::none().bits();
         }
@@ -1761,7 +1781,7 @@ pub(crate) unsafe fn generator_locals_dict(_py: &PyToken<'_>, gen_ptr: *mut u8) 
         }
         let ptr = alloc_dict_with_pairs(_py, &pairs);
         if ptr.is_null() {
-            return empty_dict();
+            return MoltObject::none().bits();
         }
         MoltObject::from_ptr(ptr).bits()
     }

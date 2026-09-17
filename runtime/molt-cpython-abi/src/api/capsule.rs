@@ -106,14 +106,9 @@ pub unsafe extern "C" fn PyCapsule_New(
             .lock()
             .insert(key, CapsuleEntry { pointer });
     }
-    let ptr = Box::into_raw(capsule).cast::<PyObject>();
-    // Register the capsule in the object bridge so a native extension that stores
-    // it back in the runtime (numpy's `PyDict_SetItem`/`PyModule_AddObject` of its
-    // `_ARRAY_API` / `DATETIMEUNITS` capsules) resolves it via `pyobj_to_handle`
-    // instead of failing the bridge lookup — the same canonical bridge registration
-    // the type/descriptor constructors use.
-    unsafe { crate::bridge::GLOBAL_BRIDGE.register_foreign_pyobj(ptr) };
-    ptr
+    // The constructor returns one native C reference. A foreign runtime owner
+    // is acquired only when a consumer crosses through molt_value_for_pyobj.
+    Box::into_raw(capsule).cast::<PyObject>()
 }
 
 #[unsafe(no_mangle)]

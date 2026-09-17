@@ -105,7 +105,7 @@ class ComprehensionMixin(_MixinBase):
             ),
             node,
         )
-        cell_vars = self._collect_comprehension_cell_vars(poll_node)
+        cell_vars = self._callable_cell_vars(poll_node)
         prev_func = self.current_func_name
 
         module_namedexpr_targets: set[str] = set()
@@ -132,7 +132,9 @@ class ComprehensionMixin(_MixinBase):
             )
         )
         frame_plan = stateful_function_frame_plan(
-            kind=FunctionKind.GENERATOR,
+            kind=FunctionKind.ASYNC_GENERATOR
+            if async_needed
+            else FunctionKind.GENERATOR,
             poll_symbol=poll_func_name,
             # CPython passes the eagerly-created outer iterator as the hidden
             # ``.0`` generator-function parameter. Model that as a real task
@@ -151,6 +153,7 @@ class ComprehensionMixin(_MixinBase):
         prev_async_context = self.async_context
         self.start_function(
             poll_func_name,
+            stateful_frame_plan=frame_plan,
             python_first_arg=outer_iter_name,
             params=["self"],
             compiler_params={"self"},
@@ -174,8 +177,7 @@ class ComprehensionMixin(_MixinBase):
         self._async_local_offset(outer_iter_name)
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-        for name in cell_vars:
-            self._box_local(name)
+        self._prebox_scope_cell_vars(cell_vars)
         self._publish_python_frame_context()
         self._push_qualname("<genexpr>", True)
         try:
@@ -226,23 +228,51 @@ class ComprehensionMixin(_MixinBase):
         )
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
-        res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-        args: list[MoltValue] = []
-        if has_closure and closure_val is not None:
-            args.append(closure_val)
-        args.append(outer_iter)
+        callable_val = MoltValue(
+            self.next_var(), type_hint=frame_plan.function_type_hint(closure_size)
+        )
+        if has_closure:
+            assert closure_val is not None
         self.emit(
             MoltOp(
-                kind="ALLOC_TASK",
-                args=[poll_func_name, closure_size] + args,
-                result=res,
-                metadata={"task_kind": frame_plan.task_kind},
+                kind="FUNC_NEW_CLOSURE" if has_closure else "FUNC_NEW",
+                args=(
+                    [poll_func_name, 1, closure_val]
+                    if has_closure
+                    else [poll_func_name, 1]
+                ),
+                result=callable_val,
+                metadata=frame_plan.callable_task_metadata(closure_size),
             )
         )
-        if async_needed:
-            async_res = MoltValue(self.next_var(), type_hint="async_generator")
-            self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[res], result=async_res))
-            return async_res
+        self._emit_function_metadata(
+            callable_val,
+            code_symbol=poll_func_name,
+            name="<genexpr>",
+            qualname=self._qualname_for_def("<genexpr>"),
+            trace_lineno=node.lineno,
+            posonly_params=[".0"],
+            pos_or_kw_params=[],
+            kwonly_params=[],
+            vararg=None,
+            varkw=None,
+            default_exprs=[],
+            kw_default_exprs=[],
+            docstring=None,
+            execution_kind=frame_plan.kind,
+            varnames=self._collect_varnames_for_body(
+                posonly_params=[".0"],
+                pos_or_kw_params=[],
+                kwonly_params=[],
+                vararg=None,
+                varkw=None,
+                body=body,
+            ),
+            freevars=free_vars,
+            cellvars=cell_vars,
+        )
+        res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
+        self.emit(MoltOp(kind="CALL_FUNC", args=[callable_val, outer_iter], result=res))
         return res
 
     def _emit_range_list(
@@ -924,7 +954,7 @@ class ComprehensionMixin(_MixinBase):
                     0,
                     outer_iterator,
                     emit_leaf,
-                    self._iterable_element_hint(outer_value) or "Any",
+                    self._iteration_element_hint(outer, outer_value) or "Any",
                 )
         finally:
             # A zero-iteration comprehension cannot prove a walrus bound.
@@ -1009,7 +1039,7 @@ class ComprehensionMixin(_MixinBase):
                 index + 1,
                 child_iterator,
                 emit_leaf,
-                self._iterable_element_hint(value) or "Any",
+                self._iteration_element_hint(child, value) or "Any",
             )
         for _ in comp.ifs:
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))

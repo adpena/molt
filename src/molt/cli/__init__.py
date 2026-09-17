@@ -412,7 +412,6 @@ from molt.cli.module_graph import (
     _namespace_paths,
     _prepare_entry_module_graph,
     _requires_spawn_entry_override,
-    STUB_MODULES,
     STUB_PARENT_MODULES,
     _write_importer_module,
     _write_namespace_module,

@@ -411,8 +411,16 @@ simpleir_execution_frame_semantics_kinds = [
 # Python-visible frame introspection. A target claiming this capability must
 # provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
 simpleir_frame_introspection_semantics_kinds = ["getframe"]
+simpleir_lexical_cell_semantics_kinds = ["func_new_closure", "function_closure_bits"]
+# Module objects and cache storage alone do not implement Python imports.
+# Admission must also cover transactions acquired as first-class callables.
+simpleir_import_protocol_semantics_kinds = [
+    "import", "import_name", "module_import", "import_from",
+    "module_import_from", "module_import_star",
+]
 simpleir_runtime_requirement_mask_bits = 32
 simpleir_runtime_requirement_roles = [
+    { table = "simpleir_lexical_cell_semantics_kinds", constant = "LEXICAL_CELLS", bit = 17, runtime_symbols = ["molt_cell_new", "molt_cell_get", "molt_cell_set", "molt_cell_eq", "molt_cell_ne", "molt_cell_lt", "molt_cell_le", "molt_cell_gt", "molt_cell_ge", "molt_types_cell_new", "molt_types_cell_contents_get", "molt_types_cell_contents_set", "molt_types_cell_contents_delete", "molt_func_new_closure", "molt_function_closure_bits"], reason = "operation requires shared mutable lexical cells, empty-cell state, and exact closure transport" },
     { table = "simpleir_identity_semantics_kinds", constant = "IDENTITY", bit = 0, reason = "operation requires Python object identity rather than value equality" },
     { table = "simpleir_tuple_semantics_kinds", constant = "TUPLE", bit = 1, reason = "operation requires a tuple representation distinct from mutable lists" },
     { table = "simpleir_exception_semantics_kinds", constant = "EXCEPTION", bit = 2, reason = "operation requires Python exception state, matching, and structured unwinding" },
@@ -428,12 +436,13 @@ simpleir_runtime_requirement_roles = [
     { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY", bit = 12, reason = "operation requires a target host filesystem or foreign-function capability" },
     { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME", bit = 13, runtime_symbols = ["molt_frame_context_set", "molt_super_from_frame"], reason = "operation requires internal execution-frame stack and source-location custody" },
     { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION", bit = 14, runtime_symbols = ["molt_getframe", "molt_inspect_currentframe", "molt_sys_settrace", "molt_sys_gettrace", "molt_sys_setprofile", "molt_sys_getprofile"], reason = "operation requires exact Python-visible frame objects, locals, globals, and tracing state" },
+    { table = "simpleir_import_protocol_semantics_kinds", constant = "IMPORT_PROTOCOL", bit = 16, runtime_symbols = ["molt_module_import", "molt_module_import_from", "molt_module_import_star", "molt_module_ensure", "molt_importlib_import_transaction", "molt_importlib_import_module", "molt_importlib_import_optional", "molt_importlib_import_required", "molt_importlib_import_or_fallback", "molt_importlib_reload", "molt_importlib_load_module_shim", "molt_importlib_load_module_from_spec", "molt_importlib_sourcefileloader_exec_module", "molt_importlib_zip_source_loader_exec_module", "molt_importlib_extension_loader_exec_module", "molt_importlib_sourceless_loader_exec_module", "molt_runpy_run_module", "molt_runpy_run_path"], reason = "operation requires Python import dispatch, module initialization, and transactional package resolution" },
     { table = "simpleir_pending_call_eval_breaker_semantics_kinds", constant = "PENDING_CALL_EVAL_BREAKER", bit = 15, reason = "operation requires the target runtime's pending-call and eval-breaker polling boundary" },
 ]
 simpleir_target_runtime_profiles = [
-    { target = "native", rust_variant = "NativeCranelift", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
-    { target = "wasm", rust_variant = "Wasm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
-    { target = "llvm", rust_variant = "Llvm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER"] },
+    { target = "native", rust_variant = "NativeCranelift", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
+    { target = "wasm", rust_variant = "Wasm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
+    { target = "llvm", rust_variant = "Llvm", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "DETERMINISTIC_LIFETIME", "FORMAT_PROTOCOL", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "ASYNC_RUNTIME", "UNSTRUCTURED_CONTROL", "HOST_CAPABILITY", "EXECUTION_FRAME", "FRAME_INTROSPECTION", "PENDING_CALL_EVAL_BREAKER", "IMPORT_PROTOCOL", "LEXICAL_CELLS"] },
     { target = "luau", rust_variant = "Luau", supported = ["IDENTITY", "TUPLE", "EXCEPTION", "ITERABLE_PROTOCOL", "OBJECT_MODEL", "TRUTHINESS", "COMPARISON", "FALLIBLE_PROTOCOL", "UNSTRUCTURED_CONTROL", "EXECUTION_FRAME"] },
     { target = "rust", rust_variant = "Rust", supported = [] },
     { target = "mlir", rust_variant = "Mlir", supported = [] },
@@ -443,6 +452,11 @@ simpleir_target_runtime_profiles = [
 # their opcode requirements. Call carriers consume the same generated masks.
 simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
 simpleir_runtime_qualified_callable = [
+    { qualified = "builtins.__import__", symbol = "molt_importlib_import_transaction" },
+    { qualified = "importlib.import_module", symbol = "molt_importlib_import_module" },
+    { qualified = "importlib.reload", symbol = "molt_importlib_reload" },
+    { qualified = "runpy.run_module", symbol = "molt_runpy_run_module" },
+    { qualified = "runpy.run_path", symbol = "molt_runpy_run_path" },
     { qualified = "inspect.currentframe", symbol = "molt_inspect_currentframe" },
     { qualified = "sys._getframe", symbol = "molt_getframe" },
     { qualified = "sys.getprofile", symbol = "molt_sys_getprofile" },
@@ -498,13 +512,14 @@ simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
     "for_iter", "iter_next", "iter_next_unboxed",
+    "callargs_expand_star",
 ]
 simpleir_object_model_semantics_kinds = [
     "const_none", "const_bytes",
     "closure_load", "closure_store",
     "guarded_field_get", "guarded_field_set",
     "module_del_global", "module_del_global_if_present",
-    "build_list", "list_new", "alloc", "alloc_task", "build_dict", "dict_new",
+    "build_list", "list_new", "alloc", "build_dict", "dict_new",
     "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
     "list_clear", "list_copy", "list_reverse", "list_count", "list_index",
     "list_index_range", "list_repeat_range",
@@ -530,7 +545,15 @@ simpleir_object_model_semantics_kinds = [
     "object_set_class", "class_set_base", "class_set_layout_version",
     "class_merge_layout", "class_apply_set_name", "class_layout_version",
     "class_layout_field_count", "class_layout_slot_count",
+    # Luau's backend instance validator admits `callargs_expand_kwstar` only
+    # when the operand has direct canonical ordered-dict provenance. This role
+    # does not claim Luau implements arbitrary Python keys/getitem mappings.
+    "callargs_new", "callargs_push_pos", "callargs_expand_star",
+    "callargs_push_kw", "callargs_expand_kwstar",
 ]
+# Target-instance admission and support documentation consume this same set.
+simpleir_luau_ordered_mapping_kinds = ["callargs_expand_kwstar"]
+
 simpleir_truthiness_semantics_kinds = [
     "bool", "cast_bool", "builtin_bool", "not", "unary_not", "and", "_m_and", "or",
     "if", "if_not", "br_if", "branch_true", "branch_false", "loop_break_if_true",
@@ -543,13 +566,23 @@ simpleir_comparison_semantics_kinds = [
 simpleir_fallible_protocol_semantics_kinds = [
     "call", "call_func", "call_internal", "call_method", "call_bind", "call_indirect",
     "call_function", "call_guarded", "builtin_func",
+    "callargs_push_kw", "callargs_expand_star", "callargs_expand_kwstar",
     "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
     "str", "cast_str", "builtin_str", "str_from_obj", "repr_from_obj", "ascii_from_obj",
     "chr", "ord", "ord_at", "print", "builtin_print",
 ]
 simpleir_async_runtime_semantics_kinds = [
-    "chan_recv_yield", "chan_send_yield",
+    "alloc_task", "call_async", "block_on", "spawn", "is_native_awaitable",
+    "asyncgen_locals_register", "gen_locals_register",
+    "chan_new", "chan_drop", "chan_recv_yield", "chan_send_yield",
     "state_label", "state_switch", "state_transition", "state_yield",
+    "cancel_token_new", "cancel_token_clone", "cancel_token_drop",
+    "cancel_token_cancel", "cancel_token_is_cancelled",
+    "cancel_token_set_current", "cancel_token_get_current",
+    "cancelled", "cancel_current",
+    "future_cancel", "future_cancel_msg", "future_cancel_clear",
+    "promise_new", "promise_set_result", "promise_set_exception",
+    "thread_submit", "task_register_token_owned",
 ]
 # Servicing CPython pending calls and the eval breaker is independent from task
 # scheduling and suspension-state semantics. The explicit wire alias carries
@@ -1805,7 +1838,6 @@ classifier_transparent_alias = [
     "file_open",
     "file_read",
     "file_write",
-    "fn_ptr_code_set",
     "frame_locals_set",
     "frozenset_add",
     "func_new",
@@ -5051,7 +5083,14 @@ reason = "dynamic __len__ and index-conversion callbacks may mutate arbitrary ca
 [[frontend_effect_kind]]
 kind = "LOAD_VAR"
 effect = "reads_heap"
+may_access_arbitrary_heap = false
 reason = "frontend local/module slot read; aliases Copy in the wire mapper but is read-only before serialization"
+
+[[frontend_effect_kind]]
+kind = "BINDING_ALIAS"
+effect = "writes_heap"
+may_access_arbitrary_heap = false
+reason = "retain-only same-bits alias changes the selected object's refcount, without releasing ownership or invoking Python"
 
 [[frontend_effect_kind]]
 kind = "STORE_VAR"

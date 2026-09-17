@@ -112,6 +112,16 @@ class ModuleGlobalsMixin(_MixinBase):
         return res
 
     def _emit_globals_dict(self) -> MoltValue:
+        """Return the globals mapping for the active Python execution frame."""
+        return self._emit_runtime_call("molt_globals_builtin", [], type_hint="dict")
+
+    def _emit_module_globals_dict(self) -> MoltValue:
+        """Return this compilation unit's lexical module dictionary.
+
+        This is the pre-frame bootstrap authority for module code metadata.
+        Python execution must use ``_emit_globals_dict`` so rebound function
+        objects observe their explicit globals mapping.
+        """
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
         else:

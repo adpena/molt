@@ -2,12 +2,62 @@
 
 import ast
 import contextlib
+import importlib
+import inspect
 from contextlib import contextmanager as scope
 from typing import AsyncIterator, Iterator
 
 import pytest
 
 from tools import gen_protocol
+from molt.frontend.sema import FunctionKind
+
+
+class DefaultMethods:
+    def defaults(
+        self,
+        required: int,
+        positional: object = object(),
+        /,
+        kind: FunctionKind = FunctionKind.SYNC,
+        *,
+        required_keyword: int,
+        optional_keyword: object = object(),
+    ) -> None:
+        pass
+
+    async def async_defaults(self, kind: FunctionKind = FunctionKind.SYNC) -> None:
+        pass
+
+
+@pytest.mark.parametrize("name", ["defaults", "async_defaults"])
+def test_protocol_defaults_preserve_call_shape_without_runtime_dependencies(name):
+    implementation = vars(DefaultMethods)[name]
+    stub = gen_protocol._render_method_stub(name, implementation)
+    assert stub is not None
+    rendered = gen_protocol.render_protocol_file(
+        [], [(name, stub)], types_module_exports=set()
+    )
+    namespace = {}
+    exec(compile(rendered, "<generated-protocol>", "exec"), namespace)
+    assert "FunctionKind" not in namespace
+    projected = inspect.signature(getattr(namespace["_GeneratorProtocol"], name))
+    original = inspect.signature(implementation)
+    assert projected.parameters.keys() == original.parameters.keys()
+    for key, actual in projected.parameters.items():
+        expected = original.parameters[key]
+        assert actual.kind == expected.kind
+        assert actual.default is (
+            inspect.Parameter.empty
+            if expected.default is inspect.Parameter.empty
+            else Ellipsis
+        )
+    assert ("async def" in stub) == inspect.iscoroutinefunction(implementation)
+
+
+def test_live_generated_protocol_imports():
+    module = importlib.import_module("molt.frontend._protocol")
+    assert module._GeneratorProtocol.start_function
 
 
 class WrappedMethods:

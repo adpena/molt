@@ -664,6 +664,55 @@ fn compile_checked_rejects_unsupported_dispatch() {
 }
 
 #[test]
+fn compile_checked_rejects_module_import_before_source_emission() {
+    for (kind, literal, args) in [
+        ("module_import", Some("sys"), vec![]),
+        ("module_import", None, vec!["module_name"]),
+        ("module_import_from", Some("path"), vec!["module"]),
+        ("module_import_from", None, vec!["module", "member"]),
+        ("module_import_star", None, vec!["module", "namespace"]),
+    ] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "import_probe".to_string(),
+                params: ["module_name", "module", "member", "namespace"]
+                    .map(str::to_string)
+                    .to_vec(),
+                ops: vec![
+                    OpIR {
+                        kind: kind.to_string(),
+                        s_value: literal.map(str::to_string),
+                        args: Some(args.into_iter().map(str::to_string).collect()),
+                        out: Some("import_result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["import_result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let mut backend = RustBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("Rust has no Python import protocol, including for sys");
+        assert!(
+            error.contains("rejected before source generation") && error.contains("module_import"),
+            "{error}"
+        );
+        assert!(
+            backend.output.is_empty(),
+            "import refusal emitted partial source"
+        );
+        assert!(backend.unsupported_ops.is_empty());
+    }
+}
+
+#[test]
 fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {

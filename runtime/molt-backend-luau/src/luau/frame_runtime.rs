@@ -1,9 +1,11 @@
 /// Luau's internal execution-frame authority.
 ///
-/// Each coroutine owns a reusable context containing only code/source-location
-/// and unwind custody. This intentionally does not expose Python frame objects,
-/// tracing hooks, or `__traceback__.tb_frame`; those require a separate exact
-/// introspection capability that Luau rejects before source generation.
+/// Each coroutine owns a reusable context containing code/source-location,
+/// exact code identity, explicit globals/builtins/locals, and unwind custody.
+/// Callable handoffs are slot-keyed and do not create visible frames. This intentionally
+/// does not expose Python frame objects, tracing hooks, or
+/// `__traceback__.tb_frame`; those require a separate exact introspection
+/// capability that Luau rejects before source generation.
 pub(super) const FRAME_RUNTIME: &str = r#"
 -- Luau does not implement ephemeron tables, so this lookup is non-owning in
 -- both directions. Local frames and wrappers strongly own live contexts; the
@@ -19,7 +21,7 @@ end
 
 local function molt_frame_new_context(): any
 	molt_frame_context_allocations += 1
-	return {depth=0, codes={}, lines={}, lastis={}, cols={}, end_cols={}, globals={}}
+	return {depth=0, codes={}, lines={}, lastis={}, cols={}, end_cols={}, globals={}, builtins={}, locals={}, invocations={}}
 end
 
 local function molt_frame_owned_context(owner: any): any
@@ -47,11 +49,47 @@ local function molt_frame_context(): (any, any)
 	return context, key
 end
 
-local function molt_frame_enter(code: any): (any, number, any, any)
-	if type(code) ~= "table" or code.co_name == nil then
+-- An invocation transports one exact activation to its compiled slot. It
+-- never pushes a Python frame; mismatching entries cannot consume the owner.
+local function molt_frame_invoke(func: any, code: any, globals: any, builtins: any, ...): ...any
+	if type(code) ~= "table" or code.__molt_frame_slot == nil then return func(...) end
+	if type(globals) ~= "table" then
+		molt_frame_invariant("compiled invocation has no globals dictionary")
+	end
+	local context = molt_frame_context()
+	local pending = context.invocations
+	local depth = #pending + 1
+	local entry = {slot=code.__molt_frame_slot, code=code, globals=globals, builtins=builtins}
+	pending[depth] = entry
+	local results = table.pack(pcall(func, ...))
+	if #pending ~= depth or pending[depth] ~= entry then
+		molt_frame_invariant("compiled invocation custody is not LIFO")
+	end
+	pending[depth] = nil
+	if not results[1] then error(results[2], 0) end
+	return table.unpack(results, 2, results.n)
+end
+
+local function molt_frame_enter(slot: any, lexical_builtins: any?): (any, number, any, any)
+	if type(slot) ~= "table" or type(slot.code) ~= "table" or slot.code.co_name == nil then
 		molt_frame_invariant("trace_enter_slot references an unbound code object")
 	end
+	if type(slot.globals) ~= "table" then
+		molt_frame_invariant("trace_enter_slot references an unbound globals dictionary")
+	end
+	local code = slot.code
 	local context, owner = molt_frame_context()
+	local globals = slot.globals
+	local builtins = lexical_builtins
+	local pending = context.invocations[#context.invocations]
+	if pending ~= nil and pending.slot == slot.id and pending.code ~= nil then
+		code = pending.code
+		globals = pending.globals
+		builtins = pending.builtins
+		pending.code = nil
+		pending.globals = nil
+		pending.builtins = nil
+	end
 	context.depth += 1
 	local index = context.depth
 	context.codes[index] = code
@@ -59,19 +97,10 @@ local function molt_frame_enter(code: any): (any, number, any, any)
 	context.lastis[index] = 0
 	context.cols[index] = -1
 	context.end_cols[index] = -1
-	context.globals[index] = code.co_globals or (if index > 1 then context.globals[index - 1] else nil)
+	context.globals[index] = globals
+	context.builtins[index] = builtins
+	context.locals[index] = nil
 	return context, index, code, owner
-end
-
-local function molt_frame_bind_code(code: any): nil
-	if type(code) ~= "table" then
-		molt_frame_invariant("code_slot_set requires a code object")
-	end
-	local context = molt_frame_context()
-	if context.depth > 0 then
-		code.co_globals = context.globals[context.depth]
-	end
-	return nil
 end
 
 local function molt_frame_set_line(context: any, line: number, col: number?, final_col: number?): nil
@@ -89,6 +118,13 @@ local function molt_frame_set_line(context: any, line: number, col: number?, fin
 	return nil
 end
 
+-- Internal namespace projection used by compiler-generated global stores.
+local function molt_globals_builtin(): any
+	local context = molt_frame_context()
+	if context.depth < 1 then molt_frame_invariant("globals requires an active frame") end
+	return context.globals[context.depth]
+end
+
 local function molt_frame_locals_set(context: any, locals_value: any): nil
 	local index = context.depth
 	if index < 1 then
@@ -97,11 +133,7 @@ local function molt_frame_locals_set(context: any, locals_value: any): nil
 	if type(locals_value) ~= "table" then
 		molt_frame_invariant("frame_locals_set requires a locals dictionary")
 	end
-	local code = context.codes[index]
-	if code.co_name == "<module>" then
-		context.globals[index] = locals_value
-		code.co_globals = locals_value
-	end
+	context.locals[index] = locals_value
 	return nil
 end
 
@@ -118,6 +150,8 @@ local function molt_frame_exit(context: any, entry_depth: number, code: any, own
 	context.cols[index] = nil
 	context.end_cols[index] = nil
 	context.globals[index] = nil
+	context.builtins[index] = nil
+	context.locals[index] = nil
 	context.depth -= 1
 	return nil
 end
@@ -134,6 +168,8 @@ local function molt_frame_restore_depth(context: any, depth: number): nil
 		context.cols[index] = nil
 		context.end_cols[index] = nil
 		context.globals[index] = nil
+		context.builtins[index] = nil
+		context.locals[index] = nil
 		context.depth -= 1
 	end
 	return nil
@@ -270,5 +306,77 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 		return nil
 	end
 	return resume, close
+end
+"#;
+
+/// Definition-time capture and lexical defaults share the ordered-dictionary
+/// authority. Emitted after dictionary helpers and the module cache exist.
+pub(super) const CALLABLE_FRAME_RUNTIME: &str = r#"
+local function molt_frame_namespace_get(namespace: any, name: any): (boolean, any)
+	if type(namespace) ~= "table" then return false, nil end
+	if molt_dict_is_ordered(namespace) then
+		if molt_dict_contains(namespace, name) then return true, molt_dict_getitem(namespace, name) end
+		return false, nil
+	end
+	local value = rawget(namespace, name)
+	return value ~= nil, value
+end
+
+local function molt_frame_effective_builtins(globals: any): any
+	local present, selected = molt_frame_namespace_get(globals, "__builtins__")
+	if present then return selected end
+	local context = molt_frame_context()
+	if context.depth > 0 then return context.builtins[context.depth] end
+	return molt_module_cache["builtins"]
+end
+
+local function molt_frame_bind_code(id: number, code: any, globals: any): any
+	if type(code) ~= "table" or code.co_name == nil or type(globals) ~= "table" then
+		molt_frame_invariant("code slot requires code and globals")
+	end
+	if code.__molt_frame_slot ~= nil and code.__molt_frame_slot ~= id then
+		molt_frame_invariant("code object cannot move between compiled slots")
+	end
+	code.__molt_frame_slot = id
+	return {id=id, code=code, globals=globals}
+end
+
+local function molt_frame_enter_slot(slot: any): (any, number, any, any)
+	local globals = if type(slot) == "table" then slot.globals else nil
+	return molt_frame_enter(slot, molt_frame_effective_builtins(globals))
+end
+
+-- Each definition has independent metadata even when its machine target is
+-- shared. The wrapper owns its attributes directly; no reverse strong map or
+-- additional Python frame is introduced.
+local molt_frame_function_context_key = {}
+
+local function molt_frame_function_capture(func: any, module_name: any): nil
+	local attrs = molt_func_attrs[func]
+	local link = if attrs ~= nil then attrs[molt_frame_function_context_key] else nil
+	-- Runtime helpers have metadata but do not own compiled Python activations.
+	if link == nil then return nil end
+	local captured = link.value
+	if captured == nil then molt_frame_invariant("live callable lost its owned context") end
+	local context = molt_frame_context()
+	local globals = if context.depth > 0 then context.globals[context.depth] else molt_module_cache[module_name]
+	captured.globals = globals
+	captured.builtins = molt_frame_effective_builtins(globals)
+	return nil
+end
+
+local function molt_frame_function_new(target: any): any
+	-- Luau weak-key tables are not ephemerons. Keep namespace owners only in
+	-- the callable closure. The existing attrs lookup has a weak, non-owning
+	-- link so metadata can finalize custody after default expressions execute.
+	local captured = {}
+	local attrs = {[molt_frame_function_context_key]=setmetatable({value=captured}, {__mode="v"})}
+	local function callable(...): ...any
+		return molt_frame_invoke(target, attrs.__code__, captured.globals, captured.builtins, ...)
+	end
+	molt_func_attrs[callable] = attrs
+	local signature = molt_function_metadata[target]
+	if signature ~= nil then molt_function_metadata[callable] = table.clone(signature) end
+	return callable
 end
 "#;

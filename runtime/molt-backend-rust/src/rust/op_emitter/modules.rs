@@ -181,35 +181,6 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_module_import(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let module = op
-            .args
-            .as_deref()
-            .and_then(|args| args.first())
-            .map(|name| rust_value(name))
-            .or_else(|| {
-                op.s_value.as_deref().map(|name| {
-                    format!("MoltValue::Str({}.to_string())", rust_string_literal(name))
-                })
-            })
-            .unwrap_or_else(|| "MoltValue::None".to_string());
-        self.emit_line(&declare(
-            &o,
-            &format!("molt_import_module(&{module})"),
-            &self.hoisted_vars.clone(),
-        ));
-    }
-
     pub(super) fn emit_op_module_get_attr(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {

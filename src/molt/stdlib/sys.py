@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from _intrinsics import runtime_active as _runtime_active
 
 
 def cast(_tp, value):  # type: ignore[override]
@@ -116,16 +117,22 @@ def _return_identity(value: object) -> object:
     return value
 
 
-def _return_maxsize_default() -> int:
-    return 2**63 - 1
+def _reference_maxsize() -> int:
+    import sys as reference_sys
+
+    return reference_sys.maxsize
 
 
-def _return_maxunicode_default() -> int:
-    return 0x10FFFF
+def _reference_maxunicode() -> int:
+    import sys as reference_sys
+
+    return reference_sys.maxunicode
 
 
-def _return_little_endian() -> str:
-    return "little"
+def _reference_byteorder() -> str:
+    import sys as reference_sys
+
+    return reference_sys.byteorder
 
 
 def _return_empty_frozenset() -> frozenset[object]:
@@ -295,7 +302,9 @@ _MOLT_SYS_VERSION_INFO = _safe_intrinsic(
     "molt_sys_version_info", _return_version_info_default
 )
 _MOLT_SYS_VERSION = _safe_intrinsic("molt_sys_version", _return_version_default)
-_MOLT_SYS_HEXVERSION = _safe_intrinsic("molt_sys_hexversion", _return_hexversion_default)
+_MOLT_SYS_HEXVERSION = _safe_intrinsic(
+    "molt_sys_hexversion", _return_hexversion_default
+)
 _MOLT_SYS_API_VERSION = _safe_intrinsic("molt_sys_api_version", _return_zero)
 _MOLT_SYS_ABIFLAGS = _safe_intrinsic("molt_sys_abiflags", _return_empty_str)
 _MOLT_SYS_IMPLEMENTATION_PAYLOAD = _safe_intrinsic(
@@ -304,7 +313,9 @@ _MOLT_SYS_IMPLEMENTATION_PAYLOAD = _safe_intrinsic(
 _MOLT_SYS_FLAGS_PAYLOAD = _safe_intrinsic("molt_sys_flags_payload", None)
 _MOLT_SYS_PLATFORM = _safe_intrinsic("molt_sys_platform", _return_platform_unknown)
 _MOLT_SYS_IS_FINALIZING = _safe_intrinsic("molt_sys_is_finalizing", _return_false)
-_MOLT_SYS_GETREFCOUNT = _safe_intrinsic("molt_sys_getrefcount", _return_refcount_default)
+_MOLT_SYS_GETREFCOUNT = _safe_intrinsic(
+    "molt_sys_getrefcount", _return_refcount_default
+)
 _MOLT_SYS_SETTRACE = _safe_intrinsic("molt_sys_settrace", None)
 _MOLT_SYS_GETTRACE = _safe_intrinsic("molt_sys_gettrace", None)
 _MOLT_SYS_SETPROFILE = _safe_intrinsic("molt_sys_setprofile", None)
@@ -315,22 +326,29 @@ _MOLT_SYS_STDERR = _safe_intrinsic("molt_sys_stderr", None)
 _MOLT_SYS_GETFILESYSTEMENCODEERRORS = _safe_intrinsic(
     "molt_sys_getfilesystemencodeerrors", _filesystem_encode_errors_default
 )
-_MOLT_SYS_MAXSIZE = _safe_intrinsic("molt_sys_maxsize", _return_maxsize_default)
-_MOLT_SYS_MAXUNICODE = _safe_intrinsic("molt_sys_maxunicode", _return_maxunicode_default)
-_MOLT_SYS_BYTEORDER = _safe_intrinsic("molt_sys_byteorder", _return_little_endian)
+if _runtime_active():
+    _MOLT_SYS_MAXSIZE = _require_intrinsic("molt_sys_maxsize", globals())
+    _MOLT_SYS_MAXUNICODE = _require_intrinsic("molt_sys_maxunicode", globals())
+    _MOLT_SYS_BYTEORDER = _require_intrinsic("molt_sys_byteorder", globals())
+else:
+    # Tooling-only CPython baseline path. Compiled Molt runtimes must publish
+    # their target facts through the required intrinsics above.
+    _MOLT_SYS_MAXSIZE = _reference_maxsize
+    _MOLT_SYS_MAXUNICODE = _reference_maxunicode
+    _MOLT_SYS_BYTEORDER = _reference_byteorder
 _MOLT_SYS_PREFIX = _safe_intrinsic("molt_sys_prefix", _return_empty_str)
 _MOLT_SYS_EXEC_PREFIX = _safe_intrinsic("molt_sys_exec_prefix", _return_empty_str)
 _MOLT_SYS_BASE_PREFIX = _safe_intrinsic("molt_sys_base_prefix", _return_empty_str)
-_MOLT_SYS_BASE_EXEC_PREFIX = _safe_intrinsic("molt_sys_base_exec_prefix", _return_empty_str)
+_MOLT_SYS_BASE_EXEC_PREFIX = _safe_intrinsic(
+    "molt_sys_base_exec_prefix", _return_empty_str
+)
 _MOLT_SYS_PLATLIBDIR = _safe_intrinsic("molt_sys_platlibdir", _platlibdir_default)
 _MOLT_SYS_FLOAT_INFO = _safe_intrinsic("molt_sys_float_info", None)
 _MOLT_SYS_INT_INFO = _safe_intrinsic("molt_sys_int_info", None)
 _MOLT_SYS_HASH_INFO = _safe_intrinsic("molt_sys_hash_info", None)
 _MOLT_SYS_THREAD_INFO = _safe_intrinsic("molt_sys_thread_info", None)
 _MOLT_SYS_INTERN = _safe_intrinsic("molt_sys_intern", _return_identity)
-_MOLT_SYS_GETSIZEOF = _safe_intrinsic(
-    "molt_sys_getsizeof", _return_zero_for_sizeof
-)
+_MOLT_SYS_GETSIZEOF = _safe_intrinsic("molt_sys_getsizeof", _return_zero_for_sizeof)
 _MOLT_SYS_STDLIB_MODULE_NAMES = _safe_intrinsic(
     "molt_sys_stdlib_module_names", _return_empty_frozenset
 )
@@ -363,7 +381,9 @@ _MOLT_SYS_CALL_TRACING_VALIDATE = _safe_intrinsic(
 )
 _MOLT_SYS_ADDAUDITHOOK = _safe_intrinsic("molt_sys_addaudithook", None)
 _MOLT_SYS_AUDIT_HOOK_COUNT = _safe_intrinsic("molt_sys_audit_hook_count", _return_zero)
-_MOLT_SYS_AUDIT_GET_HOOKS = _safe_intrinsic("molt_sys_audit_get_hooks", _return_empty_list)
+_MOLT_SYS_AUDIT_GET_HOOKS = _safe_intrinsic(
+    "molt_sys_audit_get_hooks", _return_empty_list
+)
 _MOLT_SYS_EXIT = _safe_intrinsic("molt_sys_exit", None)
 _MOLT_SYS_DISPLAYHOOK_WRITE = _safe_intrinsic("molt_sys_displayhook_write", None)
 _MOLT_SYS_EXCEPTHOOK_WRITE = _safe_intrinsic("molt_sys_excepthook_write", None)
@@ -854,6 +874,32 @@ def _try_tuple_intrinsic(
     return fallback
 
 
+def _resolve_scalar_metadata() -> tuple[int, int, str]:
+    maxsize_value = _MOLT_SYS_MAXSIZE()
+    maxunicode_value = _MOLT_SYS_MAXUNICODE()
+    byteorder_value = _MOLT_SYS_BYTEORDER()
+
+    if (
+        not isinstance(maxsize_value, int)
+        or isinstance(maxsize_value, bool)
+        or maxsize_value <= 0
+    ):
+        raise RuntimeError("molt_sys_maxsize returned invalid value")
+    if (
+        not isinstance(maxunicode_value, int)
+        or isinstance(maxunicode_value, bool)
+        or maxunicode_value <= 0
+        or maxunicode_value > 0x10FFFF
+    ):
+        raise RuntimeError("molt_sys_maxunicode returned invalid value")
+    if not isinstance(byteorder_value, str) or byteorder_value not in (
+        "little",
+        "big",
+    ):
+        raise RuntimeError("molt_sys_byteorder returned invalid value")
+    return maxsize_value, maxunicode_value, byteorder_value
+
+
 # On WASM, intrinsics that return heap-allocated objects (tuples, dicts)
 # Split metadata init into a helper to reduce molt_init_sys function size.
 # Cranelift generates incorrect code for functions >200KB of machine code.
@@ -861,6 +907,7 @@ def _init_metadata():
     """Initialize version/platform metadata as module globals."""
     global _SYS_FLAGS_GIL
     g = globals()
+    maxsize_value, maxunicode_value, byteorder_value = _resolve_scalar_metadata()
     version_text = _try_str_intrinsic(_MOLT_SYS_VERSION, "3.12.0 (molt)")
     raw_version_info = _try_tuple_intrinsic(
         _MOLT_SYS_VERSION_INFO, (3, 12, 0, "final", 0), expected_len=5
@@ -967,9 +1014,9 @@ def _init_metadata():
     g["meta_path"] = []
     g["path_hooks"] = []
     g["path_importer_cache"] = {}
-    g["maxsize"] = 2**63 - 1
-    g["maxunicode"] = 0x10FFFF
-    g["byteorder"] = "little"
+    g["maxsize"] = maxsize_value
+    g["maxunicode"] = maxunicode_value
+    g["byteorder"] = byteorder_value
     g["prefix"] = ""
     g["exec_prefix"] = ""
     g["base_prefix"] = ""
@@ -986,28 +1033,28 @@ def _init_metadata():
 
 
 _metadata_names = [
-        "version",
-        "version_info",
-        "hexversion",
-        "api_version",
-        "implementation",
-        "flags",
-        "maxsize",
-        "maxunicode",
-        "byteorder",
-        "prefix",
-        "exec_prefix",
-        "base_prefix",
-        "base_exec_prefix",
-        "platlibdir",
-        "float_info",
-        "int_info",
-        "hash_info",
-        "thread_info",
-        "orig_argv",
-        "copyright",
-        "stdlib_module_names",
-        "builtin_module_names",
+    "version",
+    "version_info",
+    "hexversion",
+    "api_version",
+    "implementation",
+    "flags",
+    "maxsize",
+    "maxunicode",
+    "byteorder",
+    "prefix",
+    "exec_prefix",
+    "base_prefix",
+    "base_exec_prefix",
+    "platlibdir",
+    "float_info",
+    "int_info",
+    "hash_info",
+    "thread_info",
+    "orig_argv",
+    "copyright",
+    "stdlib_module_names",
+    "builtin_module_names",
 ]
 if _SYS_ABIFLAGS_AVAILABLE:
     _metadata_names.append("abiflags")

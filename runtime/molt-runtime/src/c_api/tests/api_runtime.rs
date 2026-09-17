@@ -818,7 +818,7 @@ fn attr_object_ic_keeps_type_objects_distinct_per_site() {
                 b"__name__".as_ptr(),
                 b"__name__".len() as u64,
                 site_bits,
-            ) as u64
+            )
         };
         let b_name_bits = unsafe {
             crate::builtins::attributes::molt_get_attr_object_ic(
@@ -826,7 +826,7 @@ fn attr_object_ic_keeps_type_objects_distinct_per_site() {
                 b"__name__".as_ptr(),
                 b"__name__".len() as u64,
                 site_bits,
-            ) as u64
+            )
         };
 
         let mut a_len = 0u64;
@@ -871,7 +871,7 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
                 b"x".as_ptr(),
                 1,
                 site_bits,
-            ) as u64
+            )
         };
         let b_x_bits = unsafe {
             crate::builtins::attributes::molt_get_attr_object_ic(
@@ -879,7 +879,7 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
                 b"x".as_ptr(),
                 1,
                 site_bits,
-            ) as u64
+            )
         };
 
         assert_eq!(to_i64(obj_from_bits(a_x_bits)), Some(1));

@@ -16,14 +16,18 @@ impl LuauBackend {
             // Call argument builders
             // ================================================================
             "callargs_new" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out}: {{any}} = molt_callargs_new()"));
+                if op.args.as_deref().unwrap_or(&[]).is_empty() && op.out.is_some() {
+                    let out = self.out_var(op);
+                    self.emit_line(&format!("local {out}: {{any}} = molt_callargs_new()"));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
             }
             "callargs_push_pos" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let callargs = sanitize_ident(&args[0]);
-                    let value = sanitize_ident(&args[1]);
+                if let [callargs, value] = args {
+                    let callargs = sanitize_ident(callargs);
+                    let value = sanitize_ident(value);
                     self.emit_line(&format!("molt_callargs_push_pos({callargs}, {value})"));
                 } else {
                     self.emit_unsupported_op(op);
@@ -31,9 +35,9 @@ impl LuauBackend {
             }
             "callargs_expand_star" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let callargs = sanitize_ident(&args[0]);
-                    let other = sanitize_ident(&args[1]);
+                if let [callargs, other] = args {
+                    let callargs = sanitize_ident(callargs);
+                    let other = sanitize_ident(other);
                     self.emit_line(&format!("molt_callargs_expand_star({callargs}, {other})"));
                 } else {
                     self.emit_unsupported_op(op);
@@ -41,10 +45,10 @@ impl LuauBackend {
             }
             "callargs_push_kw" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 3 {
-                    let callargs = sanitize_ident(&args[0]);
-                    let key = sanitize_ident(&args[1]);
-                    let value = sanitize_ident(&args[2]);
+                if let [callargs, key, value] = args {
+                    let callargs = sanitize_ident(callargs);
+                    let key = sanitize_ident(key);
+                    let value = sanitize_ident(value);
                     self.emit_line(&format!(
                         "molt_callargs_push_kw({callargs}, {key}, {value})"
                     ));
@@ -54,9 +58,9 @@ impl LuauBackend {
             }
             "callargs_expand_kwstar" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let callargs = sanitize_ident(&args[0]);
-                    let other = sanitize_ident(&args[1]);
+                if let [callargs, other] = args {
+                    let callargs = sanitize_ident(callargs);
+                    let other = sanitize_ident(other);
                     self.emit_line(&format!("molt_callargs_expand_kwstar({callargs}, {other})"));
                 } else {
                     self.emit_unsupported_op(op);
@@ -66,7 +70,13 @@ impl LuauBackend {
             // ================================================================
             // Callable objects and builtin wrappers
             // ================================================================
-            "func_new" | "func_new_closure" => {
+            "func_new_closure" => {
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "shared lexical-cell transport is unavailable on the Luau target",
+                );
+            }
+            "func_new" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let Some(name) = op
@@ -77,7 +87,7 @@ impl LuauBackend {
                         self.emit_unsupported_op(op);
                         return true;
                     };
-                    self.emit_line(&format!("local {out} = {name}"));
+                    self.emit_line(&format!("local {out} = molt_frame_function_new({name})"));
                 }
             }
             "code_new" => {
@@ -110,10 +120,9 @@ impl LuauBackend {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let s_val = op.s_value.as_deref().unwrap_or("");
-                    // Map known Python builtins to Luau function references.
-                    // The call_func IR op passes (args_tuple, kwargs, varkw),
-                    // so we wrap Luau functions in a closure that unpacks the
-                    // positional args tuple for the correct calling convention.
+                    // Builtin wrappers consume the binder's packed positional
+                    // vector. `molt_function_set_builtin` records that ABI in
+                    // the same metadata authority used by every call shape.
                     let mapped = match s_val {
                         "molt_max_builtin" => {
                             "function(a, ...) return math.max(table.unpack(a, 1, molt_sequence_len(a))) end"
@@ -185,10 +194,10 @@ impl LuauBackend {
                             "function(a, ...) local value = if type(a[1]) == \"function\" then molt_func_attr_get(a[1], a[2]) else molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
                         }
                         "molt_set_attr_name" => {
-                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_set(a[1], a[2], a[3]) end; return molt_set_attr(a[1], a[2], a[3]) end"
+                            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_set(a[1], a[2], a[3]) end; return molt_set_attr(a[1], a[2], a[3]) end"
                         }
                         "molt_del_attr_name" => {
-                            "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_del(a[1], a[2]) end; return molt_del_attr(a[1], a[2]) end"
+                            "function(a, ...) if type(a[1]) == \"function\" then return molt_function_attr_del(a[1], a[2]) end; return molt_del_attr(a[1], a[2]) end"
                         }
                         "molt_has_attr_name" => {
                             "function(a, ...) if type(a[1]) == \"function\" then return molt_func_attr_get(a[1], a[2]) ~= nil end; return molt_has_attr(a[1], a[2]) end"
@@ -225,15 +234,16 @@ impl LuauBackend {
                         }
                     };
                     self.emit_line(&format!("local {out} = {mapped}"));
+                    self.emit_line(&format!("molt_function_set_builtin({out})"));
                 }
             }
             "bound_method_new" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
+                if let [method, obj] = args {
                     // IR contract: args[0] = function, args[1] = self.
-                    let method = sanitize_ident(&args[0]);
-                    let obj = sanitize_ident(&args[1]);
+                    let method = sanitize_ident(method);
+                    let obj = sanitize_ident(obj);
                     self.emit_line(&format!(
                         "local {out} = molt_bound_method_new({method}, {obj})"
                     ));
@@ -244,7 +254,7 @@ impl LuauBackend {
             // ================================================================
             // Function calls
             // ================================================================
-            "call" | "call_guarded" => {
+            "call" => {
                 let out = self.out_var(op);
                 // First check for s_value function name (pedagogical IR form).
                 if let Some(ref raw_func_name) = op.s_value {
@@ -330,7 +340,9 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "call_func" | "call_function" => {
+            // Guarded target metadata is an optimization hint, not callable
+            // identity: the operand still owns its captured Python activation.
+            "call_func" | "call_function" | "call_guarded" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
                     let func_ref = sanitize_ident(&args[0]);
@@ -383,82 +395,25 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "call_async" => {
-                // Luau has no Molt scheduler object model here, but CALL_ASYNC
-                // already carries the concrete poll target in s_value. Execute
-                // that target directly for the admitted synchronous subset.
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let Some(func_ref) = op
-                    .s_value
-                    .as_deref()
-                    .map(|raw| self.invocation_target_ident(raw))
-                else {
-                    self.emit_unsupported_op(op);
-                    return true;
-                };
-                let call_args = args
-                    .iter()
-                    .map(|a| sanitize_ident(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
-                } else {
-                    self.emit_line(&format!("{func_ref}({call_args})"));
-                }
-            }
-            "block_on" | "spawn" => {
-                self.emit_unsupported_op(op);
-            }
-
             // ================================================================
             // Indirect / bound calls
             // ================================================================
-            "call_indirect" => {
+            "call_indirect" | "call_bind" => {
+                // Both spellings consume exactly one canonical CallArgs builder.
+                // Keeping one invocation lane prevents indirect calls from
+                // accidentally passing the builder itself as a positional value.
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if !args.is_empty() {
-                    let func_ref = sanitize_ident(&args[0]);
-                    let call_args = args[1..]
-                        .iter()
-                        .map(|a| sanitize_ident(a))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let call = checked_call_expr(&func_ref, &call_args);
-                    if let Some(ref out_name) = op.out {
-                        let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {call}"));
-                    } else {
-                        self.emit_line(&call);
-                    }
-                } else {
-                    self.emit_unsupported_op(op);
-                }
-            }
-            "call_bind" => {
-                // In Molt IR, call_bind is a function CALL whose second arg is
-                // always a callargs tuple (built via callargs_new + callargs_push_pos).
-                // We must unpack the tuple so individual args are spread:
-                // The canonical builder keeps packed positional arguments and
-                // ordered keyword presence separately; invocation binds both.
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let func = sanitize_ident(&args[0]);
-                    let args_tuple = sanitize_ident(&args[1]);
+                if let [func, builder] = args {
+                    let func = sanitize_ident(func);
+                    let builder = sanitize_ident(builder);
                     if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
                         self.emit_line(&format!(
-                            "local {out} = molt_callargs_invoke({func}, {args_tuple})"
+                            "local {out} = molt_callargs_invoke({func}, {builder})"
                         ));
                     } else {
-                        self.emit_line(&format!("molt_callargs_invoke({func}, {args_tuple})"));
+                        self.emit_line(&format!("molt_callargs_invoke({func}, {builder})"));
                     }
-                } else if let Some(func) = args.first() {
-                    self.emit_line(&format!(
-                        "local {out} = molt_call_checked({})",
-                        sanitize_ident(func)
-                    ));
                 } else {
                     self.emit_unsupported_op(op);
                 }
@@ -505,7 +460,7 @@ impl LuauBackend {
                             check_ident(s_val);
                         }
                     }
-                    "call" | "call_guarded" => {
+                    "call" => {
                         if let Some(ref s_val) = op.s_value {
                             check_ident(s_val);
                         } else if let Some(ref args) = op.args
@@ -514,18 +469,13 @@ impl LuauBackend {
                             check_ident(callee);
                         }
                     }
-                    "call_async" => {
-                        if let Some(ref s_val) = op.s_value {
-                            check_ident(s_val);
-                        }
-                    }
                     "load_local" => {
                         if let Some(ref var) = op.var {
                             check_ident(var);
                         }
                     }
-                    "call_func" | "call_function" | "call_indirect" | "call_bind" | "block_on"
-                    | "spawn" => {
+                    "call_func" | "call_function" | "call_guarded" | "call_indirect"
+                    | "call_bind" => {
                         if let Some(ref args) = op.args
                             && let Some(callee) = args.first()
                         {

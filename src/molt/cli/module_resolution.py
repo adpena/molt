@@ -6,9 +6,15 @@ import functools
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from molt.cli import module_source as _module_source
-from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+from molt.cli.models import (
+    ImportScanMode,
+    _ImportDiscoveryProjection,
+    _RuntimeImportScanCustody,
+)
+from molt.compiler_analysis.python_imports import _PythonAstDigestAdmission
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -17,6 +23,27 @@ from molt.target_python import (
 from molt.cli.project_roots import _is_path_within
 
 _ModuleRootAliases = tuple[tuple[str, Path], ...]
+_ImportScanCacheKey = tuple[
+    Path,
+    str | None,
+    bool,
+    ImportScanMode,
+    str,
+    str,
+    _RuntimeImportScanCustody | None,
+]
+_RawImportScan = TypeVar("_RawImportScan")
+_CachedImportScan = TypeVar("_CachedImportScan")
+
+
+def _tuple_import_scan(imports: Collection[str]) -> tuple[str, ...]:
+    return tuple(imports)
+
+
+def _graph_import_scan(
+    projection: _ImportDiscoveryProjection,
+) -> _ImportDiscoveryProjection:
+    return projection
 
 
 def _is_ascii_identifier_part(part: str) -> bool:
@@ -331,17 +358,12 @@ class _ModuleResolutionCache:
     ) = None
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
-    import_scan_cache: dict[
-        tuple[
-            Path,
-            str | None,
-            bool,
-            ImportScanMode,
-            str,
-            _RuntimeImportScanCustody | None,
-        ],
-        tuple[str, ...],
-    ] = field(default_factory=dict)
+    import_scan_cache: dict[_ImportScanCacheKey, tuple[str, ...]] = field(
+        default_factory=dict
+    )
+    graph_import_scan_cache: dict[_ImportScanCacheKey, _ImportDiscoveryProjection] = (
+        field(default_factory=dict)
+    )
     path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
     path_stat_error_cache: dict[Path, OSError] = field(default_factory=dict)
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -565,6 +587,69 @@ class _ModuleResolutionCache:
         self.ast_cache[cache_key] = tree
         return tree
 
+    def _collect_import_scan(
+        self,
+        path: Path,
+        tree: ast.AST,
+        *,
+        collector: Callable[..., _RawImportScan],
+        cache: dict[_ImportScanCacheKey, _CachedImportScan],
+        normalize: Callable[[_RawImportScan], _CachedImportScan],
+        module_name: str | None = None,
+        is_package: bool = False,
+        import_scan_mode: ImportScanMode = "full",
+        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+        runtime_import_custody: _RuntimeImportScanCustody | None = None,
+        ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    ) -> _CachedImportScan:
+        ast_digest_admission = _PythonAstDigestAdmission.for_tree(
+            tree, ast_digest_admission
+        )
+        source_path = path.resolve() if runtime_import_custody is not None else path
+        if runtime_import_custody is not None:
+            if runtime_import_custody.owns(module_name, source_path):
+                runtime_import_custody.validate_scan_mode(
+                    module_name, source_path, import_scan_mode
+                )
+                runtime_import_custody.admits_scan(
+                    module_name, source_path, ast_digest_admission.digest
+                )
+            else:
+                runtime_import_custody = None
+        cache_key = (
+            self.resolved_path(path),
+            module_name,
+            is_package,
+            import_scan_mode,
+            target_python.tag,
+            ast_digest_admission.digest,
+            runtime_import_custody,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        custody_kwargs = (
+            {
+                "runtime_import_custody": runtime_import_custody,
+                "source_path": source_path,
+            }
+            if runtime_import_custody is not None
+            else {}
+        )
+        result = normalize(
+            collector(
+                tree,
+                module_name,
+                is_package,
+                import_scan_mode=import_scan_mode,
+                target_python=target_python,
+                ast_digest_admission=ast_digest_admission,
+                **custody_kwargs,
+            )
+        )
+        cache[cache_key] = result
+        return result
+
     def collect_imports(
         self,
         path: Path,
@@ -576,50 +661,50 @@ class _ModuleResolutionCache:
         import_scan_mode: ImportScanMode = "full",
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
+        ast_digest_admission: _PythonAstDigestAdmission | None = None,
     ) -> tuple[str, ...]:
-        source_path = path.resolve() if runtime_import_custody is not None else path
-        if runtime_import_custody is not None:
-            if runtime_import_custody.owns(module_name, source_path):
-                runtime_import_custody.validate_scan_mode(
-                    module_name, source_path, import_scan_mode
-                )
-                from molt.compiler_analysis.python_binding_flow import python_ast_digest
-
-                runtime_import_custody.admits_scan(
-                    module_name, source_path, python_ast_digest(tree)
-                )
-            else:
-                runtime_import_custody = None
-        cache_key = (
-            self.resolved_path(path),
-            module_name,
-            is_package,
-            import_scan_mode,
-            target_python.tag,
-            runtime_import_custody,
-        )
-        cached = self.import_scan_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        custody_kwargs = (
-            {
-                "runtime_import_custody": runtime_import_custody,
-                "source_path": source_path,
-            }
-            if runtime_import_custody is not None
-            else {}
-        )
-        imports = collector(
+        return self._collect_import_scan(
+            path,
             tree,
-            module_name,
-            is_package,
+            collector=collector,
+            cache=self.import_scan_cache,
+            normalize=_tuple_import_scan,
+            module_name=module_name,
+            is_package=is_package,
             import_scan_mode=import_scan_mode,
             target_python=target_python,
-            **custody_kwargs,
+            runtime_import_custody=runtime_import_custody,
+            ast_digest_admission=ast_digest_admission,
         )
-        cached_imports = tuple(imports)
-        self.import_scan_cache[cache_key] = cached_imports
-        return cached_imports
+
+    def collect_graph_imports(
+        self,
+        path: Path,
+        tree: ast.AST,
+        *,
+        collector: Callable[..., _ImportDiscoveryProjection],
+        module_name: str | None = None,
+        is_package: bool = False,
+        import_scan_mode: ImportScanMode = "full",
+        target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+        runtime_import_custody: _RuntimeImportScanCustody | None = None,
+        ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    ) -> _ImportDiscoveryProjection:
+        """Cache the graph projection without conflating it with strict imports."""
+
+        return self._collect_import_scan(
+            path,
+            tree,
+            collector=collector,
+            cache=self.graph_import_scan_cache,
+            normalize=_graph_import_scan,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            target_python=target_python,
+            runtime_import_custody=runtime_import_custody,
+            ast_digest_admission=ast_digest_admission,
+        )
 
     def uses_runtime_import_protocol(
         self,

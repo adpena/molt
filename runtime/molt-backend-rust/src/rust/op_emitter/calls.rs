@@ -311,12 +311,18 @@ impl RustBackend {
 
     pub(super) fn emit_op_code_slot_set(&mut self, op: &OpIR) {
         let args = op.args.as_deref().unwrap_or(&[]);
-        if let Some(code) = args.first() {
+        if let [code, globals] = args {
             let code = rust_ident(code);
+            let globals = rust_ident(globals);
             let code_id = op.value.unwrap_or(0);
-            self.emit_line(&format!("molt_code_slot_set({code_id}, &{code});"));
+            self.emit_line(&format!(
+                "molt_code_slot_set({code_id}, &{code}, &{globals});"
+            ));
         } else {
-            self.emit_unsupported_op(op, "code_slot_set requires a code object");
+            self.emit_unsupported_op(
+                op,
+                "code_slot_set requires exactly a code object and globals dictionary",
+            );
         }
     }
 }

@@ -17,6 +17,14 @@ use wasm_encoder::{Function, ValType};
 
 impl WasmFunctionFramePlan {
     pub(in crate::wasm) fn for_function(func_ir: &FunctionIR) -> Self {
+        let scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
+            func_ir,
+            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
+        );
+        let mut requirements = FrameRuntimeRequirements::default();
+        for op in &func_ir.ops {
+            requirements.observe_op(&scalar_plan, op);
+        }
         let mut locals = WasmFrameLocals::new();
         let mut local_count = 0;
         let mut local_types = Vec::new();
@@ -26,17 +34,24 @@ impl WasmFunctionFramePlan {
             local_count += 1;
         }
 
-        if func_ir.name.ends_with("_poll") {
-            let self_param_idx = locals.get("self").copied().unwrap_or(0);
+        if requirements.stateful() {
+            let self_param_idx = func_ir
+                .params
+                .first()
+                .and_then(|name| locals.get(name))
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "stateful wasm function {} missing task parameter",
+                        func_ir.name
+                    )
+                });
             locals.insert(WasmFrameLocals::SELF_PARAM_NAME.to_string(), self_param_idx);
             let self_idx = locals.get("self").copied();
             if self_idx.is_none() || self_idx == Some(self_param_idx) {
                 locals.insert("self".to_string(), local_count);
                 local_types.push(ValType::I64);
                 local_count += 1;
-            }
-            if local_count == 0 {
-                local_count = 1;
             }
         }
 
@@ -55,11 +70,6 @@ impl WasmFunctionFramePlan {
             &mut local_count,
         );
 
-        let scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
-            func_ir,
-            &crate::tir::target_info::TargetInfo::wasm_release_fast(),
-        );
-        let mut requirements = FrameRuntimeRequirements::default();
         let mut seed_plan = FrameConstSeedPlan::default();
         let allocation_policy = FrameLocalAllocationPolicy {
             read_vars: &read_vars,
@@ -68,7 +78,6 @@ impl WasmFunctionFramePlan {
             dead_sink_idx,
         };
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
-            requirements.observe_op(&scalar_plan, op);
             if let Some(var) = &op.var {
                 let var_is_dead_out = op.kind == "store_var";
                 ensure_frame_local(
@@ -138,29 +147,6 @@ impl WasmFunctionFramePlan {
         let stateful = requirements.stateful();
         let jumpful = requirements.jumpful();
         let tail_call_eligible = requirements.tail_call_eligible();
-
-        if stateful && !locals.contains_key(WasmFrameLocals::SELF_PARAM_NAME) {
-            let self_param_idx = locals
-                .get("self")
-                .copied()
-                .or_else(|| {
-                    func_ir
-                        .params
-                        .first()
-                        .and_then(|name| locals.get(name))
-                        .copied()
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "stateful wasm function {} missing self parameter",
-                        func_ir.name
-                    )
-                });
-            locals.insert(WasmFrameLocals::SELF_PARAM_NAME.to_string(), self_param_idx);
-            if !locals.contains_key("self") {
-                locals.insert("self".to_string(), self_param_idx);
-            }
-        }
 
         let dispatch_locals =
             locals.allocate_dispatch_locals(stateful, jumpful, &mut local_types, &mut local_count);

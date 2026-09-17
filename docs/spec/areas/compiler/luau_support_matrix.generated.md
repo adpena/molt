@@ -8,9 +8,9 @@
 
 - `compile-error`: `2`
 - `implemented-exact`: `184`
-- `implemented-target-limited`: `12`
-- `not-admitted`: `223`
-- `total`: `421`
+- `implemented-target-limited`: `13`
+- `not-admitted`: `224`
+- `total`: `423`
 
 ## Matrix
 
@@ -22,11 +22,11 @@
 | `add` | `implemented-target-limited` | Shared target contract admits only representation-proven non-integer scalar domains. |
 | `alloc` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `alloc_class` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `alloc_task` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `alloc_task` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `and` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ascii_from_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `async_work_poll` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `asyncgen_locals_register` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `asyncgen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `band` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `binding_alias` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `binop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -37,7 +37,7 @@
 | `bit_not` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bit_or` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bit_xor` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `block_on` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `block_on` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bool_const` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `bor` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `borrow` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -61,7 +61,7 @@
 | `bytes_from_obj` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `bytes_from_str` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `call` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `call_async` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `call_async` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `call_bind` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_func` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_function` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -69,24 +69,24 @@
 | `call_indirect` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_internal` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_method` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `callargs_expand_kwstar` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `callargs_expand_star` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `callargs_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `callargs_push_kw` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `callargs_push_pos` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_current` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_cancel` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_clone` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_drop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_get_current` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_is_cancelled` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancel_token_set_current` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `cancelled` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `callargs_expand_kwstar` | `implemented-target-limited` | Pre-source admission requires canonical ordered-dict provenance; generic Python keys/getitem mappings are not implemented. |
+| `callargs_expand_star` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `callargs_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `callargs_push_kw` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `callargs_push_pos` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `cancel_current` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_cancel` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_clone` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_drop` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_get_current` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_is_cancelled` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_new` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancel_token_set_current` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `cancelled` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `cast_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `cbor_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `chan_drop` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `chan_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `chan_drop` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `chan_new` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `chan_recv_yield` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `chan_send_yield` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `check_exception` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -197,7 +197,6 @@
 | `float_from_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `floor_div` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `floordiv` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `fn_ptr_code_set` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `for_iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `for_range` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `format_string` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -205,13 +204,13 @@
 | `frozenset_add` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `func_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `func_new_closure` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `function_closure_bits` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `future_cancel` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `future_cancel_clear` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `future_cancel_msg` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `func_new_closure` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `function_closure_bits` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `future_cancel` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `future_cancel_clear` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `future_cancel_msg` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `ge` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `gen_locals_register` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `gen_locals_register` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `get_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_obj` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `get_attr_generic_ptr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -232,6 +231,9 @@
 | `id` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `identity_alias` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `if` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `import` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `import_from` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `import_name` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `inc_ref` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `index` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `inplace_add` | `implemented-target-limited` | Shared target contract admits only representation-proven non-integer scalar domains. |
@@ -253,7 +255,7 @@
 | `invoke_ffi` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `is` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `is_callable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `is_native_awaitable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `is_native_awaitable` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `is_not` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `isinstance` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `issubclass` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -312,9 +314,9 @@
 | `module_get_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `module_get_global` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `module_get_name` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `module_import` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `module_import_from` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `module_import_star` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `module_import` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `module_import_from` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `module_import_star` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `module_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `module_set_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `modulo` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -338,9 +340,9 @@
 | `pow_mod` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `print` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `print_newline` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `promise_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `promise_set_exception` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `promise_set_result` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `promise_new` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `promise_set_exception` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `promise_set_result` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `property_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `raise` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `range` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -365,7 +367,7 @@
 | `shl` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `shr` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `slice` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `spawn` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `spawn` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_label` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_switch` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `state_transition` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
@@ -419,8 +421,8 @@
 | `super_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `sys_executable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `taq_ingest_line` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `task_register_token_owned` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `thread_submit` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `task_register_token_owned` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
+| `thread_submit` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `trace_enter_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trace_exit` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trunc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

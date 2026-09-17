@@ -7,7 +7,9 @@
 ---
 
 ## 1. Current Policy (Default, Active)
-For compiled Molt binaries, CPython dynamic semantics are fully supported except for the carve-outs below:
+For compiled Molt binaries, dynamic semantics are supported only within the
+explicit, test-backed verified subset. This is not a claim that everything
+outside the following carve-outs is implemented:
 - unrestricted `eval`/`exec` execution paths
 - runtime monkeypatching as a general semantic compatibility goal
 - unrestricted reflection/introspection lanes that block static reasoning
@@ -20,6 +22,13 @@ This aligns with:
 - Restricted, deterministic runtime lanes that do not widen dynamic execution semantics.
 - Reflection/introspection support that is explicitly scoped and test-backed.
 - Capability-gated behavior that is already part of approved contracts.
+
+The carve-outs are not a blanket ban on mutable globals, object attributes,
+function defaults, or code/closure introspection. Each supported operation must
+preserve its own binding, ownership, invalidation, exception, and version
+contracts; support on one backend does not grant it to another. Consult the
+[language surface index](../surfaces/language/language_surface_matrix.md) and
+[call binding contract](call_argument_binding_contract.md) for those boundaries.
 
 ## 3. Tooling Guardrails
 - Each differential test that relies on intentionally unsupported dynamism

@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Literal, TypeAlias, TypedDict, cast
 
-from molt.compiler_analysis.literal_identity import same_literal_value
+from molt.compiler_analysis.literal_identity import (
+    literal_identity_key,
+    same_literal_value,
+)
 
 ScalarValue: TypeAlias = None | bool | int | float | complex | str | bytes
 ExpressionKind: TypeAlias = Literal[
@@ -25,11 +28,34 @@ ExpressionKind: TypeAlias = Literal[
     "complex",
     "str",
     "bytes",
+    "bytearray",
     "tuple",
     "list",
     "set",
+    "frozenset",
     "dict",
+    "range",
+    "file_text",
+    "file_bytes",
 ]
+_MUTABLE_EXPRESSION_KINDS: frozenset[ExpressionKind] = frozenset(
+    {"bytearray", "list", "set", "dict"}
+)
+_STABLE_LEAF_EXPRESSION_KINDS: frozenset[ExpressionKind] = frozenset(
+    {
+        "NoneType",
+        "bool",
+        "int",
+        "float",
+        "complex",
+        "str",
+        "bytes",
+        "range",
+    }
+)
+_PUBLICATION_RELEASE_STABLE_LEAF_KINDS: frozenset[ExpressionKind] = frozenset(
+    {*_STABLE_LEAF_EXPRESSION_KINDS, "bytearray"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +64,7 @@ class ExpressionSequenceItem:
     expanded: bool = False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class StaticExpressionResult:
     truth: bool | None = None
     value: ScalarValue = None
@@ -50,6 +76,115 @@ class StaticExpressionResult:
     # A fresh container has not been published through a name/alias. Mutable
     # iteration may use its contents only until a callback can expose it.
     fresh_container: bool = False
+    # Exact cardinality without materializing potentially enormous contents
+    # (notably ``range``). ``items`` remains the content/provenance authority.
+    length: int | None = None
+    # Homogeneous yielded-item authority. Unlike ``items``, this does not claim
+    # cardinality or concrete contents. Mutable producers may retain it after
+    # binding publication until an object-write or callback boundary expires it.
+    element_result: StaticExpressionResult | None = None
+    _semantic_key: tuple[object, ...] = field(
+        init=False, repr=False, compare=False, hash=False
+    )
+    _semantic_hash: int = field(init=False, repr=False, compare=False, hash=False)
+    _recursively_stable: bool = field(init=False, repr=False, compare=False, hash=False)
+    # Canonical cached proof transported when publication erases descendant
+    # shape. ``None`` means derive it from the still-visible result graph.
+    _publication_release_stable: bool | None = field(
+        default=None, repr=False, compare=False, hash=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_recursively_stable",
+            self.kind in _STABLE_LEAF_EXPRESSION_KINDS
+            or self.kind in {"tuple", "frozenset"}
+            and self.items is not None
+            and all(item.result._recursively_stable for item in self.items),
+        )
+        publication_release_stable = self._publication_release_stable
+        if publication_release_stable is None:
+            publication_release_stable = not self.release_may_call and (
+                self.kind in _PUBLICATION_RELEASE_STABLE_LEAF_KINDS
+                or self.kind in {"tuple", "frozenset"}
+                and self.items is not None
+                and all(
+                    bool(item.result._publication_release_stable) for item in self.items
+                )
+            )
+        publication_release_stable = bool(publication_release_stable)
+        object.__setattr__(
+            self, "_publication_release_stable", publication_release_stable
+        )
+        key = (
+            self.truth,
+            literal_identity_key(self.value) if self.value_known else None,
+            self.value_known,
+            self.kind,
+            self.evaluation_required,
+            self.items is None,
+            self.release_may_call,
+            self.fresh_container,
+            self.length,
+            self.element_result is None,
+            publication_release_stable,
+        )
+        object.__setattr__(self, "_semantic_key", key)
+        edges = (
+            None
+            if self.items is None
+            else tuple(
+                (item.result._semantic_hash, item.expanded) for item in self.items
+            )
+        )
+        element_edge = (
+            None if self.element_result is None else self.element_result._semantic_hash
+        )
+        object.__setattr__(self, "_semantic_hash", hash((key, edges, element_edge)))
+
+    def __hash__(self) -> int:
+        return self._semantic_hash
+
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        if not isinstance(other, StaticExpressionResult):
+            return False
+        pending = [(self, other)]
+        compared: set[tuple[int, int]] = set()
+        while pending:
+            left, right = pending.pop()
+            if left is right:
+                continue
+            pair = (id(left), id(right))
+            if pair in compared:
+                continue
+            if (
+                left._semantic_hash != right._semantic_hash
+                or left._semantic_key != right._semantic_key
+            ):
+                return False
+            left_element, right_element = left.element_result, right.element_result
+            if left_element is None or right_element is None:
+                if left_element is not right_element:
+                    return False
+            else:
+                pending.append((left_element, right_element))
+            left_items, right_items = left.items, right.items
+            if left_items is None or right_items is None:
+                if left_items is not right_items:
+                    return False
+                compared.add(pair)
+                continue
+            if len(left_items) != len(right_items):
+                return False
+            compared.add(pair)
+            for left_item, right_item in zip(left_items, right_items, strict=True):
+                if left_item.expanded is not right_item.expanded:
+                    return False
+                pending.append((left_item.result, right_item.result))
+        return True
 
     @classmethod
     def scalar(
@@ -65,6 +200,7 @@ class StaticExpressionResult:
             cast(ExpressionKind, type(value).__name__),
             evaluation_required,
             release_may_call=False,
+            length=len(scalar) if isinstance(scalar, (str, bytes)) else None,
         )
 
 
@@ -99,13 +235,17 @@ def static_expression_result(
     if isinstance(expr, ast.NamedExpr):
         value = child(expr.value)
         return StaticExpressionResult(
-            value.truth,
-            value.value,
-            value.value_known,
-            value.kind,
-            True,  # The binding write is required even for an exact value.
-            value.items,
-            value.release_may_call,
+            truth=value.truth,
+            value=value.value,
+            value_known=value.value_known,
+            kind=value.kind,
+            evaluation_required=True,  # The binding write is required.
+            items=value.items,
+            release_may_call=value.release_may_call,
+            fresh_container=value.fresh_container,
+            length=value.length,
+            element_result=value.element_result,
+            _publication_release_stable=value._publication_release_stable,
         )
     if isinstance(expr, (ast.Name, ast.Attribute)):
         if fact_result is not None:
@@ -116,6 +256,8 @@ def static_expression_result(
         uncertain = False
         nonempty = False
         release_may_call = False
+        ordered_length = 0
+        ordered_length_known = True
         if isinstance(expr, ast.Dict):
             entries = zip(expr.keys, expr.values, strict=True)
             for key, value in entries:
@@ -141,6 +283,7 @@ def static_expression_result(
                     release_may_call |= element_result.release_may_call
                     members.append(ExpressionSequenceItem(element_result))
                     nonempty = True
+                    ordered_length += 1
                     continue
                 expansion = child(element.value)
                 release_may_call |= expansion.release_may_call
@@ -154,7 +297,18 @@ def static_expression_result(
                     uncertain |= bool(expansion.value)
                 else:
                     uncertain = True
+                if expansion.length is None:
+                    ordered_length_known = False
+                else:
+                    ordered_length += expansion.length
         truth = True if nonempty else None if uncertain else False
+        length = (
+            ordered_length
+            if kind in {"tuple", "list"} and ordered_length_known
+            else 0
+            if truth is False
+            else None
+        )
         return StaticExpressionResult(
             truth=truth,
             kind=kind,
@@ -162,6 +316,24 @@ def static_expression_result(
             items=None if uncertain else tuple(members),
             release_may_call=release_may_call,
             fresh_container=True,
+            length=length,
+            element_result=(
+                sequence_element_result(tuple(members)) if not uncertain else None
+            ),
+        )
+    if isinstance(expr, (ast.ListComp, ast.SetComp, ast.DictComp)):
+        # Comprehension execution can call arbitrary iteration, filtering, and
+        # payload code, but every normal completion still constructs the exact
+        # builtin outer container. Contents and cardinality remain unknown.
+        kind = cast(ExpressionKind, type(expr).__name__.removesuffix("Comp").lower())
+        return StaticExpressionResult(
+            kind=kind,
+            evaluation_required=True,
+            release_may_call=True,
+            fresh_container=True,
+            element_result=(
+                child(expr.key) if isinstance(expr, ast.DictComp) else child(expr.elt)
+            ),
         )
     if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
         operand = child(expr.operand)
@@ -209,6 +381,26 @@ def static_expression_result(
             required,
             first.items if all(item.items == first.items for item in exits) else None,
             release_may_call=any(item.release_may_call for item in exits),
+            fresh_container=all(item.fresh_container for item in exits),
+            length=(
+                first.length
+                if all(item.length == first.length for item in exits)
+                else None
+            ),
+            element_result=(
+                join_static_expression_results(
+                    tuple(
+                        item.element_result
+                        for item in exits
+                        if item.element_result is not None
+                    )
+                )
+                if all(item.element_result is not None for item in exits)
+                else None
+            ),
+            _publication_release_stable=all(
+                bool(item._publication_release_stable) for item in exits
+            ),
         )
     if isinstance(expr, ast.IfExp):
         test = child(expr.test)
@@ -222,6 +414,10 @@ def static_expression_result(
                 test.evaluation_required or selected.evaluation_required,
                 selected.items,
                 selected.release_may_call,
+                selected.fresh_container,
+                selected.length,
+                selected.element_result,
+                _publication_release_stable=selected._publication_release_stable,
             )
         return UNKNOWN_EXPRESSION_RESULT
     if isinstance(expr, ast.Compare):
@@ -265,6 +461,224 @@ def static_expression_result(
                 owner.value.startswith(prefix.value), evaluation_required=True
             )
     return UNKNOWN_EXPRESSION_RESULT
+
+
+def _recursively_stable_result(result: StaticExpressionResult) -> bool:
+    return result._recursively_stable
+
+
+def _release_stable_after_publication(result: StaticExpressionResult) -> bool:
+    return bool(result._publication_release_stable)
+
+
+def sequence_element_result(
+    items: tuple[ExpressionSequenceItem, ...],
+) -> StaticExpressionResult | None:
+    """Join finite sequence members without claiming a concrete cardinality."""
+
+    pending = list(items)
+    expanded_seen: set[int] = set()
+    elements: list[StaticExpressionResult] = []
+    while pending:
+        item = pending.pop()
+        if not item.expanded:
+            elements.append(item.result)
+            continue
+        identity = id(item.result)
+        if identity in expanded_seen:
+            continue
+        expanded_seen.add(identity)
+        if item.result.items is None:
+            return None
+        pending.extend(item.result.items)
+    return join_static_expression_results(tuple(elements)) if elements else None
+
+
+def iterable_element_result(
+    result: StaticExpressionResult,
+) -> StaticExpressionResult | None:
+    """Project the yielded-item result from the canonical expression graph."""
+
+    if result.element_result is not None:
+        return result.element_result
+    intrinsic_kind: ExpressionKind | None = (
+        "str"
+        if result.kind in {"str", "file_text"}
+        else "bytes"
+        if result.kind == "file_bytes"
+        else "int"
+        if result.kind in {"bytes", "bytearray", "range"}
+        else None
+    )
+    if intrinsic_kind is not None:
+        return StaticExpressionResult(kind=intrinsic_kind, release_may_call=False)
+    if result.items is None:
+        return None
+    return sequence_element_result(result.items)
+
+
+def expression_result_for_publication(
+    result: StaticExpressionResult,
+) -> StaticExpressionResult:
+    """Publish a value into a binding without inventing heap/alias custody.
+
+    Mutable values keep their exact normal-result kind and homogeneous element
+    result, but concrete contents, cardinality, truth, freshness, and
+    reference-bearing release safety cease to be stable once an alias is
+    published. The element result has its own shorter lifetime and is erased by
+    a subsequent object-write or callback boundary. Immutable owners retain
+    their own truth and cardinality while unsafe descendant shape is erased.
+    Bytearrays remain release-safe because their payload cannot contain object
+    references.
+    """
+
+    unstable_immutable_container = result.kind in {
+        "tuple",
+        "frozenset",
+    } and not _recursively_stable_result(result)
+    if (
+        result.kind not in _MUTABLE_EXPRESSION_KINDS
+        and not unstable_immutable_container
+    ):
+        return result
+    immutable_owner = result.kind in {"tuple", "frozenset"}
+    truth = result.truth if immutable_owner else None
+    length = result.length if immutable_owner else None
+    release_may_call = not _release_stable_after_publication(result)
+    if (
+        result.truth is truth
+        and result.value is None
+        and not result.value_known
+        and result.items is None
+        and result.release_may_call is release_may_call
+        and not result.fresh_container
+        and result.length == length
+    ):
+        return result
+    return StaticExpressionResult(
+        truth=truth,
+        kind=result.kind,
+        evaluation_required=result.evaluation_required,
+        release_may_call=release_may_call,
+        length=length,
+        element_result=result.element_result,
+        _publication_release_stable=result._publication_release_stable,
+    )
+
+
+def expression_result_without_mutable_contents(
+    result: StaticExpressionResult,
+) -> StaticExpressionResult:
+    """Expire alias-sensitive mutable contents while retaining normal kind."""
+
+    completed: dict[int, StaticExpressionResult] = {}
+    pending = [(result, False)]
+    while pending:
+        current, expanded = pending.pop()
+        identity = id(current)
+        if identity in completed:
+            continue
+        published = expression_result_for_publication(current)
+        child = published.element_result
+        if published.kind in _MUTABLE_EXPRESSION_KINDS:
+            child = None
+        elif child is not None and not expanded:
+            pending.append((current, True))
+            pending.append((child, False))
+            continue
+        elif child is not None:
+            child = completed[id(child)]
+        completed[identity] = (
+            published
+            if child is published.element_result
+            else StaticExpressionResult(
+                truth=published.truth,
+                kind=published.kind,
+                evaluation_required=published.evaluation_required,
+                release_may_call=published.release_may_call,
+                length=published.length,
+                element_result=child,
+                _publication_release_stable=published._publication_release_stable,
+            )
+        )
+    return completed[id(result)]
+
+
+def join_static_expression_results(
+    results: tuple[StaticExpressionResult, ...],
+) -> StaticExpressionResult:
+    """Join control-flow alternatives in the canonical result algebra."""
+
+    if not results:
+        return UNKNOWN_EXPRESSION_RESULT
+    completed: dict[tuple[int, ...], StaticExpressionResult] = {}
+    pending = [(results, False)]
+    while pending:
+        current, expanded = pending.pop()
+        key = tuple(id(result) for result in current)
+        if key in completed:
+            continue
+        first = current[0]
+        if all(result == first for result in current[1:]):
+            completed[key] = first
+            continue
+        child_results = (
+            tuple(
+                result.element_result
+                for result in current
+                if result.element_result is not None
+            )
+            if all(result.element_result is not None for result in current)
+            else None
+        )
+        child_key = (
+            None
+            if child_results is None
+            else tuple(id(result) for result in child_results)
+        )
+        if child_results is not None and child_key not in completed and not expanded:
+            pending.append((current, True))
+            pending.append((child_results, False))
+            continue
+        kind: ExpressionKind = (
+            first.kind
+            if all(result.kind == first.kind for result in current)
+            else "unknown"
+        )
+        exact = first.value_known and all(
+            result.value_known
+            and result.kind == first.kind
+            and _same_scalar_value(result.value, first.value)
+            for result in current[1:]
+        )
+        completed[key] = StaticExpressionResult(
+            truth=(
+                first.truth
+                if all(result.truth is first.truth for result in current[1:])
+                else None
+            ),
+            value=first.value if exact else None,
+            value_known=exact,
+            kind=kind,
+            evaluation_required=any(result.evaluation_required for result in current),
+            items=(
+                first.items
+                if all(result.items == first.items for result in current[1:])
+                else None
+            ),
+            release_may_call=any(result.release_may_call for result in current),
+            fresh_container=all(result.fresh_container for result in current),
+            length=(
+                first.length
+                if all(result.length == first.length for result in current[1:])
+                else None
+            ),
+            element_result=(None if child_key is None else completed[child_key]),
+            _publication_release_stable=all(
+                bool(result._publication_release_stable) for result in current
+            ),
+        )
+    return completed[tuple(id(result) for result in results)]
 
 
 def _same_scalar_value(left: ScalarValue, right: ScalarValue) -> bool:
@@ -317,9 +731,11 @@ def _comparison_truth(
         if left.value_known and right.value_known:
             equal = left.value == right.value
         elif (
-            left.kind in {"tuple", "list", "set", "dict"}
+            left.kind
+            in {"bytearray", "tuple", "list", "set", "frozenset", "dict", "range"}
             and right.kind == "bool"
-            or right.kind in {"tuple", "list", "set", "dict"}
+            or right.kind
+            in {"bytearray", "tuple", "list", "set", "frozenset", "dict", "range"}
             and left.kind == "bool"
         ):
             equal = False
@@ -333,10 +749,15 @@ def _comparison_truth(
             if _has_nan(left.value):
                 return None
             pending = list(reversed(right.items))
+            expanded_seen: set[int] = set()
             present = False
             while pending:
                 member = pending.pop()
                 if member.expanded:
+                    identity = id(member.result)
+                    if identity in expanded_seen:
+                        continue
+                    expanded_seen.add(identity)
                     if member.result.items is None:
                         return None
                     pending.extend(reversed(member.result.items))

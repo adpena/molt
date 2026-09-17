@@ -30,6 +30,10 @@ from molt.compiler_analysis.python_effects_generated import (
     PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS,
     effect_mask_satisfies_capability,
 )
+from molt.compiler_analysis.static_truth import (
+    StaticExpressionResult,
+    UNKNOWN_EXPRESSION_RESULT,
+)
 
 
 def _last_call(source: str):
@@ -510,6 +514,7 @@ def test_prepared_namespace_uses_classderef_reads_but_not_deref_writes() -> None
         globals=frozenset({"global_name"}),
         nonlocals=frozenset({"cell"}),
         slots={},
+        activation_namespace_stable=True,
         dynamic_class_namespace=True,
     )
     assert scope.namespace_can_call("cell")
@@ -637,7 +642,9 @@ def test_generic_class_annotation_lookup_obeys_versioned_scope_policy(
     probe = index.expression_fact(probe_annotation)
     assert value is not None and probe is not None
     callback = python_binding_flow.EXECUTES_ARBITRARY_PYTHON
-    assert bool(value.effects & callback) is (target >= (3, 14) and not class_global)
+    # Deferred annotations can execute with foreign activation mappings. A
+    # class-level global declaration bypasses classderef, not mapping callbacks.
+    assert bool(value.effects & callback) is (target >= (3, 14))
     assert probe.effects & callback
     assert probe.static_value is None
     assert value.static_value is None
@@ -778,6 +785,263 @@ def test_builtin_shadowing_uses_binding_authority(source: str, bound: bool) -> N
     assert fact.binding_is_bound is bound
 
 
+@pytest.mark.parametrize("scope_kind", ["module", "class"])
+@pytest.mark.parametrize(
+    ("name", "assigned", "builtin_identity"),
+    [
+        ("len", "'shadow'", PythonIdentity.BUILTIN_LEN),
+        ("unknown_builtin_name", "()", None),
+    ],
+)
+def test_partial_namespace_binding_projects_builtin_fallback_on_normal_load(
+    scope_kind: str,
+    name: str,
+    assigned: str,
+    builtin_identity: PythonIdentity | None,
+) -> None:
+    body = f"if flag is None:\n    {name} = {assigned}\nresult = {name}\n"
+    source = (
+        body
+        if scope_kind == "module"
+        else "class Owner:\n" + "".join(f"    {line}\n" for line in body.splitlines())
+    )
+    tree = ast.parse(source)
+    owner = tree.body[0] if scope_kind == "class" else None
+    assignment = owner.body[-1] if isinstance(owner, ast.ClassDef) else tree.body[-1]
+    assert isinstance(assignment, ast.Assign)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(assignment.value)
+    assert fact is not None
+    assert index.expression_result(assignment.value) == UNKNOWN_EXPRESSION_RESULT
+    if builtin_identity is None:
+        assert fact.identities & OTHER_IDENTITY
+        assert fact.identities & int(PythonIdentity.UNBOUND)
+    else:
+        assert fact.identities & int(builtin_identity)
+        assert not fact.identities & int(PythonIdentity.UNBOUND)
+
+
+@pytest.mark.parametrize(
+    ("source", "foreign_cell"),
+    [
+        (
+            "def read(flag):\n"
+            "    if flag is None:\n"
+            "        value = ()\n"
+            "    return value\n",
+            False,
+        ),
+        (
+            "def outer(flag):\n"
+            "    if flag is None:\n"
+            "        value = ()\n"
+            "    def read():\n"
+            "        return value\n"
+            "    return read\n",
+            True,
+        ),
+        (
+            "def outer(flag):\n"
+            "    if flag is None:\n"
+            "        value = ()\n"
+            "    def read():\n"
+            "        nonlocal value\n"
+            "        return value\n"
+            "    return read\n",
+            True,
+        ),
+        (
+            "def read(flag):\n"
+            "    if flag is None:\n"
+            "        unknown_builtin_name = ()\n"
+            "    return unknown_builtin_name\n",
+            False,
+        ),
+    ],
+)
+def test_partial_lexical_cell_absence_raises_without_builtin_fallback(
+    source: str,
+    foreign_cell: bool,
+) -> None:
+    tree = ast.parse(source)
+    returned = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"value", "unknown_builtin_name"}
+    )
+    assert isinstance(returned.value, ast.Name)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(returned.value)
+    assert fact is not None
+    result = index.expression_result(returned.value)
+    assert fact.identities & int(PythonIdentity.UNBOUND)
+    assert fact.name_lookup == "lexical"
+    if foreign_cell:
+        # FunctionType can supply an arbitrary compatible closure cell; the
+        # lexical slot still must not fall through to builtin lookup.
+        assert result == UNKNOWN_EXPRESSION_RESULT
+        assert fact.identities & OTHER_IDENTITY
+    else:
+        assert result.kind == "tuple"
+        assert result.items == ()
+        assert not result.release_may_call
+        # Coarse identity alternatives include OTHER for inert values. Normal
+        # result shape remains exact; absence is a lexical exception, not a
+        # callback-invalidated namespace lookup or builtin fallback.
+        assert not fact.binding_invalidated
+
+
+def test_class_preparation_and_nested_activation_widen_captured_payload() -> None:
+    source = (
+        "def outer():\n"
+        "    value = ()\n"
+        "    direct = value\n"
+        "    class Inline:\n"
+        "        observed = value\n"
+        "    def nested():\n"
+        "        return value\n"
+        "    return direct, Inline, nested\n"
+    )
+    tree = ast.parse(source)
+    reads = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "value"
+        ),
+        key=lambda node: node.lineno,
+    )
+    assert len(reads) == 3
+    index = analyze_python_source_bindings(source)
+    direct_result, inline_result, nested_result = (
+        index.expression_result(read) for read in reads
+    )
+    assert direct_result.kind == "tuple"
+    assert direct_result.items == ()
+    assert not direct_result.release_may_call
+    # Foreign __build_class__/metaclass preparation can supply a mapping whose
+    # value takes precedence over the enclosing activation's closure cell.
+    assert inline_result == UNKNOWN_EXPRESSION_RESULT
+    inline_fact = index.expression_fact(reads[1])
+    assert inline_fact is not None and inline_fact.name_lookup == "class_lexical"
+    assert nested_result == UNKNOWN_EXPRESSION_RESULT
+    nested_fact = index.expression_fact(reads[2])
+    assert nested_fact is not None
+    assert nested_fact.identities & OTHER_IDENTITY
+    # FunctionType may also supply a compatible empty cell, so a free read
+    # retains its NameError path even when the source-created closure was bound.
+    assert nested_fact.identities & int(PythonIdentity.UNBOUND)
+
+    import builtins
+    from types import FunctionType
+
+    class PreparedNamespace(type):
+        @classmethod
+        def __prepare__(metaclass, name, bases):
+            return {"value": "prepared namespace"}
+
+    def build_class(body, name):
+        return builtins.__build_class__(body, name, metaclass=PreparedNamespace)
+
+    namespace = {}
+    exec(source, namespace)
+    rebound = FunctionType(
+        namespace["outer"].__code__,
+        {"__name__": "probe", "__builtins__": {"__build_class__": build_class}},
+    )
+    direct, inline, nested = rebound()
+    assert direct == ()
+    assert inline.observed == "prepared namespace"
+    assert nested() == ()
+
+
+@pytest.mark.parametrize(
+    "expression", ["(value for _ in value)", "[value for _ in value]"]
+)
+def test_comprehension_activation_separates_first_iterator_from_captured_body(
+    expression: str,
+) -> None:
+    source = f"def outer():\n    value = (None,)\n    return {expression}\n"
+    tree = ast.parse(source)
+    comprehension = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.GeneratorExp, ast.ListComp))
+    )
+    index = analyze_python_source_bindings(source)
+    first = index.expression_result(comprehension.generators[0].iter)
+    assert first.kind == "tuple" and first.length == 1
+    body = index.expression_result(comprehension.elt)
+    fact = index.expression_fact(comprehension.elt)
+    assert fact is not None
+    if isinstance(comprehension, ast.GeneratorExp):
+        assert body == UNKNOWN_EXPRESSION_RESULT
+        assert fact.identities & OTHER_IDENTITY
+        assert fact.identities & int(PythonIdentity.UNBOUND)
+    else:
+        assert body == first
+        assert not fact.binding_invalidated
+
+
+def test_generator_target_is_current_activation_local_not_foreign_cell() -> None:
+    source = "def outer():\n    value = ()\n    return (value for value in (None,))\n"
+    tree = ast.parse(source)
+    comprehension = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.GeneratorExp)
+    )
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(comprehension.elt)
+    assert fact is not None and fact.binding_is_bound
+    assert not fact.identities & int(PythonIdentity.UNBOUND)
+    assert not fact.binding_invalidated
+
+
+def test_nonlocal_write_releases_foreign_cell_before_reading_its_new_value() -> None:
+    source = (
+        "def outer():\n"
+        "    value = foreign\n"
+        "    def nested():\n"
+        "        nonlocal value\n"
+        "        value = ()\n"
+        "        return value\n"
+        "    return nested\n"
+    )
+    tree = ast.parse(source)
+    returned = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "value"
+    )
+    assert isinstance(returned.value, ast.Name)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(returned.value)
+    result = index.expression_result(returned.value)
+    assert fact is not None
+    assert fact.identities & OTHER_IDENTITY
+    assert fact.binding_invalidated
+    assert result == UNKNOWN_EXPRESSION_RESULT
+
+    # STORE_DEREF publishes first; releasing the arbitrary old cell value can
+    # overwrite it again. A strong write is not a callback-free lifetime proof.
+    namespace = {"foreign": None}
+    exec(source, namespace)
+    nested = namespace["outer"]()
+    cell = nested.__closure__[0]
+
+    class ReplaceOnRelease:
+        def __del__(self):
+            cell.cell_contents = "reentered"
+
+    cell.cell_contents = ReplaceOnRelease()
+    assert nested() == "reentered"
+
+
 @pytest.mark.parametrize("branch_count", [2, 3, 4])
 def test_conditional_binding_join_preserves_clean_bound_and_pristine_unbound_paths(
     branch_count: int,
@@ -796,6 +1060,68 @@ def test_conditional_binding_join_preserves_clean_bound_and_pristine_unbound_pat
     tainted_unbound = pool.taint_module_bindings(0)
     unsafe_join = pool.join(*branches[1:], tainted_unbound)
     assert not pool._binding_resolution(unsafe_join, 0).clean
+
+
+@pytest.mark.parametrize("branch_count", [2, 4])
+def test_binding_result_join_treats_absence_as_no_normal_value(
+    branch_count: int,
+) -> None:
+    pool = python_binding_flow._StatePool()
+    exact = StaticExpressionResult.scalar("stable")
+    bound = pool.set_binding(
+        0,
+        0,
+        int(PythonIdentity.USER_FUNCTION),
+        static_value="stable",
+        result=exact,
+    )
+    absent = [0]
+    for slot in range(1, branch_count - 1):
+        absent.append(
+            pool.set_binding(
+                0,
+                slot,
+                int(PythonIdentity.INERT_VALUE),
+                result=StaticExpressionResult.scalar(slot),
+            )
+        )
+
+    joined = pool.join(bound, *absent)
+    assert pool.binding(joined, 0) == int(
+        PythonIdentity.USER_FUNCTION | PythonIdentity.UNBOUND
+    )
+    assert pool.static_value(joined, 0) == "stable"
+    assert pool.result(joined, 0) == exact
+
+
+@pytest.mark.parametrize("branch_count", [2, 4])
+def test_binding_result_join_keeps_bound_unknown_alternatives_widening(
+    branch_count: int,
+) -> None:
+    pool = python_binding_flow._StatePool()
+    exact = StaticExpressionResult.scalar("stable")
+    bound = pool.set_binding(
+        0,
+        0,
+        int(PythonIdentity.USER_FUNCTION),
+        static_value="stable",
+        result=exact,
+    )
+    unknown = pool.set_binding(0, 0, OTHER_IDENTITY)
+    branches = [bound, unknown]
+    for slot in range(1, branch_count - 1):
+        branches.append(
+            pool.set_binding(
+                0,
+                slot,
+                int(PythonIdentity.INERT_VALUE),
+                result=StaticExpressionResult.scalar(slot),
+            )
+        )
+
+    joined = pool.join(*branches)
+    assert pool.static_value(joined, 0) is None
+    assert pool.result(joined, 0) == UNKNOWN_EXPRESSION_RESULT
 
 
 @pytest.mark.parametrize(
@@ -1068,13 +1394,16 @@ def test_function_parameter_shadows_outer_importlib_for_whole_scope() -> None:
     assert call.callee_identities == OTHER_IDENTITY
 
 
-def test_deferred_function_excludes_impossible_pre_definition_module_state() -> None:
+def test_deferred_function_retains_import_dependency_not_activation_identity() -> None:
     call = _last_call(
         "import importlib\n"
         "def load():\n"
         "    return importlib.import_module('pkg.leaf')\n"
     )
-    assert call.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    assert call.callee_identities & OTHER_IDENTITY
+    immediate = _last_call("import importlib\nimportlib.import_module('pkg.leaf')\n")
+    assert immediate.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
 
 
 @pytest.mark.parametrize(
@@ -1106,7 +1435,7 @@ def test_augmented_member_assignment_evaluates_target_once(
     assert observed == expected
 
 
-def test_nested_closure_preserves_exact_outer_alias() -> None:
+def test_nested_closure_retains_import_dependency_not_foreign_import_identity() -> None:
     call = _last_call(
         "def outer():\n"
         "    import importlib\n"
@@ -1114,7 +1443,10 @@ def test_nested_closure_preserves_exact_outer_alias() -> None:
         "        return importlib.import_module('pkg.leaf')\n"
         "    return load\n"
     )
-    assert call.callee_is(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    # The closure retains the acquired object, but the outer function's import
+    # hook belongs to its activation and need not return canonical importlib.
+    assert call.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    assert call.callee_identities & OTHER_IDENTITY
 
 
 def test_global_binding_obeys_source_order_inside_function() -> None:
@@ -1706,7 +2038,6 @@ def test_proven_inert_binding_replacement_preserves_new_value(replacement: str) 
 @pytest.mark.parametrize(
     "identity",
     [
-        PythonIdentity.INERT_VALUE,
         PythonIdentity.STATIC_FALSE,
         PythonIdentity.CURRENT_GLOBALS,
     ],
@@ -1721,18 +2052,17 @@ def test_unbound_release_alternative_is_neutral(identity: PythonIdentity) -> Non
 def test_release_identity_table_requires_retained_owner_proof(
     identity: PythonIdentity,
 ) -> None:
-    inert = {
+    rooted = {
         PythonIdentity.UNBOUND,
-        PythonIdentity.INERT_VALUE,
         PythonIdentity.STATIC_FALSE,
         PythonIdentity.CURRENT_GLOBALS,
     }
     assert python_binding_flow._identity_can_release(int(identity)) is (
-        identity not in inert
+        identity not in rooted
     )
     assert python_binding_flow._identity_can_release(
         int(identity | PythonIdentity.UNBOUND)
-    ) is (identity not in inert)
+    ) is (identity not in rooted)
 
 
 @pytest.mark.parametrize("owner_kind", ["module", "function"])
@@ -1820,6 +2150,51 @@ def test_import_publication_releases_callback_populated_target(
     assert isinstance(statement, ast.Assign)
     fact = analyze_python_source_bindings(source).expression_fact(statement.value)
     assert fact is not None and fact.binding_invalidated and fact.static_value is None
+
+
+def test_import_installed_finalizers_rewrite_later_static_bindings() -> None:
+    namespace: dict[str, object] = {}
+
+    class Previous:
+        def __init__(self, name: str, value: object) -> None:
+            self.name = name
+            self.value = value
+
+        def __del__(self) -> None:
+            namespace[self.name] = self.value
+
+    class Export:
+        pass
+
+    def importing(name, globals, locals, fromlist=(), level=0):
+        assert globals is namespace
+        globals["TYPE_CHECKING"] = Previous("TYPE_CHECKING", True)
+        globals["MODULE_NAME"] = Previous("MODULE_NAME", "reentered")
+        return Export()
+
+    namespace["__builtins__"] = {"__import__": importing}
+    source = (
+        "import ext\n"
+        "TYPE_CHECKING = False\n"
+        "MODULE_NAME = 'warnings'\n"
+        "seen = (TYPE_CHECKING, MODULE_NAME)\n"
+    )
+    exec(source, namespace)
+    assert namespace["seen"] == (True, "reentered")
+
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    statement = tree.body[-1]
+    assert isinstance(statement, ast.Assign)
+    assert isinstance(statement.value, ast.Tuple)
+    reads = statement.value.elts
+    assert all(isinstance(read, ast.Name) for read in reads)
+    facts = [index.expression_fact(read) for read in reads]
+    assert all(
+        fact is not None and fact.binding_invalidated and fact.static_value is None
+        for fact in facts
+    )
+    assert index.expression_result(reads[0]).truth is None
 
 
 def test_absent_binding_is_pristine_until_its_namespace_is_exposed() -> None:

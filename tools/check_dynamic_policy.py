@@ -40,8 +40,9 @@ DOC_REQUIRED_SNIPPETS: dict[str, tuple[str, ...]] = {
 
 RUNTIME_POLICY_EVIDENCE: dict[str, tuple[str, ...]] = {
     "runtime/molt-runtime/src/builtins/modules.rs": (
-        'if trace_name == "exec" || trace_name == "eval"',
+        'if name == "exec" || name == "eval"',
         "dynamic code execution is outside the verified subset",
+        'return raise_exception::<_>(py, "RuntimeError", &message);',
     ),
     "runtime/molt-runtime/src/builtins/platform.rs": (
         "fn importlib_extension_exec_unavailable(",

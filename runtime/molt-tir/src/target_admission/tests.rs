@@ -17,6 +17,143 @@ fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
 }
 
 #[test]
+fn lexical_cells_require_real_storage_and_capture_transport() {
+    let requirement = SimpleIrRuntimeRequirements::LEXICAL_CELLS;
+    let denied = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(requirement));
+    let admitted = target_with_runtime(SimpleIrRuntimeRequirements::ALL);
+    let mut operations: Vec<OpIR> = ["func_new_closure", "function_closure_bits"]
+        .into_iter()
+        .map(|kind| OpIR {
+            kind: kind.into(),
+            ..OpIR::default()
+        })
+        .collect();
+    for symbol in [
+        "molt_cell_new",
+        "molt_cell_get",
+        "molt_cell_set",
+        "molt_cell_eq", "molt_cell_ne", "molt_cell_lt", "molt_cell_le", "molt_cell_gt", "molt_cell_ge",
+        "molt_types_cell_new",
+        "molt_types_cell_contents_get",
+        "molt_types_cell_contents_set",
+        "molt_types_cell_contents_delete",
+        "molt_func_new_closure",
+        "molt_function_closure_bits",
+    ] {
+        for kind in [
+            "call",
+            "call_internal",
+            "func_new",
+            "func_new_closure",
+            "builtin_func",
+        ] {
+            operations.push(OpIR {
+                kind: kind.into(),
+                s_value: Some(symbol.into()),
+                ..OpIR::default()
+            });
+        }
+        for kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+            operations.push(OpIR {
+                kind: (*kind).into(),
+                runtime_symbol: Some(symbol.into()),
+                ..OpIR::default()
+            });
+        }
+    }
+    for op in operations {
+        assert!(op.runtime_requirements().unwrap().contains(requirement));
+        let ir = function_ir(vec![op]);
+        let error = validate_runtime_target_contract(&ir, &denied).unwrap_err();
+        assert!(error.contains("shared mutable lexical cells"), "{error}");
+        validate_runtime_target_contract(&ir, &admitted).unwrap();
+    }
+}
+
+#[test]
+fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
+    let import = SimpleIrRuntimeRequirements::IMPORT_PROTOCOL;
+    let unsupported = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(import));
+    let supported = target_with_runtime(SimpleIrRuntimeRequirements::ALL);
+    let mut operations: Vec<OpIR> = [
+        "import",
+        "import_name",
+        "module_import",
+        "import_from",
+        "module_import_from",
+        "module_import_star",
+    ]
+    .into_iter()
+    .map(|kind| OpIR {
+        kind: kind.into(),
+        ..OpIR::default()
+    })
+    .collect();
+    for symbol in [
+        "molt_module_import",
+        "molt_module_ensure",
+        "molt_module_import_from",
+        "molt_module_import_star",
+        "molt_importlib_import_transaction",
+        "molt_importlib_import_module",
+        "molt_importlib_import_optional",
+        "molt_importlib_import_required",
+        "molt_importlib_import_or_fallback",
+        "molt_importlib_reload",
+        "molt_importlib_load_module_from_spec",
+        "molt_importlib_load_module_shim",
+        "molt_importlib_sourcefileloader_exec_module",
+        "molt_importlib_zip_source_loader_exec_module",
+        "molt_importlib_extension_loader_exec_module",
+        "molt_importlib_sourceless_loader_exec_module",
+        "molt_runpy_run_module",
+        "molt_runpy_run_path",
+    ] {
+        for kind in [
+            "call_internal",
+            "call",
+            "func_new",
+            "func_new_closure",
+            "builtin_func",
+        ] {
+            operations.push(OpIR {
+                kind: kind.into(),
+                s_value: Some(symbol.into()),
+                ..OpIR::default()
+            });
+        }
+        operations.push(OpIR {
+            kind: "module_get_attr".into(),
+            runtime_symbol: Some(symbol.into()),
+            ..OpIR::default()
+        });
+    }
+    operations.push(OpIR {
+        kind: "get_attr_generic_obj".into(),
+        runtime_requirement_bits: import.bits(),
+        ..OpIR::default()
+    });
+    for op in operations {
+        let ir = function_ir(vec![op]);
+        let error = validate_runtime_target_contract(&ir, &unsupported).expect_err(&format!(
+            "object/cache support cannot authorize Python import transactions: {:?}",
+            ir.functions[0].ops[0]
+        ));
+        assert!(error.contains("Python import dispatch"), "{error}");
+        validate_runtime_target_contract(&ir, &supported).unwrap();
+    }
+    for symbol in [
+        "molt_importlib_resolve_name",
+        "molt_importlib_cache_from_source",
+    ] {
+        assert!(
+            !crate::tir::op_kinds_generated::simpleir_runtime_symbol_requirements_table(symbol)
+                .contains(import)
+        );
+    }
+}
+
+#[test]
 fn raw_boxed_stack_allocation_is_rejected_on_every_target() {
     let ir = function_ir(vec![OpIR {
         kind: "stack_alloc".into(),
@@ -310,26 +447,32 @@ fn execution_frames_are_distinct_from_python_introspection() {
 fn super_context_intrinsics_require_execution_frames_not_locals_introspection() {
     for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
         let carriers = [
-            OpIR {
-                kind: "call_internal".to_string(),
-                s_value: Some(symbol.to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "builtin_func".to_string(),
-                s_value: Some(symbol.to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "module_get_attr".to_string(),
-                runtime_symbol: Some(symbol.to_string()),
-                ..OpIR::default()
-            },
-        ];
+            "call",
+            "call_internal",
+            "builtin_func",
+            "func_new",
+            "func_new_closure",
+        ]
+        .into_iter()
+        .map(|kind| OpIR {
+            kind: kind.to_string(),
+            s_value: Some(symbol.to_string()),
+            ..OpIR::default()
+        })
+        .chain([OpIR {
+            kind: "module_get_attr".to_string(),
+            runtime_symbol: Some(symbol.to_string()),
+            ..OpIR::default()
+        }]);
         for op in carriers {
             let requirements = op.runtime_requirements().unwrap();
             assert!(requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME));
             assert!(!requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
+            assert_eq!(
+                op.uses_execution_frame(),
+                matches!(op.kind.as_str(), "call" | "call_internal"),
+                "callable acquisition requires target support, not an already-entered frame: {op:?}"
+            );
             let ir = function_ir(vec![op]);
             validate_runtime_target_contract(&ir, &runtime_without_frame_introspection())
                 .expect("semantic frame context must not require a locals snapshot");
@@ -449,7 +592,7 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
         "molt_sys_setprofile",
         "molt_sys_getprofile",
     ] {
-        for op in [
+        let carriers = [
             OpIR {
                 kind: "module_get_attr".to_string(),
                 runtime_symbol: Some(symbol.to_string()),
@@ -465,7 +608,18 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
                 s_value: Some(symbol.to_string()),
                 ..OpIR::default()
             },
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            ["call", "builtin_func", "func_new", "func_new_closure"]
+                .into_iter()
+                .map(|kind| OpIR {
+                    kind: kind.to_string(),
+                    s_value: Some(symbol.to_string()),
+                    ..OpIR::default()
+                }),
+        );
+        for op in carriers {
             let requirements = op
                 .runtime_requirements()
                 .expect("runtime-call op must be classified");
@@ -474,6 +628,32 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
                 "{symbol} via {}",
                 op.kind
             );
+        }
+    }
+}
+
+#[test]
+fn runtime_symbol_text_is_not_callable_identity_on_opaque_or_literal_operations() {
+    let restricted = target_with_runtime(
+        SimpleIrRuntimeRequirements::ALL
+            .difference(SimpleIrRuntimeRequirements::IMPORT_PROTOCOL)
+            .difference(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION),
+    );
+    for symbol in ["molt_module_import", "molt_getframe"] {
+        for kind in [
+            "const_str",
+            "call_func",
+            "call_bind",
+            "call_guarded",
+            "invoke_ffi",
+        ] {
+            let op = OpIR {
+                kind: kind.to_string(),
+                s_value: Some(symbol.to_string()),
+                ..OpIR::default()
+            };
+            validate_runtime_target_contract(&function_ir(vec![op]), &restricted)
+                .expect("literal payloads and opaque call hints do not acquire or invoke the named runtime symbol");
         }
     }
 }

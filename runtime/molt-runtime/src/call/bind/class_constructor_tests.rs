@@ -1,5 +1,4 @@
 use super::*;
-use crate::object::seq_access::snapshot;
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -69,8 +68,8 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                 let prepared =
                     alloc_dict_with_pairs(_py, &[value_key, MoltObject::from_int(1).bits()]);
                 let prepared_bits = MoltObject::from_ptr(prepared).bits();
-                let class_cell = crate::alloc_list(_py, &[MoltObject::none().bits()]);
-                let dict_cell = crate::alloc_list(_py, &[prepared_bits]);
+                let class_cell = crate::object::cells::alloc_cell(_py, MoltObject::none().bits());
+                let dict_cell = crate::object::cells::alloc_cell(_py, prepared_bits);
                 let class_cell_bits = MoltObject::from_ptr(class_cell).bits();
                 let dict_cell_bits = MoltObject::from_ptr(dict_cell).bits();
                 crate::dict_set_in_place(_py, prepared, class_key, class_cell_bits);
@@ -85,12 +84,12 @@ fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
                 let copied = obj_from_bits(copied_bits).as_ptr().unwrap();
                 assert_ne!(copied_bits, prepared_bits);
                 assert_eq!(
-                    &*snapshot(_py, class_cell, "class cell").unwrap(),
-                    &[class_bits]
+                    crate::object::cells::cell_value_bits(class_cell),
+                    class_bits
                 );
                 assert_eq!(
-                    &*snapshot(_py, dict_cell, "dict cell").unwrap(),
-                    &[copied_bits]
+                    crate::object::cells::cell_value_bits(dict_cell),
+                    copied_bits
                 );
                 for key in [class_key, dict_key] {
                     assert_eq!(dict_get_in_place(_py, copied, key), None);
@@ -187,7 +186,7 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                     let qualname = crate::attr_name_bits_from_bytes(_py, b"__qualname__").unwrap();
                     let cell_key = crate::attr_name_bits_from_bytes(_py, cell_name).unwrap();
                     let marker = MoltObject::from_int(7).bits();
-                    let cell = crate::alloc_list(_py, &[marker]);
+                    let cell = crate::object::cells::alloc_cell(_py, marker);
                     assert!(!cell.is_null());
                     let cell_bits = MoltObject::from_ptr(cell).bits();
                     let ns = alloc_dict_with_pairs(
@@ -220,10 +219,7 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                         "{message}"
                     );
                     crate::molt_exception_clear();
-                    assert_eq!(
-                        &*snapshot(_py, cell, "failed construction cell").unwrap(),
-                        &[marker]
-                    );
+                    assert_eq!(crate::object::cells::cell_value_bits(cell), marker);
                     assert_eq!(dict_get_in_place(_py, ns, qualname), Some(marker));
                     for bits in [
                         result, error, ns_bits, bases_bits, cell_bits, name, qualname, cell_key,
@@ -248,22 +244,14 @@ extern "C" fn record_set_name(_descriptor: u64, owner: u64, name: u64) -> i64 {
             });
             let owner_dict = crate::class_dict_bits(obj_from_bits(owner).as_ptr().unwrap());
             assert_eq!(
-                &*snapshot(
-                    _py,
-                    obj_from_bits(class_cell).as_ptr().unwrap(),
-                    "callback class cell"
-                )
-                .unwrap(),
-                &[owner]
+                crate::object::cells::cell_value_bits(obj_from_bits(class_cell).as_ptr().unwrap()),
+                owner
             );
             assert_eq!(
-                &*snapshot(
-                    _py,
-                    obj_from_bits(namespace_cell).as_ptr().unwrap(),
-                    "callback dict cell"
-                )
-                .unwrap(),
-                &[owner_dict]
+                crate::object::cells::cell_value_bits(
+                    obj_from_bits(namespace_cell).as_ptr().unwrap()
+                ),
+                owner_dict
             );
             if name_text == "first" {
                 let second = crate::attr_name_bits_from_bytes(_py, b"second").unwrap();
@@ -430,8 +418,8 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             // The prepared mapping is now the only owner of each descriptor.
             dec_ref_bits(_py, first);
             dec_ref_bits(_py, second);
-            let class_cell = crate::alloc_list(_py, &[MoltObject::none().bits()]);
-            let namespace_cell = crate::alloc_list(_py, &[ns_bits]);
+            let class_cell = crate::object::cells::alloc_cell(_py, MoltObject::none().bits());
+            let namespace_cell = crate::object::cells::alloc_cell(_py, ns_bits);
             let class_cell_bits = MoltObject::from_ptr(class_cell).bits();
             let namespace_cell_bits = MoltObject::from_ptr(namespace_cell).bits();
             let class_key = crate::attr_name_bits_from_bytes(_py, b"__classcell__").unwrap();

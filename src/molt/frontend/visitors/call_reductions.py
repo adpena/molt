@@ -663,12 +663,7 @@ class CallReductionMixin(_MixinBase):
         cell = self._load_boxed_cell(target_name)
         saved_cell_val: MoltValue | None = None
         if cell is not None:
-            save_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=save_idx))
-            saved_cell_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(kind="INDEX", args=[cell, save_idx], result=saved_cell_val)
-            )
+            saved_cell_val = self._emit_cell_get(cell)
 
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
@@ -690,15 +685,7 @@ class CallReductionMixin(_MixinBase):
             self.unbound_check_names.discard(target_name)
         self.locals[target_name] = item
         if cell is not None:
-            box_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=box_idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, box_idx, item],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, item)
 
         for if_node in comp.ifs:
             cond_val = self._emit_condition(if_node)
@@ -744,15 +731,8 @@ class CallReductionMixin(_MixinBase):
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
 
         if cell is not None and saved_cell_val is not None:
-            post_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=post_idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_INDEX",
-                    args=[cell, post_idx, saved_cell_val],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_cell_set(cell, saved_cell_val)
+            self._emit_drop_owned_value(saved_cell_val)
 
         final_res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(

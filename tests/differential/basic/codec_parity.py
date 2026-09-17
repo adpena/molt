@@ -1,4 +1,3 @@
-# MOLT_ENV: MOLT_CODEC=json
 """Purpose: differential coverage for codec parity."""
 
 import json
@@ -69,6 +68,45 @@ def _report_cbor_error(label, data):
         print(f"{label}:ok")
 
 
+def _report_live_callables():
+    import molt_json as json_alias
+    from molt_json import parse as captured_parse
+    from molt_msgpack import parse as msgpack_alias
+    from molt_cbor import parse as cbor_alias
+
+    print("module_identity", json_alias is molt_json)
+    for parse, data in (
+        (captured_parse, JSON_TEXT_1),
+        (msgpack_alias, MSGPACK_BYTES_1),
+        (cbor_alias, CBOR_BYTES_1),
+    ):
+        print("captured", _normalize(parse(data)))
+
+    def replacement(data):
+        return ["replacement", data]
+
+    original = molt_json.parse
+    try:
+        molt_json.parse = replacement
+        print("mutated", json_alias.parse("live"))
+        print("retained", captured_parse("17"))
+        from molt_json import parse as rebound_parse
+
+        print("reimported", rebound_parse("new"))
+    finally:
+        molt_json.parse = original
+
+    class Other:
+        def parse(self, data):
+            return ["shadow", data]
+
+    def invoke(molt_json, data):
+        return molt_json.parse(data)
+
+    print("shadowed", invoke(Other(), "value"))
+    print("restored", molt_json.parse("23"))
+
+
 def main():
     for label, json_text, msgpack_bytes, cbor_bytes in CASES:
         _report_case(label, json_text, msgpack_bytes, cbor_bytes)
@@ -82,6 +120,7 @@ def main():
     _report_cbor_error("cbor_invalid", bad_cbor)
     _report_msgpack_error("msgpack_invalid_bytes", bad_msgpack_bytes)
     _report_cbor_error("cbor_invalid_bytes", bad_cbor_bytes)
+    _report_live_callables()
 
 
 if __name__ == "__main__":

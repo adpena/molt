@@ -4722,6 +4722,10 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
         kind for kind, effect in expected.items() if effect == "control"
     }
     assert py.FRONTEND_ARBITRARY_HEAP_EFFECT == (gen._frontend_arbitrary_heap_map(data))
+    assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["LOAD_VAR"] is False
+    assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["BINDING_ALIAS"] is False
+    assert py.FRONTEND_EFFECT_CLASS["BINDING_ALIAS"] == "writes_heap"
+    assert py.FRONTEND_ARBITRARY_HEAP_EFFECT["STORE_VAR"] is True
     assert py.FRONTEND_TRUTHINESS_CONTROL_KINDS == (
         gen._frontend_truthiness_control_kinds(data)
     )
@@ -5064,6 +5068,27 @@ def test_frontend_raising_kinds_match_frontend_consumer() -> None:
     assert consumer.AUGASSIGN_OP_KIND == py.AUGASSIGN_OP_KIND
 
 
+@pytest.mark.parametrize("invalid", [None, 0, 1, "false", []])
+def test_frontend_arbitrary_heap_override_rejects_non_boolean(
+    invalid: object,
+) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    row = next(row for row in data["frontend_effect_kind"] if row["kind"] == "LOAD_VAR")
+    row["may_access_arbitrary_heap"] = invalid
+    with pytest.raises(gen.OpKindTableError, match="may_access_arbitrary_heap.*bool"):
+        gen._validate_frontend_tables(data, data["opcode"])
+
+
+def test_frontend_arbitrary_heap_override_rejects_pure_callback() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    row = next(row for row in data["frontend_effect_kind"] if row["kind"] == "LOAD_VAR")
+    row.update(effect="pure", may_access_arbitrary_heap=True)
+    with pytest.raises(gen.OpKindTableError, match="pure operations cannot"):
+        gen._validate_frontend_tables(data, data["opcode"])
+
+
 def test_render_detects_frontend_table_mutation() -> None:
     """A change to a frontend table must change the rendered Python (so the
     freshness test catches it). Mutate copies and assert the render differs."""
@@ -5092,6 +5117,13 @@ def test_render_detects_frontend_table_mutation() -> None:
     assert gen.render_py(mutated_effect) != rendered, (
         "mutating a frontend_effect_kind row did not change the Python render"
     )
+
+    mutated_heap = json.loads(json.dumps(data))
+    for row in mutated_heap["frontend_effect_kind"]:
+        if row["kind"] == "LOAD_VAR":
+            row["may_access_arbitrary_heap"] = True
+            break
+    assert gen.render_py(mutated_heap) != rendered
 
     mutated2 = json.loads(json.dumps(data))
     for row in mutated2["binary_op"]:
@@ -5139,19 +5171,28 @@ def test_dangerous_cell_baseline_matches_current_audit() -> None:
     assert baseline.get("dangerous", {}) == res.dangerous()
 
 
-def test_audit_resolves_constant_backed_llvm_runtime_imports() -> None:
+def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> None:
     audit = _audit()
-    imports = audit.extract_llvm_runtime_import_abis()
+    imports = audit.extract_llvm_boxed_runtime_abis()
 
     expected = {
-        "molt_asyncgen_new": 1,
         "molt_cancel_token_get_current": 0,
         "molt_task_register_token_owned": 2,
     }
     for symbol, param_count in expected.items():
-        assert imports[symbol] == audit.ClassifiedRuntimeImport(
-            symbol, param_count, "I64"
-        )
+        assert imports[symbol].arity == param_count
+        assert imports[symbol].return_abi == "I64"
+    from tools.llvm_runtime_abi_audit import runtime_import_abi_facts
+
+    dedicated, _ = runtime_import_abi_facts(include_fixed=False)
+    for symbol, arity in (
+        ("molt_alloc_class", 2),
+        ("molt_asyncgen_locals_register", 3),
+        ("molt_asyncgen_new", 1),
+        ("molt_function_closure_bits", 1),
+    ):
+        assert symbol not in imports
+        assert dedicated[(symbol, arity)].return_abi == "I64"
 
 
 # ---------------------------------------------------------------------------
@@ -5738,16 +5779,16 @@ def test_target_runtime_profiles_are_complete_explicit_and_generated(
             gen.load_table(table)
 
 
-def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_extra_keys(
+def test_runtime_callable_authorities_reject_malformed_unknowns_duplicates_and_extra_keys(
     tmp_path: Path,
 ) -> None:
     gen = _gen()
     source = TABLE.read_text(encoding="utf-8")
 
     mutations = {
-        "source alias": source.replace(
+        "malformed qualified name": source.replace(
             'qualified = "inspect.currentframe"',
-            'qualified = "inspection.currentframe"',
+            'qualified = "inspect/currentframe"',
             1,
         ),
         "unknown symbol": source.replace(
@@ -5758,11 +5799,6 @@ def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_ext
         "duplicate qualified": source.replace(
             'qualified = "sys._getframe"',
             'qualified = "inspect.currentframe"',
-            1,
-        ),
-        "duplicate symbol": source.replace(
-            'qualified = "sys._getframe", symbol = "molt_getframe"',
-            'qualified = "sys._getframe", symbol = "molt_inspect_currentframe"',
             1,
         ),
         "extra row key": source.replace(
@@ -5789,6 +5825,25 @@ def test_runtime_callable_authorities_reject_aliases_unknowns_duplicates_and_ext
             gen.load_table(path)
 
 
+def test_runtime_callable_authority_allows_shared_implementation_symbols(
+    tmp_path: Path,
+) -> None:
+    source = TABLE.read_text(encoding="utf-8").replace(
+        "simpleir_runtime_qualified_callable = [",
+        "simpleir_runtime_qualified_callable = [\n"
+        '    { qualified = "importlib._bootstrap.__import__", symbol = "molt_importlib_import_transaction" },',
+        1,
+    )
+    path = tmp_path / "shared-symbol.toml"
+    path.write_text(source, encoding="utf-8")
+    data = _gen().load_table(path)
+    rows = {
+        row["qualified"]: row["symbol"]
+        for row in data["simpleir_runtime_qualified_callable"]
+    }
+    assert rows["builtins.__import__"] == rows["importlib._bootstrap.__import__"]
+
+
 def test_python_runtime_callable_attribute_authority_is_generated_from_qualified_rows() -> (
     None
 ):
@@ -5805,9 +5860,9 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     ]:
         assert f'        "{attr}",' in rendered
 
-    assert "SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS" in rendered
+    assert "SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS" in rendered
     for gateway in ["__dict__", "__getattr__", "__getattribute__"]:
-        assert f'        "{gateway}",' in rendered
+        assert f'    "{gateway}":' in rendered
 
     assert "SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES" in rendered
     for qualified in [
@@ -5837,6 +5892,41 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rendered
     assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rust_rendered
     assert "simpleir_kind_may_carry_runtime_symbol" in rust_rendered
+
+
+def test_runtime_callable_requirements_compose_generated_roles_without_frame_shortcuts() -> (
+    None
+):
+    generator = _gen()
+    data = generator.load_table()
+    # The same attribute may expose different semantic families on different
+    # modules. Unknown receivers need their union, not one hard-coded family.
+    data["simpleir_runtime_qualified_callable"].append(
+        {"qualified": "another.reload", "symbol": "molt_getframe"}
+    )
+    namespace: dict[str, object] = {}
+    exec(generator.render_py(data), namespace)
+    symbols = namespace["SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS"]
+    attributes = namespace["SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS"]
+    imports = namespace["SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL"]
+    frames = namespace["SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION"]
+    assert symbols["molt_importlib_import_transaction"] == imports
+    assert attributes["import_module"] == imports
+    assert attributes["_getframe"] == frames
+    assert attributes["reload"] == imports | frames
+    assert attributes["__dict__"] == imports | frames
+    assert (
+        namespace["SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS"]
+        == imports | frames
+    )
+    assert "resolve_name" not in attributes
+    roles = {row["constant"]: row for row in data["simpleir_runtime_requirement_roles"]}
+    for symbol in roles["IMPORT_PROTOCOL"]["runtime_symbols"]:
+        assert symbols[symbol] & imports
+    for profile in data["simpleir_target_runtime_profiles"]:
+        assert ("IMPORT_PROTOCOL" in profile["supported"]) == (
+            profile["target"] in {"native", "wasm", "llvm"}
+        )
 
 
 def test_runtime_protected_attribute_gateways_reject_invalid_authority(
@@ -6976,6 +7066,35 @@ def test_semantic_operand_shape_validation_rejects_drift(
     gen = _gen()
     with pytest.raises(gen.OpKindTableError, match=message):
         gen.load_table(path)
+
+
+def test_lexical_cells_have_one_cross_target_runtime_requirement() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    roles = {row["constant"]: row for row in data["simpleir_runtime_requirement_roles"]}
+    role = roles["LEXICAL_CELLS"]
+    assert set(data[role["table"]]) == {"func_new_closure", "function_closure_bits"}
+    assert set(role["runtime_symbols"]) == {
+        "molt_cell_new",
+        "molt_cell_get",
+        "molt_cell_set",
+        "molt_cell_eq",
+        "molt_cell_ne",
+        "molt_cell_lt",
+        "molt_cell_le",
+        "molt_cell_gt",
+        "molt_cell_ge",
+        "molt_types_cell_new",
+        "molt_types_cell_contents_get",
+        "molt_types_cell_contents_set",
+        "molt_types_cell_contents_delete",
+        "molt_func_new_closure",
+        "molt_function_closure_bits",
+    }
+    for profile in data["simpleir_target_runtime_profiles"]:
+        assert ("LEXICAL_CELLS" in profile["supported"]) == (
+            profile["target"] in {"native", "wasm", "llvm"}
+        )
 
 
 def test_fuzz_and_primitive_effect_shapes_cannot_override_operand_authority() -> None:

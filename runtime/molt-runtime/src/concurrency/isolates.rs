@@ -864,6 +864,8 @@ mod bootstrap_failure_tests {
                                 rejected_isolate_noargs as *const () as usize as u64,
                                 molt_cpython_abi::abi_types::METH_NOARGS,
                                 MoltObject::none().bits(),
+                                true,
+                                MoltObject::none().bits(),
                                 name.as_ptr(),
                                 name.len(),
                             )

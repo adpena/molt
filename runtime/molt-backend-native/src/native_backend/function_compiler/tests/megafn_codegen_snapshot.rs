@@ -449,6 +449,30 @@ fn megafn_call_family_codegen_snapshot() {
             !output.bytes.is_empty(),
             "program {name} produced no object bytes"
         );
+        if name == "call_guarded" {
+            assert!(
+                output
+                    .bytes
+                    .windows(b"molt_call_bind_ic".len())
+                    .any(|symbol| symbol == b"molt_call_bind_ic"),
+                "non-exact guarded ABI must enter the Python binder"
+            );
+        }
+        if name == "call_func_inline_probe" {
+            for required in [
+                "molt_function_direct_call_eligible",
+                "molt_frame_invocation_enter",
+                "molt_frame_invocation_exit",
+            ] {
+                assert!(
+                    output
+                        .bytes
+                        .windows(required.len())
+                        .any(|symbol| symbol == required.as_bytes()),
+                    "inline calls must consume {required}"
+                );
+            }
+        }
         let h = stable_hash(&output.bytes);
         println!(
             "MEGAFN_SNAPSHOT prog={name} len={} hash={:016x}",

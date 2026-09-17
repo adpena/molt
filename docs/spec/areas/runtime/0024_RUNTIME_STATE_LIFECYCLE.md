@@ -1,7 +1,7 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-09-15
+Last Updated: 2026-09-16
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
@@ -77,6 +77,158 @@ Expose a single global pointer (fast path) to the active RuntimeState:
 - Flushes TLS caches.
 - Decrefs builtin classes, tuples, and method objects.
 - Clears async registries and task metadata.
+
+### Python frame namespace custody
+
+Compiled entry (`molt_trace_enter_slot`) is the sole owner of Python frame
+creation; callable dispatch never manufactures a second frame. Each code slot
+publishes an owned code/globals pair under the runtime execution token. Dynamic
+function invocation transfers exact callable code, captured globals and builtins through a scoped,
+slot-keyed, single-use handoff. Typed generated calls and runtime dispatch use
+the same handoff, independently of their machine return ABI.
+
+Function objects capture builtins with globals. Globals admit dictionary
+subclasses through the existing dictionary-storage authority, retaining the
+original object as `__globals__`, not substituting its backing dictionary.
+An explicit `__builtins__` entry governs new function creation: modules normalize
+to their dictionary, while other supplied values retain their identity, including
+custom mappings and nonmappings. A present `None` is not an absent entry; invalid
+subscript protocols fail at lookup rather than silently choosing default builtins.
+When the entry is absent, the active captured builtins are inherited. Existing
+functions are unaffected by replacing that entry.
+Suspended tasks retain code and both namespace objects in
+the existing auxiliary sidecar and restore them on every resume. Live frames,
+frame snapshots, and lazy traceback payloads retain their exact namespace
+edges. Source filenames and mutable module metadata are diagnostic data, never
+namespace lookup authorities. GC traversal and retirement visit the same owned
+edges, including aliased globals/builtins edges separately. Generator shortcuts
+and binding share one constructor; resumes and suspended code/frame views use
+the retained code. There is no function-address-to-latest-code registry.
+Task construction matches the physical target in the pending callable's immutable
+code identity; runtime-native tasks do not manufacture Python code ownership.
+Frontend code-slot publication uses the constructor's explicit target, never its
+type-hint spelling. Generator expressions use the same callable metadata and
+generated task constructor as named functions; async functions have no second
+frontend-generated constructor body.
+
+Generated task constructors return a failed allocation result before resolving
+or storing payloads, retaining captures, registering cancellation, or wrapping
+an async generator. The pending allocation exception remains authoritative.
+An async-generator wrapper retains its inner task on success; the constructor
+releases its temporary task owner after wrapping on either outcome. Failed task
+allocation releases acquired namespace references without consuming or leaking
+the scoped invocation handoff.
+Ordinary `alloc_task`/`call_async` operations skip initialization on failure and
+rejoin their existing exception edges; they must not return around frame/RC
+cleanup. Native, WASM and LLVM consume `TaskConstructorLayout` for task kind,
+payload prefix, completion policy and checked frame-extent validation.
+Inferred extents use the same checked sizing authority as explicit extents;
+backends do not multiply payload counts before validation. Native internal CFG
+joins carry both object and pointer cleanup roots into the continuation, even
+when allocation fails or the task was constructed inside a non-entry block.
+
+When a compiled builtins body is admitted, its canonical module transaction
+publishes the builtins namespace before a user frame captures its default.
+Global reads preserve subclass/custom mapping `__getitem__` and treat only
+`KeyError` as a miss. Global stores/deletes and function metadata capture use
+the underlying dictionary protocol, not user `__setitem__`/`__delitem__` hooks.
+Relative-import package metadata uses this same raw globals backing authority;
+admission must accept dictionary subclasses without invoking `__getitem__`.
+Captured namespace misses stay authoritative: later module/cache replacement
+or globals `__builtins__` mutation cannot redirect an existing activation.
+Live, traceback and suspended-task views share one frame-class materializer and
+the same interned field slots, including `f_builtins`, `f_back` and `f_lineno`.
+Native runtime tasks without captured Python code expose no fabricated Python
+frame. A failed locals snapshot preserves its allocation error, never retries
+with a success-shaped empty dictionary.
+`locals()` in optimized function frames reuses the live frame dictionary on
+Python 3.12 and copies it on Python 3.13+ (PEP 667); module scope retains namespace
+identity. The runtime target-version authority selects the behavior, not the
+host interpreter. Copies use the shared dictionary-copy primitive, including
+its ownership and allocation-failure behavior.
+Dict, set and frozenset construction share one unpublished backing transaction:
+the object owns each admitted buffer immediately, and normal lifecycle teardown
+rolls back partial storage. Initial edges are published only after successful
+hashing. Raw object allocation and capacity/backing denial record non-allocating
+`MemoryError` without replacing an existing exception. Frame/traceback instances
+use the same class allocation authority as ordinary instances.
+Task execution kind belongs to the code object (direct, generator, coroutine,
+or async generator). Generated trampolines alone own callable task allocation
+and closure layout. Reconstructing `FunctionType` retains that code-owned kind;
+runtime marker truth and cached task flags are not competing dispatch facts.
+The packed function metadata tuple contains fourteen fields; field 11 (zero-based)
+is the typed execution-kind integer (0 through 3 in the order above), and fields
+12 and 13 are ordered free-variable and cell-variable name tuples. Publication
+sets the immutable code fact; introspection reads the code policy directly.
+Legacy task marker attributes are neither emitted nor consumed. Arbitrary public
+attribute mutation cannot rewrite code kind or change sibling functions sharing
+that code object. The four-argument metadata initializer ABI is unchanged.
+The iterable-coroutine protocol bit shares the immutable code-policy scalar;
+`types.coroutine` clones generator code before adding it, leaving siblings and
+existing suspended objects unchanged. `co_flags` projects code policy and
+signature facts. `inspect.markcoroutinefunction` is a separate public identity
+marker and does not change execution kind or make a returned value awaitable.
+
+Code callable identity also owns physical entry provenance (positional, lexical
+closure, opaque runtime context), alongside target, trampoline and arity. Code
+cloning preserves the complete identity; reconstruction cannot infer provenance
+from the public closure tuple or free-variable count. Opaque-context code cannot
+be reconstructed or assigned through Python's function-code API. Function
+dispatch consumes its validated scalar ABI; it never scans cells on the hot path.
+
+Both metadata transport ABIs decode into one function-metadata initializer.
+Code attachment is a prepare/publish/retire transaction. Preparation validates
+the complete signature, callable identity, lexical metadata and execution kind
+without changing either owner. Publication retains incoming edges and installs
+the coherent code/signature state without callbacks or decrefs. Executable
+scalars, mutation epoch and binder/cache state become coherent before displaced
+owners are released. Metadata initializers repeat preparation after attribute
+writes that can reenter; fresh construction preserves epoch zero. Rejected
+preparation leaves code identity, owned edges and epoch unchanged and retryable.
+
+Callable constructors transfer one result owner. Native, WASM and LLVM bind that
+owner to a named result or release it immediately when discarded; dropping only
+the machine value is not an ownership operation. Function-closure extraction is
+borrowed instead: a bound result acquires one reference, while a discarded result
+acquires and releases none. These contracts include code objects, descriptors,
+bound methods, async-generator wrappers and call-argument builders. Generated
+WASM call sinks declare the release-import dependency for owned results.
+The same sink governs callable dispatch results, including guarded, dynamic,
+method and builtin calls. Compiled direct calls consume their semantic return
+ABI: discarded object returns release ownership, raw scalar returns need no
+boxing or allocation, and void calls have no result to release. Runtime direct
+calls use generated boxed-value ABI facts, never an integer carrier or symbol
+prefix as an ownership proof.
+Static native calls preserve that exact signature even for closure targets and
+void imports. Execution-frame tracing belongs to the callee, not a call-site
+switch or value-only pointer dispatcher. After closure transport, argument
+arity must match the declared ABI; Python binding uses callable dispatch instead
+of casting an incompatible static target.
+
+Attribute APIs transport boxed values as `u64`, including read, write, delete,
+descriptor, inline-cache and GPU bridge results. Their error paths therefore use
+the boxed exception sentinel; raw signed numeric/status sentinels must never be
+reinterpreted as object values. A cache miss remains distinct from an exception
+or a successful boxed `None`. Native C declarations preserve all 64 bits on
+LLP64 as well as LP64 hosts.
+
+Raw positional call admission is shared by runtime fast helpers and native/WASM
+lowering. It requires the actual callable's exact arity, closure shape, direct
+execution kind, and binder eligibility. Guarded target mismatch or shape mismatch
+routes the original Python arguments to the binder, never to an indirect call
+using the expected target's ABI. The actual callable owns closure and defaults;
+frontends must not insert lexical defaults or task payloads at Python call sites.
+Dynamic-call argument builders are selected only by keyword/starred argument
+syntax, not caller overrides, lexical type hints, or bound-method guesses.
+Positional object dispatch binds the actual descriptor result, including self.
+Both guarded and inline direct calls retain the invocation context handoff.
+
+Teardown detaches slots and invocation handoffs before callback-capable decrefs.
+
+Regression authorities: `builtins/frames/namespace_tests.rs`, suspended-task
+tests in `async_rt/poll.rs` and `object/aux_header.rs`, module lookup tests, and
+the `globals_callable` differential capsule. These tests define the changed
+contract; passing one host lane does not establish a cross-target matrix claim.
 
 ### Canonical objects and ordinary owned references
 
@@ -180,6 +332,12 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   TLS cache custody, and `descriptor_bind` retains the descriptor across
   reentrant `__get__`/property execution so class-dict or cache mutation cannot
   invalidate borrowed descriptor storage mid-bind.
+  Fused method dispatch likewise pins the selected function and attribute name
+  before instance-dictionary shadow lookup, which may execute key equality.
+  Both hit and miss paths revalidate receiver, type and function mutation state
+  after that callback. Fused super dispatch supplies raw positional arguments to
+  the canonical binder; a cached target never authorizes the already-bound ABI
+  after code, defaults or signature replacement.
   Resource tracker factories and current-thread tracker state are reset at
   lifecycle shutdown boundaries so memory/time limits cannot leak into the
   next runtime in an embedding process.

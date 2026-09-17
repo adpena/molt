@@ -17,7 +17,6 @@ class FrontendDiagnostic(str, Enum):
     IMPORT_RESOLUTION = "MOLT-FE007"
     INTERNAL_INVARIANT = "MOLT-FE008"
     UNSUPPORTED_FEATURE = "MOLT-FE009"
-    CALL_DEFAULTS = "MOLT-FE010"
 
 
 class FrontendDiagnosticMetadata(NamedTuple):
@@ -81,11 +80,5 @@ FRONTEND_DIAGNOSTIC_METADATA: Final = {
         detail="MOLT-FE009: frontend capability is not implemented",
         tier="bridge",
         impact="high",
-    ),
-    FrontendDiagnostic.CALL_DEFAULTS: FrontendDiagnosticMetadata(
-        title="dynamic call defaults require explicit arguments",
-        detail="MOLT-FE010: dynamic call defaults require explicit arguments",
-        tier="bridge",
-        impact="medium",
     ),
 }

@@ -3,10 +3,19 @@ use super::super::RustBackend;
 impl RustBackend {
     pub(super) fn emit_stateful_runtime_prelude(&mut self, func_body: &str) {
         let used = |name: &str| func_body.contains(name);
-        if used("molt_code_new(") || used("molt_code_slot_set(") || used("molt_code_slots_init(") {
+        if used("molt_code_new(")
+            || used("molt_code_slot_set(")
+            || used("molt_code_slots_init(")
+            || used("molt_trace_enter_slot(")
+        {
             self.output.push_str(concat!(
+                "#[derive(Clone)]\n",
+                "struct MoltCodeSlot {\n",
+                "    code: MoltValue,\n",
+                "    globals: MoltValue,\n",
+                "}\n\n",
                 "thread_local! {\n",
-                "    static MOLT_CODE_SLOTS: std::cell::RefCell<Vec<Option<MoltValue>>> = const { std::cell::RefCell::new(Vec::new()) };\n",
+                "    static MOLT_CODE_SLOTS: std::cell::RefCell<Vec<Option<MoltCodeSlot>>> = const { std::cell::RefCell::new(Vec::new()) };\n",
                 "}\n\n",
                 "fn molt_expect_code_str(value: &MoltValue, field: &str) -> String {\n",
                 "    if let MoltValue::Str(s) = value { s.clone() } else { panic!(\"TypeError: code {field} must be str\") }\n",
@@ -51,13 +60,14 @@ impl RustBackend {
                 "    });\n",
                 "    MoltValue::None\n",
                 "}\n\n",
-                "fn molt_code_slot_set(code_id: i64, code: &MoltValue) -> MoltValue {\n",
+                "fn molt_code_slot_set(code_id: i64, code: &MoltValue, globals: &MoltValue) -> MoltValue {\n",
                 "    if !molt_code_is_code(code) { panic!(\"TypeError: code slot expects code object\") }\n",
+                "    if !matches!(globals, MoltValue::Dict(_)) { panic!(\"TypeError: code slot expects globals dictionary\") }\n",
                 "    let Some(idx) = usize::try_from(code_id).ok() else { panic!(\"IndexError: code slot out of range\") };\n",
                 "    MOLT_CODE_SLOTS.with(|slots| {\n",
                 "        let mut slots = slots.borrow_mut();\n",
                 "        if idx >= slots.len() { panic!(\"IndexError: code slot out of range\") }\n",
-                "        slots[idx] = Some(code.clone());\n",
+                "        slots[idx] = Some(MoltCodeSlot { code: code.clone(), globals: globals.clone() });\n",
                 "    });\n",
                 "    MoltValue::None\n",
                 "}\n\n",
@@ -71,13 +81,17 @@ impl RustBackend {
                 "#[derive(Clone)]\n",
                 "struct MoltFrame {\n",
                 "    code_id: i64,\n",
+                "    code: MoltValue,\n",
+                "    globals: MoltValue,\n",
                 "    locals: Option<MoltValue>,\n",
                 "}\n\n",
                 "thread_local! {\n",
                 "    static MOLT_FRAME_STACK: std::cell::RefCell<Vec<MoltFrame>> = const { std::cell::RefCell::new(Vec::new()) };\n",
                 "}\n\n",
                 "fn molt_trace_enter_slot(code_id: i64) -> MoltValue {\n",
-                "    MOLT_FRAME_STACK.with(|stack| stack.borrow_mut().push(MoltFrame { code_id, locals: None }));\n",
+                "    let Some(idx) = usize::try_from(code_id).ok() else { panic!(\"IndexError: code slot out of range\") };\n",
+                "    let slot = MOLT_CODE_SLOTS.with(|slots| slots.borrow().get(idx).cloned().flatten()).unwrap_or_else(|| panic!(\"RuntimeError: trace_enter_slot references an unbound code slot\"));\n",
+                "    MOLT_FRAME_STACK.with(|stack| stack.borrow_mut().push(MoltFrame { code_id, code: slot.code, globals: slot.globals, locals: None }));\n",
                 "    MoltValue::None\n",
                 "}\n\n",
                 "fn molt_trace_exit() -> MoltValue {\n",

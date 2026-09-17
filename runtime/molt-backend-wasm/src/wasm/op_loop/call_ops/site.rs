@@ -123,10 +123,6 @@ pub(super) fn push_call_args(func: &mut Function, locals: &WasmFrameLocals, args
     }
 }
 
-pub(super) fn store_call_result(func: &mut Function, out: u32) {
-    func.instruction(&Instruction::LocalSet(out));
-}
-
 pub(super) fn spill_call_args(
     func: &mut Function,
     locals: &WasmFrameLocals,

@@ -283,8 +283,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         prev_annotation_emitted = self.module_annotation_emitted
         prev_global_mutations = self.module_global_mutations
         prev_globals_dict_escaped = self.module_globals_dict_escaped
-        prev_module_intrinsic_globals = self.module_intrinsic_globals
-        prev_reserved_external = self.reserved_external_func_symbols
         prev_module_chunk_globals = self.module_chunk_globals
         prev_elided_deleted_funcs = self.module_elided_deleted_funcs
         prev_pending_classes = self.class_definition_pending
@@ -304,12 +302,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.stable_module_classes = self._collect_stable_module_classes(node)
         self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
-        self.module_intrinsic_globals = self._collect_module_optional_intrinsic_globals(
-            node
-        )
-        self.reserved_external_func_symbols = set(
-            self.module_intrinsic_globals.values()
-        )
         for func_name, kind in self.module_declared_funcs.items():
             if (
                 normalize_function_kind(kind) is not None
@@ -510,8 +502,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_annotation_emitted = prev_annotation_emitted
         self.module_global_mutations = prev_global_mutations
         self.module_globals_dict_escaped = prev_globals_dict_escaped
-        self.module_intrinsic_globals = prev_module_intrinsic_globals
-        self.reserved_external_func_symbols = prev_reserved_external
         self.module_chunk_globals = prev_module_chunk_globals
         self.module_elided_deleted_funcs = prev_elided_deleted_funcs
         self.python_binding_index = prev_python_binding_index
@@ -570,8 +560,6 @@ class StatementScopeVisitorMixin(_MixinBase):
                 if alias.asname:
                     self._typing_import_aliases.add(alias.asname)
                 # Fall through — typing names have runtime significance.
-            if module_name in self._STUB_IMPORT_MODULES:
-                continue
             bind_name = alias.asname or module_name.split(".")[0]
             if self._source_imports_use_transaction():
                 if alias.asname:
@@ -714,8 +702,6 @@ class StatementScopeVisitorMixin(_MixinBase):
                 self._record_import_binding_origin(
                     bind_name, module_name, attr_name=alias.name
                 )
-            return None
-        if not runtime_relative and module_name in self._STUB_IMPORT_MODULES:
             return None
         fromlist_names = tuple(alias.name for alias in node.names)
         if runtime_relative or self._source_imports_use_transaction():

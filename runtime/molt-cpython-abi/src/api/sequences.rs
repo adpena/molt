@@ -3,7 +3,7 @@
 use crate::abi_types::{Py_ssize_t, PyListObject, PyObject, PyTupleObject};
 #[allow(unused_imports)]
 use crate::abi_types::{PyList_Type, PyTuple_Type};
-use crate::bridge::GLOBAL_BRIDGE;
+use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks::hooks_or_stubs;
 use std::os::raw::c_int;
 use std::ptr;
@@ -167,40 +167,33 @@ pub unsafe extern "C" fn PyList_Append(list: *mut PyObject, item: *mut PyObject)
     if !bridge.commit_list_view(list_bits) {
         return -1;
     }
-    let (item_bits, owned_local) = match bridge.molt_handle_for_pyobj(item) {
-        Some(b) => (b.bits(), false),
-        None => match unsafe { bridge.molt_value_for_pyobj(item) } {
-            // A genuine C-extension object item: give it a first-class
-            // `TYPE_ID_FOREIGN` wrapper so it can be stored in the Molt list.
-            Some(b) => (b, true),
-            None => {
-                // No foreign wrapper could be minted (runtime hooks absent).
-                // Fail loud instead of a contentless -1.
-                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyList_Append: item is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                return -1;
+    let Some(item_value) = (unsafe { RuntimeValue::acquire_edge(item) }) else {
+        // No foreign wrapper could be minted (runtime hooks absent), or a
+        // known runtime identity failed edge preparation. Fail loud instead of
+        // retrying a known object as foreign or returning a contentless -1.
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyList_Append: item is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-        },
+        }
+        return -1;
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.list_append)(list_bits, item_bits, item) };
+    let rc = unsafe { (h.list_append)(list_bits, item_value.bits(), item) };
     // CPython contract: `PyList_Append` takes its own strong reference to the
     // item (it does not steal). Anchor the item proxy so the extension's
     // balancing `Py_DECREF` cannot sever the pointer↔handle mapping while the
     // item stays reachable from the runtime list (same class as the
     // `PyDict_SetItem` anchor — see api/mapping.rs). A foreign-wrapped item
     // already holds its own strong reference on the C object (minted at
-    // refcount 1, ownership transferred to the list), so it is not INCREF'd.
-    if owned_local {
-        unsafe { (h.dec_ref)(item_bits) };
-    }
+    // refcount 1, held through this hook by RuntimeValue until the list has
+    // acquired its own edge), so it is not INCREF'd.
+    drop(item_value);
     if rc != 0 {
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
@@ -278,14 +271,15 @@ pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *m
 /// * success → indexed store via the `list_set` hook (`Py_SETREF` semantics).
 ///
 /// A foreign (C-extension) `v` gets first-class `TYPE_ID_FOREIGN` custody via
-/// `molt_value_for_pyobj` (pattern from 04599327e2) — the wrapper takes its own
-/// strong reference, and the stolen caller reference is consumed here — instead
-/// of the old silent drop-and-report-success.
+/// `RuntimeValue::acquire_edge` — the wrapper takes its own strong reference,
+/// and the stolen caller reference is consumed here — instead of the old
+/// silent drop-and-report-success. Managed construction values transport their
+/// canonical identity without requiring their contents to be readable yet.
 ///
-/// Custody note: the *replaced* occupant's bridge anchor is intentionally NOT
-/// released — same deliberate leak-not-corrupt trade `PyDict_SetItem` documents
-/// for removed entries (a mismatched release on a foreign wrapper would
-/// double-free when the wrapper later drops; the anchor is a small header).
+/// Custody note: runtime list mutation and physical ABI-view publication share
+/// the canonical lifecycle ledger. The displaced physical edge retires only
+/// after both authorities agree on the new occupant, avoiding both leaks and a
+/// premature foreign-wrapper release.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyList_SetItem(
     op: *mut PyObject,
@@ -304,7 +298,7 @@ pub unsafe extern "C" fn PyList_SetItem(
     };
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     if !GLOBAL_BRIDGE.commit_list_view_partial(list_bits) {
-        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        unsafe { crate::api::errors::release_preserving_error(&[v]) };
         return -1;
     }
     if v.is_null() {
@@ -313,36 +307,28 @@ pub unsafe extern "C" fn PyList_SetItem(
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    let bridge = &*GLOBAL_BRIDGE;
-    let (val_bits, owned_local) = match bridge.molt_handle_for_pyobj(v) {
-        Some(b) => (b.bits(), false),
-        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
-            Some(b) => (b, true),
-            None => {
-                unsafe {
-                    crate::api::refcount::Py_XDECREF(v);
-                    if crate::api::errors::PyErr_Occurred().is_null() {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyList_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                return -1;
+    let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
+        unsafe {
+            crate::api::errors::release_preserving_error(&[v]);
+            if crate::api::errors::PyErr_Occurred().is_null() {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyList_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-        },
+        }
+        return -1;
     };
     if !unsafe { GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) } {
-        if owned_local {
-            unsafe { (hooks_or_stubs().dec_ref)(val_bits) };
-        }
-        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        drop(value);
+        unsafe { crate::api::errors::release_preserving_error(&[v]) };
         return -1;
     }
     let h = hooks_or_stubs();
     let stored = if i >= 0 {
-        unsafe { (h.list_set)(list_bits, i as usize, val_bits) }
+        unsafe { (h.list_set)(list_bits, i as usize, value.bits()) }
     } else {
         crate::hooks::OwnedHandleResult::error()
     };
@@ -354,10 +340,8 @@ pub unsafe extern "C" fn PyList_SetItem(
     };
     let Some(old_bits) = old_bits else {
         unsafe { GLOBAL_BRIDGE.cancel_list_set_stolen_ref(v) };
-        if owned_local {
-            unsafe { (h.dec_ref)(val_bits) };
-        }
-        unsafe { crate::api::refcount::Py_XDECREF(v) };
+        drop(value);
+        unsafe { crate::api::errors::release_preserving_error(&[v]) };
         // OOB: CPython Py_XDECREFs the stolen reference, then IndexError.
         unsafe {
             if crate::api::errors::PyErr_Occurred().is_null() {
@@ -374,9 +358,7 @@ pub unsafe extern "C" fn PyList_SetItem(
         eprintln!("molt fatal: successful runtime list store could not publish its ABI view");
         std::process::abort();
     }
-    if owned_local {
-        unsafe { (h.dec_ref)(val_bits) };
-    }
+    drop(value);
     unsafe { (h.dec_ref)(old_bits) };
     // Steal contract on success: the container takes over the caller's
     // reference — a bridge proxy is NOT INCREF'd (unlike the non-stealing
@@ -937,34 +919,27 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         }
         return -1;
     }
-    let (val_bits, owned_local) = match bridge.observed_handle_for_pyobj(v) {
-        Some(b) => (b.bits(), false),
-        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
-            Some(b) => (b, true),
-            None => {
-                unsafe {
-                    crate::api::refcount::Py_XDECREF(v);
-                    if crate::api::errors::PyErr_Occurred().is_null() {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyTuple_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                return -1;
+    let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
+        unsafe {
+            crate::api::errors::release_preserving_error(&[v]);
+            if crate::api::errors::PyErr_Occurred().is_null() {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyTuple_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-        },
+        }
+        return -1;
     };
     let is_tuple =
         unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
     let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
     if !in_bounds {
-        if owned_local {
-            unsafe { (h.dec_ref)(val_bits) };
-        }
+        drop(value);
         unsafe {
-            crate::api::refcount::Py_XDECREF(v);
+            crate::api::errors::release_preserving_error(&[v]);
             if is_tuple {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_IndexError)
@@ -978,25 +953,21 @@ pub unsafe extern "C" fn PyTuple_SetItem(
         return -1;
     }
     let Some(prepared) =
-        (unsafe { bridge.prepare_tuple_value(tuple_bits, i as usize, val_bits, v) })
+        (unsafe { bridge.prepare_tuple_value(tuple_bits, i as usize, value.bits(), v) })
     else {
-        if owned_local {
-            unsafe { (h.dec_ref)(val_bits) };
-        }
+        drop(value);
         return -1;
     };
-    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, val_bits, v) };
+    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, value.bits(), v) };
     let old_bits = match result.decode() {
         crate::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
         crate::hooks::DecodedHandleResult::Missing => Some(0),
         crate::hooks::DecodedHandleResult::Error => None,
     };
-    if owned_local {
-        unsafe { (h.dec_ref)(val_bits) };
-    }
+    drop(value);
     let Some(old_bits) = old_bits else {
         // `prepared` consumes the stolen C reference on this error path.
-        drop(prepared);
+        crate::api::errors::with_preserved_error(|| drop(prepared));
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
@@ -1733,40 +1704,25 @@ pub unsafe extern "C" fn PyList_Insert(
     if !GLOBAL_BRIDGE.commit_list_view(list_bits) {
         return -1;
     }
-    let bridge = &*GLOBAL_BRIDGE;
-    let mut item_is_foreign = false;
-    let item_bits = match bridge.molt_handle_for_pyobj(v) {
-        Some(b) => b.bits(),
-        None => match unsafe { bridge.molt_value_for_pyobj(v) } {
-            Some(b) => {
-                item_is_foreign = true;
-                b
+    let Some(item_value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError)
+                        .cast::<crate::abi_types::PyObject>(),
+                    c"PyList_Insert: item is not a bridge-managed object and no foreign wrapper could be minted"
+                        .as_ptr(),
+                );
             }
-            None => {
-                if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                    unsafe {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                            c"PyList_Insert: item is not a bridge-managed object and no foreign wrapper could be minted"
-                                .as_ptr(),
-                        );
-                    }
-                }
-                return -1;
-            }
-        },
+        }
+        return -1;
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.list_insert)(list_bits, where_, item_bits, v) };
+    let rc = unsafe { (h.list_insert)(list_bits, where_, item_value.bits(), v) };
+    drop(item_value);
     if rc != 0 {
-        if item_is_foreign {
-            unsafe { (h.dec_ref)(item_bits) };
-        }
         unsafe { ensure_set_error(c"PyList_Insert failed: runtime list authority unavailable") };
         return -1;
-    }
-    if item_is_foreign {
-        unsafe { (h.dec_ref)(item_bits) };
     }
     0
 }

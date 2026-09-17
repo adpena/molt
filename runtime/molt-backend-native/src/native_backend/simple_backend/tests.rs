@@ -7,11 +7,14 @@ use super::{
     merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_leaf_functions,
     merge_task_kinds, preprocess_backend_tir_input, should_flush_deferred_codegen,
 };
-use crate::TrampolineKind;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use cranelift_codegen::ir::Value;
+use crate::{GENERATOR_CONTROL_BYTES, TrampolineKind};
+use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::types;
-use cranelift_module::Module;
+use cranelift_codegen::ir::{
+    Block, BlockArg, ExternalName, Function, Inst, InstructionData, Value, ValueDef,
+};
+use cranelift_module::{FuncId, Module};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -116,6 +119,18 @@ fn compile_function_to_clif(
     functions: Vec<FunctionIR>,
     target_name: &str,
 ) -> cranelift_codegen::ir::Function {
+    compile_function_to_clif_with_imports(functions, target_name).function
+}
+
+struct CompiledFunctionClif {
+    function: Function,
+    import_ids: BTreeMap<&'static str, FuncId>,
+}
+
+fn compile_function_to_clif_with_imports(
+    functions: Vec<FunctionIR>,
+    target_name: &str,
+) -> CompiledFunctionClif {
     let ir = SimpleIR {
         functions,
         profile: None,
@@ -143,20 +158,120 @@ fn compile_function_to_clif(
         &analysis.task_kinds,
         &analysis.task_closure_sizes,
         &analysis.defined_functions,
-        &analysis.defined_functions,
         &analysis.closure_functions,
-        false,
         &analysis.leaf_functions,
         &function_arities,
         &function_has_ret,
     );
-    backend
+    let function = backend
         .deferred_defines
         .iter()
         .find(|deferred| deferred.name == target_name)
         .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
         .func
-        .clone()
+        .clone();
+    let import_ids = backend
+        .import_ids
+        .iter()
+        .map(|(name, (id, _))| (*name, *id))
+        .collect();
+    CompiledFunctionClif {
+        function,
+        import_ids,
+    }
+}
+
+fn call_sites_for_import(function: &Function, import_id: FuncId) -> Vec<(Block, Inst)> {
+    function
+        .layout
+        .blocks()
+        .flat_map(|block| {
+            function
+                .layout
+                .block_insts(block)
+                .map(move |inst| (block, inst))
+        })
+        .filter(|(_, inst)| {
+            let InstructionData::Call { func_ref, .. } = function.dfg.insts[*inst] else {
+                return false;
+            };
+            let ExternalName::User(name) = function.dfg.ext_funcs[func_ref].name else {
+                return false;
+            };
+            let name = &function.params.user_named_funcs()[name];
+            name.namespace == 0 && name.index == import_id.as_u32()
+        })
+        .collect()
+}
+
+/// Resolve an observed SSA value to its instruction/function-parameter
+/// origins through Cranelift aliases and explicit block transport.
+fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value> {
+    fn collect(
+        function: &Function,
+        cfg: &ControlFlowGraph,
+        value: Value,
+        visiting: &mut BTreeSet<Value>,
+        sources: &mut BTreeSet<Value>,
+    ) {
+        let value = function.dfg.resolve_aliases(value);
+        if !visiting.insert(value) {
+            sources.insert(value);
+            return;
+        }
+        match function.dfg.value_def(value) {
+            ValueDef::Result(_, _) => {
+                sources.insert(value);
+            }
+            ValueDef::Union(left, right) => {
+                collect(function, cfg, left, visiting, sources);
+                collect(function, cfg, right, visiting, sources);
+            }
+            ValueDef::Param(block, index) => {
+                let mut found_incoming = false;
+                for predecessor in cfg.pred_iter(block) {
+                    let destinations = function.dfg.insts[predecessor.inst].branch_destination(
+                        &function.dfg.jump_tables,
+                        &function.dfg.exception_tables,
+                    );
+                    for destination in destinations
+                        .iter()
+                        .filter(|destination| destination.block(&function.dfg.value_lists) == block)
+                    {
+                        let Some(argument) = destination.args(&function.dfg.value_lists).nth(index)
+                        else {
+                            continue;
+                        };
+                        found_incoming = true;
+                        match argument {
+                            BlockArg::Value(incoming) => {
+                                collect(function, cfg, incoming, visiting, sources);
+                            }
+                            BlockArg::TryCallRet(_) | BlockArg::TryCallExn(_) => {
+                                sources.insert(value);
+                            }
+                        }
+                    }
+                }
+                if !found_incoming {
+                    // Root block parameters (including function parameters)
+                    // are canonical because they have no incoming CFG value.
+                    sources.insert(value);
+                }
+            }
+        }
+        visiting.remove(&value);
+    }
+
+    let cfg = ControlFlowGraph::with_function(function);
+    let mut sources = BTreeSet::new();
+    collect(function, &cfg, value, &mut BTreeSet::new(), &mut sources);
+    sources
+}
+
+fn value_originates_only_from(function: &Function, value: Value, source: Value) -> bool {
+    let source = function.dfg.resolve_aliases(source);
+    canonical_value_sources(function, value) == BTreeSet::from([source])
 }
 
 fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {

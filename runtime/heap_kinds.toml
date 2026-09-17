@@ -191,9 +191,11 @@ metrics = "none"
 [[kind]]
 name = "BUFFER2D"
 id = 216
-layout = "boxed"
-edges = "none"
+layout = "inline_rust"
+edges = "dynamic"
 cycle = "never"
+acyclic_capability = "int_cells"
+acyclic_slots = { cell = "int" }
 weakref = "deny"
 shape = "fixed"
 drop = "buffer2d"
@@ -486,7 +488,7 @@ shape = "fixed"
 drop = "code"
 metrics = "none"
 acyclic_capability = "code_metadata"
-acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none" }
+acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none", freevars = "str_tuple", cellvars = "str_tuple" }
 
 [[kind]]
 name = "ELLIPSIS"
@@ -643,6 +645,17 @@ cycle = "always"
 weakref = "deny"
 shape = "fixed"
 drop = "native_descriptor"
+metrics = "none"
+
+[[kind]]
+name = "CELL"
+id = 258
+layout = "fixed_bits"
+edges = "fixed"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "cell"
 metrics = "none"
 
 

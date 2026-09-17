@@ -298,10 +298,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result);
         true
     }
 
@@ -370,10 +367,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result);
         true
     }
 
@@ -389,10 +383,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         {
             let callable = self.resolve(op.operands[0]);
             let result = self.emit_call_func_or_bind_runtime(callable, &op.operands[1..]);
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
             return;
         }
 
@@ -442,10 +433,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic();
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
             return;
         }
 
@@ -454,10 +442,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         {
             let callable = self.resolve(callable_id);
             let result = self.emit_call_func_runtime(callable, direct_operands);
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
             return;
         }
 
@@ -481,10 +466,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     let callable = self.resolve(callable_id);
                     let result = self.emit_call_bind_runtime(callable, direct_operands);
-                    if let Some(&result_id) = op.results.first() {
-                        self.values.insert(result_id, result);
-                        self.value_types.insert(result_id, TirType::DynBox);
-                    }
+                    self.bind_owned_runtime_result(op, result);
                     return;
                 }
                 let current_bb = self
@@ -557,15 +539,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     };
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
+                } else if !target_return_tir_ty.is_unboxed()
+                    && let Some(result) = call_result.try_as_basic_value().basic()
+                {
+                    // Semantic object returns already use boxed handles. Raw
+                    // scalar results have no owner and need no boxing just to
+                    // discard them; void calls produce no value at all.
+                    self.bind_owned_runtime_result(op, result);
                 }
             } else {
                 if let Some(callable_id) = guarded_callable {
                     let callable = self.resolve(callable_id);
                     let result = self.emit_call_bind_runtime(callable, direct_operands);
-                    if let Some(&result_id) = op.results.first() {
-                        self.values.insert(result_id, result);
-                        self.value_types.insert(result_id, TirType::DynBox);
-                    }
+                    self.bind_owned_runtime_result(op, result);
+                    return;
+                }
+                // Source functions use exact native linkage above. Only the
+                // external/runtime CALL role may use a classified runtime ABI;
+                // neither a symbol prefix nor operand count invents a signature.
+                if matches!(original_kind, Some("call"))
+                    && let Some(abi) = runtime_boxed_abi(target_name, direct_operands.len())
+                {
+                    self.emit_boxed_runtime_call(op, abi);
                     return;
                 }
                 self.record_fatal(format!(
@@ -586,10 +581,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let callable = self.resolve(op.operands[0]);
             let result = self.emit_call_bind_runtime(callable, &op.operands[1..]);
 
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
         } else {
             // No operands, no direct target — emit None.
             if let Some(&result_id) = op.results.first() {
@@ -663,10 +655,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result);
     }
 
     pub(super) fn emit_call_method_ic(&mut self, op: &TirOp) {
@@ -739,10 +728,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic();
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
         } else {
             // Build arguments only after a synthesized name is admitted. The
             // dynamic-name lane borrows its existing SSA operand instead.
@@ -756,10 +742,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.emit_builtin_with_name(name_bits, call.arguments)
                 }
             };
-            if let Some(&result_id) = op.results.first() {
-                self.values.insert(result_id, result);
-                self.value_types.insert(result_id, TirType::DynBox);
-            }
+            self.bind_owned_runtime_result(op, result);
         }
     }
 

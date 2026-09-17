@@ -36,6 +36,7 @@ pub(crate) mod aux_header;
 pub(crate) mod backing;
 pub(crate) mod buffer2d;
 pub(crate) mod builders;
+pub(crate) mod cells;
 pub(crate) mod class_storage;
 pub(crate) mod field_storage;
 #[cfg(test)]
@@ -864,9 +865,9 @@ pub(crate) struct DataclassDesc {
 }
 
 pub(crate) struct Buffer2D {
-    pub(crate) rows: usize,
-    pub(crate) cols: usize,
-    pub(crate) data: Vec<i64>,
+    pub(crate) rows: u64,
+    pub(crate) cols: u64,
+    pub(crate) data: buffer2d::Buffer2DStorage,
 }
 
 #[repr(C)]
@@ -979,8 +980,6 @@ pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
 pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN: u32 = 1 << 13;
-pub(crate) const HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED: u32 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
 pub(crate) const HEADER_FLAG_IMMORTAL: u32 = molt_codegen_abi::HEADER_FLAG_IMMORTAL;
@@ -1050,7 +1049,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 32] = [
+const HEADER_FLAG_REGISTRY: [u32; 30] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_GEN_RUNNING,
@@ -1064,8 +1063,6 @@ const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_TASK_DONE,
     HEADER_FLAG_TRACEBACK_SUPPRESSED,
     HEADER_FLAG_COROUTINE,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
     HEADER_FLAG_IMMORTAL,
     HEADER_FLAG_FINALIZER_RAN,
     HEADER_FLAG_INTERNED,
@@ -1638,7 +1635,10 @@ pub(crate) fn checked_object_total_size(payload_size: usize) -> Option<usize> {
 
 /// Heap and scoped boxed-word allocation have the same stride/extent contract.
 pub(crate) fn boxed_object_total_size(py: &PyToken<'_>, payload_bits: u64) -> Option<usize> {
-    let payload = crate::usize_from_bits(payload_bits)?;
+    let Some(payload) = crate::usize_from_bits(payload_bits) else {
+        crate::record_memory_error_without_allocation(py);
+        return None;
+    };
     if payload % std::mem::size_of::<u64>() != 0 {
         crate::raise_exception::<()>(
             py,
@@ -1647,7 +1647,10 @@ pub(crate) fn boxed_object_total_size(py: &PyToken<'_>, payload_bits: u64) -> Op
         );
         return None;
     }
-    checked_object_total_size(payload)
+    checked_object_total_size(payload).or_else(|| {
+        crate::record_memory_error_without_allocation(py);
+        None
+    })
 }
 
 /// Create owned boxed fields using caller-managed storage and the normal size
@@ -1661,10 +1664,12 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
 ) -> u64 {
     let Some(plan) = boxed_object_total_size(py, payload_bits).and_then(object_allocation_plan)
     else {
+        crate::record_memory_error_without_allocation(py);
         return MoltObject::none().bits();
     };
     let storage = allocate(plan.alloc_size);
     if storage.is_null() {
+        crate::record_memory_error_without_allocation(py);
         return MoltObject::none().bits();
     }
     unsafe {
@@ -1684,6 +1689,7 @@ pub(crate) unsafe fn alloc_scoped_boxed_object(
             plan.alloc_size,
             ObjectAuxPreselection::Default,
         ) {
+            crate::record_memory_error_without_allocation(py);
             return MoltObject::none().bits();
         }
         let data = storage.add(std::mem::size_of::<MoltHeader>());
@@ -2161,9 +2167,11 @@ fn alloc_object_zeroed_with_aux_policy(
                 type_id, total_size
             );
         }
+        crate::record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     };
     if !reserve_object_allocation(plan) {
+        crate::record_memory_error_without_allocation(_py);
         return std::ptr::null_mut();
     }
     unsafe {
@@ -2176,6 +2184,7 @@ fn alloc_object_zeroed_with_aux_policy(
                     type_id, total_size
                 );
             }
+            crate::record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
         }
         let header = ptr as *mut MoltHeader;
@@ -2190,6 +2199,7 @@ fn alloc_object_zeroed_with_aux_policy(
         if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
             std::alloc::dealloc(ptr, plan.layout);
             release_object_allocation_reservation(plan);
+            crate::record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
         }
         let aux_bytes = header_aux_storage_bytes(header_aux_snapshot(header).kind);
@@ -2227,16 +2237,6 @@ pub(crate) fn alloc_object_with_aux(
             crate::gil_held()
         );
     }
-    crate::gil_assert();
-    let Some(plan) = object_allocation_plan(total_size) else {
-        if debug_oom() {
-            eprintln!(
-                "molt OOM alloc_object type_id={} invalid total_size={}",
-                type_id, total_size
-            );
-        }
-        return std::ptr::null_mut();
-    };
     if debug_alloc_list_builder() && type_id == TYPE_ID_LIST_BUILDER {
         let expected = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut Vec<u64>>();
         eprintln!(
@@ -2244,49 +2244,9 @@ pub(crate) fn alloc_object_with_aux(
             total_size, expected
         );
     }
-    if !reserve_object_allocation(plan) {
-        return std::ptr::null_mut();
-    }
-    let header_ptr = unsafe { std::alloc::alloc(plan.layout) };
-    if header_ptr.is_null() {
-        release_object_allocation_reservation(plan);
-        if debug_oom() {
-            eprintln!(
-                "molt OOM alloc_object type_id={} total_size={}",
-                type_id, total_size
-            );
-        }
-        return std::ptr::null_mut();
-    }
-    unsafe {
-        // Zero the entire allocation so data fields past the header
-        // start as null pointers / zero values.  This prevents the
-        // deallocation path from misinterpreting stale heap data as
-        // valid inner pointers (Vec*, DataclassDesc*, etc.) when an
-        // object type allocates more space than it initializes.
-        std::ptr::write_bytes(header_ptr, 0, plan.alloc_size);
-        let header = header_ptr as *mut MoltHeader;
-        (*header).type_id = type_id;
-        MoltHeader::initialize_refcount_before_publication(header, 1);
-        MoltHeader::initialize_flags_before_publication(header, 0);
-        // Payload and size_class are already 0 from write_bytes.
-        (*header).size_class = plan.size_class;
-        if !initialize_header_aux(header, type_id, plan.size_class, total_size, aux) {
-            std::alloc::dealloc(header_ptr, plan.layout);
-            release_object_allocation_reservation(plan);
-            return std::ptr::null_mut();
-        }
-        let aux_bytes = header_aux_storage_bytes(header_aux_snapshot(header).kind);
-        let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
-        profile_hit(_py, &ALLOC_COUNT);
-        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
-        profile_alloc_aux_kind(_py, header_aux_snapshot(header).kind);
-        profile_alloc_type(_py, type_id);
-        profile_alloc_type_bytes(_py, type_id, tracked_bytes);
-        let data_ptr = header_ptr.add(std::mem::size_of::<MoltHeader>());
-        gc::gc_track_if_cyclic(_py, data_ptr, type_id);
-        data_ptr
-    }
+    // Ordinary and explicitly zeroed allocations have the same payload and
+    // failure contract; publication policy is their only semantic variation.
+    alloc_object_zeroed_with_aux_policy(_py, total_size, type_id, aux, false)
 }
 
 #[inline(always)]
@@ -3179,11 +3139,11 @@ pub(crate) unsafe fn dataclass_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
 }
 
 pub(crate) unsafe fn buffer2d_ptr(ptr: *mut u8) -> *mut Buffer2D {
-    unsafe { *(ptr as *const *mut Buffer2D) }
+    ptr.cast::<Buffer2D>()
 }
 
 /// Boxed `GlobIterState` pointer stored at payload offset 0 of a
-/// `TYPE_ID_GLOB_ITER` object (mirrors `buffer2d_ptr`).
+/// `TYPE_ID_GLOB_ITER` object payload pointer.
 pub(crate) unsafe fn glob_iter_state_ptr(
     ptr: *mut u8,
 ) -> *mut crate::builtins::io_path_utils::GlobIterState {
@@ -4305,7 +4265,15 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                     Some(HeapDropPolicy::Buffer2d) => {
                         let buffer = buffer2d_ptr(ptr);
                         if !buffer.is_null() {
-                            drop(Box::from_raw(buffer));
+                            match &mut (*buffer).data {
+                                buffer2d::Buffer2DStorage::I64(data) => {
+                                    drop(backing::tracked_vec_box_from_raw(*data));
+                                }
+                                buffer2d::Buffer2DStorage::Boxed(data) => {
+                                    drop(backing::tracked_vec_box_from_raw(*data));
+                                }
+                            }
+                            std::ptr::drop_in_place(buffer);
                         }
                     }
                     Some(HeapDropPolicy::GlobIter) => {
@@ -4326,6 +4294,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                         | HeapDropPolicy::Range
                         | HeapDropPolicy::Slice
                         | HeapDropPolicy::Code
+                        | HeapDropPolicy::Cell
                         | HeapDropPolicy::Function
                         | HeapDropPolicy::Module
                         | HeapDropPolicy::BoundMethod
@@ -4518,17 +4487,20 @@ mod tests {
 
     #[test]
     fn object_allocator_rejects_impossible_layout_without_panicking() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = alloc_object(_py, usize::MAX, TYPE_ID_OBJECT);
             assert!(
                 ptr.is_null(),
                 "impossible object layout must fail closed instead of panicking"
             );
+            assert!(crate::exception_pending(_py));
         });
     }
 
     #[test]
     fn denied_object_allocation_does_not_poison_tracker_state() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let small_total = std::mem::size_of::<super::MoltHeader>();
             let small_plan =
@@ -4552,6 +4524,7 @@ mod tests {
 
             let denied = alloc_object(_py, large_total, TYPE_ID_OBJECT);
             assert!(denied.is_null());
+            assert!(crate::exception_pending(_py));
 
             let allowed = alloc_object(_py, small_total, TYPE_ID_OBJECT);
             assert!(
@@ -4585,6 +4558,7 @@ mod tests {
                 denied.is_null(),
                 "sidecar resource denial must fail the whole object allocation"
             );
+            assert!(crate::exception_pending(_py));
 
             let allowed = alloc_object(_py, total, TYPE_ID_OBJECT);
             assert!(

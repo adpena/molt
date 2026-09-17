@@ -115,7 +115,7 @@ unsafe extern "C" {
         name_ptr: *const u8,
         name_len: usize,
         value_bits: u64,
-    ) -> i64;
+    ) -> u64;
     fn __molt_gpu_alloc_instance_for_class(class_ptr: *mut u8) -> u64;
     fn __molt_gpu_builtin_float() -> u64;
     fn __molt_gpu_object_class_bits(ptr: *mut u8) -> u64;
@@ -241,7 +241,7 @@ pub(super) unsafe fn object_setattr_raw(
     name_bits: u64,
     name: &str,
     value_bits: u64,
-) -> i64 {
+) -> u64 {
     unsafe {
         __molt_gpu_object_setattr_raw(obj_ptr, name_bits, name.as_ptr(), name.len(), value_bits)
     }

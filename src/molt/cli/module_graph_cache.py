@@ -48,12 +48,12 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 11
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 12
 
 
 # v8 allowed imports-only producers to publish a false empty execution list.
 # There is no sound way to distinguish those rows from complete empty scans.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 9
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 10
 
 
 def _module_graph_policy_digest(
@@ -272,6 +272,7 @@ def _read_persisted_module_graph(
         if mode not in {"full", "module_init", "module_init_static_helpers"}:
             return None
         is_package = item.get("is_package")
+        requires_runtime_package_anchor = item.get("requires_runtime_package_anchor")
         source_input = (
             source_input_authority.by_module.get(module_name)
             if source_input_authority is not None
@@ -284,7 +285,14 @@ def _read_persisted_module_graph(
             if source_input is not None
             else path.name == "__init__.py"
         )
-        if not isinstance(is_package, bool) or is_package != expected_package:
+        if (
+            not isinstance(is_package, bool)
+            or is_package != expected_package
+            or not isinstance(requires_runtime_package_anchor, bool)
+            or source_input is not None
+            and source_input.requires_runtime_package_anchor
+            != requires_runtime_package_anchor
+        ):
             return None
         from molt.cli.module_import_scanner import _module_import_scan_mode
 
@@ -297,7 +305,11 @@ def _read_persisted_module_graph(
             return None
         scan_sources.append(
             _ModuleSourceScanAuthority(
-                module_name, path, cast(ImportScanMode, mode), is_package
+                module_name,
+                path,
+                cast(ImportScanMode, mode),
+                is_package,
+                requires_runtime_package_anchor,
             )
         )
         if not _module_resolution._case_exact_file(path):
@@ -372,6 +384,11 @@ def _write_persisted_module_graph(
                 "module": module_name,
                 "scan_mode": scan_authority.mode_for(module_name, path),
                 "is_package": scan_authority.by_module[module_name].is_package,
+                "requires_runtime_package_anchor": (
+                    scan_authority.by_module[
+                        module_name
+                    ].requires_runtime_package_anchor
+                ),
                 "path": str(path),
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
@@ -469,31 +486,20 @@ def _read_persisted_import_scan_record(
         ) or not isinstance(execution_path, str):
             return None
         executions.append((execution_module, Path(execution_path)))
-    return _PersistedImportScan(tuple(imports), tuple(executions))
-
-
-def _read_persisted_import_scan(
-    project_root: Path,
-    path: Path,
-    *,
-    module_name: str,
-    is_package: bool,
-    import_scan_mode: ImportScanMode,
-    path_stat: os.stat_result | None = None,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    capability_config_digest: str = "",
-) -> tuple[str, ...] | None:
-    record = _read_persisted_import_scan_record(
-        project_root,
-        path,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        path_stat=path_stat,
-        target_python=target_python,
-        capability_config_digest=capability_config_digest,
+    dynamic_candidates = payload.get("dynamic_relative_import_candidates")
+    requires_runtime_package_anchor = payload.get("requires_runtime_package_anchor")
+    if (
+        not isinstance(dynamic_candidates, list)
+        or not all(isinstance(item, str) for item in dynamic_candidates)
+        or not isinstance(requires_runtime_package_anchor, bool)
+    ):
+        return None
+    return _PersistedImportScan(
+        tuple(imports),
+        tuple(executions),
+        tuple(dynamic_candidates),
+        requires_runtime_package_anchor,
     )
-    return None if record is None else record.imports
 
 
 @_source_tree_fingerprint_transaction()
@@ -540,6 +546,10 @@ def _write_persisted_import_scan(
             }
             for execution_module, execution_path in scan.source_executions
         ],
+        "dynamic_relative_import_candidates": list(
+            scan.dynamic_relative_import_candidates
+        ),
+        "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload)

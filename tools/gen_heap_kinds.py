@@ -46,9 +46,10 @@ OUTPUTS = (OUT_CODEGEN, OUT_CORE, OUT_RUNTIME, OUT_AUDIT, OUT_PYTHON)
 FIELDS = ("layout", "edges", "cycle", "weakref", "shape", "drop", "metrics")
 PUBLICATION_POLICIES = {"python", "linear_unpublished"}
 EXTERNAL_GC_POLICIES = {"none", "opaque_rust_arc", "cpython_bridge"}
-ACYCLIC_CAPABILITIES = {"none", "int_triplet", "code_metadata"}
+ACYCLIC_CAPABILITIES = {"none", "int_triplet", "int_cells", "code_metadata"}
 ACYCLIC_EDGE_DOMAINS = {"int", "str", "bytes_or_none", "str_tuple", "str_or_none"}
 ACYCLIC_SLOT_SCHEMAS = {
+    "BUFFER2D": (("cell", "int"),),
     "RANGE": (
         ("start", "int"),
         ("stop", "int"),
@@ -65,6 +66,8 @@ ACYCLIC_SLOT_SCHEMAS = {
         ("kwonly", "str_tuple"),
         ("vararg", "str_or_none"),
         ("varkw", "str_or_none"),
+        ("freevars", "str_tuple"),
+        ("cellvars", "str_tuple"),
     ),
 }
 ALLOWED = {
@@ -148,6 +151,7 @@ ALLOWED = {
         "foreign",
         "weak_container",
         "native_descriptor",
+        "cell",
     },
     "metrics": {
         "none",
@@ -247,9 +251,11 @@ def load_table(path: Path = TABLE) -> list[dict[str, object]]:
             raise ValueError(
                 f"heap kind {name} cannot carry acyclic capability {acyclic!r}"
             )
-        expected_acyclic = {"RANGE": "int_triplet", "CODE": "code_metadata"}.get(
-            str(name), "none"
-        )
+        expected_acyclic = {
+            "RANGE": "int_triplet",
+            "BUFFER2D": "int_cells",
+            "CODE": "code_metadata",
+        }.get(str(name), "none")
         if acyclic != expected_acyclic:
             raise ValueError(
                 f"heap kind {name} requires acyclic capability {expected_acyclic!r}, got {acyclic!r}"

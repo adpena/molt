@@ -6,6 +6,7 @@ import math
 import pytest
 
 from molt.compiler_analysis.static_truth import (
+    ExpressionSequenceItem,
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
     _same_scalar_value,
@@ -15,8 +16,14 @@ from molt.compiler_analysis.python_binding_flow import analyze_python_source_bin
 from molt.compiler_analysis.python_effects import (
     AccumulatedKeyEffects,
     expression_may_execute_python,
+    iterable_unpack_effects,
 )
-from molt.compiler_analysis.python_effects_generated import NO_EFFECTS
+from molt.compiler_analysis.python_effects_generated import (
+    EXECUTES_ARBITRARY_PYTHON,
+    INVOKES_COMPARISON_CALLBACK,
+    NO_EFFECTS,
+    RAISES,
+)
 
 
 @pytest.mark.parametrize(
@@ -198,3 +205,69 @@ def test_recursive_release_fact_includes_mapping_values(
 ) -> None:
     result = static_expression_result(ast.parse(source, mode="eval").body)
     assert result.release_may_call is may_call
+
+
+@pytest.mark.parametrize("kind", ["bytearray", "list", "set", "dict"])
+def test_unhashable_exact_builtin_keys_raise_without_callbacks(kind) -> None:
+    assert AccumulatedKeyEffects().add(StaticExpressionResult(kind=kind)) == RAISES
+
+
+@pytest.mark.parametrize("kind", ["tuple", "frozenset"])
+def test_recursive_key_shapes_retain_collision_callbacks(kind) -> None:
+    keys = AccumulatedKeyEffects()
+    unknown_contents = StaticExpressionResult(kind=kind)
+    expected = EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+    assert keys.add(unknown_contents) == expected
+    # A later inert key can still collide with a callbackful retained key.
+    assert keys.add(StaticExpressionResult.scalar(1)) == expected
+    inert = StaticExpressionResult(
+        kind=kind, items=(ExpressionSequenceItem(StaticExpressionResult.scalar(1)),)
+    )
+    assert AccumulatedKeyEffects().add(inert) == NO_EFFECTS
+    nested = StaticExpressionResult(
+        kind=kind, items=(ExpressionSequenceItem(unknown_contents),)
+    )
+    assert AccumulatedKeyEffects().add(nested) == expected
+
+
+@pytest.mark.parametrize("kind", ["str", "bytes", "bytearray", "range"])
+def test_builtin_scalar_iteration_does_not_invent_key_callbacks(kind) -> None:
+    assert (
+        AccumulatedKeyEffects().extend(StaticExpressionResult(kind=kind)) == NO_EFFECTS
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["tuple", "list", "set", "frozenset", "dict", "str", "bytes", "bytearray", "range"],
+)
+def test_exact_iterable_protocol_is_separate_from_element_callbacks(kind) -> None:
+    node = ast.Name(id="value", ctx=ast.Load())
+    assert (
+        iterable_unpack_effects(
+            node, fact_result=lambda _: StaticExpressionResult(kind=kind)
+        )
+        == NO_EFFECTS
+    )
+
+
+def test_key_effects_visit_shared_shape_dag_without_expanding_cardinality() -> None:
+    result = StaticExpressionResult.scalar(1)
+    for _ in range(1100):
+        result = StaticExpressionResult(
+            kind="tuple",
+            items=(ExpressionSequenceItem(result), ExpressionSequenceItem(result)),
+        )
+    assert AccumulatedKeyEffects().add(result) == NO_EFFECTS
+
+
+def test_key_effects_distinguish_shared_direct_and_expanded_nodes() -> None:
+    bytearray = StaticExpressionResult(kind="bytearray")
+    result = StaticExpressionResult(
+        kind="tuple",
+        items=(
+            ExpressionSequenceItem(bytearray),
+            ExpressionSequenceItem(bytearray, expanded=True),
+        ),
+    )
+    assert AccumulatedKeyEffects().add(result) == RAISES

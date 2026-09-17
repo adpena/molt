@@ -426,6 +426,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                 TYPE_ID_MAP => builtins.map,
                 TYPE_ID_FILTER => builtins.filter,
                 TYPE_ID_CODE => builtins.code,
+                crate::TYPE_ID_CELL => crate::builtins::types::cell_class(_py),
                 TYPE_ID_MODULE => builtins.module,
                 TYPE_ID_TYPE => {
                     let class_bits = object_class_bits(ptr);

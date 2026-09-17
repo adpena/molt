@@ -1,7 +1,7 @@
 //! Module API — PyModule_New, PyModule_AddObject, PyModuleDef_Init.
 
 use crate::abi_types::{PyModuleDef, PyObject};
-use crate::bridge::GLOBAL_BRIDGE;
+use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
 use crate::hooks;
 use molt_lang_obj_model::MoltObject;
 use std::ffi::{CStr, CString};
@@ -157,22 +157,6 @@ fn validate_module_status_result(rc: c_int, call_name: &str) -> c_int {
             -1
         }
     }
-}
-
-/// Resolve a `*mut PyObject` produced by this bridge to its underlying Molt
-/// handle bits.
-///
-/// Managed views resolve through the canonical registry. Foreign pointers are
-/// converted through the single first-class foreign-wrapper authority.
-fn bridge_pyobj_to_bits(obj: *mut PyObject) -> u64 {
-    if obj.is_null() {
-        return MoltObject::none().bits();
-    }
-    let bridge = &*GLOBAL_BRIDGE;
-    if let Some(value) = bridge.molt_handle_for_pyobj(obj) {
-        return value.bits();
-    }
-    unsafe { bridge.molt_value_for_pyobj(obj) }.unwrap_or_else(|| MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]
@@ -339,7 +323,10 @@ pub unsafe extern "C" fn PyModule_GetDict(module: *mut PyObject) -> *mut PyObjec
     if module.is_null() {
         return ptr::null_mut();
     }
-    let module_bits = bridge_pyobj_to_bits(module);
+    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+        return ptr::null_mut();
+    };
+    let module_bits = module_value.bits();
     let h = hooks::hooks_or_stubs();
     let result = unsafe { (h.module_get_dict_borrowed)(module_bits) };
     let hooks::DecodedHandleResult::Ok(dict_bits) = result.decode() else {
@@ -365,7 +352,10 @@ pub unsafe extern "C" fn PyModule_GetState(module: *mut PyObject) -> *mut std::f
     if module.is_null() {
         return ptr::null_mut();
     }
-    let module_bits = bridge_pyobj_to_bits(module);
+    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+        return ptr::null_mut();
+    };
+    let module_bits = module_value.bits();
     let h = hooks::hooks_or_stubs();
     unsafe { (h.module_capi_get_state)(module_bits).cast() }
 }
@@ -375,9 +365,13 @@ pub unsafe extern "C" fn PyState_AddModule(module: *mut PyObject, def: *mut PyMo
     if module.is_null() || def.is_null() {
         return -1;
     }
-    let module_bits = bridge_pyobj_to_bits(module);
+    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+        return -1;
+    };
+    let module_bits = module_value.bits();
     let h = hooks::hooks_or_stubs();
-    unsafe { (h.module_state_add)(module_bits, def as usize) }
+    let rc = unsafe { (h.module_state_add)(module_bits, def as usize) };
+    validate_module_status_result(rc, "module state registration")
 }
 
 #[unsafe(no_mangle)]
@@ -414,35 +408,13 @@ pub unsafe extern "C" fn PyModule_AddObject(
     name: *const c_char,
     value: *mut PyObject,
 ) -> c_int {
-    if module.is_null() || name.is_null() || value.is_null() {
-        return -1;
+    let rc = unsafe { PyModule_AddObjectRef(module, name, value) };
+    if rc == 0 {
+        // The runtime module has acquired its own edge. Consume precisely the
+        // native C reference stolen by this API, never an extra view anchor.
+        unsafe { crate::api::errors::release_preserving_error(&[value]) };
     }
-    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
-    let module_bits = bridge_pyobj_to_bits(module);
-    let value_bits = bridge_pyobj_to_bits(value);
-    let h = hooks::hooks_or_stubs();
-    let rc = unsafe {
-        (h.module_set_attr)(
-            module_bits,
-            name_bytes.as_ptr(),
-            name_bytes.len(),
-            value_bits,
-        )
-    };
-    if rc != 0 {
-        // CPython contract: on failure the caller still owns the value
-        // reference — do NOT decref.
-        return rc;
-    }
-    // Per CPython: PyModule_AddObject steals the reference on success — the
-    // module dict now owns it. The bridge equivalent RETAINS the stolen proxy
-    // reference as the module's anchor: dropping it here severed the
-    // pointer↔handle mapping for a freshly minted proxy (refcnt 1) even though
-    // the Molt module still holds the object, breaking every borrowed pointer
-    // the extension kept (and, for a raw-registered static type, corrupting the
-    // static's refcount toward zero). Same class as the `PyDict_SetItem`
-    // anchor — see api/mapping.rs.
-    0
+    rc
 }
 
 #[unsafe(no_mangle)]
@@ -451,21 +423,27 @@ pub unsafe extern "C" fn PyModule_AddObjectRef(
     name: *const c_char,
     value: *mut PyObject,
 ) -> c_int {
-    if value.is_null() {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"PyModule_AddObjectRef value must not be NULL".as_ptr(),
-            );
-        }
+    if module.is_null() || name.is_null() || value.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return -1;
     }
-    unsafe { crate::api::refcount::Py_INCREF(value) };
-    let rc = unsafe { PyModule_AddObject(module, name, value) };
-    if rc != 0 {
-        unsafe { crate::api::refcount::Py_DECREF(value) };
-    }
-    rc
+    let name_bytes = unsafe { CStr::from_ptr(name).to_bytes() };
+    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+        return -1;
+    };
+    let Some(value_owner) = (unsafe { RuntimeValue::acquire_edge(value) }) else {
+        return -1;
+    };
+    let h = hooks::hooks_or_stubs();
+    let rc = unsafe {
+        (h.module_set_attr)(
+            module_value.bits(),
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+            value_owner.bits(),
+        )
+    };
+    validate_module_status_result(rc, "module attribute assignment")
 }
 
 #[unsafe(no_mangle)]
@@ -475,7 +453,15 @@ pub unsafe extern "C" fn PyModule_AddIntConstant(
     value: c_long,
 ) -> c_int {
     let obj = unsafe { crate::api::numbers::PyLong_FromLongLong(value as i64) };
-    unsafe { PyModule_AddObject(module, name, obj) }
+    if obj.is_null() {
+        if !module_error_pending() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+        }
+        return -1;
+    }
+    let rc = unsafe { PyModule_AddObjectRef(module, name, obj) };
+    unsafe { crate::api::errors::release_preserving_error(&[obj]) };
+    rc
 }
 
 #[unsafe(no_mangle)]
@@ -484,8 +470,20 @@ pub unsafe extern "C" fn PyModule_AddStringConstant(
     name: *const c_char,
     value: *const c_char,
 ) -> c_int {
+    if value.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
     let obj = unsafe { crate::api::strings::PyUnicode_FromString(value) };
-    unsafe { PyModule_AddObject(module, name, obj) }
+    if obj.is_null() {
+        if !module_error_pending() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+        }
+        return -1;
+    }
+    let rc = unsafe { PyModule_AddObjectRef(module, name, obj) };
+    unsafe { crate::api::errors::release_preserving_error(&[obj]) };
+    rc
 }
 
 /// Multi-phase init entry point. Called by `PyInit_<name>()` in extensions
@@ -515,7 +513,10 @@ unsafe fn register_module_capi(
     if module.is_null() || def.is_null() {
         return -1;
     }
-    let module_bits = bridge_pyobj_to_bits(module);
+    let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+        return -1;
+    };
+    let module_bits = module_value.bits();
     let h = hooks::hooks_or_stubs();
     let rc = unsafe { (h.module_capi_register)(module_bits, def as usize, module_state_size(def)) };
     if rc != 0 {
@@ -547,11 +548,13 @@ unsafe fn cleanup_module_create_failure(
     def: *mut PyModuleDef,
     attach_legacy_state: bool,
 ) -> *mut PyObject {
-    if attach_legacy_state {
-        unsafe { unregister_module_state(def) };
-    }
-    unsafe { crate::api::refcount::Py_DECREF(module) };
-    ptr::null_mut()
+    crate::api::errors::with_preserved_error(|| unsafe {
+        if attach_legacy_state {
+            unregister_module_state(def);
+        }
+        crate::api::refcount::Py_DECREF(module);
+        ptr::null_mut()
+    })
 }
 
 unsafe fn module_from_def_and_slots(
@@ -706,14 +709,16 @@ unsafe fn module_create2(
         return ptr::null_mut();
     }
     // Iterate the NULL-terminated PyMethodDef array and register each method
-    // as a callable Molt function via the runtime hook.  Methods whose flags
-    // describe a calling convention the runtime does not yet support are
-    // skipped with a diagnostic — the loader caller surfaces this as a load
-    // error if the extension actually invokes the unsupported method.
+    // as a callable Molt function via the runtime hook. Malformed or unsupported
+    // methods fail module creation atomically instead of publishing a partial
+    // method table.
     let m_methods = unsafe { (*def).m_methods };
     if !m_methods.is_null() {
         let h = hooks::hooks_or_stubs();
-        let module_bits = bridge_pyobj_to_bits(module);
+        let Some(module_value) = (unsafe { RuntimeValue::acquire(module) }) else {
+            return unsafe { cleanup_module_create_failure(module, def, attach_legacy_state) };
+        };
+        let module_bits = module_value.bits();
         let mut cursor = m_methods;
         unsafe {
             while !(*cursor).ml_name.is_null() {
@@ -722,8 +727,7 @@ unsafe fn module_create2(
                 // PyMethodDef.ml_meth is `Option<unsafe extern "C" fn(...)>`
                 // for CPython compatibility; a NULL slot signals end-of-table
                 // (handled by the outer `ml_name.is_null()` check, but a
-                // mid-table NULL would be malformed input — skip silently
-                // rather than ferrying an invalid pointer through dispatch).
+                // mid-table NULL is malformed input and fails construction).
                 let Some(fn_ptr) = entry.ml_meth else {
                     let mod_name = CStr::from_ptr(name).to_string_lossy();
                     let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");
@@ -741,19 +745,30 @@ unsafe fn module_create2(
                     meth_addr,
                     entry.ml_flags,
                     module_bits,
+                    false,
+                    MoltObject::none().bits(),
                     meth_name.as_ptr(),
                     meth_name.len(),
                 );
                 if func_bits != 0 {
+                    let function_owner = RuntimeValue::from_owned(func_bits);
+                    if module_error_pending() {
+                        return cleanup_module_create_failure(module, def, attach_legacy_state);
+                    }
                     let rc = (h.module_set_attr)(
                         module_bits,
                         meth_name.as_ptr(),
                         meth_name.len(),
-                        func_bits,
+                        function_owner.bits(),
                     );
                     // Drop our reference to the callable — module_set_attr
                     // grabbed its own reference when storing into the dict.
-                    (h.dec_ref)(func_bits);
+                    let rc = if rc == 0 {
+                        validate_module_status_result(rc, "module method assignment")
+                    } else {
+                        rc
+                    };
+                    drop(function_owner);
                     if rc != 0 {
                         let mod_name = CStr::from_ptr(name).to_string_lossy();
                         let meth_name_str = std::str::from_utf8(meth_name).unwrap_or("?");

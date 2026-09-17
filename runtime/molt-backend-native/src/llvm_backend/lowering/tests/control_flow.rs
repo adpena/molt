@@ -1,6 +1,205 @@
 use super::*;
 
 #[test]
+fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
+    use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
+
+    for (call_async, task_kind) in [
+        (false, None),
+        (false, Some("future")),
+        (false, Some("generator")),
+        (false, Some("coroutine")),
+        (true, None),
+    ] {
+        for payload_count in [0, 2] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            backend.function_linkage_abis.insert(
+                "opaque_task_body".into(),
+                test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
+            );
+            let layout = if call_async {
+                TaskConstructorLayout::for_call_async()
+            } else {
+                TaskConstructorLayout::for_alloc_kind(task_kind)
+            };
+            let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
+            let mut func = TirFunction::new(
+                "task_failure_cleanup".into(),
+                vec![TirType::DynBox, TirType::DynBox],
+                TirType::DynBox,
+            );
+            let result = func.fresh_value();
+            let pending = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let args: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
+            let mut attrs = AttrDict::from([
+                ("s_value".into(), AttrValue::Str("opaque_task_body".into())),
+                (
+                    "value".into(),
+                    AttrValue::Int(i64::from(payload_base) + (payload_count as i64) * 8),
+                ),
+            ]);
+            if let Some(kind) = task_kind {
+                attrs.insert("task_kind".into(), AttrValue::Str(kind.into()));
+            }
+            if call_async {
+                attrs.insert("_original_kind".into(), AttrValue::Str("call_async".into()));
+            }
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: if call_async {
+                    OpCode::Copy
+                } else {
+                    OpCode::AllocTask
+                },
+                operands: args[..payload_count].to_vec(),
+                results: vec![result],
+                attrs,
+                source_span: None,
+            });
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ExceptionPending,
+                operands: vec![],
+                results: vec![pending],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            for arg in args {
+                entry.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::DecRef,
+                    operands: vec![arg],
+                    results: vec![],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                });
+            }
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::from([(
+                    "_original_kind".into(),
+                    AttrValue::Str("trace_exit".into()),
+                )]),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![result],
+            };
+
+            let llvm_fn = try_lower_tir_to_llvm(&func, &backend)
+                .expect("task allocation and its cleanup must lower");
+            backend
+                .module
+                .verify()
+                .expect("task failure join must verify");
+            let ir = llvm_fn.print_to_string().to_string();
+            let blocks = llvm_fn.get_basic_blocks();
+            let block_ir = |bb: &inkwell::basic_block::BasicBlock<'_>| {
+                let mut lines = Vec::new();
+                let mut current = bb.get_first_instruction();
+                while let Some(instruction) = current {
+                    lines.push(instruction.print_to_string().to_string());
+                    current = instruction.get_next_instruction();
+                }
+                lines.join("\n")
+            };
+            let init = blocks
+                .iter()
+                .find(|bb| bb.get_name().to_str().unwrap().starts_with("task_init"))
+                .expect("success-only task initializer");
+            let ready = blocks
+                .iter()
+                .find(|bb| bb.get_name().to_str().unwrap().starts_with("task_ready"))
+                .expect("ordinary continuation shared by success and failure");
+            let allocation = blocks
+                .iter()
+                .find(|bb| block_ir(bb).contains("@molt_task_new("))
+                .expect("runtime allocator block");
+            let allocation_ir = block_ir(allocation);
+            let init_ir = block_ir(init);
+            let ready_ir = block_ir(ready);
+            let call_name = if call_async {
+                "call_async_task_new"
+            } else {
+                "task_new"
+            };
+            assert!(
+                allocation_ir.contains(&format!(
+                    "icmp ne i64 %{call_name}, {}",
+                    nanbox::QNAN | nanbox::TAG_NONE
+                )),
+                "{ir}"
+            );
+            assert!(
+                allocation_ir.contains(&format!(
+                    "br i1 %task_allocated, label %{}, label %{}",
+                    init.get_name().to_str().unwrap(),
+                    ready.get_name().to_str().unwrap()
+                )),
+                "allocation failure must directly join cleanup: {ir}"
+            );
+            assert!(
+                !allocation_ir.contains("inttoptr") && !allocation_ir.contains("ret "),
+                "{ir}"
+            );
+            assert!(init_ir.contains("inttoptr"), "{ir}");
+            assert_eq!(init_ir.matches("store i64").count(), payload_count, "{ir}");
+            assert_eq!(
+                init_ir.matches("@molt_inc_ref_obj(").count(),
+                payload_count,
+                "{ir}"
+            );
+            if payload_count != 0 {
+                assert!(
+                    init_ir.contains(&format!(
+                        "getelementptr i64, ptr %task_obj_ptr, i64 {}",
+                        payload_base / 8
+                    )),
+                    "{ir}"
+                );
+            }
+            let registers_token = layout.completion() == TaskCompletion::RegisterCancelToken;
+            assert_eq!(
+                init_ir.contains("@molt_cancel_token_get_current("),
+                registers_token,
+                "{ir}"
+            );
+            assert_eq!(
+                init_ir.contains("@molt_task_register_token_owned("),
+                registers_token,
+                "{ir}"
+            );
+            assert!(!init_ir.contains("ret "), "{ir}");
+            assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
+            assert_eq!(ready_ir.matches("@molt_dec_ref_obj(").count(), 2, "{ir}");
+            assert!(ready_ir.contains("@molt_trace_exit("), "{ir}");
+            assert!(
+                ready_ir.contains(&format!("ret i64 %{call_name}")),
+                "boxed result must survive unchanged: {ir}"
+            );
+            assert!(
+                !ready_ir.contains("inttoptr") && !ready_ir.contains("store i64"),
+                "{ir}"
+            );
+            assert!(
+                !ready_ir.contains("@molt_inc_ref_obj(")
+                    && !ready_ir.contains("@molt_task_register_token_owned("),
+                "{ir}"
+            );
+            assert!(
+                !ir.contains("@molt_exception_clear("),
+                "allocation failure must preserve pending exception: {ir}"
+            );
+        }
+    }
+}
+
+#[test]
 fn lower_const_and_return() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

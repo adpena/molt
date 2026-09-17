@@ -247,6 +247,18 @@ def test_execution_frames_are_implemented_but_introspection_is_not_admitted() ->
     assert rows["getframe"].status == "not-admitted"
 
 
+def test_ordered_mapping_requirement_cannot_be_reported_as_exact() -> None:
+    mod = _load_module()
+    row = mod._classify(
+        "callargs_expand_kwstar", "molt_callargs_expand_kwstar(builder, value)"
+    )
+    assert row.status == "implemented-target-limited"
+    assert "keys/getitem" in row.note
+    assert "callargs_expand_kwstar" in mod._kind_set(
+        "simpleir_luau_ordered_mapping_kinds"
+    )
+
+
 def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
     mod = _load_module()
     source = r"""

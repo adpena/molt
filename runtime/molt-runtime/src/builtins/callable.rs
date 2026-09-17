@@ -1,10 +1,12 @@
 use molt_obj_model::MoltObject;
 
+use crate::call::function::function_code_execution_kind;
 use crate::call::{has_type_call_attr, is_exact_staticmethod_wrapper};
+use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE,
-    function_attr_bits, function_closure_bits, function_dict_bits, intern_static_name, is_truthy,
-    maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception, runtime_state,
+    function_closure_bits, function_dict_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id,
+    raise_exception,
 };
 
 #[unsafe(no_mangle)]
@@ -46,15 +48,10 @@ pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_FUNCTION {
                 return MoltObject::from_bool(false).bits();
             }
-            let name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_is_generator,
-                b"__molt_is_generator__",
-            );
-            let Some(bits) = function_attr_bits(_py, ptr, name_bits) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            MoltObject::from_bool(is_truthy(_py, obj_from_bits(bits))).bits()
+            MoltObject::from_bool(
+                function_code_execution_kind(ptr) == Some(CodeExecutionKind::Generator),
+            )
+            .bits()
         }
     })
 }
@@ -70,15 +67,10 @@ pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
             if object_type_id(ptr) != TYPE_ID_FUNCTION {
                 return MoltObject::from_bool(false).bits();
             }
-            let name_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_is_coroutine,
-                b"__molt_is_coroutine__",
-            );
-            let Some(bits) = function_attr_bits(_py, ptr, name_bits) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            MoltObject::from_bool(is_truthy(_py, obj_from_bits(bits))).bits()
+            MoltObject::from_bool(
+                function_code_execution_kind(ptr) == Some(CodeExecutionKind::Coroutine),
+            )
+            .bits()
         }
     })
 }
@@ -180,4 +172,111 @@ pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
         let msg = format!("call arity mismatch (expected {expected}, got {got})");
         raise_exception::<_>(_py, "TypeError", &msg)
     })
+}
+
+#[cfg(test)]
+mod execution_kind_tests {
+    use super::*;
+    use crate::builtins::inspect::{
+        molt_inspect_isasyncgenfunction, molt_inspect_isawaitable, molt_inspect_iscoroutine,
+        molt_inspect_iscoroutinefunction, molt_inspect_isgeneratorfunction,
+    };
+    use crate::object::layout::{code_publish_execution_kind, function_set_code_bits};
+
+    #[test]
+    fn private_markers_cannot_override_shared_code_kind_or_inspection() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = crate::alloc_string(py, b"kind_probe");
+            let empty = crate::alloc_tuple(py, &[]);
+            assert!(!name.is_null() && !empty.is_null());
+            let name_bits = MoltObject::from_ptr(name).bits();
+            let empty_bits = MoltObject::from_ptr(empty).bits();
+            for kind in [
+                CodeExecutionKind::Direct,
+                CodeExecutionKind::Generator,
+                CodeExecutionKind::Coroutine,
+                CodeExecutionKind::AsyncGenerator,
+            ] {
+                let code = crate::alloc_code_obj(
+                    py,
+                    name_bits,
+                    name_bits,
+                    1,
+                    MoltObject::none().bits(),
+                    empty_bits,
+                    empty_bits,
+                    0,
+                    0,
+                    0,
+                );
+                assert!(!code.is_null());
+                let code_bits = MoltObject::from_ptr(code).bits();
+                unsafe {
+                    assert_eq!(code_publish_execution_kind(code, kind), Ok(()));
+                }
+                for marker_value in [true, false] {
+                    let function = crate::alloc_function_obj(py, 1, 0);
+                    assert!(!function.is_null());
+                    let bits = MoltObject::from_ptr(function).bits();
+                    unsafe {
+                        assert!(function_set_code_bits(py, function, code_bits));
+                    }
+                    for marker in [
+                        b"__molt_is_generator__".as_slice(),
+                        b"__molt_is_coroutine__".as_slice(),
+                        b"__molt_is_async_generator__".as_slice(),
+                    ] {
+                        let key = crate::attr_name_bits_from_bytes(py, marker).unwrap();
+                        let result = crate::molt_object_setattr(
+                            bits,
+                            key,
+                            MoltObject::from_bool(marker_value).bits(),
+                        );
+                        crate::dec_ref_bits(py, result);
+                        crate::dec_ref_bits(py, key);
+                    }
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(
+                        obj_from_bits(molt_function_is_generator(bits)).as_bool(),
+                        Some(kind == CodeExecutionKind::Generator),
+                    );
+                    assert_eq!(
+                        obj_from_bits(molt_function_is_coroutine(bits)).as_bool(),
+                        Some(kind == CodeExecutionKind::Coroutine),
+                    );
+                    let bound = crate::alloc_bound_method_obj(py, bits, MoltObject::none().bits());
+                    assert!(!bound.is_null());
+                    let bound_bits = MoltObject::from_ptr(bound).bits();
+                    for candidate in [bits, bound_bits] {
+                        assert_eq!(
+                            obj_from_bits(molt_inspect_isgeneratorfunction(candidate)).as_bool(),
+                            Some(kind == CodeExecutionKind::Generator),
+                        );
+                        assert_eq!(
+                            obj_from_bits(molt_inspect_iscoroutinefunction(candidate)).as_bool(),
+                            Some(kind == CodeExecutionKind::Coroutine),
+                        );
+                        assert_eq!(
+                            obj_from_bits(molt_inspect_isasyncgenfunction(candidate)).as_bool(),
+                            Some(kind == CodeExecutionKind::AsyncGenerator),
+                        );
+                    }
+                    assert_eq!(
+                        obj_from_bits(molt_inspect_iscoroutine(bits)).as_bool(),
+                        Some(false)
+                    );
+                    assert_eq!(
+                        obj_from_bits(molt_inspect_isawaitable(bits)).as_bool(),
+                        Some(false)
+                    );
+                    crate::dec_ref_bits(py, bound_bits);
+                    crate::dec_ref_bits(py, bits);
+                }
+                crate::dec_ref_bits(py, code_bits);
+            }
+            crate::dec_ref_bits(py, empty_bits);
+            crate::dec_ref_bits(py, name_bits);
+        });
+    }
 }

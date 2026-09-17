@@ -7,9 +7,10 @@ use crate::json_boundary::{
 };
 use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
-    SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
-    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_return_terminator,
-    simpleir_runtime_requirements_table, simpleir_runtime_symbol_requirements_table,
+    SimpleIrCallTargetRole, SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
+    simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
+    simpleir_kind_is_return_terminator, simpleir_runtime_requirements_table,
+    simpleir_runtime_symbol_requirements_table,
 };
 use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
@@ -373,6 +374,9 @@ pub struct OpIR {
     #[serde(default)]
     pub bound_local: Option<bool>,
     pub task_kind: Option<String>,
+    /// Immutable task-frame payload size, in bytes, authored together with
+    /// `task_kind` by `func_new` / `func_new_closure`.
+    pub task_closure_size: Option<i64>,
     pub container_type: Option<String>,
     pub native_callable_export: Option<String>,
     pub native_callable_binding: Option<String>,
@@ -684,8 +688,13 @@ impl OpIR {
         if self.passes_execution_context {
             requirements = requirements.union(SimpleIrRuntimeRequirements::EXECUTION_FRAME);
         }
-        if self.kind == "call_internal"
-            && let Some(symbol) = self.s_value.as_deref()
+        if matches!(
+            simpleir_call_target_role(&self.kind),
+            Some(
+                SimpleIrCallTargetRole::ExternalOrRuntime
+                    | SimpleIrCallTargetRole::InternalRequired
+            )
+        ) && let Some(symbol) = self.s_value.as_deref()
         {
             requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
         }
@@ -717,7 +726,7 @@ impl OpIR {
         {
             requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
         }
-        if self.kind == "builtin_func"
+        if (self.kind == "builtin_func" || simpleir_kind_has_function_reference_s_value(&self.kind))
             && let Some(symbol) = self.s_value.as_deref()
         {
             requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
@@ -1008,6 +1017,7 @@ impl OpIR {
             fast_float: optional_bool(obj, "fast_float", ctx)?,
             stack_eligible: optional_bool(obj, "stack_eligible", ctx)?,
             task_kind: optional_string(obj, "task_kind", ctx)?,
+            task_closure_size: optional_i64(obj, "task_closure_size", ctx)?,
             container_type: optional_string(obj, "container_type", ctx)?,
             native_callable_export: optional_string(obj, "native_callable_export", ctx)?,
             native_callable_binding: optional_string(obj, "native_callable_binding", ctx)?,
@@ -1390,6 +1400,37 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_parses_typed_callable_task_constructor_facts() {
+        let ir = SimpleIR::from_json_str(
+            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"func_new","s_value":"worker_poll","value":0,"out":"callable","task_kind":"async_generator","task_closure_size":48},{"kind":"ret","args":["callable"]}]},{"name":"worker_poll","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
+        )
+        .expect("typed callable task metadata must parse");
+        let constructor = &ir.functions[0].ops[0];
+        assert_eq!(constructor.task_kind.as_deref(), Some("async_generator"));
+        assert_eq!(constructor.task_closure_size, Some(48));
+    }
+
+    #[test]
+    fn simple_ir_rejects_partial_unknown_or_negative_callable_task_facts() {
+        for fields in [
+            r#""task_kind":"generator""#,
+            r#""task_closure_size":48"#,
+            r#""task_kind":"future","task_closure_size":48"#,
+            r#""task_kind":"coroutine","task_closure_size":-1"#,
+        ] {
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"func_new","s_value":"worker_poll","value":0,{fields}}},{{"kind":"ret_void"}}]}},{{"name":"worker_poll","params":[],"ops":[{{"kind":"ret_void"}}]}}]}}"#
+            );
+            let error = SimpleIR::from_json_str(&source)
+                .expect_err("malformed callable task metadata must be rejected");
+            assert!(
+                error.contains("task_kind") || error.contains("task_closure_size"),
+                "unexpected diagnostic: {error}"
+            );
+        }
     }
 
     #[test]
@@ -2038,13 +2079,19 @@ mod json_parse_tests {
 
     #[test]
     fn simple_ir_runtime_requirement_bits_are_typed_and_op_scoped() {
+        use super::{SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements};
+
+        let all_bits = SimpleIrRuntimeRequirements::ALL.bits();
         for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":1,"out":"value"}}]}}]}}"#,
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{all_bits},"out":"value"}}]}}]}}"#,
             );
             let accepted = SimpleIR::from_json_str(&source)
                 .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
-            assert_eq!(accepted.functions[0].ops[0].runtime_requirement_bits, 1);
+            assert_eq!(
+                accepted.functions[0].ops[0].runtime_requirement_bits,
+                all_bits
+            );
         }
 
         let wrong_op = SimpleIR::from_json_str(
@@ -2053,13 +2100,28 @@ mod json_parse_tests {
         .expect_err("requirement bits must not leak onto unrelated op families");
         assert!(wrong_op.contains("cannot carry runtime_requirement_bits"));
 
-        let unknown_bit = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"module_get_attr","runtime_requirement_bits":65536,"out":"value"}]}]}"#,
-        )
-        .expect_err("unknown generated requirement bits must fail closed");
-        assert!(unknown_bit.contains("unknown runtime_requirement_bits"));
+        for bit in 0..SimpleIrRuntimeRequirementBits::BITS {
+            let bits: SimpleIrRuntimeRequirementBits = 1 << bit;
+            let source = format!(
+                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{bits},"out":"value"}}]}}]}}"#,
+            );
+            let parsed = SimpleIR::from_json_str(&source);
+            if all_bits & bits != 0 {
+                let accepted = parsed.expect("every generated requirement bit must parse");
+                assert_eq!(accepted.functions[0].ops[0].runtime_requirement_bits, bits);
+            } else {
+                let error = parsed.expect_err("every unassigned requirement bit must fail closed");
+                assert!(
+                    error.contains("unknown runtime_requirement_bits"),
+                    "{error}"
+                );
+            }
+        }
 
-        for invalid in ["-1", "4294967296"] {
+        for invalid in [
+            "-1".to_string(),
+            (u64::from(SimpleIrRuntimeRequirementBits::MAX) + 1).to_string(),
+        ] {
             let source = format!(
                 r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{invalid},"out":"value"}}]}}]}}"#,
             );

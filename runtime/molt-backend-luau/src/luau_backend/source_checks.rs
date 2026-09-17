@@ -51,12 +51,16 @@ fn luau_block_kind_name(kind: LuauBlockKind) -> &'static str {
     }
 }
 
-fn strip_luau_line_comment(line: &str) -> &str {
+// Block keywords must come from code, never from diagnostics or string values.
+// Preserve byte positions while masking quoted literals and removing comments.
+fn luau_line_code(line: &str) -> String {
+    let mut code = String::with_capacity(line.len());
     let mut quote = None;
     let mut escaped = false;
     for (idx, ch) in line.char_indices() {
         if escaped {
             escaped = false;
+            code.extend(std::iter::repeat_n(' ', ch.len_utf8()));
             continue;
         }
         if let Some(active_quote) = quote {
@@ -65,17 +69,20 @@ fn strip_luau_line_comment(line: &str) -> &str {
             } else if ch == active_quote {
                 quote = None;
             }
+            code.extend(std::iter::repeat_n(' ', ch.len_utf8()));
             continue;
         }
         if ch == '"' || ch == '\'' {
             quote = Some(ch);
+            code.push(' ');
             continue;
         }
         if ch == '-' && line[idx..].starts_with("--") {
-            return &line[..idx];
+            break;
         }
+        code.push(ch);
     }
-    line
+    code
 }
 
 fn opens_luau_function_block(trimmed: &str) -> bool {
@@ -104,30 +111,18 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
 
     for (line_index, raw_line) in source.lines().enumerate() {
         let line_number = line_index + 1;
-        let trimmed = strip_luau_line_comment(raw_line).trim();
+        let code = luau_line_code(raw_line);
+        let trimmed = code.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        if trimmed.starts_with("else ") && trimmed.ends_with(" end") {
-            match stack.pop() {
-                Some((LuauBlockKind::If, _)) => {}
-                Some((kind, opened_line)) => {
-                    return Err(format!(
-                        "luau block structure error at line {line_number}: inline else closes if block, but top block is {} opened at line {opened_line}",
-                        luau_block_kind_name(kind)
-                    ));
-                }
-                None => {
-                    return Err(format!(
-                        "luau block structure error at line {line_number}: orphan inline else"
-                    ));
-                }
-            }
-            continue;
-        }
-
-        if trimmed == "else" || (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) {
+        // Both continuation branches retain the existing if frame. Either may
+        // contain a body and close that frame on the same line; a body without
+        // an inline end leaves it open, just like a branch with a separate body.
+        let is_else = trimmed == "else" || trimmed.starts_with("else ");
+        let is_elseif = trimmed.starts_with("elseif ") && trimmed.contains(" then");
+        if is_else || is_elseif {
             match stack.last() {
                 Some((LuauBlockKind::If, _)) => {}
                 Some((kind, opened_line)) => {
@@ -141,6 +136,9 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
                         "luau block structure error at line {line_number}: orphan `{trimmed}`"
                     ));
                 }
+            }
+            if trimmed.ends_with(" end") {
+                stack.pop();
             }
             continue;
         }
@@ -371,6 +369,81 @@ mod tests {
         ]
         .join("\n");
         assert!(validate_luau_source(&source).is_ok());
+    }
+
+    #[test]
+    fn if_chain_continuations_share_block_custody_for_every_body_layout() {
+        let chains = [
+            "if first then\nprint(1)\nelseif second then\nprint(2)\nelse\nprint(3)\nend",
+            "if first then print(1)\nelseif second then print(2) end",
+            "if first then print(1)\nelseif second then print(2)\nend",
+            "if first then print(1)\nelseif second then print(2)\nelse print(3) end",
+            "if first then print(1)\nelse print(2)\nend",
+            "if first then print(1)\nelseif second then print(2)\nelseif third then print(3) end",
+        ];
+        for chain in chains {
+            let source = format!(
+                "local function outer()\nscan(values, function(value)\n{chain}\nend)\nend\n"
+            );
+            validate_luau_source(&source)
+                .unwrap_or_else(|error| panic!("valid chain rejected: {error}\n{source}"));
+        }
+    }
+
+    #[test]
+    fn if_chain_keywords_in_literals_and_comments_do_not_change_block_custody() {
+        let source = r#"
+local function visit()
+    if first then print("function( -- end")
+    elseif second then print(' end') -- end
+    else print("quote: \" end") end -- function(
+end
+"#;
+        validate_luau_source(source).expect("only code may open or close blocks");
+
+        let malformed = "local function visit()\nif first then print(' end')\nend\n";
+        let error = validate_luau_source(malformed)
+            .expect_err("a quoted end must not hide a missing block terminator");
+        assert!(error.contains("unterminated function block"), "{error}");
+    }
+
+    #[test]
+    fn if_chain_continuations_reject_orphan_and_mismatched_branches() {
+        for branch in [
+            "else",
+            "else print(1)",
+            "else print(1) end",
+            "elseif flag then",
+            "elseif flag then print(1)",
+            "elseif flag then print(1) end",
+        ] {
+            let orphan = validate_luau_source(branch)
+                .expect_err("a continuation must have an owning if block");
+            assert!(orphan.contains("orphan"), "{orphan}");
+            for opener in ["local function f()", "while ready do", "do", "repeat"] {
+                let source = format!("{opener}\n{branch}\nend\n");
+                let error = validate_luau_source(&source)
+                    .expect_err("a continuation cannot steal another block's terminator");
+                assert!(error.contains("belongs to if block"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn inline_if_chain_closures_still_reject_missing_and_extra_ends() {
+        for chain in [
+            "if first then print(1)\nelseif second then print(2)",
+            "if first then print(1)\nelse print(2)",
+        ] {
+            let source = format!("local function f()\n{chain}\nend\n");
+            let error = validate_luau_source(&source).expect_err("missing if terminator");
+            assert!(error.contains("unterminated function block"), "{error}");
+        }
+        for branch in ["elseif second then print(2) end", "else print(2) end"] {
+            let source = format!("if first then print(1)\n{branch}\nend\n");
+            let error = validate_luau_source(&source).expect_err("extra if terminator");
+            assert!(error.contains("orphan `end`"), "{error}");
+        }
     }
 
     #[test]

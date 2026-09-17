@@ -346,3 +346,40 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
     assert!(!retained.contains("sys__helper"));
     assert!(!retained.contains("molt_init_json"));
 }
+#[test]
+fn task_references_retain_exact_symbols_without_guessed_companions() {
+    for kind in ["alloc_task", "call_async"] {
+        let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
+            name: name.to_string(),
+            params: Vec::new(),
+            ops,
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        };
+        let mut ir = SimpleIR {
+            functions: vec![
+                function(
+                    "entry",
+                    vec![OpIR {
+                        kind: kind.to_string(),
+                        s_value: Some("opaque_body".to_string()),
+                        ..OpIR::default()
+                    }],
+                ),
+                function("opaque_body", vec![make_op("ret_void")]),
+                function("opaque_body_poll", vec![make_op("ret_void")]),
+            ],
+            profile: None,
+        };
+        eliminate_dead_functions(&mut ir);
+        let retained: Vec<&str> = ir
+            .functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect();
+        assert_eq!(retained, ["entry", "opaque_body"], "{kind}");
+    }
+}

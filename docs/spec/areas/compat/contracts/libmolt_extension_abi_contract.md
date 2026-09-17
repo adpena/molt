@@ -77,6 +77,37 @@ for C/C++ extensions recompiled against Molt.
 
 ---
 
+## Value Presence At The Runtime Boundary
+
+Runtime value handles are boxed Python values, not nullable pointers. In
+particular, float `+0.0` has handle bits zero. Typed results use their status;
+exception snapshots use their presence masks. Neither may infer absence or
+failure from a present payload. Inactive snapshot slots must be zero and scalar
+exception fields travel in separate native-width lanes.
+
+`ExceptionSnapshot` in `runtime/molt-cpython-abi/src/hooks.rs` owns structural
+layout/mask validation and present-edge enumeration for both capture and commit.
+The runtime additionally checks field types and the recipient's immutable layout
+before publishing the whole state. Capture, C projection, rollback, and commit
+preserve each reference occurrence, including aliases, without a second validator
+or payload-based ownership test.
+
+Power's optional modulus follows the same rule: the C API's absent argument is
+projected to canonical Python `None`; a supplied numeric zero remains a value,
+and failed argument conversion remains failure. This does not change the
+language's integer-only modular-power contract.
+
+Numeric protocols share the bridge's observed-object classification: a managed
+view is committed before observation, foreign identity stays explicit, and a
+failed commit terminates dispatch. It must never become a foreign-slot retry or
+an omitted argument. Physical numeric projection consumes that classification
+and preserves aliased operand identity.
+
+These contracts require behavioral proof at the actual runtime/ABI boundary;
+host unit tests alone do not certify native/WASM or package compatibility.
+
+---
+
 ## 4. Tooling Contract
 - `molt extension build` must record the targeted header contract in
   `extension_manifest.json`.

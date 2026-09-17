@@ -97,9 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits, *self_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "object_new" => {
             let callee = SimpleBackend::import_func_id_split(
@@ -211,9 +209,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "staticmethod_new" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -238,9 +234,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "property_new" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -289,9 +283,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 .ins()
                 .call(local_callee, &[*getter, *setter, *deleter]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }

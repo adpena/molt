@@ -128,25 +128,20 @@ impl WasmRuntimeSurfacePlan {
             self.max_func_arity = self.max_func_arity.max(signature.arity);
             return;
         }
-        let is_poll = func_ir.name.ends_with("_poll");
-        if !is_poll {
-            self.max_func_arity = self.max_func_arity.max(func_ir.params.len());
-        }
+        self.max_func_arity = self.max_func_arity.max(func_ir.params.len());
         for op in &func_ir.ops {
-            self.observe_op(op, is_poll, defined_function_names, known_imports);
+            self.observe_op(op, defined_function_names, known_imports);
         }
     }
 
     fn observe_op(
         &mut self,
         op: &OpIR,
-        is_poll: bool,
         defined_function_names: &BTreeSet<&str>,
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind.as_str();
-        if !is_poll
-            && (kind == "call_func" || kind == "invoke_ffi")
+        if (kind == "call_func" || kind == "invoke_ffi")
             && let Some(args) = &op.args
             && !args.is_empty()
         {

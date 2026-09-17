@@ -25,6 +25,7 @@ from molt.frontend._types import (
     FuncInfo,
     MoltOp,
     MoltValue,
+    SourceModulePublication,
 )
 
 if TYPE_CHECKING:
@@ -264,6 +265,10 @@ class ModuleLifecycleMixin(_MixinBase):
             if code_id is None:
                 code_id = self._register_code_symbol(current_func)
             self.module_frame_code_id = code_id
+        # Module/code metadata is created before TRACE_ENTER_SLOT establishes
+        # an active frame, so this one bootstrap path must use the lexical
+        # module dictionary rather than the execution-context globals lookup.
+        globals_dict = self._emit_module_globals_dict()
         if not self.module_frame_emitted:
             self.module_frame_emitted = True
             filename = self.source_path or "<unknown>"
@@ -319,7 +324,7 @@ class ModuleLifecycleMixin(_MixinBase):
             self.emit(
                 MoltOp(
                     kind="CODE_SLOT_SET",
-                    args=[code_val],
+                    args=[code_val, globals_dict],
                     result=MoltValue("none"),
                     metadata={"code_id": code_id},
                 )
@@ -340,10 +345,22 @@ class ModuleLifecycleMixin(_MixinBase):
         self.function_exception_label = self.next_label()
         # Module-scope locals() must behave like globals(); pin the module dict on
         # the frame entry so builtins.locals/globals work even via getattr aliases.
-        locals_dict = self._emit_globals_dict()
+        assert self.function_exception_label is not None
+        assert self.module_obj is not None
+        assert self.current_func_name is not None
         self.emit(
             MoltOp(
-                kind="FRAME_LOCALS_SET", args=[locals_dict], result=MoltValue("none")
+                kind="FRAME_LOCALS_SET",
+                args=[globals_dict],
+                result=MoltValue("none"),
+                metadata={"source_module_publication_boundary": True},
+            )
+        )
+        self.funcs_map[self.current_func_name]["source_module_publication"] = (
+            SourceModulePublication(
+                module_name=self.module_name,
+                module_value=self.module_obj.name,
+                failure_label=self.function_exception_label,
             )
         )
 

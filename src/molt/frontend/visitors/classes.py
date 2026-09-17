@@ -398,9 +398,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 items.extend([key, value])
             scope.ns = MoltValue(self.next_var(), type_hint="dict")
             self.emit(MoltOp(kind="DICT_NEW", args=items, result=scope.ns))
-        cell = MoltValue(self.next_var(), type_hint="list")
-        self.emit(MoltOp(kind="LIST_NEW", args=[scope.ns], result=cell))
-        scope.annotation_namespace_cell = cell
+        scope.annotation_namespace_cell = self._emit_cell_new(scope.ns)
 
     def _collect_static_attributes(self, class_node: ast.ClassDef) -> tuple[str, ...]:
         """Collect attribute names set via self.X = ... in class body methods.
@@ -509,10 +507,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             "molt_issubclass", [actual_type, type_value], type_hint="bool"
         )
         self.emit(MoltOp(kind="IF", args=[is_type], result=MoltValue("none")))
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        owner = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=owner))
+        owner = self._emit_cell_get(cell)
         correct = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[owner, result], result=correct))
         self.emit(MoltOp(kind="IF", args=[correct], result=MoltValue("none")))
@@ -1228,8 +1223,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         classcell_val: MoltValue | None = None
         if needs_classcell:
             empty = self._emit_missing_value()
-            classcell_val = MoltValue(self.next_var(), type_hint="list")
-            self.emit(MoltOp(kind="LIST_NEW", args=[empty], result=classcell_val))
+            classcell_val = self._emit_cell_new(empty)
 
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[node.name], result=name_val))

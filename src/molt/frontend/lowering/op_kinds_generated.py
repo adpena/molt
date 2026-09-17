@@ -954,6 +954,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "ALLOC_TASK": "reads_heap",
     "AND": "writes_heap",
     "ASYNC_WORK_POLL": "writes_heap",
+    "BINDING_ALIAS": "writes_heap",
     "BIT_AND": "writes_heap",
     "BIT_NOT": "writes_heap",
     "BIT_OR": "writes_heap",
@@ -1225,6 +1226,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "ALLOC_TASK": True,
     "AND": True,
     "ASYNC_WORK_POLL": False,
+    "BINDING_ALIAS": False,
     "BIT_AND": True,
     "BIT_NOT": True,
     "BIT_OR": True,
@@ -1394,7 +1396,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "LOAD": True,
     "LOAD_ATTR": True,
     "LOAD_CONST": False,
-    "LOAD_VAR": True,
+    "LOAD_VAR": False,
     "LOOP_BREAK": False,
     "LOOP_BREAK_IF_EXCEPTION": False,
     "LOOP_BREAK_IF_FALSE": True,
@@ -1509,7 +1511,7 @@ SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: frozenset[str] = frozenset(
 
 # Explicit acquisition-provenance requirement bits shared with target admission.
 SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: int = 32
-SIMPLEIR_RUNTIME_REQUIREMENT_ALL: int = 65535
+SIMPLEIR_RUNTIME_REQUIREMENT_ALL: int = 262143
 SIMPLEIR_RUNTIME_REQUIREMENT_IDENTITY: int = 1 << 0
 SIMPLEIR_RUNTIME_REQUIREMENT_TUPLE: int = 1 << 1
 SIMPLEIR_RUNTIME_REQUIREMENT_EXCEPTION: int = 1 << 2
@@ -1526,9 +1528,16 @@ SIMPLEIR_RUNTIME_REQUIREMENT_HOST_CAPABILITY: int = 1 << 12
 SIMPLEIR_RUNTIME_REQUIREMENT_EXECUTION_FRAME: int = 1 << 13
 SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION: int = 1 << 14
 SIMPLEIR_RUNTIME_REQUIREMENT_PENDING_CALL_EVAL_BREAKER: int = 1 << 15
+SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL: int = 1 << 16
+SIMPLEIR_RUNTIME_REQUIREMENT_LEXICAL_CELLS: int = 1 << 17
 
 SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
+    "builtins.__import__": "molt_importlib_import_transaction",
+    "importlib.import_module": "molt_importlib_import_module",
+    "importlib.reload": "molt_importlib_reload",
     "inspect.currentframe": "molt_inspect_currentframe",
+    "runpy.run_module": "molt_runpy_run_module",
+    "runpy.run_path": "molt_runpy_run_path",
     "sys._getframe": "molt_getframe",
     "sys.getprofile": "molt_sys_getprofile",
     "sys.gettrace": "molt_sys_gettrace",
@@ -1538,28 +1547,82 @@ SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
 
 SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(
     {
+        "__import__",
         "_getframe",
         "currentframe",
         "getprofile",
         "gettrace",
+        "import_module",
+        "reload",
+        "run_module",
+        "run_path",
         "setprofile",
         "settrace",
     }
 )
 
-SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS: frozenset[str] = frozenset(
-    {
-        "__dict__",
-        "__getattr__",
-        "__getattribute__",
-        "_getframe",
-        "currentframe",
-        "getprofile",
-        "gettrace",
-        "setprofile",
-        "settrace",
-    }
-)
+SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS: dict[str, int] = {
+    "molt_cell_eq": 131072,
+    "molt_cell_ge": 131072,
+    "molt_cell_get": 131072,
+    "molt_cell_gt": 131072,
+    "molt_cell_le": 131072,
+    "molt_cell_lt": 131072,
+    "molt_cell_ne": 131072,
+    "molt_cell_new": 131072,
+    "molt_cell_set": 131072,
+    "molt_frame_context_set": 8192,
+    "molt_func_new_closure": 131072,
+    "molt_function_closure_bits": 131072,
+    "molt_getframe": 16384,
+    "molt_importlib_extension_loader_exec_module": 65536,
+    "molt_importlib_import_module": 65536,
+    "molt_importlib_import_optional": 65536,
+    "molt_importlib_import_or_fallback": 65536,
+    "molt_importlib_import_required": 65536,
+    "molt_importlib_import_transaction": 65536,
+    "molt_importlib_load_module_from_spec": 65536,
+    "molt_importlib_load_module_shim": 65536,
+    "molt_importlib_reload": 65536,
+    "molt_importlib_sourcefileloader_exec_module": 65536,
+    "molt_importlib_sourceless_loader_exec_module": 65536,
+    "molt_importlib_zip_source_loader_exec_module": 65536,
+    "molt_inspect_currentframe": 16384,
+    "molt_module_ensure": 65536,
+    "molt_module_import": 65536,
+    "molt_module_import_from": 65536,
+    "molt_module_import_star": 65536,
+    "molt_runpy_run_module": 65536,
+    "molt_runpy_run_path": 65536,
+    "molt_super_from_frame": 8192,
+    "molt_sys_getprofile": 16384,
+    "molt_sys_gettrace": 16384,
+    "molt_sys_setprofile": 16384,
+    "molt_sys_settrace": 16384,
+    "molt_types_cell_contents_delete": 131072,
+    "molt_types_cell_contents_get": 131072,
+    "molt_types_cell_contents_set": 131072,
+    "molt_types_cell_new": 131072,
+}
+
+SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS: dict[str, int] = {
+    "__dict__": 81920,
+    "__getattr__": 81920,
+    "__getattribute__": 81920,
+    "__import__": 65536,
+    "_getframe": 16384,
+    "currentframe": 16384,
+    "getprofile": 16384,
+    "gettrace": 16384,
+    "import_module": 65536,
+    "reload": 65536,
+    "run_module": 65536,
+    "run_path": 65536,
+    "setprofile": 16384,
+    "settrace": 16384,
+}
+
+SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS: int = 81920
 
 FRONTEND_EFFECT_PURE_KINDS: frozenset[str] = frozenset(
     {
@@ -1618,6 +1681,7 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "ALLOC",
         "AND",
         "ASYNC_WORK_POLL",
+        "BINDING_ALIAS",
         "BIT_AND",
         "BIT_NOT",
         "BIT_OR",

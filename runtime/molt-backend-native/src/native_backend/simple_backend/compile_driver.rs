@@ -366,13 +366,6 @@ impl SimpleBackend {
         // skip the redundant per-batch whole-program leaf lift here.
         let need_local_leaves = self.module_context.is_none();
         let ir_analysis = analyze_native_backend_ir(&ir, need_local_leaves, source_callables);
-        // Optional call-site tracing is separate from mandatory execution-frame
-        // ownership in FunctionIR. This switch may remove supplemental call traces,
-        // never the code-slot entry or owned exit needed by Python semantics.
-        let emit_traces = env_setting("MOLT_BACKEND_EMIT_TRACES")
-            .as_deref()
-            .map(parse_truthy_env)
-            .unwrap_or(false);
         // Compile functions into one module. Backend codegen failures are hard
         // failures: the compiler must not produce partial objects with
         // runtime-aborting placeholders for functions it could not compile.
@@ -455,8 +448,6 @@ impl SimpleBackend {
         local_function_has_ret.extend(compute_function_has_ret(&ir.functions));
         let effective_function_has_ret =
             merge_function_has_ret(module_context.as_ref(), local_function_has_ret);
-        let mut module_known_functions = ir_analysis.defined_functions.clone();
-        module_known_functions.extend(self.external_function_names.iter().cloned());
         let mut compiled = 0u32;
         let failed = 0u32;
         let mut slowest_func: Option<(String, std::time::Duration)> = None;
@@ -485,9 +476,7 @@ impl SimpleBackend {
                 &effective_task_kinds,
                 &effective_task_closure_sizes,
                 &ir_analysis.defined_functions,
-                &module_known_functions,
                 &effective_closure_functions,
-                emit_traces,
                 &effective_leaf_functions,
                 &effective_function_arities,
                 &effective_function_has_ret,

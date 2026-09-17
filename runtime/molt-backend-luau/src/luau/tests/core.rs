@@ -744,11 +744,129 @@ fn dict_runtime_dependency_slices_do_not_ship_unreferenced_call_or_repr_authorit
 }
 
 #[test]
-fn callargs_codegen_uses_packed_positional_and_ordered_keyword_authority() {
+fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "invoke".to_string(),
-            params: vec!["func".to_string(), "value".to_string()],
+            params: vec![
+                "func".to_string(),
+                "value".to_string(),
+                "star".to_string(),
+                "key".to_string(),
+                "kwvalue".to_string(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "callargs_new".to_string(),
+                    out: Some("bind_builder".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_push_pos".to_string(),
+                    args: Some(vec!["bind_builder".to_string(), "value".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_bind".to_string(),
+                    args: Some(vec!["func".to_string(), "bind_builder".to_string()]),
+                    out: Some("bound_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_new".to_string(),
+                    out: Some("indirect_builder".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_push_pos".to_string(),
+                    args: Some(vec![
+                        "indirect_builder".to_string(),
+                        "bound_result".to_string(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_expand_star".to_string(),
+                    args: Some(vec!["indirect_builder".to_string(), "star".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_push_kw".to_string(),
+                    args: Some(vec![
+                        "indirect_builder".to_string(),
+                        "key".to_string(),
+                        "kwvalue".to_string(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("kwstar".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_expand_kwstar".to_string(),
+                    args: Some(vec!["indirect_builder".to_string(), "kwstar".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_indirect".to_string(),
+                    args: Some(vec!["func".to_string(), "indirect_builder".to_string()]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("the complete CallArgs family must pass checked Luau admission");
+    assert!(source.contains("local bind_builder: {any} = molt_callargs_new()"));
+    assert!(source.contains("molt_callargs_push_pos(bind_builder, value)"));
+    assert!(source.contains("local bound_result = molt_callargs_invoke(func, bind_builder)"));
+    assert!(source.contains("molt_callargs_expand_star(indirect_builder, star)"));
+    assert!(source.contains("molt_callargs_push_kw(indirect_builder, key, kwvalue)"));
+    assert!(source.contains("molt_callargs_expand_kwstar(indirect_builder, kwstar)"));
+    assert!(source.contains("local result = molt_callargs_invoke(func, indirect_builder)"));
+    assert!(!source.contains("molt_call_checked(func, indirect_builder)"));
+    assert!(source.contains("molt_call_checked = function"));
+    assert!(source.contains("local function molt_callargs_expand_kwstar"));
+    assert!(!source.contains("local function molt_equal"));
+    assert!(!source.contains("molt_function_params"));
+    assert!(source.contains(
+        "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})"
+    ));
+    assert!(source.contains(
+        "local molt_func_attrs: {[any]: {[any]: any}} = setmetatable({}, {__mode = \"k\"})"
+    ));
+    assert!(source.contains("if value == func then molt_func_self_attr else value"));
+}
+
+#[test]
+fn callable_and_frame_runtime_fragments_pass_shared_source_validation() {
+    for (name, source) in [
+        ("frames", frame_runtime::FRAME_RUNTIME),
+        ("callable frames", frame_runtime::CALLABLE_FRAME_RUNTIME),
+        ("call arguments", dict_runtime::CALLARGS_RUNTIME),
+    ] {
+        validate_luau_source(source)
+            .unwrap_or_else(|error| panic!("{name} runtime is structurally invalid: {error}"));
+    }
+}
+
+#[test]
+fn compile_checked_rejects_kwstar_without_canonical_ordered_mapping_provenance() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "unknown_mapping".to_string(),
+            params: vec!["func".to_string(), "mapping".to_string()],
             ops: vec![
                 OpIR {
                     kind: "callargs_new".to_string(),
@@ -756,12 +874,12 @@ fn callargs_codegen_uses_packed_positional_and_ordered_keyword_authority() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "callargs_push_pos".to_string(),
-                    args: Some(vec!["builder".to_string(), "value".to_string()]),
+                    kind: "callargs_expand_kwstar".to_string(),
+                    args: Some(vec!["builder".to_string(), "mapping".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "call_bind".to_string(),
+                    kind: "call_indirect".to_string(),
                     args: Some(vec!["func".to_string(), "builder".to_string()]),
                     out: Some("result".to_string()),
                     ..OpIR::default()
@@ -776,21 +894,330 @@ fn callargs_codegen_uses_packed_positional_and_ordered_keyword_authority() {
         }],
         profile: None,
     };
-    let source = LuauBackend::new().compile(&ir);
-    assert!(source.contains("local builder: {any} = molt_callargs_new()"));
-    assert!(source.contains("molt_callargs_push_pos(builder, value)"));
-    assert!(source.contains("local result = molt_callargs_invoke(func, builder)"));
-    assert!(source.contains("molt_call_checked = function"));
-    assert!(source.contains("local function molt_callargs_expand_kwstar"));
-    assert!(!source.contains("local function molt_equal"));
-    assert!(!source.contains("molt_function_params"));
-    assert!(source.contains(
-        "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})"
-    ));
-    assert!(source.contains(
-        "local molt_func_attrs: {[any]: {[string]: any}} = setmetatable({}, {__mode = \"k\"})"
-    ));
-    assert!(source.contains("if value == func then molt_func_self_attr else value"));
+    let error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("generic Python mapping protocol is not implemented by Luau");
+    assert!(
+        error.contains("`callargs_expand_kwstar`")
+            && error.contains("canonical ordered Molt dict")
+            && error.contains("keys/getitem mapping protocol")
+    );
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
+    let callargs_new = |out: &str| OpIR {
+        kind: "callargs_new".to_string(),
+        out: Some(out.to_string()),
+        ..OpIR::default()
+    };
+    let call = |kind: &str, func: &str, builder: &str, out: &str| OpIR {
+        kind: kind.to_string(),
+        args: Some(vec![func.to_string(), builder.to_string()]),
+        out: Some(out.to_string()),
+        ..OpIR::default()
+    };
+    let ret = |value: &str| OpIR {
+        kind: "ret".to_string(),
+        args: Some(vec![value.to_string()]),
+        ..OpIR::default()
+    };
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "mixed_call".to_string(),
+                params: vec![
+                    "func".to_string(),
+                    "first".to_string(),
+                    "star".to_string(),
+                    "key".to_string(),
+                    "kwvalue".to_string(),
+                    "kwstar_value".to_string(),
+                ],
+                ops: vec![
+                    callargs_new("builder"),
+                    OpIR {
+                        kind: "callargs_push_pos".to_string(),
+                        args: Some(vec!["builder".to_string(), "first".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_expand_star".to_string(),
+                        args: Some(vec!["builder".to_string(), "star".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_push_kw".to_string(),
+                        args: Some(vec![
+                            "builder".to_string(),
+                            "key".to_string(),
+                            "kwvalue".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        s_value: Some("e".to_string()),
+                        out: Some("kwstar_key".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_new".to_string(),
+                        out: Some("kwstar".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_set".to_string(),
+                        args: Some(vec![
+                            "kwstar".to_string(),
+                            "kwstar_key".to_string(),
+                            "kwstar_value".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_expand_kwstar".to_string(),
+                        args: Some(vec!["builder".to_string(), "kwstar".to_string()]),
+                        ..OpIR::default()
+                    },
+                    call("call_indirect", "func", "builder", "result"),
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "duplicate_keyword_call".to_string(),
+                params: vec![
+                    "func".to_string(),
+                    "key".to_string(),
+                    "value".to_string(),
+                    "kwstar_value".to_string(),
+                ],
+                ops: vec![
+                    callargs_new("builder"),
+                    OpIR {
+                        kind: "callargs_push_kw".to_string(),
+                        args: Some(vec![
+                            "builder".to_string(),
+                            "key".to_string(),
+                            "value".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_new".to_string(),
+                        out: Some("kwstar".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_set".to_string(),
+                        args: Some(vec![
+                            "kwstar".to_string(),
+                            "key".to_string(),
+                            "kwstar_value".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_expand_kwstar".to_string(),
+                        args: Some(vec!["builder".to_string(), "kwstar".to_string()]),
+                        ..OpIR::default()
+                    },
+                    call("call_indirect", "func", "builder", "result"),
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "unsigned_builtin_direct".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "builtin_func".to_string(),
+                        s_value: Some("molt_max_builtin".to_string()),
+                        out: Some("builtin".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_func".to_string(),
+                        args: Some(vec![
+                            "builtin".to_string(),
+                            "left".to_string(),
+                            "right".to_string(),
+                        ]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "unsigned_builtin_indirect".to_string(),
+                params: vec!["left".to_string(), "right".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "builtin_func".to_string(),
+                        s_value: Some("molt_max_builtin".to_string()),
+                        out: Some("builtin".to_string()),
+                        ..OpIR::default()
+                    },
+                    callargs_new("builder"),
+                    OpIR {
+                        kind: "callargs_push_pos".to_string(),
+                        args: Some(vec!["builder".to_string(), "left".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "callargs_push_pos".to_string(),
+                        args: Some(vec!["builder".to_string(), "right".to_string()]),
+                        ..OpIR::default()
+                    },
+                    call("call_indirect", "builtin", "builder", "result"),
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "unsigned_builtin_keyword".to_string(),
+                params: vec!["key".to_string(), "value".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "builtin_func".to_string(),
+                        s_value: Some("molt_max_builtin".to_string()),
+                        out: Some("builtin".to_string()),
+                        ..OpIR::default()
+                    },
+                    callargs_new("builder"),
+                    OpIR {
+                        kind: "callargs_push_kw".to_string(),
+                        args: Some(vec![
+                            "builder".to_string(),
+                            "key".to_string(),
+                            "value".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    call("call_indirect", "builtin", "builder", "result"),
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "direct_call".to_string(),
+                params: vec!["func".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "call_func".to_string(),
+                        args: Some(vec!["func".to_string()]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "builder_call".to_string(),
+                params: vec!["func".to_string()],
+                ops: vec![
+                    callargs_new("builder"),
+                    call("call_bind", "func", "builder", "result"),
+                    ret("result"),
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let compiled = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("checked CallArgs execution fixture must pass target admission");
+    assert!(compiled.contains("molt_function_set_builtin(builtin)"));
+    assert!(compiled.contains("molt_call_checked(builtin, left, right)"));
+    assert!(compiled.contains("molt_callargs_invoke(builtin, builder)"));
+    assert!(!compiled.contains("pcall(molt_iterator_new"));
+    let oracle = r#"
+local function mixed_target(a, b, c, d, e) return a + b + c + d + e end
+molt_function_metadata[mixed_target] = {arg_names=molt_pack_tuple("a", "b", "c", "d", "e"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
+local star = molt_pack_list(2, 3)
+assert(mixed_call(mixed_target, 1, star, "d", 4, 5) == 15)
+
+local duplicate_ok, duplicate_error = pcall(function()
+	return duplicate_keyword_call(mixed_target, "d", 4, 9)
+end)
+assert(not duplicate_ok and duplicate_error.__type == "TypeError")
+
+local star_builder = molt_callargs_new()
+local star_ok, star_error = pcall(function() molt_callargs_expand_star(star_builder, 42) end)
+assert(not star_ok and star_error.__type == "TypeError" and star_error.__msg == "object is not a deterministic Python iterable")
+
+assert(unsigned_builtin_direct(6, 7) == 7)
+assert(unsigned_builtin_indirect(6, 7) == 7)
+local builtin_keyword_ok, builtin_keyword_error = pcall(function()
+	return unsigned_builtin_keyword("value", 7)
+end)
+assert(not builtin_keyword_ok and builtin_keyword_error.__type == "TypeError" and builtin_keyword_error.__msg == "callable does not accept keyword arguments")
+
+local packed_builtin = function(args)
+	return rawget(args, 1) + rawget(args, 2)
+end
+molt_function_metadata[packed_builtin] = {arg_names=molt_pack_tuple("left", "right"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil, is_builtin=true}
+assert(molt_call_checked(packed_builtin, 6, 7) == 13)
+local builtin_builder = molt_callargs_new()
+molt_callargs_push_pos(builtin_builder, 6); molt_callargs_push_pos(builtin_builder, 7)
+assert(molt_callargs_invoke(packed_builtin, builtin_builder) == 13)
+
+local zero_arity_builtin = function(args) return molt_sequence_len(args) end
+molt_function_metadata[zero_arity_builtin] = {arg_names=molt_pack_tuple(), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil, is_builtin=true}
+assert(molt_call_checked(zero_arity_builtin) == 0)
+local zero_arity_ok, zero_arity_error = pcall(function() return molt_call_checked(zero_arity_builtin, 1) end)
+assert(not zero_arity_ok and zero_arity_error.__type == "TypeError")
+
+local function defaulted(value) return value end
+molt_function_metadata[defaulted] = {arg_names=molt_pack_tuple("value"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=molt_pack_tuple(10), kwdefaults=nil}
+molt_function_attr_set(defaulted, "__defaults__", molt_pack_tuple(20))
+assert(molt_func_attr_get(defaulted, "__defaults__") == molt_function_metadata[defaulted].defaults)
+assert(direct_call(defaulted) == 20 and builder_call(defaulted) == 20)
+local invalid_defaults_ok, invalid_defaults_error = pcall(function()
+	molt_function_attr_set(defaulted, "__defaults__", 1)
+end)
+assert(not invalid_defaults_ok and invalid_defaults_error.__type == "TypeError")
+
+local function keyword_only(option) return option end
+local first_kwdefaults = molt_dict_new(); molt_dict_set(first_kwdefaults, "option", 11)
+molt_function_metadata[keyword_only] = {arg_names=molt_pack_tuple(), posonly=0, kwonly=molt_pack_tuple("option"), vararg=nil, varkw=nil, defaults=nil, kwdefaults=first_kwdefaults}
+local second_kwdefaults = molt_dict_new(); molt_dict_set(second_kwdefaults, "option", 12)
+molt_function_attr_set(keyword_only, "__kwdefaults__", second_kwdefaults)
+assert(molt_func_attr_get(keyword_only, "__kwdefaults__") == molt_function_metadata[keyword_only].kwdefaults)
+assert(direct_call(keyword_only) == 12 and builder_call(keyword_only) == 12)
+
+local function method(self_value, value) return self_value + value end
+molt_function_metadata[method] = {arg_names=molt_pack_tuple("self", "value"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=molt_pack_tuple(7), kwdefaults=nil}
+local bound = molt_bound_method_new(method, 30)
+assert(molt_function_metadata[bound].bound_func == method and molt_function_metadata[bound].bound_self == 30)
+assert(direct_call(bound) == 37 and builder_call(bound) == 37)
+molt_function_attr_set(method, "__defaults__", molt_pack_tuple(9))
+assert(direct_call(bound) == 39 and builder_call(bound) == 39)
+print("luau-callargs-checked-execution-ok")
+"#;
+    let source = format!("{compiled}\n{oracle}");
+    validate_luau_source(&source).expect("checked CallArgs execution source must validate");
+    let output = execute_lune_oracle("checked_callargs", &source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("luau-callargs-checked-execution-ok"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -874,9 +1301,15 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
             ..OpIR::default()
         },
         OpIR {
+            kind: "dict_new".to_string(),
+            args: Some(vec![]),
+            out: Some("globals".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
             kind: "code_slot_set".to_string(),
             value: Some(3),
-            args: Some(vec!["code".to_string()]),
+            args: Some(vec!["code".to_string(), "globals".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -893,6 +1326,9 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 "defaults".to_string(),
                 "kwdefaults".to_string(),
                 "doc".to_string(),
+                "posonly".to_string(),
+                "kwonly".to_string(),
+                "kwonly".to_string(),
             ]),
             out: Some("metadata".to_string()),
             ..OpIR::default()
@@ -945,7 +1381,12 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         "packed metadata call must remain reachable:\n{source}"
     );
     assert!(source.contains("local code = {__molt_code=true"));
-    assert!(source.contains("molt_code_slots[3] = code"));
+    assert!(source.contains("molt_code_slots[3] = molt_frame_bind_code(3, code, globals)"));
+    assert!(source.contains("local function_value = molt_frame_function_new(target)"));
+    assert!(source.contains("molt_frame_function_capture(func, rawget(metadata, 3))"));
+    assert!(source.contains("pending.slot == slot.id and pending.code ~= nil"));
+    assert!(source.contains("setmetatable({value=captured}, {__mode=\"v\"})"));
+    assert!(!source.contains("local function_value = target"));
     assert!(!source.contains("molt_function_params"));
     assert!(!source.contains("[unsupported op:"));
 }
@@ -1074,17 +1515,25 @@ fn execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable(
 local outer_code = {co_filename="frame_oracle.py", co_name="outer", co_firstlineno=10}
 local inner_code = {co_filename="frame_oracle.py", co_name="inner", co_firstlineno=20}
 local module_code = {co_filename="module_oracle.py", co_name="<module>", co_firstlineno=1}
-
-local module_context, module_depth, module_identity, module_owner = molt_frame_enter(module_code)
+local outer_globals = {__name__="outer_module"}
+local inner_globals = {__name__="inner_module"}
 local module_globals = {__name__="module_oracle"}
+local outer_slot = {code=outer_code, globals=outer_globals}
+local inner_slot = {code=inner_code, globals=inner_globals}
+local module_slot = {code=module_code, globals=module_globals}
+
+local module_context, module_depth, module_identity, module_owner = molt_frame_enter(module_slot)
 molt_frame_locals_set(module_context, module_globals)
-assert(module_code.co_globals == module_globals)
+assert(module_context.globals[module_depth] == module_globals)
+assert(module_context.locals[module_depth] == module_globals)
 molt_frame_exit(module_context, module_depth, module_identity, module_owner)
 
-local outer_context, outer_depth, outer_identity, outer_owner = molt_frame_enter(outer_code)
+local outer_context, outer_depth, outer_identity, outer_owner = molt_frame_enter(outer_slot)
 molt_frame_set_line(outer_context, 11, 2, 9)
-local inner_context, inner_depth, inner_identity, _inner_owner = molt_frame_enter(inner_code)
+local inner_context, inner_depth, inner_identity, _inner_owner = molt_frame_enter(inner_slot)
 assert(inner_context == outer_context and inner_depth == 2)
+assert(inner_context.globals[outer_depth] == outer_globals)
+assert(inner_context.globals[inner_depth] == inner_globals)
 molt_frame_set_line(inner_context, 23, 4, 17)
 local exception = molt_exception_attach_traceback(inner_context, {__type="ValueError", __msg="boom"})
 assert(exception.__traceback__ == nil)
@@ -1116,8 +1565,8 @@ local function coroutine_body(code, line)
 	molt_frame_exit(context, depth, identity, owner)
 	return context
 end
-local first = coroutine.create(function() return coroutine_body(outer_code, 31) end)
-local second = coroutine.create(function() return coroutine_body(inner_code, 41) end)
+local first = coroutine.create(function() return coroutine_body(outer_slot, 31) end)
+local second = coroutine.create(function() return coroutine_body(inner_slot, 41) end)
 local ok_first, first_context = coroutine.resume(first)
 local ok_second, second_context = coroutine.resume(second)
 assert(ok_first and ok_second and first_context ~= second_context)
@@ -1134,7 +1583,7 @@ local failing = molt_coroutine_execution_wrap(function(code)
 	coroutine.yield("suspended")
 	error({__type="ValueError", __msg="inside coroutine"}, 0)
 end)
-assert(failing(inner_code) == "suspended")
+assert(failing(inner_slot) == "suspended")
 assert(failing_context.depth == 1)
 local failing_ok, failing_error = pcall(failing)
 assert(not failing_ok and failing_error.__type == "ValueError")
@@ -1150,7 +1599,7 @@ local attachment_failure = molt_coroutine_execution_wrap(function(code)
 	context.codes[context.depth] = nil
 	error({__type="ValueError", __msg="traceback attachment failure"}, 0)
 end)
-local attachment_ok, attachment_error = pcall(attachment_failure, inner_code)
+local attachment_ok, attachment_error = pcall(attachment_failure, inner_slot)
 assert(not attachment_ok and attachment_error.__type == "RuntimeError")
 assert(attachment_error.__cause__.__type == "ValueError")
 assert(attachment_error.__molt_traceback_attachment_error ~= nil)
@@ -1165,7 +1614,7 @@ local hostile = molt_coroutine_execution_wrap(function(code)
 	})
 	error(exception, 0)
 end)
-local hostile_ok, hostile_error = pcall(hostile, inner_code)
+local hostile_ok, hostile_error = pcall(hostile, inner_slot)
 assert(not hostile_ok and hostile_error.__type == "ValueError")
 assert(rawget(hostile_error, "__molt_traceback_locations") ~= nil)
 assert(hostile_context.depth == 0)
@@ -1177,7 +1626,7 @@ local frozen = molt_coroutine_execution_wrap(function(code)
 	local exception = table.freeze({__type="ValueError", __msg="frozen"})
 	error(exception, 0)
 end)
-local frozen_ok, frozen_error = pcall(frozen, inner_code)
+local frozen_ok, frozen_error = pcall(frozen, inner_slot)
 assert(not frozen_ok and frozen_error.__type == "RuntimeError")
 assert(frozen_error.__cause__.__type == "ValueError")
 assert(frozen_error.__molt_traceback_attachment_error ~= nil)
@@ -1192,7 +1641,7 @@ local restoration_failure = molt_coroutine_execution_wrap(function(code)
 	table.freeze(context.codes)
 	return "cannot complete with a poisoned frame stack"
 end)
-local restoration_ok, restoration_error = pcall(restoration_failure, inner_code)
+local restoration_ok, restoration_error = pcall(restoration_failure, inner_slot)
 assert(not restoration_ok and restoration_error.__type == "RuntimeError")
 assert(restoration_error.__msg == "execution-frame restoration failed")
 assert(restoration_error.__molt_frame_restoration_error ~= nil)
@@ -1205,7 +1654,7 @@ local completing = molt_coroutine_execution_wrap(function(code)
 	completing_context = context
 	return "complete"
 end)
-assert(completing(outer_code) == "complete")
+assert(completing(outer_slot) == "complete")
 assert(completing_context.depth == 0)
 
 local close_context: any = nil
@@ -1214,7 +1663,7 @@ local abandoned, close_abandoned = molt_coroutine_execution_wrap(function(code)
 	close_context = context
 	coroutine.yield("open")
 end)
-assert(abandoned(outer_code) == "open" and close_context.depth == 1)
+assert(abandoned(outer_slot) == "open" and close_context.depth == 1)
 close_abandoned()
 close_abandoned()
 assert(close_context.depth == 0)
@@ -1231,7 +1680,7 @@ for _index = 1, 2000 do
 		context.globals[depth] = {owner=coroutine.running()}
 		coroutine.yield("abandoned")
 	end)
-	assert(resume(inner_code) == "abandoned")
+	assert(resume(inner_slot) == "abandoned")
 	resume = nil
 end
 for _round = 1, 8 do
@@ -1261,7 +1710,7 @@ for index = 1, 2000 do
 		molt_frame_enter(code)
 		return index
 	end)
-	assert(resume(outer_code) == index)
+	assert(resume(outer_slot) == index)
 	completed_wrappers[index] = resume
 	completed_closers[index] = close
 end
@@ -1331,7 +1780,7 @@ assert(
 wrapped_resume()
 wrapped_close()
 
-local warm_context, warm_depth, warm_identity, warm_owner = molt_frame_enter(outer_code)
+local warm_context, warm_depth, warm_identity, warm_owner = molt_frame_enter(outer_slot)
 molt_frame_exit(warm_context, warm_depth, warm_identity, warm_owner)
 local allocations_after_main_warm = molt_frame_context_allocations
 local baseline_total = 0
@@ -1341,7 +1790,7 @@ local baseline_elapsed = os.clock() - baseline_started
 local heap_before = gcinfo()
 local started = os.clock()
 for index = 1, 100000 do
-	local context, depth, identity, owner = molt_frame_enter(outer_code)
+	local context, depth, identity, owner = molt_frame_enter(outer_slot)
 	molt_frame_set_line(context, 12, 1, 3)
 	molt_frame_exit(context, depth, identity, owner)
 end
@@ -1357,7 +1806,7 @@ assert(weak_mode == "kv", "frame_registry_is_not_non_owning_kv")
 print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
 "#
     );
-    assert!(frame_runtime::FRAME_RUNTIME.len() < 9_500);
+    assert!(frame_runtime::FRAME_RUNTIME.len() < 11_500);
     assert!(!frame_runtime::FRAME_RUNTIME.contains("owner = key"));
     assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("{__mode = \"kv\"}"));
@@ -1387,7 +1836,121 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
 }
 
 #[test]
-fn generated_coroutine_tasks_use_the_execution_wrapper_authority() {
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn callable_frames_keep_exact_definition_context_across_rebinding_and_call_shapes() {
+    let oracle = r#"
+local first_builtins = molt_dict_new(); molt_dict_set(first_builtins, "builtin_value", 41)
+local second_builtins = molt_dict_new(); molt_dict_set(second_builtins, "builtin_value", 99)
+local first_globals = molt_dict_new(); molt_dict_set(first_globals, "value", "first")
+molt_dict_set(first_globals, "__builtins__", first_builtins)
+local second_globals = molt_dict_new(); molt_dict_set(second_globals, "value", "second")
+molt_dict_set(second_globals, "__builtins__", second_builtins)
+local old_code = {co_name="old", co_filename="same.py", co_firstlineno=1}
+local new_code = {co_name="new", co_filename="same.py", co_firstlineno=2}
+local module_code = {co_name="<module>", co_filename="same.py", co_firstlineno=1}
+molt_code_slots[1] = molt_frame_bind_code(1, module_code, first_globals)
+molt_code_slots[7] = molt_frame_bind_code(7, old_code, first_globals)
+local target
+target = function(mode)
+	local context, depth, code, owner = molt_frame_enter_slot(molt_code_slots[7])
+	local result
+	if mode == "recurse" then result = target("inspect")
+	else
+		result = {code, context.globals[depth], context.builtins[depth], depth,
+			molt_module_get_global(second_globals, "value"),
+			molt_module_get_global(second_globals, "builtin_value")}
+	end
+	molt_frame_exit(context, depth, code, owner)
+	return result
+end
+molt_function_register_signature(target, molt_pack_tuple("mode"))
+local module_context, module_depth, module_identity, module_owner = molt_frame_enter_slot(molt_code_slots[1])
+local metadata = molt_pack_tuple("target", "target", "sample", molt_pack_tuple("mode"), 0, molt_pack_tuple(), nil, nil, nil, nil, nil, 0, molt_pack_tuple(), molt_pack_tuple())
+local first = molt_frame_function_new(target)
+molt_function_init_metadata_packed(first, metadata, old_code, nil)
+local second = molt_frame_function_new(target)
+-- func_new is staging: default expressions can mutate builtins before metadata.
+molt_dict_set(first_globals, "__builtins__", second_builtins)
+molt_function_init_metadata_packed(second, metadata, new_code, nil)
+assert(first ~= second and molt_func_attr_get(first, "__code__") == old_code)
+assert(module_context.builtins[module_depth] == first_builtins)
+molt_frame_exit(module_context, module_depth, module_identity, module_owner)
+molt_code_slots[7] = molt_frame_bind_code(7, new_code, second_globals)
+
+local function check(result, code, globals, builtins, value, builtin_value, depth)
+	assert(result[1] == code and result[2] == globals and result[3] == builtins)
+	assert(result[4] == depth and result[5] == value and result[6] == builtin_value)
+end
+check(molt_call_checked(first, "inspect"), old_code, first_globals, first_builtins, "first", 41, 1)
+check(molt_call_checked(second, "inspect"), new_code, first_globals, second_builtins, "first", 99, 1)
+local keywords = molt_callargs_new(); molt_callargs_push_kw(keywords, "mode", "inspect")
+check(molt_callargs_invoke(first, keywords), old_code, first_globals, first_builtins, "first", 41, 1)
+local bound = molt_bound_method_new(first, "inspect")
+check(molt_call_checked(bound), old_code, first_globals, first_builtins, "first", 41, 1)
+-- Static recursion does not reuse a consumed dynamic handoff.
+check(molt_call_checked(first, "recurse"), new_code, second_globals, second_builtins, "second", 99, 2)
+check(target("inspect"), new_code, second_globals, second_builtins, "second", 99, 1)
+
+local context = molt_frame_context()
+assert(context.depth == 0 and #context.invocations == 0)
+local mismatch = molt_frame_invoke(function()
+	local unrelated, depth, code, owner = molt_frame_enter_slot(molt_code_slots[1])
+	assert(code == module_code and unrelated.depth == 1)
+	molt_frame_exit(unrelated, depth, code, owner)
+	return target("inspect")
+end, old_code, first_globals, first_builtins)
+check(mismatch, old_code, first_globals, first_builtins, "first", 41, 1)
+local failure = {__type="ValueError", __msg="unconsumed handoff"}
+local ok, error_value = pcall(function()
+	molt_frame_invoke(function() error(failure, 0) end, old_code, first_globals, first_builtins)
+end)
+assert(not ok and error_value == failure and #context.invocations == 0)
+-- A captured miss never switches to later cached or globals-selected builtins.
+molt_module_cache["builtins"] = {builtin_value=123}
+molt_dict_delete(first_builtins, "builtin_value", false)
+local missing_ok, missing_error = pcall(function() return molt_call_checked(first, "inspect") end)
+assert(not missing_ok and missing_error.__type == "NameError")
+assert(#context.invocations == 0)
+molt_frame_restore_depth(context, 0)
+molt_dict_set(first_builtins, "builtin_value", 41)
+
+-- Replacing a globals entry affects new definitions, not existing functions;
+-- an absent entry instead inherits the defining activation's captured builtins.
+local defining, depth, code, owner = molt_frame_enter(molt_code_slots[1], first_builtins)
+molt_dict_delete(first_globals, "__builtins__", false)
+local inherited = molt_frame_function_new(target)
+molt_function_init_metadata_packed(inherited, metadata, old_code, nil)
+molt_frame_exit(defining, depth, code, owner)
+check(molt_call_checked(inherited, "inspect"), old_code, first_globals, first_builtins, "first", 41, 1)
+assert(context.depth == 0 and #context.invocations == 0)
+molt_dict_set(first_globals, "remove", 1); molt_dict_set(second_globals, "remove", 2)
+molt_frame_invoke(function()
+	local active, depth, code, owner = molt_frame_enter_slot(molt_code_slots[7])
+	assert(molt_globals_builtin() == first_globals)
+	molt_dict_set(molt_globals_builtin(), "written", 3)
+	molt_module_del_global(second_globals, "remove", false)
+	molt_module_del_global(second_globals, "remove", true)
+	molt_frame_exit(active, depth, code, owner)
+end, old_code, first_globals, first_builtins)
+assert(not molt_dict_contains(first_globals, "remove"))
+assert(molt_dict_getitem(second_globals, "remove") == 2)
+assert(molt_dict_getitem(first_globals, "written") == 3)
+print("luau-callable-frame-context-ok")
+"#;
+    let mut backend = LuauBackend::new();
+    backend.emit_prelude_conditional(oracle);
+    let source = format!("{}\n{oracle}", backend.output);
+    validate_luau_source(&source).expect("callable-context oracle must pass source validation");
+    let output = execute_lune_oracle("callable_frame_context", &source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("luau-callable-frame-context-ok"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compile_checked_rejects_alloc_task_without_scheduler_authority() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
@@ -1418,14 +1981,10 @@ fn generated_coroutine_tasks_use_the_execution_wrapper_authority() {
         profile: None,
     };
 
-    let source = LuauBackend::new().emit_source(&ir);
-    assert!(
-        source.contains("local __co, __close = molt_coroutine_execution_wrap(sample__genexpr_1)")
-    );
-    assert!(source.contains("__close()"));
-    assert!(!source.contains("coroutine.wrap("));
-    assert!(source.contains("local function molt_coroutine_execution_wrap"));
-    assert!(!source.contains("molt_frame_finalize_error"));
+    let error = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect_err("alloc_task requires the unavailable Molt scheduler model");
+    assert!(error.contains("`alloc_task`") && error.contains("exact async scheduler"));
 }
 
 #[test]
@@ -1664,10 +2223,12 @@ assert(molt_callargs_invoke(bound, bound_args) == 15)
 local function method_with_defaults(self, x, y) return self + x + y end
 molt_function_metadata[method_with_defaults] = {arg_names=molt_pack_tuple("self", "x", "y"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=molt_pack_tuple(99, 5, 7), kwdefaults=nil}
 local bound_defaults = molt_bound_method_new(method_with_defaults, 10)
-assert(molt_sequence_len(molt_function_metadata[bound_defaults].defaults) == 2)
+assert(molt_function_metadata[bound_defaults].bound_func == method_with_defaults and molt_function_metadata[bound_defaults].bound_self == 10)
 assert(molt_callargs_invoke(bound_defaults, molt_callargs_new()) == 22)
 local bound_override = molt_callargs_new(); molt_callargs_push_kw(bound_override, "y", 2)
 assert(molt_callargs_invoke(bound_defaults, bound_override) == 17)
+molt_function_attr_set(method_with_defaults, "__defaults__", molt_pack_tuple(99, 8, 9))
+assert(molt_call_checked(bound_defaults) == 27 and molt_callargs_invoke(bound_defaults, molt_callargs_new()) == 27)
 local function capture3(a, b, c) return molt_pack_tuple(a, b, c) end
 molt_function_metadata[capture3] = {arg_names=molt_pack_tuple("a", "b", "c"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
 local string_star = molt_callargs_new(); molt_callargs_expand_star(string_star, "ab"); molt_callargs_push_pos(string_star, "c")
@@ -2602,6 +3163,49 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
 }
 
 #[test]
+fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "target".to_string(),
+                params: vec!["value".to_string()],
+                ops: vec![OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["value".to_string()]),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "dispatch".to_string(),
+                params: vec!["selected".to_string(), "value".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "call_guarded".to_string(),
+                        s_value: Some("target".to_string()),
+                        args: Some(vec!["selected".to_string(), "value".to_string()]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("checked guarded call");
+    assert!(source.contains("molt_call_checked(selected, value)"));
+    assert!(!source.contains("molt_call_checked(target, selected"));
+}
+
+#[test]
 fn test_simple_function() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -2908,32 +3512,6 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
                     ]),
                     ..OpIR::default()
                 },
-                OpIR {
-                    kind: "const_str".to_string(),
-                    s_value: Some("sys".to_string()),
-                    out: Some("sys_name".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "module_import".to_string(),
-                    args: Some(vec!["sys_name".to_string()]),
-                    out: Some("sys_module".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "module_get_attr".to_string(),
-                    args: Some(vec!["sys_module".to_string()]),
-                    s_value: Some("version_info".to_string()),
-                    out: Some("version_info".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "module_get_attr".to_string(),
-                    args: Some(vec!["sys_module".to_string()]),
-                    s_value: Some("hexversion".to_string()),
-                    out: Some("hexversion".to_string()),
-                    ..OpIR::default()
-                },
             ],
         }],
         profile: None,
@@ -2941,11 +3519,62 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
 
     let source = LuauBackend::new()
         .compile_checked(&ir)
-        .expect("bounded sys bootstrap literals and the Luau module model are exact");
+        .expect("bounded sys version bootstrap does not require Python import dispatch");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
     assert!(source.contains("local function molt_sys_set_version_info("));
-    assert!(source.contains("local sys_module = molt_luau_import_module(sys_name)"));
+    assert!(source.contains("local function molt_sys_seed_module()"));
+}
+
+#[test]
+fn compile_checked_rejects_module_import_before_source_emission() {
+    for (kind, literal, args) in [
+        ("module_import", Some("sys"), vec![]),
+        ("module_import", None, vec!["module_name"]),
+        ("module_import_from", Some("path"), vec!["module"]),
+        ("module_import_from", None, vec!["module", "member"]),
+        ("module_import_star", None, vec!["module", "namespace"]),
+    ] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "import_probe".to_string(),
+                params: ["module_name", "module", "member", "namespace"]
+                    .map(str::to_string)
+                    .to_vec(),
+                ops: vec![
+                    OpIR {
+                        kind: kind.to_string(),
+                        s_value: literal.map(str::to_string),
+                        args: Some(args.into_iter().map(str::to_string).collect()),
+                        out: Some("import_result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["import_result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("Luau has no Python import protocol, including for sys");
+        assert!(
+            error.contains("rejected before source generation")
+                && error.contains("module_import")
+                && error.contains("Python import dispatch"),
+            "{error}"
+        );
+        assert!(
+            backend.output.is_empty(),
+            "import refusal emitted partial source"
+        );
+        assert!(backend.unsupported_ops.is_empty());
+    }
 }
 
 #[test]
@@ -3273,7 +3902,7 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     let source = LuauBackend::new()
         .compile_checked(&ir)
         .expect("the complete Local/Inherited frame ABI must lower");
-    assert!(source.contains("molt_frame_enter(molt_code_slots[7])"));
+    assert!(source.contains("molt_frame_enter_slot(molt_code_slots[7])"));
     assert!(source.contains("molt_frame_exit(__molt_frame_context"));
     assert!(source.contains("inherited_frame(locals, __molt_frame_context)"));
     assert!(source.contains("molt_frame_set_line(__molt_frame_context, 8"));
@@ -3342,7 +3971,7 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
     }
     assert_eq!(
         source
-            .matches("molt_frame_enter(molt_code_slots[3])")
+            .matches("molt_frame_enter_slot(molt_code_slots[3])")
             .count(),
         1
     );
@@ -3428,9 +4057,15 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
                     ..OpIR::default()
                 },
                 OpIR {
+                    kind: "dict_new".to_string(),
+                    args: Some(vec![]),
+                    out: Some("globals".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
                     kind: "code_slot_set".to_string(),
                     value: Some(1),
-                    args: Some(vec!["code".to_string()]),
+                    args: Some(vec!["code".to_string(), "globals".to_string()]),
                     ..OpIR::default()
                 },
                 OpIR {

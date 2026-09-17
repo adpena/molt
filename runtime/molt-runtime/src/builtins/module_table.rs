@@ -1568,18 +1568,15 @@ mod tests {
         }
         let module_ptr = obj_from_bits(module_bits).as_ptr().expect("test module");
         let globals_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
-        let function = crate::object::builders::alloc_function_obj(_py, 0, 0);
-        assert!(!function.is_null());
-        unsafe {
-            crate::object::layout::function_set_globals_bits(_py, function, globals_bits);
-            crate::object::layout::function_set_globals_override_enabled(function, true);
-        }
-        crate::builtins::frames::frame_stack_push_function(_py, 0, function);
+        let builtins_bits =
+            crate::builtins::frames::frame_effective_builtins_bits(_py, globals_bits);
+        inc_ref_bits(_py, globals_bits);
+        inc_ref_bits(_py, builtins_bits);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits);
         // A conflicting module argument proves the active-frame dictionary is
         // the authority for this sibling of the direct-module lookup path.
         let result = crate::builtins::modules::molt_module_get_global(none_bits(), name_bits);
         crate::builtins::frames::frame_stack_pop(_py);
-        dec_ref_bits(_py, MoltObject::from_ptr(function).bits());
         result
     }
 

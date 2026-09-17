@@ -177,8 +177,6 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     let local_function_has_ret = compute_function_has_ret(std::slice::from_ref(&caller));
     let effective_function_has_ret =
         merge_function_has_ret(Some(&module_context), local_function_has_ret);
-    let mut module_known_functions = BTreeSet::from(["molt_main".to_string()]);
-    module_known_functions.insert("stdlib_value_helper".to_string());
     let mut backend = SimpleBackend::new();
     backend.compile_func(
         caller,
@@ -186,9 +184,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeSet::from(["molt_main".to_string()]),
-        &module_known_functions,
         &BTreeSet::new(),
-        false,
         &BTreeSet::new(),
         &effective_function_arities,
         &effective_function_has_ret,

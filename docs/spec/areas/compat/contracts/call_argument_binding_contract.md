@@ -2,7 +2,7 @@
 
 **Spec ID:** 0016
 **Status:** Draft
-**Last updated:** 2026-09-15
+**Last updated:** 2026-09-17
 **Audience:** compiler engineers, runtime engineers
 **Goal:** Add Python-compatible call argument binding (positional, keyword, varargs, varkw) while preserving Molt Tier 0 performance via specialization and allocation-free fast paths.
 
@@ -165,6 +165,70 @@ claim that every version/OS/architecture/backend cell has been executed.
 `object.__dict__` classmethod-descriptor visibility/callability cases as an
 unproven builtin-introspection frontier;
 bound-hook proofs must not be reported as closure of those raw-descriptor cases.
+
+### Shared C-extension calling conventions
+
+The pointer-based CPython ABI uses
+`molt-cpython-abi/src/api/cfunction.rs::CFunctionConvention` as the single
+flag/arity/dispatch authority for raw `PyCFunction`/`PyCMethod` objects and
+runtime-backed extension functions. It covers NOARGS, O, VARARGS with or without
+keywords, FASTCALL with or without keywords, and METHOD/FASTCALL/KEYWORDS.
+The boxed-value libmolt C API remains a distinct representation contract; its
+function pointer signatures are not interchangeable with `PyObject *` signatures.
+
+Both vectorcall and the runtime binder transport positional values followed by
+keyword values, paired with an ordered keyword-name tuple. A kwargs dictionary
+is never passed as FASTCALL kwnames. Only VARARGS conventions pack argument
+tuples/dictionaries. Borrowed inputs remain pinned across extension reentry;
+temporary argument cleanup preserves the callee's exact error indicator.
+
+A runtime callable retains receiver, defining class and diagnostic name in its
+ordinary traced closure. The executable registry owns no hidden Python edges.
+METHOD requires an actual defining class; other conventions forbid one. STATIC
+passes a null effective receiver while retaining the supplied object's lifetime.
+Receiver presence is explicit: C NULL, Python None, and floating-point zero
+cannot share an absence sentinel. Raw bridge bindings distinguish borrowed
+identities from transferred runtime holds and retire the latter outside locks.
+Direct aliases retire their own forward identity even when no reverse view
+exists; they cannot retire a different canonical managed view. Static binding
+rejections carry typed collision facts captured by the publication transaction.
+Direct-ingress metadata is not ownership: an exact managed view takes precedence
+over that metadata during release and cannot be rebound or unbound as a static
+alias. C type readiness and capsule/descriptor construction acquire no hidden
+runtime references. The sole C-to-runtime conversion, `molt_value_for_pyobj`,
+preserves existing managed/static identity or acquires an owned foreign wrapper
+on demand; its last runtime owner releases the wrapper's single C hold.
+`RuntimeValue` is the shared temporary crossing guard for C-function owners,
+module APIs, mapping/sequence mutation, and marshaled call arguments. It borrows
+an already-observed canonical value or releases its temporary foreign owner
+while preserving the exact error indicator. A failed managed observation cannot
+be reclassified as foreign. Foreign reservation rechecks canonical identity
+under the publication lock; allocation failure publishes neither a wrapper nor
+a C hold. `PyModule_AddObject` consumes its C reference only on successful
+insertion; `PyModule_AddObjectRef` never consumes the caller's reference.
+Generic item access delegates to the mapping/sequence authorities rather than
+maintaining a second conversion, result-ownership, or error policy.
+Reference insertion uses `RuntimeValue::acquire_edge`: it validates physical
+layout and commits initialized slots without requiring container construction
+to be complete. Semantic reads use strict observation. This distinction applies
+to list/tuple insertion, dict values and module values, including self/mutual
+construction cycles; dictionary keys and call arguments remain observations.
+Runtime-to-C borrowed arguments acquire new C references without consuming the
+caller's runtime hold. Foreign get/set/call cleanup preserves the exact pending
+error, and attribute deletion has explicit presence independent of value bits.
+Typed owned/borrowed results use status alone for success: float `+0.0` has bits
+zero and remains a value. Uninitialized runtime tuple slots use the existing
+canonical missing singleton, never a scalar payload sentinel. Foreign call and
+attribute results use that same typed status authority.
+Invalid construction cannot publish a partial registry entry or fall back from
+a failed runtime constructor to a raw callable.
+
+Runtime keyword binding recognizes this executable authority directly instead
+of inventing Python parameter names for a C function. ABI object calls and
+runtime calls preserve their respective result/error boundary validation.
+Regressions live in ABI `test_cfunction_conventions` and runtime
+`cpython_abi_hooks/cfunction_tests.rs`; host tests alone are not native/WASM,
+Python-version, platform, or real-package acceptance.
 
 ### 5.1 Tier 0: Specialized, allocation-free call paths
 

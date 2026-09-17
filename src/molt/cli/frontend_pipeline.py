@@ -173,7 +173,9 @@ def _prepare_build_module_outputs(
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
     try:
         if prepared_module_graph.target != target:
-            raise ValueError("prepared source closure target changed before materialization")
+            raise ValueError(
+                "prepared source closure target changed before materialization"
+            )
         import_plan = _materialize_import_plan(
             prepared_module_graph=prepared_module_graph,
             module_reasons=module_reasons,
@@ -845,6 +847,16 @@ def _prepare_frontend_stage_state(
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
     import_plan = prepared_build_outputs.import_plan
+    native_callable_conflicts = (
+        import_plan.native_artifact_plan.native_callable_contract_conflicts()
+    )
+    if native_callable_conflicts:
+        return None, _fail(
+            "static native callable export contract conflicts:\n"
+            + "\n".join(native_callable_conflicts),
+            json_output,
+            command="build",
+        )
     if verbose and not json_output:
         print(f"Project root: {project_root}")
         print(f"Module roots: {', '.join(str(root) for root in module_roots)}")

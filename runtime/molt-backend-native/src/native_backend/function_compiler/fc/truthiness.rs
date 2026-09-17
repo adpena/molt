@@ -106,17 +106,6 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     let params = builder.block_params(merge).to_vec();
     rebind_live_through_values(builder, vars, &live_through, &params[1..]);
 
-    if let Some(origin) = origin_block
-        && origin != merge
-    {
-        let obj_live = block_tracked_obj.remove(&origin).unwrap_or_default();
-        if !obj_live.is_empty() {
-            extend_unique_tracked(block_tracked_obj.entry(merge).or_default(), obj_live);
-        }
-        let ptr_live = block_tracked_ptr.remove(&origin).unwrap_or_default();
-        if !ptr_live.is_empty() {
-            extend_unique_tracked(block_tracked_ptr.entry(merge).or_default(), ptr_live);
-        }
-    }
+    carry_internal_cfg_tracking(origin_block, merge, block_tracked_obj, block_tracked_ptr);
     params[0]
 }

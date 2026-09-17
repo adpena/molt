@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 from concurrent.futures import Future
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
@@ -22,6 +22,11 @@ from typing import (
 )
 
 from molt.cli.output import CliFailure as _CliFailure
+from molt.native_callable_exports import (
+    NativeCallableExport as _ExternalNativeCallableExport,
+    NativeCallableExportError,
+    normalize_native_callable_export,
+)
 from molt.target_python import TargetPythonVersion
 from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
@@ -59,7 +64,6 @@ BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
 BuildEntrySelectorTarget = Literal["file", "module"]
 
 
-
 @dataclass(frozen=True)
 class _ModuleSourceScanAuthority:
     """The source identity and depth of a closure scan, never source/AST storage."""
@@ -68,13 +72,16 @@ class _ModuleSourceScanAuthority:
     source_path: Path
     mode: ImportScanMode
     is_package: bool | None = None
+    requires_runtime_package_anchor: bool = False
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "module_init_static_helpers", "full"}:
             raise ValueError(f"invalid module scan mode: {self.mode!r}")
         object.__setattr__(self, "source_path", self.source_path.resolve())
         if self.is_package is None:
-            object.__setattr__(self, "is_package", self.source_path.name == "__init__.py")
+            object.__setattr__(
+                self, "is_package", self.source_path.name == "__init__.py"
+            )
 
     def validate(self, module_name: str, source_path: Path) -> None:
         if self.module_name != module_name or self.source_path != source_path.resolve():
@@ -84,12 +91,18 @@ class _ModuleSourceScanAuthority:
 @dataclass(frozen=True)
 class _ModuleGraphScanAuthority:
     sources: tuple[_ModuleSourceScanAuthority, ...] = ()
-    by_module: Mapping[str, _ModuleSourceScanAuthority] = field(init=False, compare=False, repr=False)
+    by_module: Mapping[str, _ModuleSourceScanAuthority] = field(
+        init=False, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         if len({source.module_name for source in self.sources}) != len(self.sources):
             raise ValueError("module scan authority requires unique module identities")
-        object.__setattr__(self, "by_module", MappingProxyType({source.module_name: source for source in self.sources}))
+        object.__setattr__(
+            self,
+            "by_module",
+            MappingProxyType({source.module_name: source for source in self.sources}),
+        )
 
     def mode_for(self, module_name: str, source_path: Path) -> ImportScanMode:
         source = self.by_module.get(module_name)
@@ -106,14 +119,32 @@ class _ModuleGraphScanAuthority:
             if prior is not None:
                 prior.validate(source.module_name, source.source_path)
                 if prior.is_package != source.is_package:
-                    raise ValueError(f"module package scan authority changed: {source.module_name!r}")
+                    raise ValueError(
+                        f"module package scan authority changed: {source.module_name!r}"
+                    )
+                requires_runtime_package_anchor = (
+                    prior.requires_runtime_package_anchor
+                    or source.requires_runtime_package_anchor
+                )
                 if ranks[prior.mode] >= ranks[source.mode]:
-                    continue
+                    source = prior
+                if (
+                    requires_runtime_package_anchor
+                    != source.requires_runtime_package_anchor
+                ):
+                    source = replace(
+                        source,
+                        requires_runtime_package_anchor=requires_runtime_package_anchor,
+                    )
             sources[source.module_name] = source
-        return _ModuleGraphScanAuthority(tuple(sources[name] for name in sorted(sources)))
+        return _ModuleGraphScanAuthority(
+            tuple(sources[name] for name in sorted(sources))
+        )
 
     def restricted(self, graph: Mapping[str, Path]) -> "_ModuleGraphScanAuthority":
-        sources = tuple(source for source in self.sources if source.module_name in graph)
+        sources = tuple(
+            source for source in self.sources if source.module_name in graph
+        )
         for source in sources:
             source.validate(source.module_name, graph[source.module_name])
         return _ModuleGraphScanAuthority(sources)
@@ -123,10 +154,21 @@ class _ModuleGraphScanAuthority:
         if {source.module_name for source in self.sources} != set(graph):
             raise ValueError("source graph and scan authority differ")
 
-    def payload(self, logical_paths: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    def payload(
+        self, logical_paths: Mapping[str, str] | None = None
+    ) -> list[dict[str, Any]]:
         return [
-            {"module": source.module_name, "path": (logical_paths or {}).get(source.module_name, os.fspath(source.source_path)),
-             "mode": source.mode, "is_package": source.is_package}
+            {
+                "module": source.module_name,
+                "path": (logical_paths or {}).get(
+                    source.module_name, os.fspath(source.source_path)
+                ),
+                "mode": source.mode,
+                "is_package": source.is_package,
+                "requires_runtime_package_anchor": (
+                    source.requires_runtime_package_anchor
+                ),
+            }
             for source in sorted(self.sources, key=lambda source: source.module_name)
         ]
 
@@ -134,6 +176,16 @@ class _ModuleGraphScanAuthority:
 class _CompleteImportScan(NamedTuple):
     imports: tuple[str, ...]
     source_executions: tuple[tuple[str | None, Path], ...]
+    dynamic_relative_import_candidates: tuple[str, ...] = ()
+    requires_runtime_package_anchor: bool = False
+
+
+class _ImportDiscoveryProjection(NamedTuple):
+    """Graph-only candidates kept separate from runtime import semantics."""
+
+    imports: tuple[str, ...]
+    dynamic_relative_import_candidates: tuple[str, ...] = ()
+    requires_runtime_package_anchor: bool = False
 
 
 @dataclass(frozen=True)
@@ -871,9 +923,10 @@ class _RuntimeImportSupportPolicy:
 class _RuntimeImportScanCustody:
     """Source-backed finite catalog for runtime protocol implementation scans.
 
-    Owners may defer dynamic package selection to the compiled registry. Every
-    catalog row must be retained as a dispatch root by the graph producer; this
-    is not permission to discover arbitrary modules through runtime metadata.
+    Owners may defer dynamic package selection to the finite compiled catalog.
+    Every row must be retained as a dispatch root by the graph producer, whether
+    emitted as registry data or source dispatch. This is neither permission to
+    discover arbitrary modules nor proof of a backend's import capabilities.
     """
 
     owners: tuple[tuple[str, Path], ...]
@@ -919,7 +972,10 @@ class _RuntimeImportScanCustody:
         )
 
     def validate_scan_mode(
-        self, module_name: str | None, source_path: Path | None, mode: ImportScanMode,
+        self,
+        module_name: str | None,
+        source_path: Path | None,
+        mode: ImportScanMode,
     ) -> None:
         if self.owns(module_name, source_path) and mode != "full":
             raise ValueError("runtime import custody requires full-depth owner scans")
@@ -1061,37 +1117,6 @@ class _ExternalNativeCapiSymbol:
 
 
 @dataclass(frozen=True)
-class _ExternalNativeCallableExport:
-    module: str
-    name: str
-    binding: str
-    abi: str
-    symbol: str | None = None
-    provider_module: str | None = None
-    effects: tuple[str, ...] = ()
-    deterministic: bool = False
-
-    @property
-    def qualified_name(self) -> str:
-        return f"{self.module}.{self.name}"
-
-    def digest_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "module": self.module,
-            "name": self.name,
-            "binding": self.binding,
-            "abi": self.abi,
-            "effects": list(self.effects),
-            "deterministic": self.deterministic,
-        }
-        if self.symbol is not None:
-            payload["symbol"] = self.symbol
-        if self.provider_module is not None:
-            payload["provider_module"] = self.provider_module
-        return payload
-
-
-@dataclass(frozen=True)
 class _ExternalNativeModuleAttrPublishSpec:
     provider_module: str
     attr: str
@@ -1102,6 +1127,7 @@ class _ExternalNativeModuleInitSpec:
     module: str
     init_symbol: str = ""
     module_attr_exports: tuple[_ExternalNativeModuleAttrPublishSpec, ...] = ()
+    direct_symbol_exports: tuple[_ExternalNativeCallableExport, ...] = ()
     alias_of: str = ""
 
     @property
@@ -1343,15 +1369,135 @@ class _ExternalPackageNativeArtifactPlan:
         )
 
     def native_callable_exports_by_qualified_name(self) -> dict[str, dict[str, Any]]:
-        exports: dict[str, dict[str, Any]] = {}
+        exports, _conflicts = self._merged_native_callable_exports()
+        return {
+            export.qualified_name: export.digest_payload()
+            for _origin_module, export in exports
+        }
+
+    @staticmethod
+    def _native_callable_contract_display(
+        export: _ExternalNativeCallableExport,
+        *,
+        effective_provider: str | None,
+    ) -> str:
+        return (
+            f"binding={export.binding}, abi={export.abi}, "
+            f"symbol={export.symbol!r}, provider={effective_provider!r}, "
+            f"arity={export.arity!r}, effects={export.effects!r}, "
+            f"deterministic={export.deterministic!r}"
+        )
+
+    def _merged_native_callable_exports(
+        self,
+    ) -> tuple[
+        tuple[tuple[str, _ExternalNativeCallableExport], ...],
+        tuple[str, ...],
+    ]:
+        qualified_contracts: dict[
+            str,
+            tuple[
+                tuple[object, ...],
+                str,
+                str,
+                _ExternalNativeCallableExport,
+            ],
+        ] = {}
+        conflicts: list[str] = []
         for artifact in self.artifacts:
             for export in artifact.callable_exports:
-                exports[export.qualified_name] = export.digest_payload()
-        return {name: exports[name] for name in sorted(exports)}
+                try:
+                    normalized = normalize_native_callable_export(
+                        export.digest_payload(),
+                        qualified_name=export.qualified_name,
+                    )
+                except NativeCallableExportError as exc:
+                    conflicts.append(
+                        f"native callable export {export.qualified_name!r} is invalid: {exc}"
+                    )
+                    continue
+                effective_provider = (
+                    normalized.provider_module or artifact.module
+                    if normalized.binding == "module_attr"
+                    else None
+                )
+                contract = (
+                    normalized.binding,
+                    normalized.abi,
+                    normalized.symbol,
+                    effective_provider,
+                    normalized.arity,
+                    normalized.effects,
+                    normalized.deterministic,
+                )
+                origin = f"{artifact.module} ({artifact.manifest_path})"
+                prior = qualified_contracts.get(normalized.qualified_name)
+                if prior is None:
+                    qualified_contracts[normalized.qualified_name] = (
+                        contract,
+                        origin,
+                        artifact.module,
+                        normalized,
+                    )
+                elif prior[0] != contract:
+                    prior_export = prior[3]
+                    prior_effective_provider = (
+                        prior_export.provider_module or prior[2]
+                        if prior_export.binding == "module_attr"
+                        else None
+                    )
+                    prior_display = self._native_callable_contract_display(
+                        prior_export,
+                        effective_provider=prior_effective_provider,
+                    )
+                    current_display = self._native_callable_contract_display(
+                        normalized,
+                        effective_provider=effective_provider,
+                    )
+                    conflicts.append(
+                        f"native callable export {normalized.qualified_name!r} has "
+                        f"conflicting declarations: {prior[1]} "
+                        f"({prior_display}) and {origin} ({current_display})"
+                    )
+
+        symbol_contracts: dict[str, tuple[str, int, str]] = {}
+        for qualified_name in sorted(qualified_contracts):
+            export = qualified_contracts[qualified_name][3]
+            if export.binding != "direct_symbol" or export.symbol is None:
+                continue
+            contract = (
+                export.abi,
+                export.wrapper_payload_arity,
+                export.qualified_name,
+            )
+            prior = symbol_contracts.get(export.symbol)
+            if prior is None:
+                symbol_contracts[export.symbol] = contract
+                continue
+            if prior[:2] != contract[:2]:
+                conflicts.append(
+                    f"direct symbol {export.symbol!r} has conflicting callable "
+                    f"contracts: {prior[2]} ({prior[0]}, arity={prior[1]}) and "
+                    f"{contract[2]} ({contract[0]}, arity={contract[1]})"
+                )
+        merged = tuple(
+            (
+                qualified_contracts[name][2],
+                qualified_contracts[name][3],
+            )
+            for name in sorted(qualified_contracts)
+        )
+        return merged, tuple(sorted(set(conflicts)))
+
+    def native_callable_contract_conflicts(self) -> tuple[str, ...]:
+        _exports, conflicts = self._merged_native_callable_exports()
+        return conflicts
 
     def native_module_init_specs(self) -> tuple[_ExternalNativeModuleInitSpec, ...]:
         specs: dict[str, _ExternalNativeModuleInitSpec] = {}
         module_attr_exports: dict[str, set[_ExternalNativeModuleAttrPublishSpec]] = {}
+        direct_symbol_exports: dict[str, set[_ExternalNativeCallableExport]] = {}
+        merged_callable_exports, _conflicts = self._merged_native_callable_exports()
         for artifact in self.artifacts:
             names, _support_init_modules = self._artifact_base_module_names(artifact)
             capsule_alias_modules = self._artifact_capsule_alias_module_names(artifact)
@@ -1360,10 +1506,12 @@ class _ExternalPackageNativeArtifactPlan:
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
                 if exported_name in {artifact.package, artifact.module}:
                     names.add(exported_name)
-            for export in artifact.callable_exports:
+            for origin_module, export in merged_callable_exports:
+                if origin_module != artifact.module:
+                    continue
                 parts = export.qualified_name.split(".")
                 names.update(".".join(parts[:idx]) for idx in range(1, len(parts)))
-                provider_module = export.provider_module or artifact.module
+                provider_module = export.provider_module or origin_module
                 if export.binding == "module_attr":
                     names.update(self._module_prefixes(provider_module))
                 if export.binding == "module_attr" and export.module != provider_module:
@@ -1374,6 +1522,9 @@ class _ExternalPackageNativeArtifactPlan:
                             attr=export.name,
                         )
                     )
+                if export.binding == "direct_symbol":
+                    names.add(export.module)
+                    direct_symbol_exports.setdefault(export.module, set()).add(export)
             for name in names:
                 if name == artifact.module and artifact.init_symbol:
                     specs[name] = _ExternalNativeModuleInitSpec(
@@ -1408,6 +1559,18 @@ class _ExternalPackageNativeArtifactPlan:
                 init_symbol=existing.init_symbol,
                 module_attr_exports=tuple(
                     sorted(exports, key=lambda item: (item.provider_module, item.attr))
+                ),
+                direct_symbol_exports=existing.direct_symbol_exports,
+                alias_of=existing.alias_of,
+            )
+        for module, exports in direct_symbol_exports.items():
+            existing = specs.get(module, _ExternalNativeModuleInitSpec(module=module))
+            specs[module] = _ExternalNativeModuleInitSpec(
+                module=existing.module,
+                init_symbol=existing.init_symbol,
+                module_attr_exports=existing.module_attr_exports,
+                direct_symbol_exports=tuple(
+                    sorted(exports, key=lambda item: item.qualified_name)
                 ),
                 alias_of=existing.alias_of,
             )
@@ -1820,7 +1983,9 @@ class _ImportPlan:
             "stdlib_support_modules": sorted(self.stdlib_support_modules),
             "package_parent_modules": sorted(self.package_parent_modules),
             "runtime_import_dispatch_roots": sorted(self.runtime_import_dispatch_roots),
-            "source_scan_authority": self.scan_authority.payload(self.module_graph_metadata.logical_source_path_by_module),
+            "source_scan_authority": self.scan_authority.payload(
+                self.module_graph_metadata.logical_source_path_by_module
+            ),
             "stub_parents": sorted(self.stub_parents),
             "namespace_module_names": sorted(self.namespace_module_names),
             "spawn_enabled": self.spawn_enabled,

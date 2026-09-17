@@ -1,76 +1,82 @@
 # Molt
 
-Molt compiles Python into standalone native binaries and WASM with a Rust-owned
-runtime, deterministic tooling, and explicit compatibility boundaries.
+Molt is an optimizing Python-to-native and WebAssembly compiler with a Rust-owned
+runtime and explicit compatibility boundaries.
 
-It is not trying to be a hidden CPython launcher. Molt targets a verified,
-production-minded subset that can keep expanding without giving up control over
-performance, packaging, or runtime semantics.
+Molt is under active development, not a drop-in replacement for CPython. It targets
+an expanding verified subset without a hidden host-Python fallback. Language,
+stdlib, third-party package support, and native/WASM parity remain incomplete;
+see [current status](docs/spec/STATUS.md) before choosing a workload.
 
 ## Why Molt
 
 - **Standalone output**: compiled binaries do not rely on a host Python installation.
 - **Rust-first runtime**: hot semantics and stdlib behavior are pushed down into
   runtime primitives and intrinsics instead of Python fallbacks.
-- **Deterministic engineering**: parity, performance, and security are treated
-  as measurable gates, not vague goals.
-- **Cross-target ambition**: native and WASM are both first-class targets.
+- **Evidence-backed compatibility**: differential tests compare supported
+  behavior with CPython; support is scoped to the tested configuration.
+- **Co-equal targets**: native and WASM correctness, determinism, performance,
+  and binary size are engineering goals, not a claim of completed parity.
 
 ## Project Contract
 
-- CPython `>=3.12` parity target for supported Molt semantics.
-- Full product target: full CPython `>=3.12` parity for the supported subset
-  without hidden host fallback.
+- CPython `>=3.12` parity target within the verified subset.
+  Current target-version policies are `3.12`, `3.13`, and `3.14`; accepting a
+  version policy does not certify every feature on that version.
 - Compiled artifacts must work without a host Python installation.
-- By design, Molt does not support unrestricted `exec`/`eval`/`compile`,
-  runtime monkeypatching, or unrestricted reflection in compiled binaries.
+- Support is specific to Python version, OS, architecture, backend, runtime
+  profile, and capabilities. Windows, macOS, Linux, and WASM are in scope;
+  unverified cells are not implied by a pass on another configuration.
+- Dynamic execution and reflection follow the
+  [dynamic-semantics policy](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
+  Scoped mutation and introspection are not a promise of arbitrary runtime
+  monkeypatching or unrestricted dynamism.
 
 ## What Molt Supports Today
 
-- Native AOT compilation through the Rust backend.
+- Native AOT compilation through Cranelift by default, with LLVM opt-in.
+  The experimental Rust source emitter is a separate backend.
 - Standalone binary workflows with no runtime dependency on local CPython.
 - A growing Rust-first stdlib lowering program with generated audit surfaces.
 - Differential testing against CPython as a core validation path.
 - WASM build workflows, with cross-target parity still incomplete and actively
   tracked.
+- Third-party integration through shared import/runtime primitives and
+  source-recompiled extensions. C-API symbol coverage alone does not establish
+  package compatibility; see the [ecosystem matrix](docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md).
 
-## 5-Minute Quickstart
+## Source Checkout Quickstart
 
 For the full setup and troubleshooting path, use
 [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
-uv sync --group dev --python 3.12   # installs the `molt` command into .venv
-molt run examples/hello.py          # build + run, like `python examples/hello.py`
+uv sync --group dev --python 3.12
+uv run --python 3.12 molt doctor --json
+uv run --python 3.12 molt run examples/hello.py
 ```
 
-`uv sync` puts the `molt` command on your path (in `.venv`). From there the
-common commands are:
+Run these commands from the repository root after installing the
+[prerequisites](docs/getting-started.md#prerequisites). `uv sync` creates the
+project environment but does not activate it; `uv run` selects it without
+shell-specific activation. The first build may compile the backend and runtime.
 
 ```bash
-molt run app.py             # build and run (fast `dev` profile, like `cargo run`)
-molt build app.py --release # produce an optimized standalone binary
-./app                       # run the compiled binary directly
-molt compare app.py         # diff Molt's output against CPython
+uv run --python 3.12 molt run examples/hello.py --release
+uv run --python 3.12 molt compare examples/hello.py
 ```
 
-> `molt run` defaults to the fast `dev` profile and `molt build` defaults to the
-> optimized `release` profile — the same convention as `cargo run` / `cargo
-> build --release`. Override either with `--profile dev|release` (or the
-> `--release` shorthand); both verbs accept both profiles. See
-> [docs/getting-started.md](docs/getting-started.md#build-and-run-profiles).
-
-> **From a source checkout without activating the venv**, prefix any command
-> with `uv run --python 3.12`, e.g.
-> `uv run --python 3.12 molt run examples/hello.py`. The module form
-> `python3 -m molt.cli ...` is equivalent and is what the contributor proof
-> lanes use.
+`molt run` defaults to `dev`; `molt build` defaults to `release`. Both accept
+`--profile dev|release` and `--release`. For explicit output paths and Windows,
+macOS, and Linux invocation, see
+[build and run](docs/getting-started.md#build-and-run-hello-world).
 
 ## Install
 
 - Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
 - Packaging details: [packaging/README.md](packaging/README.md)
-- Verification command: `molt doctor --json`
+- Toolchain diagnostics: `uv run --python 3.12 molt doctor --json` (not a
+  compatibility or release certification).
 
 ## Status
 
@@ -83,7 +89,9 @@ For compatibility and proof detail:
 - Docs index: [docs/INDEX.md](docs/INDEX.md)
 - Spec index: [docs/spec/README.md](docs/spec/README.md)
 - Compatibility architecture: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
-- Detailed benchmark report: [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md)
+- Dated benchmark report: [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md)
+  (read its source revision, timing mode, and comparator coverage; it does not
+  establish current performance or superiority to unmeasured compilers).
 - Standalone proof workflow: [docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 
 ## Development

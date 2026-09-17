@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
+
+from markdown_it import MarkdownIt
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +18,8 @@ def test_readme_declares_parity_target_and_no_host_python_fallback() -> None:
     text = _read_text("README.md")
     assert "CPython `>=3.12` parity target" in text
     assert "host Python installation" in text
-    assert "runtime monkeypatching" in text
+    assert "dynamic_execution_policy_contract.md" in text
+    assert "parity remain incomplete" in text
 
 
 def test_readme_links_to_getting_started_and_status_and_drops_internal_sections() -> (
@@ -67,7 +72,9 @@ def test_core_policy_docs_keep_carveouts_and_standalone_binary_story() -> None:
     assert "host-Python fallback" in breaks
     assert "No host CPython in binaries" in fallback
     assert "full CPython `>=3.12` parity" in fallback
-    assert "except for the carve-outs below" in dynamic
+    assert "explicit, test-backed verified subset" in dynamic
+    assert "not a claim that everything" in dynamic
+    assert "mutation of global state after startup" not in breaks
     assert "runtime monkeypatching" in verified
 
 
@@ -80,3 +87,43 @@ def test_packaging_docs_call_out_standalone_binary_contract() -> None:
     assert "hidden host-CPython fallback" in packaging_readme
     assert "without any" in install_doc
     assert "host Python installation" in install_doc
+
+
+@pytest.mark.parametrize("rel_path", ["README.md", "docs/getting-started.md"])
+def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
+    from molt.cli.entrypoint_parser import _build_entrypoint_parser
+
+    parser = _build_entrypoint_parser()
+    commands = []
+    for block in MarkdownIt().parse(_read_text(rel_path)):
+        if block.type != "fence" or block.info not in {"bash", "powershell"}:
+            continue
+        for line in block.content.splitlines():
+            if line.lstrip().startswith(("./", ".\\")):
+                continue
+            words = shlex.split(line, comments=True)
+            if not words:
+                continue
+            assert words[:1] == ["uv"], f"Unmanaged quickstart command: {line}"
+            if words[1:2] == ["sync"]:
+                assert words[-2:] == ["--python", "3.12"]
+                continue
+            assert words[:4] == ["uv", "run", "--python", "3.12"]
+            payload = words[4:]
+            if payload[:3] == ["python", "-m", "molt.cli"]:
+                payload = payload[3:]
+            else:
+                assert payload[:1] == ["molt"]
+                payload = payload[1:]
+            commands.append(parser.parse_args(payload).command)
+    assert {"doctor", "run", "compare"} <= set(commands)
+
+
+def test_public_status_separates_implementation_from_acceptance() -> None:
+    status = _read_text("docs/spec/STATUS.md")
+    assert "## Reading Support Claims" in status
+    assert "## Implemented Surfaces" in status
+    assert "packaging/PACKAGING.md" in status
+    deployment = _read_text("docs/deployment/PRODUCTION_STATUS.md")
+    assert "(Historical)" in deployment
+    assert "full parity across" not in deployment

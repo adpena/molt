@@ -873,7 +873,14 @@ pub extern "C" fn molt_functools_wraps(
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
         }
-        unsafe { crate::function_set_closure_bits(_py, func_ptr, closure_bits) };
+        unsafe {
+            crate::function_set_closure_bits(
+                _py,
+                func_ptr,
+                closure_bits,
+                crate::FunctionCallAbi::OpaqueContextFirst,
+            )
+        };
         dec_ref_bits(_py, closure_bits);
         MoltObject::from_ptr(func_ptr).bits()
     })
@@ -937,7 +944,14 @@ pub extern "C" fn molt_functools_cmp_to_key(cmp_bits: u64) -> u64 {
             dec_ref_bits(_py, closure_bits);
             return MoltObject::none().bits();
         }
-        unsafe { crate::function_set_closure_bits(_py, func_ptr, closure_bits) };
+        unsafe {
+            crate::function_set_closure_bits(
+                _py,
+                func_ptr,
+                closure_bits,
+                crate::FunctionCallAbi::OpaqueContextFirst,
+            )
+        };
         dec_ref_bits(_py, closure_bits);
         MoltObject::from_ptr(func_ptr).bits()
     })
@@ -1200,7 +1214,14 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
                 dec_ref_bits(_py, closure_bits);
                 continue;
             }
-            unsafe { crate::function_set_closure_bits(_py, func_ptr, closure_bits) };
+            unsafe {
+                crate::function_set_closure_bits(
+                    _py,
+                    func_ptr,
+                    closure_bits,
+                    crate::FunctionCallAbi::OpaqueContextFirst,
+                )
+            };
             dec_ref_bits(_py, closure_bits);
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {

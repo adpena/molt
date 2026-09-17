@@ -31,7 +31,7 @@ pub(in crate::wasm) struct WasmCallableTablePlan {
     func_to_index: BTreeMap<String, u32>,
     func_to_trampoline_idx: BTreeMap<String, u32>,
     app_callable_resolver: Option<WasmAppCallableResolverPlan>,
-    closure_functions: BTreeSet<String>,
+    positional_call_shapes: BTreeMap<String, (usize, bool)>,
     function_abi_returns_value: BTreeMap<String, bool>,
     trampoline_entries: Vec<WasmCallableTrampolineEntry>,
 }
@@ -130,6 +130,27 @@ impl WasmCallableTablePlan {
 
     fn ir_call_target_closure_issue(&self, ir: &SimpleIR) -> Option<String> {
         let mut issues: Vec<String> = Vec::new();
+        let mut task_target_signatures = crate::wasm_abi::POLL_TABLE_IMPORTS
+            .iter()
+            .filter_map(|spec| {
+                let signature =
+                    &crate::wasm_abi::STATIC_FUNC_TYPES[spec.import.type_idx() as usize];
+                (signature.params == [wasm_encoder::ValType::I64]
+                    && signature.results == [wasm_encoder::ValType::I64])
+                .then_some((spec.import.runtime_export_name(), (1, true)))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for function in &ir.functions {
+            match function.function_signature() {
+                Ok(signature) => {
+                    task_target_signatures.insert(
+                        function.name.as_str(),
+                        (signature.arity, signature.returns_value),
+                    );
+                }
+                Err(error) => issues.push(error),
+            }
+        }
         for func_ir in &ir.functions {
             if func_ir.is_extern {
                 continue;
@@ -157,6 +178,7 @@ impl WasmCallableTablePlan {
                     kind,
                     target,
                     requires,
+                    task_target_signatures.get(target).copied(),
                 );
             }
         }
@@ -188,6 +210,7 @@ impl WasmCallableTablePlan {
         kind: &str,
         target: &str,
         requires: TargetRequirement,
+        target_signature: Option<(usize, bool)>,
     ) {
         match requires {
             TargetRequirement::FunctionIndex => {
@@ -198,9 +221,9 @@ impl WasmCallableTablePlan {
                 self.require_table_slot(issues, owner, op_idx, kind, target);
             }
             TargetRequirement::PollTable => {
-                if !target.ends_with("_poll") {
+                if target_signature != Some((1, true)) {
                     issues.push(format!(
-                        "{owner} op {op_idx} {kind} targets {target}, expected *_poll"
+                        "{owner} op {op_idx} {kind} targets {target}, expected task ABI (i64) -> i64, got {target_signature:?}"
                     ));
                 }
                 self.require_table_slot(issues, owner, op_idx, kind, target);
@@ -504,7 +527,7 @@ mod tests {
             func_to_index,
             func_to_trampoline_idx,
             app_callable_resolver: None,
-            closure_functions: BTreeSet::new(),
+            positional_call_shapes: BTreeMap::new(),
             function_abi_returns_value,
             trampoline_entries: Vec::new(),
         }
@@ -539,6 +562,57 @@ mod tests {
         assert!(issue.contains("wasm callable table target validation failed"));
         assert!(issue.contains("molt_main op 0 call function target not indexed"));
         assert!(issue.contains("sys___init_metadata"));
+    }
+
+    #[test]
+    fn task_target_validation_uses_physical_signature_not_name_or_callable_arity() {
+        for kind in ["alloc_task", "call_async"] {
+            for (target, arity, returns_value, accepted) in [
+                ("opaque_body", 1, true, true),
+                ("ordinary_poll", 0, true, false),
+                ("ordinary_poll", 2, true, false),
+                ("void_poll", 1, false, false),
+            ] {
+                let mut ir = ir_with_op(kind, target);
+                let mut body = ir.functions[0].clone();
+                body.name = target.to_string();
+                body.params = (0..arity).map(|index| format!("arg{index}")).collect();
+                body.ops = vec![OpIR {
+                    kind: if returns_value { "ret" } else { "ret_void" }.to_string(),
+                    ..OpIR::default()
+                }];
+                ir.functions.push(body);
+                let mut table = plan(
+                    BTreeMap::from([(target.to_string(), 7)]),
+                    BTreeMap::from([(target.to_string(), 42)]),
+                    BTreeMap::new(),
+                );
+                // Constructor arity deliberately differs from its task body ABI.
+                table
+                    .positional_call_shapes
+                    .insert(target.to_string(), (0, false));
+                let issue = table.ir_call_target_closure_issue(&ir);
+                assert_eq!(issue.is_none(), accepted, "{kind} {target}: {issue:?}");
+                if !accepted {
+                    assert!(issue.unwrap().contains("expected task ABI (i64) -> i64"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn task_target_validation_accepts_generated_runtime_poll_signature() {
+        let target = "molt_async_sleep_poll";
+        let table = plan(
+            BTreeMap::from([(target.to_string(), 7)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        assert!(
+            table
+                .ir_call_target_closure_issue(&ir_with_op("call_async", target))
+                .is_none()
+        );
     }
 
     #[test]

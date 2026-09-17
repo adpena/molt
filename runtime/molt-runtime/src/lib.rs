@@ -643,10 +643,10 @@ pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errn
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_builtins_bits,
-    frame_stack_active_globals_bits, frame_stack_pop, frame_stack_push_function,
-    frame_stack_push_owned, frame_stack_set_line, molt_frame_context_set, molt_getframe,
-    molt_globals_builtin, molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
-    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
+    frame_stack_active_globals_bits, frame_stack_pop, frame_stack_push_owned, frame_stack_set_line,
+    molt_frame_context_set, molt_getframe, molt_globals_builtin, molt_locals_builtin,
+    traceback_payload_code_bits, traceback_payload_col, traceback_payload_end_col,
+    traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;
@@ -727,9 +727,8 @@ pub(crate) use crate::call::bind::{
     molt_callargs_push_pos,
 };
 pub(crate) use crate::call::class_init::{
-    alloc_instance_for_class, alloc_instance_for_class_no_pool,
-    alloc_instance_for_default_object_new, call_builtin_type_if_needed, call_class_init_with_args,
-    function_attr_bits, function_set_attr_bits, raise_not_callable, try_call_generator,
+    alloc_instance_for_class, alloc_instance_for_default_object_new, call_builtin_type_if_needed,
+    call_class_init_with_args, function_attr_bits, function_set_attr_bits, raise_not_callable,
 };
 pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
@@ -743,29 +742,31 @@ pub(crate) use crate::object::accessors::{
 pub use crate::object::buffer2d::*;
 pub use crate::object::builders::*;
 pub(crate) use crate::object::builders::{PtrDropGuard, alloc_dict_with_pairs};
+pub use crate::object::cells::{molt_cell_get, molt_cell_new, molt_cell_set};
 #[allow(unused_imports)]
 pub(crate) use crate::object::layout::{
-    CALL_ITER_PAYLOAD_SIZE, ENUMERATE_PAYLOAD_SIZE, MAP_PAYLOAD_SIZE, bound_method_func_bits,
-    bound_method_self_bits, bytearray_data, bytearray_len, bytearray_vec, bytearray_vec_ptr,
-    bytearray_vec_ref, call_iter_cached_tuple, call_iter_callable_bits, call_iter_sentinel_bits,
-    call_iter_set_cached_tuple, class_annotate_bits, class_annotations_bits, class_bases_bits,
-    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
-    class_name_bits, class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits,
-    class_set_bases_bits, class_set_layout_version_bits, class_set_name_bits,
-    class_set_qualname_bits, classmethod_func_bits, code_arg_names_bits, code_argcount,
-    code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr, code_filename_bits,
-    code_firstlineno, code_kwonly_names_bits, code_kwonlyargcount, code_linetable_bits,
-    code_name_bits, code_names_bits, code_posonlyargcount, code_signature_posonly_bits,
-    code_vararg_bits, code_varkw_bits, code_varnames_bits, ensure_function_code_bits,
-    enumerate_cached_inner, enumerate_cached_outer, enumerate_index_bits,
-    enumerate_set_cached_inner, enumerate_set_cached_outer, enumerate_set_index_bits,
-    enumerate_target_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
-    function_annotations_bits, function_arity, function_arity_usize,
-    function_bump_defaults_version, function_closure_bits, function_code_bits,
-    function_defaults_version, function_dict_bits, function_fn_ptr, function_globals_bits,
-    function_globals_override_enabled, function_name_bits, function_set_annotate_bits,
-    function_set_annotations_bits, function_set_closure_bits, function_set_code_bits,
-    function_set_dict_bits, function_set_globals_bits, function_set_globals_override_enabled,
+    CALL_ITER_PAYLOAD_SIZE, ENUMERATE_PAYLOAD_SIZE, FunctionCallAbi, MAP_PAYLOAD_SIZE,
+    bound_method_func_bits, bound_method_self_bits, bump_function_mutation_version, bytearray_data,
+    bytearray_len, bytearray_vec, bytearray_vec_ptr, bytearray_vec_ref, call_iter_cached_tuple,
+    call_iter_callable_bits, call_iter_sentinel_bits, call_iter_set_cached_tuple,
+    class_annotate_bits, class_annotations_bits, class_bases_bits, class_bump_layout_version,
+    class_dict_bits, class_layout_version_bits, class_mro_bits, class_name_bits,
+    class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits, class_set_bases_bits,
+    class_set_layout_version_bits, class_set_name_bits, class_set_qualname_bits,
+    classmethod_func_bits, code_arg_names_bits, code_argcount, code_callable_arity,
+    code_callable_fn_ptr, code_callable_trampoline_ptr, code_cellvars_bits, code_filename_bits,
+    code_firstlineno, code_freevars_bits, code_kwonly_names_bits, code_kwonlyargcount,
+    code_linetable_bits, code_name_bits, code_names_bits, code_posonlyargcount,
+    code_publish_lexical_metadata, code_signature_posonly_bits, code_vararg_bits, code_varkw_bits,
+    code_varnames_bits, ensure_function_code_bits, enumerate_cached_inner, enumerate_cached_outer,
+    enumerate_index_bits, enumerate_set_cached_inner, enumerate_set_cached_outer,
+    enumerate_set_index_bits, enumerate_target_bits, filter_func_bits, filter_iter_bits,
+    function_annotate_bits, function_annotations_bits, function_arity, function_arity_usize,
+    function_call_abi, function_closure_bits, function_code_bits, function_dict_bits,
+    function_execution_closure_bits, function_fn_ptr, function_globals_bits,
+    function_has_execution_closure, function_mutation_version, function_name_bits,
+    function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
+    function_set_code_bits, function_set_dict_bits, function_set_globals_bits,
     function_set_trampoline_ptr, function_trampoline_ptr, generic_alias_args_bits,
     generic_alias_origin_bits, iter_cached_tuple, iter_index, iter_set_cached_tuple,
     iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr,
@@ -834,8 +835,7 @@ pub use crate::object::weakref::{
 };
 pub(crate) use crate::object::{
     Buffer2D, ClassEdgeOwnership, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
-    HEADER_FLAG_FUNC_REQUIRES_BINDER, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
+    HEADER_FLAG_FUNC_REQUIRES_BINDER, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE,
     HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SPAWN_RETAIN,
     HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat,
