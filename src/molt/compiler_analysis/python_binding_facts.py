@@ -233,27 +233,16 @@ ALL_INVALID_MEMBERS: Final[MemberMask] = sum(int(member) for member in PythonMem
 
 BUILTIN_SHAPE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
-        "bool": PythonIdentity.BUILTIN_BOOL,
-        "int": PythonIdentity.BUILTIN_INT,
-        "float": PythonIdentity.BUILTIN_FLOAT,
-        "complex": PythonIdentity.BUILTIN_COMPLEX,
-        "str": PythonIdentity.BUILTIN_STR,
-        "bytes": PythonIdentity.BUILTIN_BYTES,
-        "bytearray": PythonIdentity.BUILTIN_BYTEARRAY,
-        "tuple": PythonIdentity.BUILTIN_TUPLE,
-        "list": PythonIdentity.BUILTIN_LIST,
-        "set": PythonIdentity.BUILTIN_SET,
-        "frozenset": PythonIdentity.BUILTIN_FROZENSET,
-        "dict": PythonIdentity.BUILTIN_DICT,
-        "range": PythonIdentity.BUILTIN_RANGE,
-        "len": PythonIdentity.BUILTIN_LEN,
+        name: PythonIdentity[f"BUILTIN_{name.upper()}"]
+        for name in sorted(BUILTIN_SHAPE_NAMES)
     }
 )
 BUILTIN_SHAPE_MEMBERS: Final[Mapping[str, PythonMember]] = MappingProxyType(
-    {name: PythonMember[f"BUILTINS_{name.upper()}"] for name in BUILTIN_SHAPE_NAMES}
+    {
+        name: PythonMember[f"BUILTINS_{name.upper()}"]
+        for name in sorted(BUILTIN_SHAPE_NAMES)
+    }
 )
-if frozenset(BUILTIN_SHAPE_IDENTITIES) != BUILTIN_SHAPE_NAMES:
-    raise RuntimeError("builtin shape identity catalog drift")
 _BUILTIN_SHAPE_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
     {int(identity): name for name, identity in BUILTIN_SHAPE_IDENTITIES.items()}
 )

@@ -1645,6 +1645,83 @@ pub extern "C" fn molt_bytearray_rpartition(hay_bits: u64, sep_bits: u64) -> u64
     })
 }
 
+fn bytes_split_impl(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+    maxsplit_bits: u64,
+    type_id: u32,
+    from_right: bool,
+) -> u64 {
+    let hay = obj_from_bits(hay_bits);
+    let hay_ptr = hay
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) == type_id });
+    let Some(hay_ptr) = hay_ptr else {
+        let method = if from_right { "rsplit" } else { "split" };
+        let receiver_type = if type_id == TYPE_ID_BYTES {
+            "bytes"
+        } else {
+            "bytearray"
+        };
+        let msg = format!(
+            "descriptor '{method}' for '{receiver_type}' objects doesn't apply to a '{}' object",
+            type_name(_py, hay)
+        );
+        return raise_exception::<_>(_py, "TypeError", &msg);
+    };
+    // __index__ can resize either bytearray argument. Do not acquire any byte
+    // slice until it has completed; then consume the live post-callback storage.
+    let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let needle = obj_from_bits(needle_bits);
+    unsafe {
+        let hay_bytes = bytes_like_slice(hay_ptr).expect("validated bytes receiver");
+        let alloc = |bytes: &[u8]| {
+            if type_id == TYPE_ID_BYTES {
+                alloc_bytes(_py, bytes)
+            } else {
+                alloc_bytearray(_py, bytes)
+            }
+        };
+        let result = if needle.is_none() {
+            if from_right {
+                rsplit_bytes_whitespace_to_list_maxsplit(_py, hay_bytes, maxsplit, alloc)
+            } else {
+                split_bytes_whitespace_to_list_maxsplit(_py, hay_bytes, maxsplit, alloc)
+            }
+        } else {
+            let Some(needle_ptr) = needle.as_ptr() else {
+                let msg = format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, needle)
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            };
+            let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
+                format!(
+                    "a bytes-like object is required, not '{}'",
+                    type_name(_py, needle)
+                )
+            }) {
+                Ok(slice) => slice,
+                Err(bits) => return bits,
+            };
+            if needle_bytes.is_empty() {
+                return raise_exception::<_>(_py, "ValueError", "empty separator");
+            }
+            if from_right {
+                rsplit_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit, alloc)
+            } else {
+                split_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit, alloc)
+            }
+        };
+        result.unwrap_or_else(|| MoltObject::none().bits())
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1656,63 +1733,14 @@ pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTES {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                if needle.is_none() {
-                    let list_bits = split_bytes_whitespace_to_list_maxsplit(
-                        _py,
-                        hay_bytes,
-                        maxsplit,
-                        |bytes| alloc_bytes(_py, bytes),
-                    );
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits = match split_bytes_to_list_maxsplit(
-                    _py,
-                    hay_bytes,
-                    needle_bytes,
-                    maxsplit,
-                    |bytes| alloc_bytes(_py, bytes),
-                ) {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
-            }
-        }
-        MoltObject::none().bits()
+        bytes_split_impl(
+            _py,
+            hay_bits,
+            needle_bits,
+            maxsplit_bits,
+            TYPE_ID_BYTES,
+            false,
+        )
     })
 }
 
@@ -1731,64 +1759,14 @@ pub extern "C" fn molt_bytes_rsplit_max(
     maxsplit_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTES {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                if needle.is_none() {
-                    let list_bits = rsplit_bytes_whitespace_to_list_maxsplit(
-                        _py,
-                        hay_bytes,
-                        maxsplit,
-                        |bytes| alloc_bytes(_py, bytes),
-                    );
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits = rsplit_bytes_to_list_maxsplit(
-                    _py,
-                    hay_bytes,
-                    needle_bytes,
-                    maxsplit,
-                    |bytes| alloc_bytes(_py, bytes),
-                );
-                let list_bits = match list_bits {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
-            }
-        }
-        MoltObject::none().bits()
+        bytes_split_impl(
+            _py,
+            hay_bits,
+            needle_bits,
+            maxsplit_bits,
+            TYPE_ID_BYTES,
+            true,
+        )
     })
 }
 
@@ -1929,63 +1907,14 @@ pub extern "C" fn molt_bytearray_split_max(
     maxsplit_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTEARRAY {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                if needle.is_none() {
-                    let list_bits = split_bytes_whitespace_to_list_maxsplit(
-                        _py,
-                        hay_bytes,
-                        maxsplit,
-                        |bytes| alloc_bytearray(_py, bytes),
-                    );
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits = match split_bytes_to_list_maxsplit(
-                    _py,
-                    hay_bytes,
-                    needle_bytes,
-                    maxsplit,
-                    |bytes| alloc_bytearray(_py, bytes),
-                ) {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
-            }
-        }
-        MoltObject::none().bits()
+        bytes_split_impl(
+            _py,
+            hay_bits,
+            needle_bits,
+            maxsplit_bits,
+            TYPE_ID_BYTEARRAY,
+            false,
+        )
     })
 }
 
@@ -2004,64 +1933,14 @@ pub extern "C" fn molt_bytearray_rsplit_max(
     maxsplit_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTEARRAY {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                if needle.is_none() {
-                    let list_bits = rsplit_bytes_whitespace_to_list_maxsplit(
-                        _py,
-                        hay_bytes,
-                        maxsplit,
-                        |bytes| alloc_bytearray(_py, bytes),
-                    );
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits = rsplit_bytes_to_list_maxsplit(
-                    _py,
-                    hay_bytes,
-                    needle_bytes,
-                    maxsplit,
-                    |bytes| alloc_bytearray(_py, bytes),
-                );
-                let list_bits = match list_bits {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
-            }
-        }
-        MoltObject::none().bits()
+        bytes_split_impl(
+            _py,
+            hay_bits,
+            needle_bits,
+            maxsplit_bits,
+            TYPE_ID_BYTEARRAY,
+            true,
+        )
     })
 }
 

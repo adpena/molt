@@ -43,8 +43,6 @@ class CallImportedAttributeDispatchMixin(_MixinBase):
                 allowlist_key = normalized or module_name
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
-                if func_id == "open" and allowlist_key == "builtins":
-                    return self._emit_open_call(node)
                 enforce_allowlist = (
                     allowlist_key in MOLT_DIRECT_CALLS
                     or allowlist_key in self.stdlib_allowlist

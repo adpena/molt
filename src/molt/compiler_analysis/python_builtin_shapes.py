@@ -51,6 +51,7 @@ BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset(
         "dict",
         "range",
         "len",
+        "open",
     }
 )
 
@@ -101,12 +102,14 @@ class BuiltinCallShape:
 
 @dataclass(frozen=True, slots=True)
 class BuiltinMethodCallShape:
-    """Normal result and receiver-content transition for an exact builtin method."""
+    """Normal result and lifetime transitions for an exact builtin method."""
 
     result: StaticExpressionResult
     invocation_effects: EffectMask
+    argument_effects: EffectMask
     receiver_after: StaticExpressionResult | None
     specialization_valid: bool
+    retained_argument_indices: frozenset[int]
 
 
 def builtin_method_descriptor_known(kind: ExpressionKind, method: str) -> bool:
@@ -433,6 +436,8 @@ def builtin_call_shape(
 
     if name not in BUILTIN_SHAPE_NAMES:
         raise ValueError(f"unsupported builtin shape name: {name}")
+    if name == "open":
+        return _builtin_open_shape(node, argument_results)
     arguments = _plain_arguments(node, argument_results)
     arities = {
         "bool": (0, 1),
@@ -468,16 +473,15 @@ def builtin_call_shape(
     return BuiltinCallShape(result, invocation_effects, specialization_valid)
 
 
-def builtin_open_result(
+def _builtin_open_shape(
     node: ast.Call, argument_results: tuple[StaticExpressionResult, ...]
-) -> tuple[StaticExpressionResult, EffectMask]:
+) -> BuiltinCallShape:
     """Return exact builtin ``open`` mode/result facts without spelling authority."""
 
+    effects = ALLOCATES | READS_OBJECT_STATE | EXECUTES_ARBITRARY_PYTHON | RAISES
     arguments = _plain_arguments(node, argument_results)
     if arguments is None:
-        return UNKNOWN_EXPRESSION_RESULT, (
-            ALLOCATES | RAISES | EXECUTES_ARBITRARY_PYTHON
-        )
+        return BuiltinCallShape(UNKNOWN_EXPRESSION_RESULT, effects, False)
     positional = arguments[: len(node.args)]
     keyword_results = {
         keyword.arg: result
@@ -486,16 +490,15 @@ def builtin_open_result(
     }
     file_result = positional[0] if positional else keyword_results.get("file")
     if file_result is None:
-        return UNKNOWN_EXPRESSION_RESULT, (
-            ALLOCATES | RAISES | EXECUTES_ARBITRARY_PYTHON
-        )
-    mode_node: ast.expr | None = node.args[1] if len(node.args) > 1 else None
-    for keyword in node.keywords:
-        if keyword.arg == "mode" and mode_node is None:
-            mode_node = keyword.value
-    mode = "r" if mode_node is None else None
-    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
-        mode = mode_node.value
+        return BuiltinCallShape(UNKNOWN_EXPRESSION_RESULT, effects, False)
+    mode_result = positional[1] if len(positional) > 1 else keyword_results.get("mode")
+    mode = "r" if mode_result is None else None
+    if (
+        mode_result is not None
+        and mode_result.kind == "str"
+        and mode_result.value_known
+    ):
+        mode = cast(str, mode_result.value)
     result = (
         _normal_result(
             "file_bytes" if "b" in mode else "file_text",
@@ -504,27 +507,11 @@ def builtin_open_result(
         if mode is not None
         else UNKNOWN_EXPRESSION_RESULT
     )
-    buffering = (
-        positional[2] if len(positional) > 2 else keyword_results.get("buffering")
-    )
-    encoding = positional[3] if len(positional) > 3 else keyword_results.get("encoding")
-    closefd = positional[6] if len(positional) > 6 else keyword_results.get("closefd")
-    opener = positional[7] if len(positional) > 7 else keyword_results.get("opener")
-    callbackful_path = (
-        file_result.kind not in {"str", "bytes", "int"}
-        or buffering is not None
-        and not _index_callback_free(buffering)
-        or encoding is not None
-        and encoding.kind != "NoneType"
-        or closefd is not None
-        and closefd.kind not in {"bool", "int"}
-        or opener is not None
-        and opener.kind != "NoneType"
-    )
-    effects = ALLOCATES | READS_OBJECT_STATE | RAISES
-    if callbackful_path:
-        effects |= EXECUTES_ARBITRARY_PYTHON
-    return result, effects
+    # ``open`` always emits the ``open`` audit event. Registered audit hooks
+    # can execute Python even for literal paths, default encodings, and the
+    # builtin opener, so exact normal-result shape is independent of callback
+    # freedom here.
+    return BuiltinCallShape(result, effects, False)
 
 
 def _joined_element_result(
@@ -541,12 +528,15 @@ def _joined_element_result(
 
 
 def _receiver_with_element(
-    receiver: StaticExpressionResult, element: StaticExpressionResult | None
+    receiver: StaticExpressionResult,
+    element: StaticExpressionResult | None,
+    *,
+    release_may_call: bool,
 ) -> StaticExpressionResult:
     return StaticExpressionResult(
         kind=receiver.kind,
         evaluation_required=receiver.evaluation_required,
-        release_may_call=receiver.release_may_call,
+        release_may_call=release_may_call,
         element_result=element,
         _publication_release_stable=receiver._publication_release_stable,
     )
@@ -644,12 +634,33 @@ def builtin_method_call_shape(
         effects: EffectMask,
         receiver_after: StaticExpressionResult | None,
         valid: bool,
+        *,
+        publishes_arguments: bool = False,
+        retained_argument_indices: frozenset[int] = frozenset(),
     ) -> BuiltinMethodCallShape:
         if not valid:
             return BuiltinMethodCallShape(
-                UNKNOWN_EXPRESSION_RESULT, base_effects, None, False
+                UNKNOWN_EXPRESSION_RESULT,
+                base_effects,
+                base_effects,
+                None,
+                False,
+                frozenset(),
             )
-        return BuiltinMethodCallShape(result, effects, receiver_after, True)
+        # Receiver mutation is publication only for methods that may store
+        # arguments. Exact positions stored by the normal result have separate
+        # retained-owner custody; callback/release effects remain shared.
+        argument_effects = (
+            effects if publishes_arguments else effects & ~WRITES_OBJECT_STATE
+        )
+        return BuiltinMethodCallShape(
+            result,
+            effects,
+            argument_effects,
+            receiver_after,
+            True,
+            retained_argument_indices,
+        )
 
     if receiver.kind == "list":
         if method == "append":
@@ -659,11 +670,17 @@ def builtin_method_call_shape(
                 inert_none,
                 base_effects | ALLOCATES | WRITES_OBJECT_STATE,
                 _receiver_with_element(
-                    receiver, _joined_element_result(receiver, incoming)
+                    receiver,
+                    _joined_element_result(receiver, incoming),
+                    release_may_call=(
+                        receiver.release_may_call or incoming.release_may_call
+                    ),
                 )
                 if incoming is not None
                 else None,
                 valid,
+                publishes_arguments=True,
+                retained_argument_indices=frozenset((0,)),
             )
         if method == "insert":
             valid = arguments_complete and len(positional) == 2 and not node.keywords
@@ -677,11 +694,17 @@ def builtin_method_call_shape(
                 inert_none,
                 effects,
                 _receiver_with_element(
-                    receiver, _joined_element_result(receiver, incoming)
+                    receiver,
+                    _joined_element_result(receiver, incoming),
+                    release_may_call=(
+                        receiver.release_may_call or incoming.release_may_call
+                    ),
                 )
                 if callback_free and incoming is not None
                 else None,
                 valid,
+                publishes_arguments=True,
+                retained_argument_indices=frozenset((1,)),
             )
         if method == "extend":
             valid = arguments_complete and len(positional) == 1 and not node.keywords
@@ -695,7 +718,13 @@ def builtin_method_call_shape(
                 inert_none,
                 effects,
                 _receiver_with_element(
-                    receiver, _joined_element_result(receiver, incoming)
+                    receiver,
+                    _joined_element_result(receiver, incoming),
+                    release_may_call=(
+                        receiver.release_may_call
+                        or source.truth is not False
+                        and (incoming is None or incoming.release_may_call)
+                    ),
                 )
                 if callback_free
                 else None,
@@ -718,7 +747,11 @@ def builtin_method_call_shape(
             return shape(
                 inert_none,
                 effects,
-                _receiver_with_element(receiver, element)
+                _receiver_with_element(
+                    receiver,
+                    element,
+                    release_may_call=receiver.release_may_call,
+                )
                 if safe and release_safe
                 else None,
                 valid,
@@ -754,7 +787,13 @@ def builtin_method_call_shape(
                 if callback_free
                 else UNKNOWN_EXPRESSION_RESULT,
                 effects,
-                _receiver_with_element(receiver, element) if callback_free else None,
+                _receiver_with_element(
+                    receiver,
+                    element,
+                    release_may_call=receiver.release_may_call,
+                )
+                if callback_free
+                else None,
                 valid,
             )
         if method == "clear":
@@ -769,7 +808,9 @@ def builtin_method_call_shape(
             return shape(
                 inert_none,
                 effects,
-                _receiver_with_element(receiver, None) if release_safe else None,
+                _receiver_with_element(receiver, None, release_may_call=False)
+                if release_safe
+                else None,
                 valid,
             )
         if method == "reverse":
@@ -777,7 +818,11 @@ def builtin_method_call_shape(
             return shape(
                 inert_none,
                 base_effects | WRITES_OBJECT_STATE,
-                _receiver_with_element(receiver, iterable_element_result(receiver)),
+                _receiver_with_element(
+                    receiver,
+                    iterable_element_result(receiver),
+                    release_may_call=receiver.release_may_call,
+                ),
                 valid,
             )
 
@@ -818,8 +863,24 @@ def builtin_method_call_shape(
                     _joined_element_result(receiver, key)
                     if method == "setdefault"
                     else element,
+                    release_may_call=(
+                        receiver.release_may_call
+                        or method == "setdefault"
+                        and (key.release_may_call or default.release_may_call)
+                    ),
                 )
-            return shape(result, effects, receiver_after, valid)
+            return shape(
+                result,
+                effects,
+                receiver_after,
+                valid,
+                publishes_arguments=method == "setdefault",
+                retained_argument_indices=(
+                    frozenset(range(len(positional)))
+                    if method == "setdefault" and receiver.truth is False and safe
+                    else frozenset()
+                ),
+            )
         if method in {"keys", "values", "items"}:
             valid = arguments_complete and not positional and not node.keywords
             return shape(UNKNOWN_EXPRESSION_RESULT, base_effects, None, valid)
@@ -878,7 +939,10 @@ def builtin_method_call_shape(
             return shape(
                 _normal_result(
                     "list",
-                    release_may_call=True,
+                    # split constructs an exact list containing only exact
+                    # str/bytes/bytearray values. Retiring that normal result
+                    # cannot invoke element finalizers or weakref callbacks.
+                    release_may_call=element.release_may_call,
                     fresh_container=True,
                     element_result=element,
                 ),
@@ -972,5 +1036,4 @@ __all__ = [
     "builtin_call_shape",
     "builtin_method_descriptor_known",
     "builtin_method_call_shape",
-    "builtin_open_result",
 ]

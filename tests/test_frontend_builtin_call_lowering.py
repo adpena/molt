@@ -1753,7 +1753,10 @@ def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
 
 def test_python_builtin_func_serializes_metadata_name_operand() -> None:
     gen = SimpleTIRGenerator(module_name="open_builtin_metadata_probe")
-    gen.visit(ast.parse("f = open('data.txt')\n"))
+    # Test explicit wrapper publication, not a Python reference: source-level
+    # open must capture the actual namespace binding before its arguments.
+    gen._emit_builtin_function("open")
+    gen._emit_function_exception_handler()
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]

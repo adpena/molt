@@ -15,7 +15,7 @@ pub use sequence_methods::*;
 
 #[path = "ops_bytes_ascii.rs"]
 mod ops_bytes_ascii;
-pub(super) use ops_bytes_ascii::bytes_ascii_space;
+pub(crate) use ops_bytes_ascii::bytes_ascii_space;
 pub use ops_bytes_ascii::{
     molt_bytearray_capitalize, molt_bytearray_center, molt_bytearray_expandtabs,
     molt_bytearray_isalnum, molt_bytearray_isalpha, molt_bytearray_isascii, molt_bytearray_isdigit,
@@ -43,6 +43,11 @@ where
     match unsafe { bytes_like_slice_checked(ptr) } {
         Ok(slice) => Ok(slice),
         Err(BytesLikeSliceError::ReleasedMemoryView) => Err(raise_released_memoryview::<u64>(_py)),
+        Err(BytesLikeSliceError::NonContiguousMemoryView) => Err(raise_exception::<u64>(
+            _py,
+            "BufferError",
+            "memoryview: underlying buffer is not C-contiguous",
+        )),
         Err(BytesLikeSliceError::NotBytesLike) => {
             let msg = make_type_error();
             Err(raise_exception::<u64>(_py, "TypeError", &msg))
@@ -60,7 +65,11 @@ where
 {
     match unsafe { bytes_like_slice_checked(ptr) } {
         Ok(slice) => Ok(slice),
-        Err(BytesLikeSliceError::ReleasedMemoryView | BytesLikeSliceError::NotBytesLike) => {
+        Err(
+            BytesLikeSliceError::ReleasedMemoryView
+            | BytesLikeSliceError::NonContiguousMemoryView
+            | BytesLikeSliceError::NotBytesLike,
+        ) => {
             let msg = make_type_error();
             Err(raise_exception::<u64>(_py, "TypeError", &msg))
         }

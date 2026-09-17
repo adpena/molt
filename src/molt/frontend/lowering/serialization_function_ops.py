@@ -367,14 +367,6 @@ class SerializationFunctionOpsMixin(_MixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CONTEXT_NULL":
-            ctx.json_ops.append(
-                {
-                    "kind": "context_null",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "CONTEXT_ENTER":
             ctx.json_ops.append(
                 {
@@ -406,14 +398,6 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 {
                     "kind": "context_unwind_to",
                     "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CONTEXT_CLOSING":
-            ctx.json_ops.append(
-                {
-                    "kind": "context_closing",
-                    "args": [op.args[0].name],
                     "out": op.result.name,
                 }
             )

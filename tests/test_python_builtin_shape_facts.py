@@ -19,7 +19,6 @@ from molt.compiler_analysis.python_builtin_shapes import (
     BUILTIN_SHAPE_NAMES,
     builtin_call_shape,
     builtin_method_call_shape,
-    builtin_open_result,
 )
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
@@ -29,6 +28,7 @@ from molt.compiler_analysis.python_effects_generated import (
     RELEASES_REFERENCE,
     RUNS_FINALIZER,
     RUNS_WEAKREF_CALLBACK,
+    WRITES_OBJECT_STATE,
 )
 from molt.compiler_analysis.static_truth import (
     ExpressionKind,
@@ -116,6 +116,7 @@ def _deep_element_chain(
         ("dict", "dict()", "dict"),
         ("range", "range(3)", "range"),
         ("len", "len(())", "int"),
+        ("open", "open('data.txt')", "file_text"),
     ],
 )
 def test_exact_builtin_identities_publish_the_cataloged_normal_kind(
@@ -126,6 +127,7 @@ def test_exact_builtin_identities_publish_the_cataloged_normal_kind(
     index, fact = _analyzed_call(source, call)
 
     assert BUILTIN_SHAPE_NAMES == frozenset(BUILTIN_SHAPE_IDENTITIES)
+    assert tuple(BUILTIN_SHAPE_IDENTITIES) == tuple(sorted(BUILTIN_SHAPE_NAMES))
     assert fact.callee_is(BUILTIN_SHAPE_IDENTITIES[name])
     assert fact.exact_builtin_name() == name
     assert index.expression_result(call).kind == kind
@@ -148,6 +150,7 @@ def test_exact_builtin_identities_publish_the_cataloged_normal_kind(
         ("dict", "dict()"),
         ("range", "range(1)"),
         ("len", "len(())"),
+        ("open", "open('data.txt')"),
     ],
 )
 def test_deferred_activation_keeps_builtin_identity_only_as_possible(
@@ -418,6 +421,22 @@ def test_cleanup_lifetime_distinguishes_owned_names_from_temporaries(
     assert bool(fact.cleanup_effects & RUNS_FINALIZER) is (not safe)
 
 
+def test_retained_argument_does_not_hide_temporary_receiver_retirement() -> None:
+    source = "result = [].append([Probe()])\n"
+    call = _statement_call(source)
+    _index, fact = _analyzed_call(source, call)
+
+    assert fact.cleanup_effects & RUNS_FINALIZER
+
+
+def test_retained_insert_value_does_not_hide_unretained_index_cleanup() -> None:
+    source = "items = []\nitems.insert([unknown], (value := ['retained']))\n"
+    call = _statement_call(source)
+    _index, fact = _analyzed_call(source, call)
+
+    assert fact.cleanup_effects & RUNS_FINALIZER
+
+
 def test_exceptional_later_argument_releases_prior_temporaries() -> None:
     source = "result = consume(Probe(), fail())\n"
     call = _statement_call(source)
@@ -624,7 +643,7 @@ def test_mutable_publication_strips_alias_sensitive_facts() -> None:
     assert published.release_may_call
 
 
-def test_clean_name_load_transports_published_mutable_kind() -> None:
+def test_clean_name_load_transports_owned_mutable_contents() -> None:
     source = "value = [1]\nresult = value\n"
     tree = ast.parse(source)
     index = analyze_python_source_bindings(source)
@@ -633,6 +652,28 @@ def test_clean_name_load_transports_published_mutable_kind() -> None:
     assert isinstance(assignment.value, ast.Name)
 
     result = index.expression_result(assignment.value)
+    assert result.kind == "list"
+    assert result.truth is True
+    assert result.items is not None
+    assert result.items[0].result == StaticExpressionResult.scalar(1)
+    assert result.length == 1
+    assert not result.fresh_container
+    assert not result.release_may_call
+
+
+def test_callback_expires_owned_mutable_contents_after_clean_store() -> None:
+    source = "def run(callback):\n    value = [1]\n    callback()\n    result = value\n"
+    tree = ast.parse(source)
+    assignment = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "result"
+    )
+    assert isinstance(assignment.value, ast.Name)
+    result = analyze_python_source_bindings(source).expression_result(assignment.value)
+
     assert result.kind == "list"
     assert result.truth is None
     assert result.items is None
@@ -1199,6 +1240,83 @@ def test_safe_list_mutation_preserves_kind_and_homogeneous_element_result() -> N
     assert iteration.element_result.kind == "int"
 
 
+@pytest.mark.parametrize(
+    ("setup", "mutation"),
+    [
+        ("items = []", "items.append(payload)"),
+        ("items = []", "items.insert(0, payload)"),
+        ("items = []", "items.extend([payload])"),
+        ("items = {}", "items.setdefault('key', payload)"),
+    ],
+)
+def test_storing_mutators_transport_release_risk_through_receiver_alias(
+    setup: str, mutation: str
+) -> None:
+    source = (
+        "def run(payload):\n"
+        f"    {setup}\n"
+        "    alias = items\n"
+        f"    {mutation}\n"
+        "    items = None\n"
+        "    alias = None\n"
+    )
+    tree = ast.parse(source)
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    final_drop = function.body[-1]
+    assert isinstance(final_drop, ast.Assign)
+    fact = analyze_python_source_bindings(source).statement_fact(final_drop)
+    assert fact is not None
+
+    assert fact.effects & RUNS_FINALIZER
+
+
+def test_heterogeneous_release_safe_append_stays_release_safe() -> None:
+    source = "items = [1]\nitems.append([])\nitems = None\n"
+    tree = ast.parse(source)
+    final_drop = tree.body[-1]
+    assert isinstance(final_drop, ast.Assign)
+    fact = analyze_python_source_bindings(source).statement_fact(final_drop)
+    assert fact is not None
+
+    assert not fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK)
+
+
+def test_safe_list_mutation_chain_preserves_each_method_receiver_fact() -> None:
+    source = (
+        "items = [1]\n"
+        "items.append(2)\n"
+        "items.extend([3])\n"
+        "items.insert(0, 4)\n"
+        "items.remove(2)\n"
+        "count = items.count(3)\n"
+        "index = items.index(3)\n"
+        "popped = items.pop()\n"
+    )
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    index = analyze_python_source_bindings(source)
+
+    assert [call.func.attr for call in calls] == [
+        "append",
+        "extend",
+        "insert",
+        "remove",
+        "count",
+        "index",
+        "pop",
+    ]
+    for call in calls:
+        fact = index.expression_fact(call.func.value)
+        assert fact is not None
+        assert index.expression_result(call.func.value).kind == "list"
+        assert not fact.binding_invalidated
+
+
 def test_arbitrary_callback_expires_element_result_but_keeps_live_local_kind() -> None:
     source = (
         "def run(callback):\n"
@@ -1231,6 +1349,111 @@ def test_argument_rebinding_does_not_restore_bound_method_receiver_fact() -> Non
     assert iteration is not None
 
     assert iteration.element_result.kind == "str"
+
+
+def test_rebound_method_cleanup_invalidates_replacement_when_old_receiver_can_finalize() -> (
+    None
+):
+    source = (
+        "class Payload:\n"
+        "    def __del__(self):\n"
+        "        pass\n"
+        "items = [Payload()]\n"
+        "items.append((items := ['replacement']))\n"
+        "for item in items:\n"
+        "    pass\n"
+    )
+    tree = ast.parse(source)
+    loop = tree.body[-1]
+    assert isinstance(loop, ast.For)
+    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    assert iteration is not None
+
+    assert iteration.element_result.kind == "unknown"
+
+
+def test_fresh_receiver_rebinding_expires_mutable_descendant_contents() -> None:
+    source = (
+        "items = [1]\nitems.append((items := [items]))\nfor item in items:\n    pass\n"
+    )
+    tree = ast.parse(source)
+    loop = tree.body[-1]
+    assert isinstance(loop, ast.For)
+    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    assert iteration is not None
+
+    assert iteration.element_result.kind == "list"
+    assert iteration.element_result.element_result is None
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "(items := alias)",
+        "tuple(((items := ['fresh']), (items := alias)))",
+    ],
+)
+def test_receiver_write_owner_token_requires_final_fresh_nonalias(
+    argument: str,
+) -> None:
+    source = (
+        "items = [1]\n"
+        "alias = items\n"
+        f"items.append({argument})\n"
+        "for item in items:\n"
+        "    pass\n"
+    )
+    tree = ast.parse(source)
+    loop = tree.body[-1]
+    assert isinstance(loop, ast.For)
+    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    assert iteration is not None
+
+    assert iteration.element_result.kind == "unknown"
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "(items := ['fresh']) if flag else 0",
+        "(items := ['fresh']) if flag else (items := alias)",
+        "(items := (['fresh'] if flag else items))",
+    ],
+)
+def test_conditional_receiver_rebinding_cannot_claim_fresh_owner_custody(
+    argument: str,
+) -> None:
+    source = (
+        "def run(flag):\n"
+        "    items = [1]\n"
+        "    alias = items\n"
+        f"    items.append({argument})\n"
+        "    for item in items:\n"
+        "        pass\n"
+    )
+    tree = ast.parse(source)
+    loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For))
+    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    assert iteration is not None
+
+    assert iteration.element_result.kind == "unknown"
+
+
+def test_same_shape_fresh_and_preexisting_receivers_do_not_share_owner_token() -> None:
+    source = (
+        "def run(flag):\n"
+        "    items = ['old']\n"
+        "    alias = ['alias']\n"
+        "    items.append((items := ['fresh']) if flag else (items := alias))\n"
+        "    for item in items:\n"
+        "        pass\n"
+    )
+    tree = ast.parse(source)
+    loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For))
+    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    assert iteration is not None
+
+    assert iteration.element_result.kind == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -1301,6 +1524,106 @@ def test_setdefault_does_not_claim_default_for_unknown_existing_value() -> None:
     assert shape is not None
 
     assert shape.result is UNKNOWN_EXPRESSION_RESULT
+
+
+@pytest.mark.parametrize(
+    ("expression", "arguments", "retained"),
+    [
+        (
+            "items.append(value)",
+            (UNKNOWN_EXPRESSION_RESULT,),
+            frozenset((0,)),
+        ),
+        (
+            "items.insert(0, value)",
+            (StaticExpressionResult.scalar(0), UNKNOWN_EXPRESSION_RESULT),
+            frozenset((1,)),
+        ),
+    ],
+)
+def test_list_storage_contract_identifies_retained_argument_positions(
+    expression: str,
+    arguments: tuple[StaticExpressionResult, ...],
+    retained: frozenset[int],
+) -> None:
+    method = _call(expression).func
+    assert isinstance(method, ast.Attribute)
+    shape = builtin_method_call_shape(
+        StaticExpressionResult(kind="list"),
+        method.attr,
+        _call(expression),
+        arguments,
+    )
+    assert shape is not None
+
+    assert shape.retained_argument_indices == retained
+    assert shape.argument_effects & WRITES_OBJECT_STATE
+
+
+@pytest.mark.parametrize(
+    ("truth", "retained"),
+    [(False, frozenset((0, 1))), (True, frozenset())],
+)
+def test_setdefault_retention_requires_proven_missing_key(
+    truth: bool, retained: frozenset[int]
+) -> None:
+    shape = builtin_method_call_shape(
+        StaticExpressionResult(kind="dict", truth=truth),
+        "setdefault",
+        _call("mapping.setdefault('key', value)"),
+        (StaticExpressionResult.scalar("key"), UNKNOWN_EXPRESSION_RESULT),
+    )
+    assert shape is not None
+
+    assert shape.retained_argument_indices == retained
+
+
+@pytest.mark.parametrize(
+    ("receiver_kind", "method", "expression", "arguments"),
+    [
+        ("list", "append", "items.append(value)", (UNKNOWN_EXPRESSION_RESULT,)),
+        (
+            "list",
+            "insert",
+            "items.insert(0, value)",
+            (StaticExpressionResult.scalar(0), UNKNOWN_EXPRESSION_RESULT),
+        ),
+        (
+            "list",
+            "extend",
+            "items.extend(values)",
+            (
+                StaticExpressionResult(
+                    kind="list",
+                    release_may_call=True,
+                    element_result=UNKNOWN_EXPRESSION_RESULT,
+                ),
+            ),
+        ),
+        (
+            "dict",
+            "setdefault",
+            "items.setdefault('key', value)",
+            (StaticExpressionResult.scalar("key"), UNKNOWN_EXPRESSION_RESULT),
+        ),
+    ],
+)
+def test_storing_mutator_receiver_shape_includes_new_content_release_risk(
+    receiver_kind: ExpressionKind,
+    method: str,
+    expression: str,
+    arguments: tuple[StaticExpressionResult, ...],
+) -> None:
+    shape = builtin_method_call_shape(
+        StaticExpressionResult(kind=receiver_kind, truth=False, release_may_call=False),
+        method,
+        _call(expression),
+        arguments,
+    )
+    assert shape is not None
+    assert shape.receiver_after is not None
+
+    assert shape.receiver_after.release_may_call
 
 
 @pytest.mark.parametrize(
@@ -1424,7 +1747,8 @@ def test_exact_builtin_buffer_arguments_are_callback_free(
 
 def test_explicit_open_encoding_retains_codec_registry_callback_boundary() -> None:
     node = _call("open('data.txt', encoding='user-codec')")
-    result, effects = builtin_open_result(
+    shape = builtin_call_shape(
+        "open",
         node,
         (
             StaticExpressionResult.scalar("data.txt"),
@@ -1432,8 +1756,24 @@ def test_explicit_open_encoding_retains_codec_registry_callback_boundary() -> No
         ),
     )
 
-    assert result.kind == "file_text"
-    assert effects & EXECUTES_ARBITRARY_PYTHON
+    assert shape.result.kind == "file_text"
+    assert shape.invocation_effects & EXECUTES_ARBITRARY_PYTHON
+    assert not shape.specialization_valid
+
+
+def test_open_mode_uses_evaluated_argument_result_authority() -> None:
+    node = _call("open('data.bin', mode)")
+    shape = builtin_call_shape(
+        "open",
+        node,
+        (
+            StaticExpressionResult.scalar("data.bin"),
+            StaticExpressionResult.scalar("rb"),
+        ),
+    )
+
+    assert shape.result.kind == "file_bytes"
+    assert not shape.specialization_valid
 
 
 def test_callback_expiry_sanitizes_mutable_element_nested_in_immutable_owner() -> None:
@@ -1478,19 +1818,135 @@ def test_deep_element_graph_join_and_expiry_are_iterative() -> None:
 
 
 @pytest.mark.parametrize(
-    ("expression", "element_kind"),
-    [("open('data.txt')", "str"), ("open('data.bin', 'rb')", "bytes")],
+    ("expression", "file_kind"),
+    [("open('data.txt')", "file_text"), ("open('data.bin', 'rb')", "file_bytes")],
 )
-def test_exact_file_context_and_loop_publish_iteration_element(
-    expression: str, element_kind: str
+def test_broad_file_result_retains_kind_without_inventing_iteration_element(
+    expression: str, file_kind: str
 ) -> None:
-    source = f"with {expression} as stream:\n    for item in stream:\n        pass\n"
+    source = f"for item in {expression}:\n    pass\n"
     tree = ast.parse(source)
     loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For))
-    iteration = analyze_python_source_bindings(source).iteration_fact(loop)
+    index = analyze_python_source_bindings(source)
+    iteration = index.iteration_fact(loop)
     assert iteration is not None
 
-    assert iteration.element_result.kind == element_kind
+    assert index.expression_result(loop.iter).kind == file_kind
+    assert iteration.element_result is UNKNOWN_EXPRESSION_RESULT
+
+
+@pytest.mark.parametrize(
+    ("expression", "separator", "file_kind"),
+    [
+        ("open('data.txt')", "'|'", "file_text"),
+        ("open('data.bin', 'rb')", "b'|'", "file_bytes"),
+    ],
+)
+def test_broad_file_iteration_does_not_invent_exact_split_result(
+    expression: str, separator: str, file_kind: str
+) -> None:
+    source = f"parts = [item.split({separator}) for item in {expression}]\n"
+    tree = ast.parse(source)
+    comprehension = tree.body[0]
+    assert isinstance(comprehension, ast.Assign)
+    assert isinstance(comprehension.value, ast.ListComp)
+    clause = comprehension.value.generators[0]
+    split = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "split"
+    )
+    index = analyze_python_source_bindings(source)
+    iteration = index.iteration_fact(clause)
+    receiver = index.expression_fact(split.func.value)
+    result = index.expression_result(split)
+
+    assert iteration is not None
+    assert receiver is not None
+    assert index.expression_result(clause.iter).kind == file_kind
+    assert iteration.element_result is UNKNOWN_EXPRESSION_RESULT
+    assert index.expression_result(split.func.value).kind == "unknown"
+    assert result.kind == "unknown"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "stream = open('data.txt', encoding='user-codec')\n"
+            "sentinel = [1]\n"
+            "with stream as entered:\n"
+            "    pass\n"
+            "observed = sentinel\n"
+        ),
+        (
+            "stream = open('data.txt', encoding='user-codec')\n"
+            "sentinel = [1]\n"
+            "for item in stream:\n"
+            "    observed = sentinel\n"
+        ),
+        (
+            "stream = open('data.txt', encoding='user-codec')\n"
+            "sentinel = [1]\n"
+            "observed = [sentinel for item in stream]\n"
+        ),
+    ],
+)
+def test_file_protocol_callbacks_invalidate_other_bindings(source: str) -> None:
+    tree = ast.parse(source)
+    sentinel_load = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == "sentinel"
+    )
+    fact = analyze_python_source_bindings(source).expression_fact(sentinel_load)
+
+    assert fact is not None
+    assert fact.binding_invalidated
+
+
+def test_callback_free_receiver_write_does_not_revoke_builtin_members() -> None:
+    source = "items = []\nitems.append(1)\nresult = bytearray()\n"
+    call = _statement_call(source)
+    index, fact = _analyzed_call(source, call)
+
+    assert fact.callee_is(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert index.expression_result(call).kind == "bytearray"
+
+
+def test_callbackful_receiver_operation_still_revokes_builtin_members() -> None:
+    source = "items = []\nitems.extend(source)\nresult = bytearray()\n"
+    call = _statement_call(source)
+    index, fact = _analyzed_call(source, call)
+
+    assert fact.callee_may_be(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert not fact.callee_is(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert index.expression_result(call).kind == "unknown"
+
+
+def test_fresh_dict_receiver_write_does_not_revoke_builtin_members() -> None:
+    source = "mapping = {}\nmapping.setdefault('key', 1)\nresult = bytearray()\n"
+    call = _statement_call(source)
+    index, fact = _analyzed_call(source, call)
+
+    assert fact.callee_is(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert index.expression_result(call).kind == "bytearray"
+
+
+def test_namespace_dict_receiver_write_retains_member_conservatism() -> None:
+    source = (
+        "namespace = globals()\nnamespace.setdefault('key', 1)\nresult = bytearray()\n"
+    )
+    call = _statement_call(source)
+    index, fact = _analyzed_call(source, call)
+
+    assert fact.callee_may_be(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert not fact.callee_is(PythonIdentity.BUILTIN_BYTEARRAY)
+    assert index.expression_result(call).kind == "unknown"
 
 
 @pytest.mark.parametrize(

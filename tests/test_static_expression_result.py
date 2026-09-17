@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import ast
+import codecs
+import io
 import math
+import os
+from pathlib import Path
+import runpy
 
 import pytest
 
 from molt.compiler_analysis.static_truth import (
     ExpressionSequenceItem,
+    ExpressionKind,
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
     _same_scalar_value,
+    expression_result_for_owned_binding,
+    expression_result_for_publication,
+    expression_result_without_mutable_contents,
+    iterable_element_result,
     static_expression_result,
 )
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
@@ -24,6 +34,145 @@ from molt.compiler_analysis.python_effects_generated import (
     NO_EFFECTS,
     RAISES,
 )
+
+
+def test_cpython_owned_result_lifetime_capsule() -> None:
+    # One replayable source owns the oracle and future native/WASM comparison.
+    runpy.run_path(
+        str(Path(__file__).parent / "differential/basic/builtin_shape_lifetimes.py")
+    )
+
+
+def test_cpython_split_protocol_capsule() -> None:
+    # The differential source is also the direct CPython protocol-order oracle.
+    runpy.run_path(
+        str(Path(__file__).parent / "differential/basic/split_protocol_order.py")
+    )
+
+
+@pytest.mark.parametrize("source", ["[]", "[1]", "{}", "{'key': 1}", "{1}"])
+def test_tracked_allocation_binding_preserves_current_contents_not_freshness(
+    source: str,
+) -> None:
+    result = static_expression_result(ast.parse(source, mode="eval").body)
+    published = expression_result_for_owned_binding(result)
+    assert not published.fresh_container
+    assert published.items is result.items
+    assert published.element_result is result.element_result
+    assert published.truth is result.truth
+    assert published.length == result.length
+    assert published.release_may_call is result.release_may_call
+    assert expression_result_for_owned_binding(published) is published
+    # Arbitrary publication and later mutation still erase those facts.
+    exposed = expression_result_for_publication(published)
+    expired = expression_result_without_mutable_contents(published)
+    assert exposed.items is None and exposed.truth is None
+    assert expired.items is None and expired.element_result is None
+
+
+def test_nonalias_outer_owner_expires_all_mutable_descendant_projections() -> None:
+    child = static_expression_result(ast.parse("[1]", mode="eval").body)
+    outer = StaticExpressionResult(
+        kind="list",
+        truth=True,
+        length=1,
+        fresh_container=True,
+        release_may_call=False,
+        items=(ExpressionSequenceItem(child),),
+        element_result=child,
+    )
+    expired = expression_result_without_mutable_contents(outer, preserve_owner=True)
+    assert expired.truth is True and expired.length == 1
+    assert not expired.fresh_container
+    assert expired.items is not None
+    assert expired.items[0].result is expired.element_result
+    descendant = expired.element_result
+    assert descendant is not None and descendant.kind == "list"
+    assert descendant.items is None and descendant.element_result is None
+    assert descendant.release_may_call and expired.release_may_call
+
+
+def test_nonalias_outer_owner_descendant_expiry_is_stack_safe() -> None:
+    result = static_expression_result(ast.parse("[1]", mode="eval").body)
+    for _ in range(1200):
+        result = StaticExpressionResult(
+            kind="tuple",
+            items=(ExpressionSequenceItem(result),),
+            element_result=result,
+            release_may_call=False,
+        )
+    expired = expression_result_without_mutable_contents(result, preserve_owner=True)
+    assert expired.release_may_call
+    for _ in range(1200):
+        assert expired.element_result is not None
+        expired = expired.element_result
+    assert expired.kind == "list" and expired.element_result is None
+
+
+@pytest.mark.parametrize("kind", ["file_text", "file_bytes"])
+def test_file_mode_does_not_certify_iteration_element(kind: ExpressionKind) -> None:
+    assert iterable_element_result(StaticExpressionResult(kind=kind)) is None
+    item = StaticExpressionResult.scalar(b"proven separately")
+    assert (
+        iterable_element_result(StaticExpressionResult(kind=kind, element_result=item))
+        is item
+    )
+
+
+def test_cpython_text_decoder_can_return_a_subclass_as_a_complete_line() -> None:
+    class DecodedLine(str):
+        pass
+
+    class Decoder(codecs.IncrementalDecoder):
+        def decode(self, data: bytes, final: bool = False) -> str:
+            return DecodedLine(data.decode("ascii"))
+
+    def lookup(name: str) -> codecs.CodecInfo | None:
+        if name != "molt_decoded_line_subclass":
+            return None
+        return codecs.CodecInfo(
+            name=name,
+            encode=codecs.ascii_encode,
+            decode=codecs.ascii_decode,
+            incrementalencoder=codecs.getincrementalencoder("ascii"),
+            incrementaldecoder=Decoder,
+        )
+
+    codecs.register(lookup)
+    try:
+        with io.TextIOWrapper(
+            io.BytesIO(b"whole line\n"), encoding="molt_decoded_line_subclass"
+        ) as stream:
+            assert type(next(stream)) is DecodedLine
+    finally:
+        codecs.unregister(lookup)
+
+
+def test_cpython_unbuffered_file_iteration_uses_live_readline() -> None:
+    # The file_bytes mode includes FileIO, whose iterator returns the result
+    # of ordinary readline lookup rather than certifying an exact bytes value.
+    with io.FileIO(os.devnull, "rb") as stream:
+        stream.readline = lambda: ("not bytes",)
+        assert next(stream) == ("not bytes",)
+
+
+def test_cpython_exact_text_wrapper_enter_calls_underlying_closed() -> None:
+    observations: list[str] = []
+
+    class Buffer(io.BytesIO):
+        @property
+        def closed(self) -> bool:
+            observations.append("closed")
+            return super().closed
+
+    # An exact wrapper's normal return is itself; its closed check can still
+    # enter Python through the wrapped stream. These are independent facts.
+    stream = io.TextIOWrapper(Buffer())
+    observations.clear()
+    with stream as entered:
+        assert type(entered) is io.TextIOWrapper
+        assert entered is stream
+        assert observations == ["closed"]
 
 
 @pytest.mark.parametrize(
