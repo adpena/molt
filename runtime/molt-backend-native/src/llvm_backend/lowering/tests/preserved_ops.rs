@@ -216,7 +216,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         backend.runtime_callable_symbols.remove(&symbol);
         let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
             .expect_err("descriptor construction must require the linked runtime symbol");
-        assert_lowering_error_contains(&error, "unhandled preserved SimpleIR op");
+        assert_lowering_error_contains(&error, "is unavailable in the selected runtime");
         assert!(backend.module.get_function(&symbol).is_none());
 
         backend.runtime_callable_symbols.insert(symbol.clone());

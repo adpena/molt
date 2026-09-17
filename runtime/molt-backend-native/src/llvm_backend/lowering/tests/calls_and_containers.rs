@@ -12,7 +12,8 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         ("molt_chan_new", 1),
     ] {
         let ctx = Context::create();
-        let backend = make_backend(&ctx);
+        let mut backend = make_backend(&ctx);
+        backend.runtime_callable_symbols.insert(symbol.into());
         let mut func = TirFunction::new("runtime_call".into(), vec![], TirType::DynBox);
         let raw = func.fresh_value();
         let result = func.fresh_value();
@@ -54,7 +55,8 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
     for (symbol, arity) in [("molt_spawn", 1), ("molt_print_newline", 0)] {
         for with_result in [false, true] {
             let ctx = Context::create();
-            let backend = make_backend(&ctx);
+            let mut backend = make_backend(&ctx);
+            backend.runtime_callable_symbols.insert(symbol.into());
             let mut func = TirFunction::new("void_runtime_call".into(), vec![], TirType::DynBox);
             let arg = func.fresh_value();
             let result = func.fresh_value();
@@ -82,6 +84,57 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
                 let ir = lowered.print_to_string().to_string();
                 assert!(ir.contains(&format!("call void @{symbol}(")), "{ir}");
                 backend.module.verify().expect("void boxed call ABI");
+            }
+        }
+    }
+}
+
+#[test]
+fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
+    for opcode in [OpCode::Call, OpCode::Copy] {
+        for kind in ["cell_new", "spawn"] {
+            for bound in [false, true] {
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                let symbol = format!("molt_{kind}");
+                backend.runtime_callable_symbols.remove(&symbol);
+                let mut func =
+                    TirFunction::new("unavailable_runtime".into(), vec![], TirType::DynBox);
+                let arg = func.fresh_value();
+                let none = func.fresh_value();
+                let result = func.fresh_value();
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops.push(const_int_def(arg, i64::MAX));
+                entry.ops.push(const_none_def(none));
+                entry.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![arg],
+                    results: if bound { vec![result] } else { vec![] },
+                    attrs: AttrDict::from([
+                        (
+                            "_original_kind".into(),
+                            AttrValue::Str(
+                                if opcode == OpCode::Call { "call" } else { kind }.into(),
+                            ),
+                        ),
+                        ("s_value".into(), AttrValue::Str(symbol.clone())),
+                    ]),
+                    source_span: None,
+                });
+                entry.terminator = Terminator::Return { values: vec![none] };
+                let error = try_lower_tir_to_llvm(&func, &backend)
+                    .expect_err("runtime availability must precede materialization");
+                assert_lowering_error_contains(
+                    &error,
+                    &format!(
+                        "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
+                    ),
+                );
+                assert!(backend.module.get_function(&symbol).is_none());
+                let ir = backend.module.print_to_string().to_string();
+                assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
+                assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
             }
         }
     }
