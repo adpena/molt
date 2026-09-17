@@ -334,9 +334,43 @@ pub(super) fn utf8_byte_to_char_index_cached(
     utf8_count_prefix_blocked(bytes, prefix_len)
 }
 
-pub(in crate::object) fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
+pub(crate) fn wtf8_from_bytes(bytes: &[u8]) -> &Wtf8 {
     // SAFETY: Molt string bytes are constructed as well-formed WTF-8.
     unsafe { &*(bytes as *const [u8] as *const Wtf8) }
+}
+
+/// Step over one code point at a known WTF-8 boundary in either direction.
+pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option<(usize, u32)> {
+    let start = if from_right {
+        if cursor == 0 {
+            return None;
+        }
+        let mut start = cursor - 1;
+        while start > 0 && bytes[start] & 0xc0 == 0x80 {
+            start -= 1;
+        }
+        start
+    } else {
+        if cursor == bytes.len() {
+            return None;
+        }
+        cursor
+    };
+    let code = if bytes[start].is_ascii() {
+        u32::from(bytes[start])
+    } else {
+        wtf8_from_bytes(&bytes[start..])
+            .code_points()
+            .next()
+            .unwrap()
+            .to_u32()
+    };
+    let next = if from_right {
+        start
+    } else {
+        start + utf8_char_width(bytes[start])
+    };
+    Some((next, code))
 }
 
 pub(in crate::object) fn wtf8_codepoint_at(bytes: &[u8], idx: usize) -> Option<CodePoint> {

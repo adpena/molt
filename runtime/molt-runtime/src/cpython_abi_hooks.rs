@@ -23,7 +23,7 @@ use molt_cpython_abi::{
     EXCEPTION_SNAPSHOT_TRACEBACK, ExceptionSnapshot, MoltBufferView as AbiMoltBufferView,
     OwnedHandleResult, RuntimeHooks,
 };
-use molt_obj_model::{ExceptionLayoutKind, MoltObject};
+use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 

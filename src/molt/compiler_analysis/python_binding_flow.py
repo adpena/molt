@@ -54,7 +54,6 @@ from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
     builtin_method_call_shape,
     builtin_method_descriptor_known,
-    builtin_open_result,
 )
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
@@ -85,6 +84,7 @@ from molt.compiler_analysis.python_effects_generated import (
 from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
+    expression_result_for_owned_binding,
     expression_result_without_mutable_contents,
     expression_result_for_publication,
     join_static_expression_results,
@@ -148,7 +148,6 @@ _BUILTIN_IDENTITIES: Final[dict[str, IdentityMask]] = {
     "setattr": exact_identity(PythonIdentity.BUILTIN_SETATTR),
     "eval": exact_identity(PythonIdentity.BUILTIN_EVAL),
     "exec": exact_identity(PythonIdentity.BUILTIN_EXEC),
-    "open": exact_identity(PythonIdentity.BUILTIN_OPEN),
     **{
         name: exact_identity(identity)
         for name, identity in BUILTIN_SHAPE_IDENTITIES.items()
@@ -196,6 +195,7 @@ class _BindingChunk:
     identities: tuple[IdentityMask, ...]
     static_values: tuple[PythonStaticValue, ...]
     results: tuple[StaticExpressionResult, ...]
+    owner_tokens: tuple[int, ...]
     clean_epochs: tuple[int, ...]
     active_mask: int
     clean_mask: int
@@ -205,6 +205,7 @@ _EMPTY_BINDING_CHUNK: Final = _BindingChunk(
     (UNBOUND_IDENTITY,) * _BINDING_CHUNK_SIZE,
     (None,) * _BINDING_CHUNK_SIZE,
     (UNKNOWN_EXPRESSION_RESULT,) * _BINDING_CHUNK_SIZE,
+    (0,) * _BINDING_CHUNK_SIZE,
     (0,) * _BINDING_CHUNK_SIZE,
     0,
     0,
@@ -270,9 +271,11 @@ class _BindingState:
     updated_value: IdentityMask = UNBOUND_IDENTITY
     updated_static_value: PythonStaticValue = None
     updated_result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
+    updated_owner_token: int = 0
     updated_clean: bool | None = None
     updated_bindings: tuple[
-        tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, bool], ...
+        tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool],
+        ...,
     ] = ()
     taint_epoch: int = 0
     maybe_invalidated_members: MemberMask = 0
@@ -391,6 +394,7 @@ class _StatePool:
         identity: IdentityMask,
         static_value: PythonStaticValue,
         result: StaticExpressionResult,
+        owner_token: int,
         clean: bool,
         clean_epoch: int,
     ) -> _BindingEnvironment:
@@ -402,6 +406,8 @@ class _StatePool:
         static_values[slot & _BINDING_CHUNK_MASK] = static_value
         results = list(previous.results)
         results[slot & _BINDING_CHUNK_MASK] = result
+        owner_tokens = list(previous.owner_tokens)
+        owner_tokens[slot & _BINDING_CHUNK_MASK] = owner_token
         clean_epochs = list(previous.clean_epochs)
         clean_epochs[slot & _BINDING_CHUNK_MASK] = clean_epoch
         slot_bit = 1 << (slot & _BINDING_CHUNK_MASK)
@@ -423,6 +429,7 @@ class _StatePool:
             tuple(identities),
             tuple(static_values),
             tuple(results),
+            tuple(owner_tokens),
             tuple(clean_epochs),
             active_mask,
             clean_mask,
@@ -515,6 +522,7 @@ class _StatePool:
             identities = list(_EMPTY_BINDING_CHUNK.identities)
             static_values = list(_EMPTY_BINDING_CHUNK.static_values)
             results = list(_EMPTY_BINDING_CHUNK.results)
+            owner_tokens = list(_EMPTY_BINDING_CHUNK.owner_tokens)
             clean_epochs = list(_EMPTY_BINDING_CHUNK.clean_epochs)
             active_mask = 0
             clean_mask = 0
@@ -584,9 +592,16 @@ class _StatePool:
                         clean_epoch=right.clean_epochs[chunk_offset],
                     )
                     clean = left_clean and right_clean
+                    left_owner = left.owner_tokens[chunk_offset]
+                    right_owner = right.owner_tokens[chunk_offset]
                     identities[chunk_offset] = identity
                     static_values[chunk_offset] = static_value
                     results[chunk_offset] = result
+                    owner_tokens[chunk_offset] = (
+                        left_owner
+                        if clean and left_owner != 0 and left_owner == right_owner
+                        else 0
+                    )
                     clean_epochs[chunk_offset] = taint_epoch
                     if (
                         identity != UNBOUND_IDENTITY
@@ -602,6 +617,7 @@ class _StatePool:
                     tuple(identities),
                     tuple(static_values),
                     tuple(results),
+                    tuple(owner_tokens),
                     tuple(clean_epochs),
                     active_mask,
                     clean_mask,
@@ -616,6 +632,7 @@ class _StatePool:
                     tuple[IdentityMask, PythonStaticValue, StaticExpressionResult]
                 ] = []
                 clean = True
+                owner_token: int | None = None
                 for chunk, parent_epoch in zip(chunks, chunk_epochs, strict=True):
                     present = bool((chunk.active_mask | chunk.clean_mask) & slot_bit)
                     candidate_identity = (
@@ -641,10 +658,21 @@ class _StatePool:
                         clean_epoch=chunk.clean_epochs[chunk_offset],
                     )
                     clean = clean and parent_clean
+                    candidate_owner = chunk.owner_tokens[chunk_offset]
+                    owner_token = (
+                        candidate_owner
+                        if owner_token is None
+                        else owner_token
+                        if owner_token == candidate_owner
+                        else 0
+                    )
                 identities[chunk_offset] = identity
                 static_value, result = _join_binding_payloads(alternatives)
                 static_values[chunk_offset] = static_value
                 results[chunk_offset] = result
+                owner_tokens[chunk_offset] = (
+                    owner_token if clean and owner_token is not None else 0
+                )
                 clean_epochs[chunk_offset] = taint_epoch
                 if (
                     identity != UNBOUND_IDENTITY
@@ -660,6 +688,7 @@ class _StatePool:
                 tuple(identities),
                 tuple(static_values),
                 tuple(results),
+                tuple(owner_tokens),
                 tuple(clean_epochs),
                 active_mask,
                 clean_mask,
@@ -725,16 +754,25 @@ class _StatePool:
                 state.updated_value,
                 state.updated_static_value,
                 state.updated_result,
+                state.updated_owner_token,
                 state.updated_clean,
                 state.taint_epoch,
             )
-        for slot, value, static_value, result, clean in state.updated_bindings:
+        for (
+            slot,
+            value,
+            static_value,
+            result,
+            owner_token,
+            clean,
+        ) in state.updated_bindings:
             environment = self._updated_environment(
                 environment,
                 slot,
                 value,
                 static_value,
                 result,
+                owner_token,
                 clean,
                 state.taint_epoch,
             )
@@ -766,6 +804,14 @@ class _StatePool:
     def result(self, state_id: int, slot: int) -> StaticExpressionResult:
         return self._binding_details(state_id, slot)[2]
 
+    def owner_token(self, state_id: int, slot: int) -> int:
+        resolution = self._binding_resolution(state_id, slot)
+        if not resolution.clean:
+            return 0
+        environment = self._binding_environments[state_id]
+        chunk = self._chunk_at(environment, slot >> _BINDING_CHUNK_SHIFT)
+        return chunk.owner_tokens[slot & _BINDING_CHUNK_MASK]
+
     def set_binding(
         self,
         state_id: int,
@@ -773,36 +819,51 @@ class _StatePool:
         value: IdentityMask,
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
+        owner_token: int = 0,
     ) -> int:
-        return self.set_bindings(state_id, ((slot, value, static_value, result),))
+        return self.set_bindings(
+            state_id, ((slot, value, static_value, result, owner_token),)
+        )
 
     def set_bindings(
         self,
         state_id: int,
         bindings: Sequence[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult]
+            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ],
+        *,
+        record_writes: bool = False,
     ) -> int:
         updates: list[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, bool]
+            tuple[
+                int,
+                IdentityMask,
+                PythonStaticValue,
+                StaticExpressionResult,
+                int,
+                bool,
+            ]
         ] = []
-        for slot, value, static_value, result in bindings:
+        for slot, value, static_value, result, owner_token in bindings:
             current_value, current_static_value, current_result, clean = (
                 self._binding_details(state_id, slot)
             )
+            current_owner_token = self.owner_token(state_id, slot)
             if (
                 current_value == value
                 and current_static_value == static_value
                 and current_result == result
+                and current_owner_token == owner_token
                 and clean
+                and not record_writes
             ):
                 continue
-            updates.append((slot, value, static_value, result, True))
+            updates.append((slot, value, static_value, result, owner_token, True))
         if not updates:
             return state_id
         state = self._states[state_id]
         if len(updates) == 1:
-            slot, value, static_value, result, clean = updates[0]
+            slot, value, static_value, result, owner_token, clean = updates[0]
             return self.intern(
                 _BindingState(
                     parents=(state_id,),
@@ -810,6 +871,7 @@ class _StatePool:
                     updated_value=value,
                     updated_static_value=static_value,
                     updated_result=result,
+                    updated_owner_token=owner_token,
                     updated_clean=clean,
                     taint_epoch=state.taint_epoch,
                     maybe_invalidated_members=state.maybe_invalidated_members,
@@ -826,12 +888,14 @@ class _StatePool:
             )
         )
 
-    def invalidate_mutable_contents(self, state_id: int) -> int:
-        """Expire container contents without erasing exact normal-result kinds."""
+    def invalidate_mutable_contents(
+        self, state_id: int, *, except_slots: frozenset[int] = frozenset()
+    ) -> int:
+        """Expire mutable contents, retaining only exempt owners' outer shape."""
 
         environment = self._binding_environments[state_id]
         updates: list[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult]
+            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ] = []
         for chunk_index in range(environment.chunk_count):
             chunk = self._chunk_at(environment, chunk_index)
@@ -845,7 +909,10 @@ class _StatePool:
                 resolution = self._binding_resolution(state_id, slot)
                 if not resolution.clean:
                     continue
-                widened = expression_result_without_mutable_contents(resolution.result)
+                widened = expression_result_without_mutable_contents(
+                    resolution.result,
+                    preserve_owner=slot in except_slots,
+                )
                 if widened != resolution.result:
                     updates.append(
                         (
@@ -853,6 +920,7 @@ class _StatePool:
                             resolution.identities,
                             resolution.static_value,
                             widened,
+                            self.owner_token(state_id, slot),
                         )
                     )
         return self.set_bindings(state_id, updates) if updates else state_id
@@ -943,7 +1011,7 @@ class _StatePool:
                 if state.updated_clean is False and value != UNBOUND_IDENTITY:
                     value |= OTHER_IDENTITY
                 direct.setdefault(state.updated_slot, value)
-            for slot, value, _static_value, _result, clean in reversed(
+            for slot, value, _static_value, _result, _owner_token, clean in reversed(
                 state.updated_bindings
             ):
                 if not clean and value != UNBOUND_IDENTITY:
@@ -958,6 +1026,31 @@ class _StatePool:
             (slot, self.binding(current, slot))
             for slot in self.changed_slots_between(previous, current)
         )
+
+    def slot_updated_between(self, previous: int, current: int, slot: int) -> bool:
+        """Report a write on any state path, including owner-only branch joins."""
+
+        pending = [current]
+        visited: set[int] = set()
+        reached_previous = False
+        while pending:
+            cursor = pending.pop()
+            if cursor == previous:
+                reached_previous = True
+                continue
+            if cursor in visited:
+                continue
+            visited.add(cursor)
+            state = self._states[cursor]
+            if state.updated_slot == slot or any(
+                updated_slot == slot
+                for updated_slot, *_payload in state.updated_bindings
+            ):
+                return True
+            if not state.parents or any(parent < previous for parent in state.parents):
+                return True
+            pending.extend(state.parents)
+        return not reached_previous
 
     def taint_module_bindings(self, state_id: int) -> int:
         # The namespace can acquire previously undeclared names, even when the
@@ -1125,6 +1218,31 @@ class _StatePool:
                 return False
         return True
 
+    def owner_tokens_equal(self, left_id: int, right_id: int) -> bool:
+        """Compare custody only, separately from semantic loop-state equality."""
+
+        left_environment = self._binding_environments[left_id]
+        right_environment = self._binding_environments[right_id]
+        chunk_count = max(left_environment.chunk_count, right_environment.chunk_count)
+        for chunk_index in range(chunk_count):
+            left = self._chunk_at(left_environment, chunk_index)
+            right = self._chunk_at(right_environment, chunk_index)
+            remaining = (
+                left.active_mask
+                | left.clean_mask
+                | right.active_mask
+                | right.clean_mask
+            )
+            while remaining:
+                slot_bit = remaining & -remaining
+                remaining ^= slot_bit
+                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (
+                    slot_bit.bit_length() - 1
+                )
+                if self.owner_token(left_id, slot) != self.owner_token(right_id, slot):
+                    return False
+        return True
+
     def __len__(self) -> int:
         return len(self._states)
 
@@ -1257,6 +1375,21 @@ class _ExpressionResult:
     static_value: PythonStaticValue = None
     assignment_target: _EvaluatedMemberTarget | None = None
     result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
+    owner_token: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _CallSemantics:
+    """Normal-call transfer plus custody of the evaluated callee temporary."""
+
+    result_identities: IdentityMask
+    invocation_effects: EffectMask
+    state_id: int
+    result: StaticExpressionResult
+    specialization_valid: bool
+    argument_effects: EffectMask
+    callee_release_safe: bool = False
+    retained_argument_indices: frozenset[int] = frozenset()
 
 
 @dataclass(slots=True)
@@ -1430,6 +1563,7 @@ class _Analyzer:
         self._module_import_flow_required = False
         self._scope_slot_cache: dict[tuple[int, str], int | None] = {}
         self._history_summaries: dict[int, _HistorySummary] = {}
+        self._next_owner_token = 1
         # AST instances use identity equality/hash. Keeping the node itself as the
         # key both avoids repeated source-key construction and retains synthetic
         # nodes for the analysis lifetime, so CPython cannot recycle an id into a
@@ -1624,6 +1758,7 @@ class _Analyzer:
                     | UNBOUND_IDENTITY,
                     None,
                     UNKNOWN_EXPRESSION_RESULT,
+                    0,
                 )
                 for slot, _base_binding in lexical_bindings
             ),
@@ -1681,7 +1816,7 @@ class _Analyzer:
         state_id = self.states.set_bindings(
             state_id,
             tuple(
-                (slot, OTHER_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT)
+                (slot, OTHER_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, 0)
                 for slot in scope.slots.values()
             ),
         )
@@ -2048,7 +2183,14 @@ class _Analyzer:
         self._namespace_observation_epoch += 1
         return self.states.taint_module_bindings(state_id)
 
-    def _apply_effects(self, state_id: int, effects: EffectMask) -> int:
+    def _apply_effects(
+        self,
+        state_id: int,
+        effects: EffectMask,
+        *,
+        object_write_may_invalidate_members: bool = True,
+        object_write_content_exempt_slots: frozenset[int] = frozenset(),
+    ) -> int:
         if effects & (REFLECTS_NAMESPACE | READS_GLOBAL_NAMESPACE | READS_FRAME_STATE):
             self._namespace_observation_epoch += 1
         callback_effects = (
@@ -2066,15 +2208,23 @@ class _Analyzer:
             | callback_effects
         ):
             state_id = self._widen_module_bindings(state_id)
-        if effects & (
-            WRITES_OBJECT_STATE | EXECUTES_ARBITRARY_PYTHON | callback_effects
-        ):
-            state_id = self.states.invalidate_mutable_contents(state_id)
-        if effects & (
-            EXECUTES_ARBITRARY_PYTHON
-            | INVOKES_IMPORT_SYSTEM
-            | WRITES_OBJECT_STATE
-            | callback_effects
+        callback_boundary = bool(
+            effects & (EXECUTES_ARBITRARY_PYTHON | callback_effects)
+        )
+        if effects & WRITES_OBJECT_STATE or callback_boundary:
+            state_id = self.states.invalidate_mutable_contents(
+                state_id,
+                except_slots=(
+                    frozenset()
+                    if callback_boundary
+                    else object_write_content_exempt_slots
+                ),
+            )
+        if (
+            effects
+            & (EXECUTES_ARBITRARY_PYTHON | INVOKES_IMPORT_SYSTEM | callback_effects)
+            or effects & WRITES_OBJECT_STATE
+            and object_write_may_invalidate_members
         ):
             state_id = self.states.invalidate_members(state_id, ALL_INVALID_MEMBERS)
         return state_id
@@ -2137,12 +2287,6 @@ class _Analyzer:
                 PythonIdentity.BUILTINS_MODULE,
                 PythonMember.BUILTINS_IMPORT,
                 PythonIdentity.BUILTINS_IMPORT,
-            )
-        elif member == "open":
-            value |= admitted(
-                PythonIdentity.BUILTINS_MODULE,
-                PythonMember.BUILTINS_OPEN,
-                PythonIdentity.BUILTIN_OPEN,
             )
         elif member == "modules":
             value |= admitted(
@@ -2227,8 +2371,6 @@ class _Analyzer:
             members |= int(PythonMember.MODULE_SPEC_CLASS)
         if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
             members |= int(PythonMember.BUILTINS_IMPORT | PythonMember.IMPORT_HOOKS)
-        if base & int(PythonIdentity.BUILTINS_MODULE) and member == "open":
-            members |= int(PythonMember.BUILTINS_OPEN)
         if (
             base & int(PythonIdentity.BUILTINS_MODULE)
             and (shape_guard := BUILTIN_SHAPE_MEMBERS.get(member)) is not None
@@ -2248,12 +2390,15 @@ class _Analyzer:
     def _call_semantics(
         self,
         state_id: int,
+        callee_state_id: int,
         scope: _Scope,
         node: ast.Call,
         callee: IdentityMask,
         argument_results: tuple[StaticExpressionResult, ...],
+        captured_receiver_owner_token: int,
+        argument_owner_token_floor: int,
         prior_effects: EffectMask,
-    ) -> tuple[IdentityMask, EffectMask, int, StaticExpressionResult, bool]:
+    ) -> _CallSemantics:
         effects = NO_EFFECTS
         result = OTHER_IDENTITY
         exact = callee.bit_count() == 1
@@ -2270,6 +2415,7 @@ class _Analyzer:
         method_shape = None
         receiver_node: ast.expr | None = None
         receiver_slot: int | None = None
+        receiver_write_exempt_slots: frozenset[int] = frozenset()
         if isinstance(node.func, ast.Attribute):
             receiver_node = node.func.value
             receiver_result = self._known_expression_result(receiver_node)
@@ -2285,16 +2431,27 @@ class _Analyzer:
             )
             receiver_rebound = False
             if isinstance(receiver_node, ast.Name):
-                receiver_rebound = any(
-                    isinstance(child, ast.NamedExpr)
-                    and receiver_node.id in _target_names(child.target)
-                    for argument in (
-                        *node.args,
-                        *(keyword.value for keyword in node.keywords),
-                    )
-                    for child in ast.walk(argument)
-                )
                 candidate_slot = self._slot_for_name(scope, receiver_node.id)
+                receiver_rebound = candidate_slot is not None and (
+                    self.states.slot_updated_between(
+                        callee_state_id, state_id, candidate_slot
+                    )
+                )
+                if (
+                    candidate_slot is not None
+                    and (
+                        current_owner_token := self.states.owner_token(
+                            state_id, candidate_slot
+                        )
+                    )
+                    != 0
+                    and current_owner_token >= argument_owner_token_floor
+                ):
+                    # The evaluated bound method owns the pre-argument receiver.
+                    # The evaluated argument transfer proves that the slot's
+                    # latest owner is freshly allocated and therefore cannot
+                    # alias that receiver. Other aliases still lose contents.
+                    receiver_write_exempt_slots = frozenset((candidate_slot,))
                 if (
                     candidate_slot is not None
                     and not receiver_rebound
@@ -2304,7 +2461,7 @@ class _Analyzer:
                     if current_result.kind == receiver_result.kind:
                         receiver_result = current_result
                         receiver_slot = candidate_slot
-            if prior_effects & receiver_boundary or receiver_rebound:
+            if prior_effects & receiver_boundary:
                 receiver_result = expression_result_without_mutable_contents(
                     receiver_result
                 )
@@ -2323,7 +2480,15 @@ class _Analyzer:
             )
             effects |= method_shape.invocation_effects
             specialization_valid = method_shape.specialization_valid
-            state_id = self._apply_effects(state_id, effects)
+            state_id = self._apply_effects(
+                state_id,
+                effects,
+                object_write_may_invalidate_members=(
+                    receiver_result.kind == "dict"
+                    and captured_receiver_owner_token == 0
+                ),
+                object_write_content_exempt_slots=receiver_write_exempt_slots,
+            )
             if method_shape.receiver_after is not None and receiver_slot is not None:
                 state_id = self.states.set_binding(
                     state_id,
@@ -2331,8 +2496,25 @@ class _Analyzer:
                     self.states.binding(state_id, receiver_slot),
                     self.states.static_value(state_id, receiver_slot),
                     method_shape.receiver_after,
+                    self.states.owner_token(state_id, receiver_slot),
                 )
-            return result, effects, state_id, result_fact, specialization_valid
+            return _CallSemantics(
+                result,
+                effects,
+                state_id,
+                result_fact,
+                specialization_valid,
+                method_shape.argument_effects,
+                # Releasing the evaluated builtin bound method is safe when a
+                # live binding still owns its receiver, or when the exact
+                # post-call receiver can itself retire without callbacks.
+                method_shape.receiver_after is not None
+                and (
+                    receiver_slot is not None
+                    or not method_shape.receiver_after.release_may_call
+                ),
+                method_shape.retained_argument_indices,
+            )
         if builtin_name is not None:
             shape = builtin_call_shape(builtin_name, node, argument_results)
             result_fact = shape.result
@@ -2343,14 +2525,6 @@ class _Analyzer:
             )
             effects |= shape.invocation_effects
             specialization_valid = shape.specialization_valid
-        elif exact and callee == int(PythonIdentity.BUILTIN_OPEN):
-            result_fact, open_effects = builtin_open_result(node, argument_results)
-            result = (
-                exact_identity(PythonIdentity.INERT_VALUE)
-                if result_fact.kind != "unknown"
-                else OTHER_IDENTITY
-            )
-            effects |= open_effects
         elif exact and callee == int(PythonIdentity.BUILTIN_GLOBALS):
             result = exact_identity(PythonIdentity.CURRENT_GLOBALS)
             effects |= REFLECTS_NAMESPACE | READS_GLOBAL_NAMESPACE
@@ -2391,12 +2565,13 @@ class _Analyzer:
                 # Callee/arguments have executed; publication applies only its
                 # own release effects. Reapplying aggregate namespace writes
                 # here would erase the exact replacement we just established.
-                return (
+                return _CallSemantics(
                     int(PythonIdentity.INERT_VALUE),
                     mutation_effects,
                     state_id,
                     result_fact,
                     specialization_valid,
+                    mutation_effects,
                 )
             else:
                 effects |= UNKNOWN_EFFECTS
@@ -2456,12 +2631,13 @@ class _Analyzer:
             effects |= UNKNOWN_EFFECTS
         else:
             effects |= UNKNOWN_EFFECTS
-        return (
+        return _CallSemantics(
             result,
             effects,
             self._apply_effects(state_id, effects),
             result_fact,
             specialization_valid,
+            effects,
         )
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
@@ -2506,6 +2682,7 @@ class _Analyzer:
         effects = NO_EFFECTS
         identities = OTHER_IDENTITY
         static_value: PythonStaticValue = None
+        owner_token = 0
         binding_invalidated = False
         binding_is_bound = False
         result_override: StaticExpressionResult | None = None
@@ -2533,6 +2710,9 @@ class _Analyzer:
                 binding_invalidated,
                 binding_is_bound,
             ) = self._resolve_name(state_id, scope, node.id)
+            slot = self._slot_for_name(scope, node.id)
+            if slot is not None and not binding_invalidated:
+                owner_token = self.states.owner_token(state_id, slot)
             if identities & UNBOUND_IDENTITY or binding_invalidated:
                 effects |= RAISES
         elif isinstance(node, ast.Attribute):
@@ -2593,10 +2773,25 @@ class _Analyzer:
             effects_applied = True
             callee_result = self.eval_expr(node.func, state_id, scope)
             state_id = callee_result.state_id
+            callee_state_id = state_id
             evaluation_effects = callee_result.effects
-            state_id, argument_effects, argument_results = self._eval_call_arguments(
-                node, state_id, scope
-            )
+            argument_owner_token_floor = self._next_owner_token
+            captured_receiver_owner_token = 0
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and (receiver_slot := self._slot_for_name(scope, node.func.value.id))
+                is not None
+            ):
+                captured_receiver_owner_token = self.states.owner_token(
+                    state_id, receiver_slot
+                )
+            (
+                state_id,
+                argument_effects,
+                argument_results,
+                argument_crossed_boundaries,
+            ) = self._eval_call_arguments(node, state_id, scope)
             evaluation_effects |= argument_effects
             if (
                 callee_result.identities
@@ -2615,20 +2810,22 @@ class _Analyzer:
                 and _literal_string(node.args[1]) in _METADATA_NAMES
             ):
                 self._module_import_flow_required = True
-            (
-                identities,
-                invocation_effects,
+            call_semantics = self._call_semantics(
                 state_id,
-                result_override,
-                specialization_valid,
-            ) = self._call_semantics(
-                state_id,
+                callee_state_id,
                 scope,
                 node,
                 callee_result.identities,
                 argument_results,
+                captured_receiver_owner_token,
+                argument_owner_token_floor,
                 evaluation_effects,
             )
+            identities = call_semantics.result_identities
+            invocation_effects = call_semantics.invocation_effects
+            state_id = call_semantics.state_id
+            result_override = call_semantics.result
+            specialization_valid = call_semantics.specialization_valid
             argument_cleanup_effects = (
                 RELEASES_REFERENCE if argument_results else NO_EFFECTS
             )
@@ -2636,17 +2833,26 @@ class _Analyzer:
                 argument.value if isinstance(argument, ast.Starred) else argument
                 for argument in node.args
             ) + tuple(keyword.value for keyword in node.keywords)
-            boundary_before_cleanup = evaluation_effects | invocation_effects
+            argument_boundary_before_cleanup = call_semantics.argument_effects
+            callee_boundary_before_cleanup = evaluation_effects | invocation_effects
             if any(
-                _result_after_retained_boundary(
-                    result, boundary_before_cleanup
+                index not in call_semantics.retained_argument_indices
+                and _result_after_retained_boundary(
+                    result, argument_boundary_before_cleanup
                 ).release_may_call
                 and not (
                     isinstance(argument, ast.Name)
-                    and not boundary_before_cleanup & _CALLEE_ELISION_FORBIDDEN_EFFECTS
+                    and not crossed_boundary
+                    and not argument_boundary_before_cleanup
+                    & _CALLEE_ELISION_FORBIDDEN_EFFECTS
                 )
-                for argument, result in zip(
-                    argument_nodes, argument_results, strict=True
+                for index, (argument, result, crossed_boundary) in enumerate(
+                    zip(
+                        argument_nodes,
+                        argument_results,
+                        argument_crossed_boundaries,
+                        strict=True,
+                    )
                 )
             ):
                 argument_cleanup_effects |= _RELEASE_CALLBACK_EFFECTS
@@ -2659,6 +2865,9 @@ class _Analyzer:
                 & _CALLEE_ELISION_FORBIDDEN_EFFECTS
             )
             callee_retention_safe = (
+                call_semantics.callee_release_safe
+                and not argument_cleanup_effects & _CALLEE_RETENTION_FORBIDDEN_EFFECTS
+            ) or (
                 isinstance(node.func, (ast.Name, ast.Attribute))
                 and not (
                     evaluation_effects | invocation_effects | argument_cleanup_effects
@@ -2670,7 +2879,7 @@ class _Analyzer:
                 cleanup_effects |= RELEASES_REFERENCE
                 if (
                     _result_after_retained_boundary(
-                        callee_result.result, boundary_before_cleanup
+                        callee_result.result, callee_boundary_before_cleanup
                     ).release_may_call
                     and not callee_retention_safe
                 ):
@@ -2744,10 +2953,12 @@ class _Analyzer:
                 scope,
                 static_value=value.static_value,
                 result=value.result,
+                owner_token=value.owner_token,
             )
             effects = value.effects | target_effects
             identities = value.identities
             static_value = value.static_value
+            owner_token = value.owner_token
         elif isinstance(node, ast.Lambda):
             state_id, defaults_effect, defaults = self._eval_arguments(
                 node.args, state_id, scope
@@ -3002,6 +3213,24 @@ class _Analyzer:
             self._namespace_observation_epoch != observation_before,
             result_override,
         )
+        if (
+            expression_result.fresh_container
+            and owner_token == 0
+            and isinstance(
+                node,
+                (
+                    ast.Call,
+                    ast.Dict,
+                    ast.DictComp,
+                    ast.List,
+                    ast.ListComp,
+                    ast.Set,
+                    ast.SetComp,
+                ),
+            )
+        ):
+            owner_token = self._next_owner_token
+            self._next_owner_token += 1
         self._record_state(state_id)
         return _ExpressionResult(
             state_id,
@@ -3010,15 +3239,22 @@ class _Analyzer:
             static_value,
             assignment_target,
             expression_result,
+            owner_token,
         )
 
     def _eval_call_arguments(
         self, node: ast.Call | ast.ClassDef, state_id: int, scope: _Scope
-    ) -> tuple[int, EffectMask, tuple[StaticExpressionResult, ...]]:
+    ) -> tuple[
+        int,
+        EffectMask,
+        tuple[StaticExpressionResult, ...],
+        tuple[bool, ...],
+    ]:
         effects = NO_EFFECTS
         keys = AccumulatedKeyEffects()
         evaluated: dict[int, StaticExpressionResult] = {}
         retained: list[tuple[int, ast.expr, StaticExpressionResult]] = []
+        crossed_boundaries: set[int] = set()
         # Retained slots before this cursor have crossed an exposure boundary;
         # later slots still have uninterrupted source-name owner custody.
         publication_cursor = 0
@@ -3034,6 +3270,7 @@ class _Analyzer:
                     result = expression_result_for_publication(result)
                     retained[retained_index] = (index, expression, result)
                     evaluated[index] = result
+                    crossed_boundaries.add(index)
                 publication_cursor = len(retained)
             if boundary & RAISES:
                 cleanup = RELEASES_REFERENCE
@@ -3091,6 +3328,7 @@ class _Analyzer:
             state_id,
             effects,
             tuple(evaluated[index] for index in sorted(evaluated)),
+            tuple(index in crossed_boundaries for index in sorted(evaluated)),
         )
 
     def _eval_arguments(
@@ -3146,8 +3384,6 @@ class _Analyzer:
         first_iteration_boundary = iterable_unpack_effects(
             generators[0].iter, fact_result=self._known_expression_result
         )
-        if first_iterable.result.kind in {"file_text", "file_bytes"}:
-            first_iteration_boundary = READS_OBJECT_STATE | RAISES
         immediate_effects = first_iterable.effects | first_iteration_boundary
         deferred_effects = NO_EFFECTS
         immediate_state = self._apply_effects(
@@ -3286,14 +3522,17 @@ class _Analyzer:
         value: IdentityMask,
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
+        owner_token: int = 0,
     ) -> tuple[int, EffectMask]:
-        return self._replace_bindings(state_id, ((slot, value, static_value, result),))
+        return self._replace_bindings(
+            state_id, ((slot, value, static_value, result, owner_token),)
+        )
 
     def _replace_bindings(
         self,
         state_id: int,
         bindings: Sequence[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult]
+            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ],
         *,
         may_write: bool = False,
@@ -3303,10 +3542,10 @@ class _Analyzer:
         # slot independently: retain its old value as a may-write, and publish
         # the whole abstract update once instead of constructing N branches.
         updates: list[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult]
+            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ] = []
         releases_previous = False
-        for slot, value, static_value, result in bindings:
+        for slot, value, static_value, result, owner_token in bindings:
             previous = self.states.binding(state_id, slot)
             previous_result = self.states.result(state_id, slot)
             previous_has_value = bool(previous & ~UNBOUND_IDENTITY)
@@ -3315,7 +3554,11 @@ class _Analyzer:
             releases_previous |= previous_has_value and _release_may_call(
                 previous, previous_result
             )
-            result = expression_result_for_publication(result)
+            result = (
+                expression_result_for_owned_binding(result)
+                if owner_token
+                else expression_result_for_publication(result)
+            )
             if may_write:
                 previous_static_value = self.states.static_value(state_id, slot)
                 static_value, result = _join_binding_payloads(
@@ -3325,8 +3568,9 @@ class _Analyzer:
                     )
                 )
                 value |= previous
-            updates.append((slot, value, static_value, result))
-        state_id = self.states.set_bindings(state_id, updates)
+                owner_token = 0
+            updates.append((slot, value, static_value, result, owner_token))
+        state_id = self.states.set_bindings(state_id, updates, record_writes=True)
         if not releases_previous:
             return state_id, NO_EFFECTS
         effects = _RELEASE_CALLBACK_EFFECTS
@@ -3423,7 +3667,7 @@ class _Analyzer:
         state_id, release_effects = self._replace_bindings(
             state_id,
             tuple(
-                (self._ensure_module_slot(name), value, static_value, result)
+                (self._ensure_module_slot(name), value, static_value, result, 0)
                 for name in sorted(strings)
             ),
             may_write=len(strings) > 1,
@@ -3439,6 +3683,7 @@ class _Analyzer:
         *,
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
+        owner_token: int = 0,
     ) -> tuple[int, EffectMask]:
         assignment = self._assign_target(
             target,
@@ -3447,6 +3692,7 @@ class _Analyzer:
             scope,
             static_value=static_value,
             result=result,
+            owner_token=owner_token,
         )
         key = self._node_key(target)
         self.assignment_effects[key] = (
@@ -3463,11 +3709,18 @@ class _Analyzer:
         *,
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
+        owner_token: int = 0,
     ) -> tuple[int, EffectMask]:
         effects = NO_EFFECTS
         if isinstance(target, ast.Name):
             return self._write_name(
-                state_id, scope, target.id, value, static_value, result
+                state_id,
+                scope,
+                target.id,
+                value,
+                static_value,
+                result,
+                owner_token,
             )
         if isinstance(target, (ast.Tuple, ast.List)):
             stable_items = (
@@ -3586,7 +3839,6 @@ class _Analyzer:
             ("importlib.util", "find_spec"): PythonIdentity.IMPORTLIB_FIND_SPEC,
             ("importlib.machinery", "ModuleSpec"): PythonIdentity.MODULE_SPEC_CLASS,
             ("builtins", "__import__"): PythonIdentity.BUILTINS_IMPORT,
-            ("builtins", "open"): PythonIdentity.BUILTIN_OPEN,
             ("inspect", "currentframe"): PythonIdentity.INSPECT_CURRENTFRAME,
             ("typing", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
             ("typing_extensions", "TYPE_CHECKING"): PythonIdentity.STATIC_FALSE,
@@ -3600,8 +3852,6 @@ class _Analyzer:
             guard = (
                 PythonMember.BUILTINS_IMPORT
                 if name == "__import__"
-                else PythonMember.BUILTINS_OPEN
-                if name == "open"
                 else BUILTIN_SHAPE_MEMBERS.get(name)
             )
             if guard is not None:
@@ -3629,6 +3879,7 @@ class _Analyzer:
         value: IdentityMask,
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
+        owner_token: int = 0,
     ) -> tuple[int, EffectMask]:
         slot = self._slot_for_name(scope, name)
         if scope.namespace_can_call(
@@ -3644,7 +3895,9 @@ class _Analyzer:
             return self._apply_effects(state_id, effects), effects
         if slot is None:
             return state_id, NO_EFFECTS
-        return self._replace_binding(state_id, slot, value, static_value, result)
+        return self._replace_binding(
+            state_id, slot, value, static_value, result, owner_token
+        )
 
     def _merge_flows(
         self, *flows: PythonCompletionFlow[int]
@@ -3818,6 +4071,7 @@ class _Analyzer:
                     scope,
                     static_value=result.static_value,
                     result=result.result,
+                    owner_token=result.owner_token,
                 )
                 effects |= target_effects
         elif isinstance(node, ast.AnnAssign):
@@ -3832,6 +4086,7 @@ class _Analyzer:
                     scope,
                     static_value=result.static_value,
                     result=result.result,
+                    owner_token=result.owner_token,
                 )
                 effects |= target_effects
             elif isinstance(node.target, (ast.Attribute, ast.Subscript)):
@@ -4046,9 +4301,12 @@ class _Analyzer:
             state_id, definition_scope = self._type_parameter_scope(
                 node, state_id, scope
             )
-            state_id, argument_effects, _argument_results = self._eval_call_arguments(
-                node, state_id, definition_scope
-            )
+            (
+                state_id,
+                argument_effects,
+                _argument_results,
+                _argument_crossed_boundaries,
+            ) = self._eval_call_arguments(node, state_id, definition_scope)
             effects |= argument_effects
             assert self._dependency_authority is not None
             declarations = self._dependency_authority.declarations(node)
@@ -4071,7 +4329,7 @@ class _Analyzer:
             state_id = self.states.set_bindings(
                 state_id,
                 tuple(
-                    (slot, UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT)
+                    (slot, UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, 0)
                     for slot in class_scope.slots.values()
                 ),
             )
@@ -4217,8 +4475,6 @@ class _Analyzer:
             iteration_effects = iterable_unpack_effects(
                 node.iter, fact_result=self._known_expression_result
             )
-            if iterable_result.kind in {"file_text", "file_bytes"}:
-                iteration_effects = READS_OBJECT_STATE | RAISES
             if isinstance(node, ast.AsyncFor):
                 iteration_effects = (
                     INVOKES_ITERATION_CALLBACK
@@ -4316,7 +4572,10 @@ class _Analyzer:
             advance,
             lambda exhausted: self.exec_statements(node.orelse, exhausted, scope),
             join_states=self.states.join,
-            equivalent_states=self.states.equivalent,
+            equivalent_states=lambda left, right: (
+                self.states.equivalent(left, right)
+                and self.states.owner_tokens_equal(left, right)
+            ),
             widen_state=widen,
             finalize=finalize if iteration is not None else None,
         )
@@ -4356,9 +4615,9 @@ class _Analyzer:
                 "file_text",
                 "file_bytes",
             } and not isinstance(node, ast.AsyncWith)
-            enter_effects = (
-                READS_OBJECT_STATE | RAISES if exact_file else callback_effects
-            )
+            # Broad file kinds transport the normal ``__enter__`` result, but
+            # do not prove wrapped stream/state access callback-free.
+            enter_effects = callback_effects
             entered = self._apply_effects(context.state_id, enter_effects)
             prefix = self._merge_flows(
                 evaluated.without_normal(),
@@ -4379,11 +4638,7 @@ class _Analyzer:
             )
 
             def exit_context(incoming: int) -> PythonCompletionFlow[int]:
-                exit_effects = (
-                    READS_OBJECT_STATE | WRITES_OBJECT_STATE | RAISES
-                    if exact_file
-                    else callback_effects
-                )
+                exit_effects = callback_effects
                 released = self._apply_effects(incoming, exit_effects)
                 return self._normal_flow(released, exit_effects)
 
@@ -4586,7 +4841,7 @@ class _Analyzer:
             taint_epoch=taint_epoch,
         )
         updates: list[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult]
+            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
         ] = []
         for slot, base_binding in base_bindings:
             future_binding = summary.binding(self.states, summary_start, slot)
@@ -4596,6 +4851,7 @@ class _Analyzer:
                     base_binding | future_binding,
                     None,
                     UNKNOWN_EXPRESSION_RESULT,
+                    0,
                 )
             )
         return self.states.set_bindings(state_id, updates)

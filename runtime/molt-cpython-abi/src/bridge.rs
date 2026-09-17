@@ -32,9 +32,7 @@ use crate::abi_types::{
     PyStopIterationObject, PySyntaxErrorObject, PySystemExitObject, PyTuple_Type, PyType_Type,
     PyTypeObject, PyUnicodeErrorObject,
 };
-use molt_lang_obj_model::{
-    ExceptionFieldStorage, ExceptionLayoutKind, MAX_EXCEPTION_TYPED_FIELDS, MoltObject,
-};
+use molt_lang_obj_model::{ExceptionLayoutKind, MAX_EXCEPTION_TYPED_FIELDS, MoltObject};
 use once_cell::sync::OnceCell;
 use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::cell::{RefCell, UnsafeCell};
@@ -6508,6 +6506,7 @@ mod bridge_handle_tests {
 #[cfg(test)]
 mod exception_projection_tests {
     use super::*;
+    use molt_lang_obj_model::ExceptionFieldStorage;
 
     fn valid_snapshot(kind: ExceptionLayoutKind) -> crate::hooks::ExceptionSnapshot {
         let mut snapshot = crate::hooks::ExceptionSnapshot {

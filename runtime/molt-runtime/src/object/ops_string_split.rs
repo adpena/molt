@@ -153,51 +153,58 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-/// Validate explicit `str.split`/split-field arguments and return live string pointers.
+/// Validate a split descriptor receiver before any argument protocol executes.
 ///
 /// # Safety
 /// Caller must hold the GIL and pass object bits whose pointees stay live for
 /// the returned raw pointers. The returned pointers are only borrowed; callers
 /// must not store them beyond the current GIL entry.
+unsafe fn validate_string_split_receiver(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    from_right: bool,
+) -> Option<*mut u8> {
+    let hay = obj_from_bits(hay_bits);
+    if let Some(ptr) = hay.as_ptr() {
+        if unsafe { object_type_id(ptr) } == TYPE_ID_STRING {
+            return Some(ptr);
+        }
+    }
+    let method = if from_right { "rsplit" } else { "split" };
+    let msg = format!(
+        "descriptor '{method}' for 'str' objects doesn't apply to a '{}' object",
+        type_name(_py, hay)
+    );
+    raise_exception::<()>(_py, "TypeError", &msg);
+    None
+}
+
+unsafe fn validate_string_split_separator(_py: &PyToken<'_>, needle_bits: u64) -> Option<*mut u8> {
+    let needle = obj_from_bits(needle_bits);
+    if let Some(ptr) = needle.as_ptr() {
+        if unsafe { object_type_id(ptr) } == TYPE_ID_STRING {
+            if unsafe { string_len(ptr) } != 0 {
+                return Some(ptr);
+            }
+            raise_exception::<()>(_py, "ValueError", "empty separator");
+            return None;
+        }
+    }
+    let msg = format!("must be str or None, not {}", type_name(_py, needle));
+    raise_exception::<()>(_py, "TypeError", &msg);
+    None
+}
+
 unsafe fn validate_explicit_string_split_args(
     _py: &PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
 ) -> Option<(*mut u8, *mut u8)> {
     unsafe {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            let msg = format!(
-                "descriptor 'split' for 'str' objects doesn't apply to a '{}' object",
-                type_name(_py, hay)
-            );
-            raise_exception::<()>(_py, "TypeError", &msg);
-            return None;
-        };
-        if object_type_id(hay_ptr) != TYPE_ID_STRING {
-            let msg = format!(
-                "descriptor 'split' for 'str' objects doesn't apply to a '{}' object",
-                type_name(_py, hay)
-            );
-            raise_exception::<()>(_py, "TypeError", &msg);
-            return None;
-        }
-        let Some(needle_ptr) = needle.as_ptr() else {
-            let msg = format!("must be str or None, not {}", type_name(_py, needle));
-            raise_exception::<()>(_py, "TypeError", &msg);
-            return None;
-        };
-        if object_type_id(needle_ptr) != TYPE_ID_STRING {
-            let msg = format!("must be str or None, not {}", type_name(_py, needle));
-            raise_exception::<()>(_py, "TypeError", &msg);
-            return None;
-        }
-        if string_len(needle_ptr) == 0 {
-            raise_exception::<()>(_py, "ValueError", "empty separator");
-            return None;
-        }
-        Some((hay_ptr, needle_ptr))
+        Some((
+            validate_string_split_receiver(_py, hay_bits, false)?,
+            validate_string_split_separator(_py, needle_bits)?,
+        ))
     }
 }
 
@@ -581,6 +588,47 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
     })
 }
 
+fn string_split_impl(
+    _py: &PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+    maxsplit_bits: u64,
+    from_right: bool,
+) -> u64 {
+    // Descriptor admission precedes user code. Separator validation and every
+    // storage borrow follow __index__, which may mutate a separator's owner.
+    let Some(hay_ptr) = (unsafe { validate_string_split_receiver(_py, hay_bits, from_right) })
+    else {
+        return MoltObject::none().bits();
+    };
+    let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let hay = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
+        let result = if obj_from_bits(needle_bits).is_none() {
+            if from_right {
+                rsplit_string_whitespace_to_list_maxsplit(_py, hay, maxsplit)
+            } else {
+                split_string_whitespace_to_list_maxsplit(_py, hay, maxsplit)
+            }
+        } else {
+            let Some(needle_ptr) = validate_string_split_separator(_py, needle_bits) else {
+                return MoltObject::none().bits();
+            };
+            let needle =
+                std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
+            if from_right {
+                rsplit_string_bytes_to_list_maxsplit(_py, hay, needle, maxsplit)
+            } else {
+                split_string_bytes_to_list_maxsplit(_py, hay, needle, maxsplit)
+            }
+        };
+        result.unwrap_or_else(|| MoltObject::none().bits())
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_split_max(
     hay_bits: u64,
@@ -588,58 +636,13 @@ pub extern "C" fn molt_string_split_max(
     maxsplit_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes =
-                    std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-                if needle.is_none() {
-                    let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                        return MoltObject::none().bits();
-                    };
-                    let list_bits =
-                        split_string_whitespace_to_list_maxsplit(_py, hay_str, maxsplit);
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let Some(needle_ptr) = needle.as_ptr() else {
-                    return MoltObject::none().bits();
-                };
-                if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                    let msg = format!("must be str or None, not {}", type_name(_py, needle));
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                let needle_bytes =
-                    std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits =
-                    split_string_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit);
-                let list_bits = match list_bits {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
-            }
-        }
-        MoltObject::none().bits()
+        string_split_impl(_py, hay_bits, needle_bits, maxsplit_bits, false)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_rsplit(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let maxsplit_bits = MoltObject::from_int(-1).bits();
-        molt_string_rsplit_max(hay_bits, needle_bits, maxsplit_bits)
-    })
+    molt_string_rsplit_max(hay_bits, needle_bits, MoltObject::from_int(-1).bits())
 }
 
 #[unsafe(no_mangle)]
@@ -649,48 +652,453 @@ pub extern "C" fn molt_string_rsplit_max(
     maxsplit_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
+        string_split_impl(_py, hay_bits, needle_bits, maxsplit_bits, true)
+    })
+}
+
+#[cfg(test)]
+mod split_contract_tests {
+    use super::*;
+    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    type Split = extern "C" fn(u64, u64, u64) -> u64;
+    const LANES: [(u32, bool, Split); 6] = [
+        (TYPE_ID_STRING, false, molt_string_split_max),
+        (TYPE_ID_STRING, true, molt_string_rsplit_max),
+        (TYPE_ID_BYTES, false, molt_bytes_split_max),
+        (TYPE_ID_BYTES, true, molt_bytes_rsplit_max),
+        (TYPE_ID_BYTEARRAY, false, molt_bytearray_split_max),
+        (TYPE_ID_BYTEARRAY, true, molt_bytearray_rsplit_max),
+    ];
+    static INDEX_CALLS: AtomicU64 = AtomicU64::new(0);
+    static INDEX_MODE: AtomicU64 = AtomicU64::new(0);
+    static MUTATED_RECEIVER: AtomicU64 = AtomicU64::new(0);
+    static MUTATED_SEPARATOR: AtomicU64 = AtomicU64::new(0);
+
+    extern "C" fn split_contract_index(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
+            match INDEX_MODE.load(Ordering::SeqCst) {
+                1 => raise_exception::<u64>(py, "RuntimeError", "split index failure"),
+                2 => MoltObject::from_float(1.0).bits(),
+                3 => {
+                    for (slot, replacement) in [
+                        (&MUTATED_RECEIVER, b"x|y|z".as_slice()),
+                        (&MUTATED_SEPARATOR, b"|".as_slice()),
+                    ] {
+                        let bits = slot.load(Ordering::SeqCst);
+                        if bits != 0 {
+                            molt_bytearray_resize(bits, MoltObject::from_int(0).bits());
+                            for byte in replacement {
+                                molt_bytearray_append(
+                                    bits,
+                                    MoltObject::from_int(i64::from(*byte)).bits(),
+                                );
+                            }
+                        }
+                    }
+                    assert!(!exception_pending(py));
+                    MoltObject::from_int(1).bits()
+                }
+                _ => MoltObject::from_int(1).bits(),
+            }
+        })
+    }
+
+    fn index_object(py: &PyToken<'_>) -> u64 {
+        let name = attr_name_bits_from_bytes(py, b"SplitContractIndex").unwrap();
+        let class = crate::molt_class_new(name);
+        crate::molt_class_set_base(class, builtin_classes(py).object);
+        let method = attr_name_bits_from_bytes(py, b"__index__").unwrap();
+        let function = alloc_runtime_function_obj(
+            py,
+            runtime_fn_addr("split_contract_index", split_contract_index as *const ()),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = MoltObject::from_ptr(function).bits();
+        crate::molt_set_attr_name(class, method, function);
+        let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        unsafe { crate::object::class_finish_definition(py, class_ptr).unwrap() };
+        let size = unsafe { crate::object::layout::class_cached_layout_size(class_ptr).unwrap() };
+        let value = crate::object::builders::alloc_class_instance(py, size, class);
+        unsafe {
+            crate::object::gc::gc_publish_initialized(py, obj_from_bits(value).as_ptr().unwrap());
         }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes =
-                    std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-                if needle.is_none() {
-                    let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                        return MoltObject::none().bits();
-                    };
-                    let list_bits =
-                        rsplit_string_whitespace_to_list_maxsplit(_py, hay_str, maxsplit);
-                    return list_bits.unwrap_or_else(|| MoltObject::none().bits());
-                }
-                let Some(needle_ptr) = needle.as_ptr() else {
-                    return MoltObject::none().bits();
+        for bits in [name, method, function, class] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+        value
+    }
+
+    fn value(py: &PyToken<'_>, type_id: u32, bytes: &[u8]) -> u64 {
+        let ptr = match type_id {
+            TYPE_ID_STRING => alloc_string(py, bytes),
+            TYPE_ID_BYTES => alloc_bytes(py, bytes),
+            TYPE_ID_BYTEARRAY => alloc_bytearray(py, bytes),
+            _ => unreachable!(),
+        };
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn assert_error(py: &PyToken<'_>, result: u64, kind: &str) {
+        assert!(obj_from_bits(result).is_none());
+        assert!(exception_pending(py));
+        let error = crate::builtins::exceptions::molt_exception_last_pending();
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            py, error, kind
+        ));
+        clear_exception(py);
+        dec_ref_bits(py, error);
+    }
+
+    fn assert_parts(py: &PyToken<'_>, result: u64, type_id: u32, expected: &[&[u8]]) {
+        assert!(!exception_pending(py));
+        let ptr = obj_from_bits(result).as_ptr().unwrap();
+        unsafe {
+            assert_eq!(object_type_id(ptr), TYPE_ID_LIST);
+            let items = &*crate::object::layout::seq_vec_ptr(ptr);
+            assert_eq!(items.len(), expected.len());
+            for (bits, expected) in items.iter().zip(expected) {
+                let item = obj_from_bits(*bits).as_ptr().unwrap();
+                assert_eq!(object_type_id(item), type_id);
+                let bytes = if type_id == TYPE_ID_STRING {
+                    std::slice::from_raw_parts(string_bytes(item), string_len(item))
+                } else {
+                    bytes_like_slice(item).unwrap()
                 };
-                if object_type_id(needle_ptr) != TYPE_ID_STRING {
-                    let msg = format!("must be str or None, not {}", type_name(_py, needle));
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                let needle_bytes =
-                    std::slice::from_raw_parts(string_bytes(needle_ptr), string_len(needle_ptr));
-                if needle_bytes.is_empty() {
-                    return raise_exception::<_>(_py, "ValueError", "empty separator");
-                }
-                let list_bits =
-                    rsplit_string_bytes_to_list_maxsplit(_py, hay_bytes, needle_bytes, maxsplit);
-                let list_bits = match list_bits {
-                    Some(val) => val,
-                    None => return MoltObject::none().bits(),
-                };
-                return list_bits;
+                assert_eq!(bytes, *expected);
             }
         }
-        MoltObject::none().bits()
-    })
+        dec_ref_bits(py, result);
+    }
+
+    #[test]
+    fn split_contract_receiver_index_separator_order_and_errors() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let index = index_object(py);
+            for (type_id, _, split) in LANES {
+                INDEX_MODE.store(0, Ordering::SeqCst);
+                INDEX_CALLS.store(0, Ordering::SeqCst);
+                assert_error(
+                    py,
+                    split(
+                        MoltObject::from_int(7).bits(),
+                        MoltObject::none().bits(),
+                        index,
+                    ),
+                    "TypeError",
+                );
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                let wrong_receiver = value(
+                    py,
+                    if type_id == TYPE_ID_STRING {
+                        TYPE_ID_BYTES
+                    } else {
+                        TYPE_ID_STRING
+                    },
+                    b"a,b",
+                );
+                assert_error(
+                    py,
+                    split(wrong_receiver, MoltObject::none().bits(), index),
+                    "TypeError",
+                );
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                dec_ref_bits(py, wrong_receiver);
+                let hay = value(py, type_id, b"a,b");
+                let empty = value(py, type_id, b"");
+                for (separator, error) in [
+                    (MoltObject::from_int(7).bits(), "TypeError"),
+                    (MoltObject::from_float(0.0).bits(), "TypeError"),
+                    (empty, "ValueError"),
+                ] {
+                    INDEX_CALLS.store(0, Ordering::SeqCst);
+                    assert_error(py, split(hay, separator, index), error);
+                    assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
+                    INDEX_MODE.store(1, Ordering::SeqCst);
+                    assert_error(py, split(hay, separator, index), "RuntimeError");
+                    INDEX_MODE.store(2, Ordering::SeqCst);
+                    assert_error(py, split(hay, separator, index), "TypeError");
+                    INDEX_MODE.store(0, Ordering::SeqCst);
+                }
+                for exponent in [100i32, -100] {
+                    let magnitude = num_bigint::BigInt::from(10u8).pow(exponent.unsigned_abs());
+                    let huge = crate::builtins::numbers::bigint_bits(
+                        py,
+                        if exponent < 0 { -magnitude } else { magnitude },
+                    );
+                    assert_error(py, split(hay, empty, huge), "OverflowError");
+                    dec_ref_bits(py, huge);
+                }
+                for limit in [
+                    num_bigint::BigInt::from(isize::MAX) + 1,
+                    num_bigint::BigInt::from(isize::MIN) - 1,
+                ] {
+                    let limit = crate::builtins::numbers::bigint_bits(py, limit);
+                    assert_error(py, split(hay, empty, limit), "OverflowError");
+                    dec_ref_bits(py, limit);
+                }
+                for limit in [isize::MIN, isize::MAX] {
+                    let limit =
+                        crate::builtins::numbers::bigint_bits(py, num_bigint::BigInt::from(limit));
+                    assert_parts(
+                        py,
+                        split(hay, MoltObject::none().bits(), limit),
+                        type_id,
+                        &[b"a,b"],
+                    );
+                    dec_ref_bits(py, limit);
+                }
+                dec_ref_bits(py, empty);
+                dec_ref_bits(py, hay);
+            }
+            dec_ref_bits(py, index);
+        });
+    }
+
+    #[test]
+    fn split_contract_whitespace_caps_unicode_surrogates_and_result_types() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (type_id, right, split) in LANES {
+                let hay = value(py, type_id, b"  a\x0bb  ");
+                for (cap, expected) in [
+                    (
+                        0,
+                        if right {
+                            vec![b"  a\x0bb".as_slice()]
+                        } else {
+                            vec![b"a\x0bb  ".as_slice()]
+                        },
+                    ),
+                    (
+                        1,
+                        if right {
+                            vec![b"  a".as_slice(), b"b"]
+                        } else {
+                            vec![b"a".as_slice(), b"b  "]
+                        },
+                    ),
+                    (-1, vec![b"a".as_slice(), b"b"]),
+                ] {
+                    assert_parts(
+                        py,
+                        split(
+                            hay,
+                            MoltObject::none().bits(),
+                            MoltObject::from_int(cap).bits(),
+                        ),
+                        type_id,
+                        &expected,
+                    );
+                }
+                dec_ref_bits(py, hay);
+                let empty = value(py, type_id, b" \t\x0b\x0c\r\n");
+                assert_parts(
+                    py,
+                    split(
+                        empty,
+                        MoltObject::none().bits(),
+                        MoltObject::from_bool(false).bits(),
+                    ),
+                    type_id,
+                    &[],
+                );
+                dec_ref_bits(py, empty);
+                if type_id == TYPE_ID_STRING {
+                    let hay = value(py, type_id, b"\xed\xa0\x80\x1c\xc2\xa0\xe2\x80\x83z");
+                    assert_parts(
+                        py,
+                        split(
+                            hay,
+                            MoltObject::none().bits(),
+                            MoltObject::from_int(-1).bits(),
+                        ),
+                        type_id,
+                        &[b"\xed\xa0\x80", b"z"],
+                    );
+                    dec_ref_bits(py, hay);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn split_contract_bytes_like_separators_and_post_index_mutation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let index = index_object(py);
+            for (type_id, right, split) in LANES {
+                let hay = value(py, type_id, b"x|y|z");
+                for separator_type in [TYPE_ID_BYTES, TYPE_ID_BYTEARRAY] {
+                    let sep = value(py, separator_type, b"|");
+                    let view = molt_memoryview_new(sep);
+                    for separator in [sep, view] {
+                        let result = split(hay, separator, MoltObject::from_int(1).bits());
+                        if type_id == TYPE_ID_STRING {
+                            assert_error(py, result, "TypeError");
+                        } else {
+                            let expected: &[&[u8]] = if right {
+                                &[b"x|y", b"z"]
+                            } else {
+                                &[b"x", b"y|z"]
+                            };
+                            assert_parts(py, result, type_id, expected);
+                        }
+                    }
+                    molt_memoryview_release(view);
+                    INDEX_CALLS.store(0, Ordering::SeqCst);
+                    let result = split(hay, view, index);
+                    assert_error(
+                        py,
+                        result,
+                        if type_id == TYPE_ID_STRING {
+                            "TypeError"
+                        } else {
+                            "ValueError"
+                        },
+                    );
+                    assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
+                    dec_ref_bits(py, view);
+                    dec_ref_bits(py, sep);
+                }
+                dec_ref_bits(py, hay);
+                if type_id == TYPE_ID_STRING {
+                    continue;
+                }
+                let hay = value(
+                    py,
+                    type_id,
+                    if type_id == TYPE_ID_BYTEARRAY {
+                        b"old"
+                    } else {
+                        b"x|y|z"
+                    },
+                );
+                let sep = value(py, TYPE_ID_BYTEARRAY, b"old-separator");
+                MUTATED_RECEIVER.store(
+                    if type_id == TYPE_ID_BYTEARRAY { hay } else { 0 },
+                    Ordering::SeqCst,
+                );
+                MUTATED_SEPARATOR.store(sep, Ordering::SeqCst);
+                INDEX_MODE.store(3, Ordering::SeqCst);
+                let result = split(hay, sep, index);
+                let expected: &[&[u8]] = if right {
+                    &[b"x|y", b"z"]
+                } else {
+                    &[b"x", b"y|z"]
+                };
+                assert_parts(py, result, type_id, expected);
+                MUTATED_RECEIVER.store(0, Ordering::SeqCst);
+                MUTATED_SEPARATOR.store(0, Ordering::SeqCst);
+                INDEX_MODE.store(0, Ordering::SeqCst);
+                dec_ref_bits(py, sep);
+                dec_ref_bits(py, hay);
+            }
+            dec_ref_bits(py, index);
+        });
+    }
+
+    #[test]
+    fn split_contract_buffer_layout_and_join_error_policies() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let index = index_object(py);
+            INDEX_MODE.store(0, Ordering::SeqCst);
+            for (data, itemsize, shape, strides, expected) in [
+                (b"".as_slice(), 1, vec![0], vec![1], Some(b"".as_slice())),
+                (b"|x|".as_slice(), 1, vec![0], vec![2], None),
+                (b"|x".as_slice(), 1, vec![1], vec![2], Some(b"|".as_slice())),
+                (b"|x|".as_slice(), 1, vec![2], vec![2], None),
+                (
+                    b"||".as_slice(),
+                    2,
+                    vec![1],
+                    vec![2],
+                    Some(b"||".as_slice()),
+                ),
+                (
+                    b"||".as_slice(),
+                    1,
+                    vec![1, 2],
+                    vec![2, 1],
+                    Some(b"||".as_slice()),
+                ),
+            ] {
+                let base = value(py, TYPE_ID_BYTES, data);
+                let format = value(py, TYPE_ID_STRING, if itemsize == 2 { b"H" } else { b"B" });
+                let storage = TypedStridedStorage::new(
+                    unsafe { bytes_data(obj_from_bits(base).as_ptr().unwrap()) } as *mut u8,
+                    true,
+                    itemsize,
+                    0,
+                    base,
+                    format,
+                    shape,
+                    strides,
+                )
+                .unwrap();
+                let view_ptr = crate::object::builders::alloc_memoryview_from_storage(py, storage);
+                assert!(!view_ptr.is_null());
+                let view = MoltObject::from_ptr(view_ptr).bits();
+                for (type_id, _, split) in LANES {
+                    if type_id == TYPE_ID_STRING {
+                        continue;
+                    }
+                    let hay = value(py, type_id, b"a||b");
+                    INDEX_CALLS.store(0, Ordering::SeqCst);
+                    let result = split(hay, view, index);
+                    match expected {
+                        None => assert_error(py, result, "BufferError"),
+                        Some(bytes) if bytes.is_empty() => assert_error(py, result, "ValueError"),
+                        Some(_) => {
+                            assert!(!exception_pending(py));
+                            assert!(obj_from_bits(result).as_ptr().is_some());
+                            dec_ref_bits(py, result);
+                        }
+                    }
+                    assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
+                    let separator = value(py, type_id, b"");
+                    let items = alloc_list(py, &[view]);
+                    assert!(!items.is_null());
+                    let items = MoltObject::from_ptr(items).bits();
+                    let join: extern "C" fn(u64, u64) -> u64 = if type_id == TYPE_ID_BYTES {
+                        molt_bytes_join
+                    } else {
+                        molt_bytearray_join
+                    };
+                    let result = join(separator, items);
+                    if let Some(expected) = expected {
+                        assert!(!exception_pending(py));
+                        let ptr = obj_from_bits(result).as_ptr().unwrap();
+                        unsafe {
+                            assert_eq!(object_type_id(ptr), type_id);
+                            assert_eq!(bytes_like_slice(ptr).unwrap(), expected);
+                        }
+                        dec_ref_bits(py, result);
+                    } else {
+                        assert_error(py, result, "TypeError");
+                    }
+                    for bits in [items, separator, hay] {
+                        dec_ref_bits(py, bits);
+                    }
+                }
+                molt_memoryview_release(view);
+                let separator = value(py, TYPE_ID_BYTES, b"");
+                let items = alloc_list(py, &[view]);
+                assert!(!items.is_null());
+                let items = MoltObject::from_ptr(items).bits();
+                assert_error(py, molt_bytes_join(separator, items), "TypeError");
+                for bits in [items, separator, view, format, base] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+            dec_ref_bits(py, index);
+        });
+    }
 }

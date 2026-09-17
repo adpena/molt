@@ -5,6 +5,127 @@ from builtins import float as imported_float
 events = []
 
 
+def split_argument(label, value):
+    events.append(label)
+    return value
+
+
+class SplitCallable:
+    def __call__(self, *args, **keywords):
+        events.append("split-called")
+        return args, keywords
+
+    def __del__(self):
+        events.append("split-callable-released")
+
+
+class DetachedSplitReceiver:
+    @property
+    def split(self):
+        events.append("split-lookup")
+        return SplitCallable()
+
+    def __del__(self):
+        events.append("split-receiver-released")
+
+
+split_result = DetachedSplitReceiver().split(
+    maxsplit=split_argument("split-maxsplit", 2),
+    sep=split_argument("split-separator", "|"),
+)
+assert split_result == ((), {"maxsplit": 2, "sep": "|"})
+assert events == [
+    "split-lookup",
+    "split-receiver-released",
+    "split-maxsplit",
+    "split-separator",
+    "split-called",
+    "split-callable-released",
+]
+print("split-capture", events)
+events.clear()
+
+
+def suspended_split():
+    result = DetachedSplitReceiver().split(sep=(yield "split-suspended"))
+    events.append("split-resumed")
+    return result
+
+
+split_generator = suspended_split()
+assert next(split_generator) == "split-suspended"
+assert events == ["split-lookup", "split-receiver-released"]
+try:
+    split_generator.send("|")
+except StopIteration as stopped:
+    assert stopped.value == ((), {"sep": "|"})
+assert events == [
+    "split-lookup",
+    "split-receiver-released",
+    "split-called",
+    "split-callable-released",
+    "split-resumed",
+]
+print("split-suspension", events)
+events.clear()
+
+
+class SplitText(str):
+    def split(self, *arguments, **keywords):
+        return ("override", arguments, keywords)
+
+
+class SplitBytes(bytes):
+    split = SplitText.split
+
+
+class SplitBytearray(bytearray):
+    split = SplitText.split
+
+
+for split_receiver in (SplitText("a|b"), SplitBytes(b"a|b"), SplitBytearray(b"a|b")):
+    assert split_receiver.split(1, 2, 3, sep="|") == (
+        "override",
+        (1, 2, 3),
+        {"sep": "|"},
+    )
+    assert split_receiver.split(maxsplit=2, sep="|") == (
+        "override",
+        (),
+        {"maxsplit": 2, "sep": "|"},
+    )
+print("split-subclass-overrides", True)
+
+
+events.clear()
+
+
+class SetIterationProbe:
+    def __iter__(self):
+        events.append("set-iterate")
+        yield 1
+
+
+def later_set_argument():
+    events.append("set-later-argument")
+    return {2}
+
+
+for set_operation in (
+    lambda: {0}.union(SetIterationProbe(), later_set_argument()),
+    lambda: {0}.intersection(SetIterationProbe(), later_set_argument()),
+    lambda: {0}.difference(SetIterationProbe(), later_set_argument()),
+    lambda: {0}.update(SetIterationProbe(), later_set_argument()),
+    lambda: {0}.intersection_update(SetIterationProbe(), later_set_argument()),
+    lambda: {0}.difference_update(SetIterationProbe(), later_set_argument()),
+):
+    events.clear()
+    set_operation()
+    assert events == ["set-later-argument", "set-iterate"]
+    print("set-argument-order", events)
+events.clear()
+
+
 class Probe:
     def __del__(self):
         events.append("argument-released")
@@ -155,6 +276,46 @@ for factory, publish in (
     print("published-lifetime", events)
 
 
+class RetainedNestedProbe:
+    def __init__(self, label):
+        self.label = label
+
+    def __del__(self):
+        events.append(f"{self.label}-released")
+
+
+def retained_nested_lifetime(label, make_owner, store):
+    events.clear()
+    owner = make_owner()
+    alias = owner
+    nested = [RetainedNestedProbe(label)]
+    store(owner, nested)
+    nested = None
+    events.append("after-store")
+    owner = None
+    events.append("after-owner-drop")
+    assert events == ["after-store", "after-owner-drop"]
+    alias = None
+    assert alias is None
+    events.append("after-alias-drop")
+    assert events == [
+        "after-store",
+        "after-owner-drop",
+        f"{label}-released",
+        "after-alias-drop",
+    ]
+    print("stored-lifetime", label, events)
+
+
+for label, factory, store in (
+    ("append", list, lambda owner, nested: owner.append(nested)),
+    ("insert", list, lambda owner, nested: owner.insert(0, nested)),
+    ("extend", list, lambda owner, nested: owner.extend([nested])),
+    ("setdefault", dict, lambda owner, nested: owner.setdefault("key", nested)),
+):
+    retained_nested_lifetime(label, factory, store)
+
+
 # A name is not a lifetime root after an intervening callback revokes it.
 class RevokeArgumentOwner:
     def __del__(self):
@@ -193,3 +354,56 @@ for item in (loop_owner := [0]):
 events.append("after-loop")
 assert events == ["before-break", "published-released", "after-loop"]
 print("retained-iterator-lifetime", events)
+
+
+# The bound method owns the old receiver, not the name's replacement.
+items = [1]
+items.append((items := ["replacement"]))
+assert items == ["replacement"]
+print("replacement-owner", items)
+
+# A fresh outer owner may still contain the receiver being mutated.
+items = [1]
+items.append((items := [items]))
+assert items[0][0] == 1
+assert items[0][1] is items
+assert length(items[0]) == 2
+print("nested-owner", length(items), length(items[0]))
+# Break the intentional cycle; do not leave its collection timing in stdout.
+items[0].pop()
+
+
+def joined_receiver(flag):
+    if flag:
+        first = []
+        second = []
+    else:
+        first = []
+        second = []
+    first.append((first := second))
+    return length(first)
+
+
+assert joined_receiver(True) == joined_receiver(False) == 0
+print("joined-owner", joined_receiver(True), joined_receiver(False))
+
+
+class CleanupText(str):
+    def __del__(self):
+        events.append("text-released")
+
+
+def replace_text_owner():
+    global retained_text
+    retained_text = None
+    events.append("text-owner-replaced")
+    return "b"
+
+
+events.clear()
+retained_text = CleanupText("a")
+text = "a".replace(retained_text, replace_text_owner())
+events.append("after-replace")
+assert text == "b"
+assert events == ["text-owner-replaced", "text-released", "after-replace"]
+print("normal-argument-lifetime", text, events)

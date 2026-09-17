@@ -862,6 +862,8 @@ class AttributeAccessMixin(_MixinBase):
         obj: MoltValue,
         obj_name: str | None,
         exact_class: str | None,
+        *,
+        generic: bool = False,
     ) -> MoltValue:
         # Set expression-level col_offset from the Attribute AST node so
         # that get_attr ops carry the correct column range for traceback
@@ -872,7 +874,9 @@ class AttributeAccessMixin(_MixinBase):
         if _attr_col is not None and _attr_end_col is not None:
             self._expr_col = (_attr_col, _attr_end_col)
         try:
-            return self._emit_attribute_load_inner(node, obj, obj_name, exact_class)
+            return self._emit_attribute_load_inner(
+                node, obj, obj_name, exact_class, generic=generic
+            )
         finally:
             self._expr_col = _prev_expr_col
 
@@ -882,6 +886,8 @@ class AttributeAccessMixin(_MixinBase):
         obj: MoltValue,
         obj_name: str | None,
         exact_class: str | None,
+        *,
+        generic: bool = False,
     ) -> MoltValue:
         # Canonical imported-module callable acquisition is a producer fact.
         # It must be stamped before type-driven attribute lowering: a module
@@ -892,7 +898,7 @@ class AttributeAccessMixin(_MixinBase):
         runtime_symbol, runtime_requirement_bits = (
             self._runtime_qualified_callable_provenance_for_binding(obj_name, node.attr)
         )
-        if runtime_symbol is not None:
+        if runtime_symbol is not None and not generic:
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
             result = MoltValue(self.next_var(), type_hint="Any")
@@ -910,7 +916,7 @@ class AttributeAccessMixin(_MixinBase):
             node.attr,
             exact_class=exact_class,
         )
-        if runtime_requirement_bits or protected_requirement_bits:
+        if generic or runtime_requirement_bits or protected_requirement_bits:
             # Protected runtime callable acquisition is a value capability,
             # not a lexical-import spelling. Unknown receivers may carry a
             # sys/inspect module through conditionals, containers, calls, heap

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from typing import Literal, TypeAlias, TypedDict, cast
 
@@ -501,11 +501,12 @@ def iterable_element_result(
 
     if result.element_result is not None:
         return result.element_result
+    # File mode is not an exact iterator protocol. Text decoders may return a
+    # str subclass, and unbuffered FileIO dispatches the instance's readline.
+    # A stronger producer may transport an explicit element_result above.
     intrinsic_kind: ExpressionKind | None = (
         "str"
-        if result.kind in {"str", "file_text"}
-        else "bytes"
-        if result.kind == "file_bytes"
+        if result.kind == "str"
         else "int"
         if result.kind in {"bytes", "bytearray", "range"}
         else None
@@ -566,42 +567,92 @@ def expression_result_for_publication(
     )
 
 
-def expression_result_without_mutable_contents(
+def expression_result_for_owned_binding(
     result: StaticExpressionResult,
+) -> StaticExpressionResult:
+    """Publish into tracked allocation storage without inventing exposure.
+
+    The caller must hold a nonzero evaluated-allocation token and invalidate
+    contents of every alias at object-write/callback boundaries. This retains
+    current contents, not unexposed freshness or lifetime-long immutability.
+    Unknown owners use ``expression_result_for_publication`` instead.
+    """
+
+    return replace(result, fresh_container=False) if result.fresh_container else result
+
+
+def expression_result_without_mutable_contents(
+    result: StaticExpressionResult, *, preserve_owner: bool = False
 ) -> StaticExpressionResult:
     """Expire alias-sensitive mutable contents while retaining normal kind."""
 
-    completed: dict[int, StaticExpressionResult] = {}
-    pending = [(result, False)]
+    # A proven nonalias outer allocation can survive a write to another owner,
+    # but any mutable object reachable through it can still be that receiver.
+    # Transform both per-member and homogeneous element facts in one DAG walk.
+    completed: dict[tuple[int, bool], StaticExpressionResult] = {}
+    pending = [(result, preserve_owner, False)]
     while pending:
-        current, expanded = pending.pop()
-        identity = id(current)
+        current, retain_outer, expanded = pending.pop()
+        identity = (id(current), retain_outer)
         if identity in completed:
             continue
-        published = expression_result_for_publication(current)
-        child = published.element_result
-        if published.kind in _MUTABLE_EXPRESSION_KINDS:
-            child = None
-        elif child is not None and not expanded:
-            pending.append((current, True))
-            pending.append((child, False))
+        published = (
+            expression_result_for_owned_binding(current)
+            if retain_outer
+            else expression_result_for_publication(current)
+        )
+        if published._recursively_stable:
+            completed[identity] = published
             continue
-        elif child is not None:
-            child = completed[id(child)]
-        completed[identity] = (
-            published
-            if child is published.element_result
-            else StaticExpressionResult(
-                truth=published.truth,
-                kind=published.kind,
-                evaluation_required=published.evaluation_required,
-                release_may_call=published.release_may_call,
-                length=published.length,
-                element_result=child,
-                _publication_release_stable=published._publication_release_stable,
+        child = published.element_result
+        if published.kind in _MUTABLE_EXPRESSION_KINDS and not retain_outer:
+            child = None
+        members = published.items
+        if not expanded and (child is not None or members):
+            pending.append((current, retain_outer, True))
+            if child is not None:
+                pending.append((child, False, False))
+            if members:
+                pending.extend((item.result, False, False) for item in members)
+            continue
+        if child is not None:
+            child = completed[(id(child), False)]
+        if members is not None and any(
+            completed[(id(item.result), False)] is not item.result for item in members
+        ):
+            members = tuple(
+                ExpressionSequenceItem(
+                    completed[(id(item.result), False)], expanded=item.expanded
+                )
+                for item in members
+            )
+        descendants_changed = (
+            child is not published.element_result or members is not published.items
+        )
+        release_may_call = published.release_may_call or (
+            retain_outer
+            and descendants_changed
+            and (
+                child is not None
+                and child.release_may_call
+                or members is not None
+                and any(item.result.release_may_call for item in members)
             )
         )
-    return completed[id(result)]
+        completed[identity] = (
+            published
+            if not descendants_changed
+            else replace(
+                published,
+                items=members,
+                element_result=child,
+                release_may_call=release_may_call,
+                _publication_release_stable=(
+                    False if release_may_call else published._publication_release_stable
+                ),
+            )
+        )
+    return completed[(id(result), preserve_owner)]
 
 
 def join_static_expression_results(

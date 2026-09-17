@@ -13,7 +13,7 @@ use super::ops::{
     format_with_spec, parse_codec_arg, parse_format_spec, repeat_sequence,
     simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
     simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable,
-    simd_is_all_ascii_whitespace, slice_bounds_from_args, slice_match,
+    simd_is_all_ascii_text_whitespace, slice_bounds_from_args, slice_match,
 };
 
 #[path = "ops_string_affix.rs"]
@@ -1307,14 +1307,15 @@ pub use ops_string_format::{
 #[path = "ops_string_utf8.rs"]
 mod ops_string_utf8;
 pub(super) use ops_string_utf8::{
-    push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at, wtf8_from_bytes,
-    wtf8_has_surrogates,
+    push_wtf8_codepoint, utf8_char_to_byte_index_cached, wtf8_codepoint_at, wtf8_has_surrogates,
 };
 use ops_string_utf8::{
     utf8_byte_to_char_index_cached, utf8_count_cache_count_slice, utf8_count_cache_lookup,
     utf8_count_cache_store, utf8_count_cache_upgrade_prefix,
 };
-pub(crate) use ops_string_utf8::{utf8_cache_remove, utf8_codepoint_count_cached};
+pub(crate) use ops_string_utf8::{
+    utf8_cache_remove, utf8_codepoint_count_cached, wtf8_from_bytes, wtf8_step,
+};
 
 #[path = "ops_string_split.rs"]
 mod ops_string_split;
@@ -1747,20 +1748,15 @@ pub extern "C" fn molt_string_isspace(hay_bits: u64) -> u64 {
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             // SIMD fast path: pure-ASCII strings use bulk whitespace check
             if hay_bytes.is_ascii() {
-                return MoltObject::from_bool(simd_is_all_ascii_whitespace(hay_bytes)).bits();
+                return MoltObject::from_bool(simd_is_all_ascii_text_whitespace(hay_bytes)).bits();
             }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::from_bool(false).bits();
-            };
-            let mut seen = false;
-            for ch in hay_str.chars() {
-                if unicode_space_table::is_space(ch as u32) {
-                    seen = true;
-                    continue;
-                }
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(seen).bits()
+            MoltObject::from_bool(
+                !hay_bytes.is_empty()
+                    && wtf8_from_bytes(hay_bytes)
+                        .code_points()
+                        .all(|code| unicode_space_table::is_space(code.to_u32())),
+            )
+            .bits()
         }
     })
 }

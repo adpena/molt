@@ -266,10 +266,6 @@ class TypeAnnotationMixin(_MixinBase):
             return "str"
         if hint in {"bytes", "bytearray"}:
             return "int"
-        if hint == "file_text":
-            return "str"
-        if hint == "file_bytes":
-            return "bytes"
         if hint == "dict":
             return self._dict_key_hint(iterable)
         return self._container_elem_hint(iterable)

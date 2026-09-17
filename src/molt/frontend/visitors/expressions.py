@@ -861,7 +861,9 @@ class ExpressionVisitorMixin(_MixinBase):
     def visit_Attribute(self, node: ast.Attribute) -> Any:
         obj = self.visit(node.value)
         if obj is None:
-            obj = MoltValue("unknown_obj", type_hint="Unknown")
+            raise FrontendRejection(
+                Diagnostic.OPERAND_VALUE, "Unsupported attribute receiver"
+            )
         obj_name = None
         if isinstance(
             node.value, ast.Name

@@ -67,55 +67,11 @@ class CallAttributeDispatchMixin(_MixinBase):
                 lowered = self._lower_string_format_call(node, node.func.value.value)
                 if lowered is not None:
                     return lowered
-            # ...
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "contextlib"
-                and node.func.attr == "nullcontext"
-            ):
-                if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "nullcontext expects 0 or 1 argument",
-                    )
-                if node.args:
-                    payload = self.visit(node.args[0])
-                else:
-                    payload = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=payload))
-                return self._emit_nullcontext(payload)
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "contextlib"
-                and node.func.attr == "closing"
-            ):
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "closing expects 1 argument"
-                    )
-                payload = self.visit(node.args[0])
-                return self._emit_closing(payload)
-            if (
-                isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "math"
-                and node.func.attr == "trunc"
-            ):
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "math.trunc expects 1 argument",
-                    )
-                value = self.visit(node.args[0])
-                if value is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE, "Unsupported math.trunc input"
-                    )
-                res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="TRUNC", args=[value], result=res))
-                return res
             receiver = self.visit(attr_node.value)
             if receiver is None:
-                receiver = MoltValue("unknown_obj", type_hint="Unknown")
+                raise FrontendRejection(
+                    Diagnostic.CALL_TARGET, "Unsupported attribute call receiver"
+                )
             obj_name = None
             if isinstance(attr_node.value, ast.Name):
                 obj_name = attr_node.value.id
@@ -298,20 +254,14 @@ class CallAttributeDispatchMixin(_MixinBase):
                     "symmetric_difference",
                 }
                 and receiver.type_hint in {"set", "frozenset"}
+                and not node.keywords
                 and not any(isinstance(a, ast.Starred) for a in node.args)
             ):
+                if method == "symmetric_difference" and len(node.args) != 1:
+                    return self._emit_dynamic_call(node, load_attr_callee())
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 if method == "symmetric_difference":
-                    if len(node.args) != 1:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "set.symmetric_difference expects 1 argument",
-                        )
-                    other = self.visit(node.args[0])
-                    if other is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported set operation input",
-                        )
+                    (other,) = arguments
                     if other.type_hint not in {"set", "frozenset"}:
                         other = self._emit_set_from_iter(other)
                     op_kind = "BIT_XOR"
@@ -324,13 +274,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                     return self._emit_set_from_iter(receiver)
                 if method == "union":
                     res = self._emit_set_from_iter(receiver)
-                    for arg in node.args:
-                        other = self.visit(arg)
-                        if other is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported set operation input",
-                            )
+                    for other in arguments:
                         if other.type_hint in {"set", "frozenset"}:
                             self.emit(
                                 MoltOp(
@@ -345,13 +289,7 @@ class CallAttributeDispatchMixin(_MixinBase):
                         return self._emit_frozenset_from_iter(res)
                     return res
                 res = receiver
-                for arg in node.args:
-                    other = self.visit(arg)
-                    if other is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported set operation input",
-                        )
+                for other in arguments:
                     if other.type_hint not in {"set", "frozenset"}:
                         # intersection probes the receiver (bare unhashable
                         # context); difference inserts into a result set
@@ -376,15 +314,12 @@ class CallAttributeDispatchMixin(_MixinBase):
                     "symmetric_difference_update",
                 }
                 and receiver.type_hint == "set"
+                and not node.keywords
                 and not any(isinstance(a, ast.Starred) for a in node.args)
             ):
-                receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
                 if method == "symmetric_difference_update":
                     if len(node.args) != 1:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "set.symmetric_difference_update expects 1 argument",
-                        )
+                        return self._emit_dynamic_call(node, load_attr_callee())
                 if len(node.args) == 0:
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
@@ -395,17 +330,8 @@ class CallAttributeDispatchMixin(_MixinBase):
                     "difference_update": "SET_DIFFERENCE_UPDATE",
                     "symmetric_difference_update": "SET_SYMDIFF_UPDATE",
                 }[method]
-                for arg in node.args:
-                    other = self.visit(arg)
-                    if other is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE,
-                            "Unsupported set operation input",
-                        )
-                    if recv_slot is not None:
-                        receiver = self._reload_async_value(
-                            recv_slot, receiver.type_hint
-                        )
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
+                for other in arguments:
                     if other.type_hint in {"set", "frozenset"} or method != "update":
                         if other.type_hint not in {"set", "frozenset"}:
                             # intersection_update probes the receiver (bare
@@ -432,38 +358,19 @@ class CallAttributeDispatchMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
             if method == "append" and receiver.type_hint == "list":
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.append expects 1 argument",
-                    )
-                receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
-                arg = self.visit(node.args[0])
-                if arg is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "list.append expects a value"
-                    )
-                if recv_slot is not None:
-                    receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                if len(node.args) != 1 or self._call_needs_bind(node):
+                    return self._emit_dynamic_call(node, load_attr_callee())
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
+                (arg,) = arguments
                 self._record_list_element_write(receiver, obj_name, arg.type_hint)
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_APPEND", args=[receiver, arg], result=res))
                 return res
             if method == "extend" and receiver.type_hint == "list":
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.extend expects 1 argument",
-                    )
-                receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
-                other = self.visit(node.args[0])
-                if other is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.extend expects an iterable",
-                    )
-                if recv_slot is not None:
-                    receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                if len(node.args) != 1 or self._call_needs_bind(node):
+                    return self._emit_dynamic_call(node, load_attr_callee())
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
+                (other,) = arguments
                 self._record_list_element_write(
                     receiver,
                     obj_name,
@@ -475,21 +382,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 )
                 return res
             if method == "insert" and receiver.type_hint == "list":
-                if len(node.args) != 2:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.insert expects 2 arguments",
-                    )
-                receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
-                idx = self.visit(node.args[0])
-                val = self.visit(node.args[1])
-                if idx is None or val is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.insert expects index and value",
-                    )
-                if recv_slot is not None:
-                    receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                if len(node.args) != 2 or self._call_needs_bind(node):
+                    return self._emit_dynamic_call(node, load_attr_callee())
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
+                idx, val = arguments
                 self._record_list_element_write(receiver, obj_name, val.type_hint)
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(
@@ -497,15 +393,10 @@ class CallAttributeDispatchMixin(_MixinBase):
                 )
                 return res
             if method == "remove" and receiver.type_hint == "list":
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.remove expects 1 argument",
-                    )
-                receiver, recv_slot = self._maybe_spill_receiver(receiver, node.args)
-                val = self.visit(node.args[0])
-                if recv_slot is not None:
-                    receiver = self._reload_async_value(recv_slot, receiver.type_hint)
+                if len(node.args) != 1 or self._call_needs_bind(node):
+                    return self._emit_dynamic_call(node, load_attr_callee())
+                receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
+                (val,) = arguments
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_REMOVE", args=[receiver, val], result=res))
                 return res
@@ -810,56 +701,6 @@ class CallAttributeDispatchMixin(_MixinBase):
             if method == "items" and receiver.type_hint == "dict":
                 res = MoltValue(self.next_var(), type_hint="dict_items_view")
                 self.emit(MoltOp(kind="DICT_ITEMS", args=[receiver], result=res))
-                return res
-            if method == "read" and receiver.type_hint.startswith("file"):
-                if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "file.read expects 0 or 1 argument",
-                    )
-                if node.args:
-                    size_val = self.visit(node.args[0])
-                else:
-                    size_val = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=size_val))
-                if receiver.type_hint == "file_bytes":
-                    res_hint = "bytes"
-                elif receiver.type_hint == "file_text":
-                    res_hint = "str"
-                else:
-                    res_hint = "Any"
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(
-                    MoltOp(kind="FILE_READ", args=[receiver, size_val], result=res)
-                )
-                return res
-            if method == "write" and receiver.type_hint.startswith("file"):
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "file.write expects 1 argument",
-                    )
-                data = self.visit(node.args[0])
-                res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="FILE_WRITE", args=[receiver, data], result=res))
-                return res
-            if method == "close" and receiver.type_hint.startswith("file"):
-                if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "file.close expects 0 arguments",
-                    )
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="FILE_CLOSE", args=[receiver], result=res))
-                return res
-            if method == "flush" and receiver.type_hint.startswith("file"):
-                if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "file.flush expects 0 arguments",
-                    )
-                res = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="FILE_FLUSH", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
@@ -1300,84 +1141,6 @@ class CallAttributeDispatchMixin(_MixinBase):
                     self.emit(
                         MoltOp(kind="STRING_JOIN", args=[receiver, items], result=res)
                     )
-                    return res
-            if method == "split":
-                if len(node.args) > 2:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "split expects 0-2 arguments"
-                    )
-                # Support keyword args: split(sep=',') and split(sep=',', maxsplit=2)
-                kw_sep = next(
-                    (kw.value for kw in node.keywords if kw.arg == "sep"), None
-                )
-                kw_maxsplit = next(
-                    (kw.value for kw in node.keywords if kw.arg == "maxsplit"), None
-                )
-                if node.args:
-                    needle = self.visit(node.args[0])
-                elif kw_sep is not None:
-                    needle = self.visit(kw_sep)
-                else:
-                    needle = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=needle))
-                maxsplit = None
-                if len(node.args) == 2:
-                    maxsplit = self.visit(node.args[1])
-                elif kw_maxsplit is not None:
-                    maxsplit = self.visit(kw_maxsplit)
-                res = MoltValue(self.next_var(), type_hint="list")
-                if receiver.type_hint == "str":
-                    if maxsplit is not None:
-                        self.emit(
-                            MoltOp(
-                                kind="STRING_SPLIT_MAX",
-                                args=[receiver, needle, maxsplit],
-                                result=res,
-                            )
-                        )
-                    else:
-                        self.emit(
-                            MoltOp(
-                                kind="STRING_SPLIT", args=[receiver, needle], result=res
-                            )
-                        )
-                    self._record_container_elem_hint(res, "str")
-                    return res
-                if receiver.type_hint == "bytes":
-                    if maxsplit is not None:
-                        self.emit(
-                            MoltOp(
-                                kind="BYTES_SPLIT_MAX",
-                                args=[receiver, needle, maxsplit],
-                                result=res,
-                            )
-                        )
-                    else:
-                        self.emit(
-                            MoltOp(
-                                kind="BYTES_SPLIT", args=[receiver, needle], result=res
-                            )
-                        )
-                    self._record_container_elem_hint(res, "bytes")
-                    return res
-                if receiver.type_hint == "bytearray":
-                    if maxsplit is not None:
-                        self.emit(
-                            MoltOp(
-                                kind="BYTEARRAY_SPLIT_MAX",
-                                args=[receiver, needle, maxsplit],
-                                result=res,
-                            )
-                        )
-                    else:
-                        self.emit(
-                            MoltOp(
-                                kind="BYTEARRAY_SPLIT",
-                                args=[receiver, needle],
-                                result=res,
-                            )
-                        )
-                    self._record_container_elem_hint(res, "bytearray")
                     return res
             if method == "lower" and receiver.type_hint == "str":
                 if node.args:

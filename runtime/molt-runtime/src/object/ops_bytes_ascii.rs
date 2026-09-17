@@ -49,7 +49,7 @@ pub extern "C" fn molt_bytes_lower(hay_bits: u64) -> u64 {
 }
 
 #[inline]
-pub(in crate::object) fn bytes_ascii_space(b: u8) -> bool {
+pub(crate) fn bytes_ascii_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 

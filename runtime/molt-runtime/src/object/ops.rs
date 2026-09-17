@@ -74,7 +74,7 @@ pub(crate) use ascii_bytes::{
     bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title,
     bytes_ascii_upper, simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
     simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable,
-    simd_is_all_ascii_whitespace,
+    simd_is_all_ascii_text_whitespace, simd_is_all_ascii_whitespace,
 };
 pub(in crate::object) use dict_set_tables::simd_contains_u64;
 pub(crate) use dict_set_tables::{

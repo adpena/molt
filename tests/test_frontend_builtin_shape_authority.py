@@ -6,6 +6,7 @@ import pytest
 
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend.diagnostics import FrontendRejection
 
 
 def _raw_ops(source: str) -> list[MoltOp]:
@@ -44,7 +45,9 @@ def test_shape_specialization_uses_captured_identity(
     assert not any(op.kind in {"CALL_FUNC", "CALL_INDIRECT"} for op in ops)
 
 
-@pytest.mark.parametrize("name", ["len", "list", "tuple", "range", "int", "str"])
+@pytest.mark.parametrize(
+    "name", ["len", "list", "tuple", "range", "int", "str", "open"]
+)
 def test_shape_call_captures_live_callee_before_argument_callback(name: str) -> None:
     ops = _raw_ops(f"value = {name}(argument())\n")
     constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
@@ -113,6 +116,7 @@ def test_range_fusion_obeys_same_identity_authority(body: str) -> None:
         ("dict", ""),
         ("range", "3"),
         ("len", "()"),
+        ("open", "'sample.txt'"),
     ],
 )
 def test_callable_body_uses_its_activation_builtin_namespace(
@@ -223,7 +227,14 @@ def test_stale_receiver_hints_cannot_authorize_any_builtin_method_family(
     generator.visit(ast.parse(source, mode="eval").body)
     ops = generator.funcs_map["molt_main"]["ops"]
     assert any(op.kind == "CALL_FUNC" for op in ops)
-    assert not any(op.kind == specialized for op in ops)
+    if method == "split":
+        # Stale hints admit only an exact runtime guard, never direct lowering.
+        assert any(op.kind == specialized for op in ops)
+        assert sum(op.kind == "IS" for op in ops) == 3
+        assert any(op.kind == "GETATTR_GENERIC_OBJ" for op in ops)
+        assert next(op for op in ops if op.kind == "TYPE_OF").args[0].type_hint == "Any"
+    else:
+        assert not any(op.kind == specialized for op in ops)
 
     reference = SimpleTIRGenerator()
     reference.python_binding_index = analyze_python_source_bindings(f"value.{method}")
@@ -268,6 +279,153 @@ def test_generic_binding_preserves_independent_normal_result_kind(
     ops = _raw_ops(f"value = {expression}\n")
     call = next(op for op in ops if op.kind == "CALL_INDIRECT")
     assert call.result.type_hint == kind
+
+
+@pytest.mark.parametrize(
+    ("prefix", "callee"),
+    [
+        ("", "open"),
+        ("acquire = open\n", "acquire"),
+        ("from builtins import open as acquire\n", "acquire"),
+        ("import builtins\n", "builtins.open"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("arguments", "kind"),
+    [
+        ("'sample.txt'", "file_text"),
+        ("'sample.bin', 'rb'", "file_bytes"),
+        ("file='sample.bin', mode='rb'", "file_bytes"),
+        ("path(), mode='r'", "file_text"),
+        ("'sample', mode=mode", "Any"),
+        ("*arguments", "Any"),
+    ],
+)
+def test_open_aliases_transport_only_canonical_normal_result(
+    prefix: str, callee: str, arguments: str, kind: str
+) -> None:
+    ops = _raw_ops(f"{prefix}stream = {callee}({arguments})\n")
+    calls = [op for op in ops if op.kind in {"CALL_FUNC", "CALL_INDIRECT"}]
+    assert calls
+    assert calls[-1].result.type_hint == kind
+    # Import transactions may publish __import__; they must not manufacture
+    # a replacement for the particular callable captured by this source.
+    assert not any(
+        op.kind == "BUILTIN_FUNC" and op.args[0] == "molt_open_builtin" for op in ops
+    )
+
+
+def test_open_mode_alias_uses_evaluated_mode_fact() -> None:
+    ops = _raw_ops("mode = 'rb'\nstream = open('sample.bin', mode)\n")
+    call = next(op for op in ops if op.kind == "CALL_FUNC")
+    assert call.result.type_hint == "file_bytes"
+
+
+@pytest.mark.parametrize("mode", ["'r'", "'rb'"])
+def test_open_result_does_not_restore_destination_after_previous_owner_release(
+    mode: str,
+) -> None:
+    # The call result remains exact. STORE then releases the previous owner,
+    # whose finalizer may replace this module slot before its next load.
+    source = f"stream = previous\nstream = open('sample', {mode})\nvalue = stream\n"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    call = tree.body[1].value
+    reload = tree.body[2].value
+    assert index.expression_result(call).kind in {"file_text", "file_bytes"}
+    assert index.expression_result(reload).kind == "unknown"
+    generator = SimpleTIRGenerator()
+    generator.python_binding_index = index
+    assert generator._builtin_exact_type_from_expr(reload) is None
+
+
+@pytest.mark.parametrize("name", ["nullcontext", "closing"])
+@pytest.mark.parametrize(
+    ("prefix", "callee"),
+    [
+        ("", "{name}"),
+        ("", "contextlib.{name}"),
+        ("contextlib = replacement\n", "contextlib.{name}"),
+        ("import contextlib\n", "contextlib.{name}"),
+        ("from contextlib import {name} as acquire\n", "acquire"),
+    ],
+)
+def test_context_constructor_spelling_never_manufactures_a_context(
+    name: str,
+    prefix: str,
+    callee: str,
+) -> None:
+    source = prefix.format(name=name)
+    source += f"manager = {callee.format(name=name)}(argument(), custom=1)\n"
+    ops = _raw_ops(source)
+    assert not any(op.kind in {"CONTEXT_NULL", "CONTEXT_CLOSING"} for op in ops)
+    assert any(op.kind == "CALL_INDIRECT" for op in ops)
+
+
+@pytest.mark.parametrize("prefix", ["", "math = replacement\n"])
+def test_math_spelling_does_not_authorize_truncation(prefix: str) -> None:
+    ops = _raw_ops(f"{prefix}value = math.trunc(argument(), custom=1)\n")
+    assert not any(op.kind == "TRUNC" for op in ops)
+    assert any(op.kind == "CALL_INDIRECT" for op in ops)
+
+
+@pytest.mark.parametrize("is_call", [False, True])
+def test_failed_attribute_receiver_lowering_does_not_invent_an_operand(
+    monkeypatch: pytest.MonkeyPatch,
+    is_call: bool,
+) -> None:
+    generator = SimpleTIRGenerator()
+    monkeypatch.setattr(generator, "visit", lambda node: None)
+    call = ast.parse("receiver.method()").body[0].value
+    with pytest.raises(FrontendRejection, match="Unsupported attribute.*receiver"):
+        if is_call:
+            generator._try_emit_attribute_receiver_call(call)
+        else:
+            generator.visit_Attribute(call.func)
+
+
+@pytest.mark.parametrize("method", ["read", "write", "close", "flush"])
+@pytest.mark.parametrize("rebound", [False, True])
+def test_file_result_kind_does_not_authorize_method_substitution(
+    method: str, rebound: bool
+) -> None:
+    source = "stream = open('sample.txt')\n"
+    if rebound:
+        source += f"stream.{method} = replacement\n"
+    source += f"value = stream.{method}(custom=1)\n"
+    ops = _raw_ops(source)
+    assert not any(
+        op.kind in {"FILE_READ", "FILE_WRITE", "FILE_CLOSE", "FILE_FLUSH"} for op in ops
+    )
+    calls = [op for op in ops if op.kind in {"CALL_FUNC", "CALL_INDIRECT"}]
+    assert calls[-1].kind == "CALL_INDIRECT"
+    assert calls[-1].result.type_hint == "Any"
+
+
+@pytest.mark.parametrize(
+    ("expression", "separator", "split_kind"),
+    [
+        ("open('sample.txt', encoding='user-codec')", "'|'", "STRING_SPLIT"),
+        ("open('sample.bin', 'rb')", "b'|'", "BYTES_SPLIT"),
+    ],
+)
+def test_file_iteration_does_not_restore_callback_visible_names(
+    expression: str, separator: str, split_kind: str
+) -> None:
+    ops = _raw_ops(
+        "items = []\n"
+        f"with {expression} as stream:\n"
+        "    for item in stream:\n"
+        f"        parts = item.split({separator})\n"
+        "        items.append(1)\n"
+    )
+    # A module target can be rebound by the old value's finalizer after STORE.
+    # The iterator's returned value alone does not certify this later load.
+    assert any(op.kind == split_kind for op in ops)
+    assert any(op.kind == "TYPE_OF" for op in ops)
+    assert sum(op.kind == "IS" for op in ops) >= 3
+    assert any(op.kind == "GETATTR_GENERIC_OBJ" and op.args[1] == "split" for op in ops)
+    assert not any(op.kind == "LIST_APPEND" for op in ops)
 
 
 @pytest.mark.parametrize("name", ["str", "bytes"])
@@ -332,3 +490,9 @@ def test_unknown_canonical_iteration_fact_does_not_fall_back_to_frontend_hint() 
     generator.container_elem_hints[iterable.name] = "int"
 
     assert generator._iteration_element_hint(loop, iterable) is None
+
+
+@pytest.mark.parametrize("kind", ["file_text", "file_bytes"])
+def test_file_mode_hint_alone_never_certifies_an_iteration_item(kind: str) -> None:
+    generator = SimpleTIRGenerator()
+    assert generator._iterable_element_hint(MoltValue("file", type_hint=kind)) is None

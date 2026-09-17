@@ -1,4 +1,7 @@
 use crate::PyToken;
+use crate::object::ops::unicode_space_table;
+use crate::object::ops_bytes::bytes_ascii_space;
+use crate::object::ops_string::wtf8_step;
 use memchr::{memchr, memchr2, memmem};
 use molt_obj_model::MoltObject;
 
@@ -1130,7 +1133,7 @@ fn find_next_ascii_whitespace(hay: &[u8], start: usize) -> Option<usize> {
         }
     }
     // Scalar tail
-    (i..hay.len()).find(|&j| hay[j].is_ascii_whitespace())
+    (i..hay.len()).find(|&j| bytes_ascii_space(hay[j]))
 }
 
 /// Skip past ASCII whitespace bytes starting from `start`.
@@ -1237,7 +1240,7 @@ fn skip_ascii_whitespace(hay: &[u8], start: usize) -> usize {
             }
         }
     }
-    while i < hay.len() && hay[i].is_ascii_whitespace() {
+    while i < hay.len() && bytes_ascii_space(hay[i]) {
         i += 1;
     }
     i
@@ -1380,18 +1383,15 @@ where
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
     let mut end = hay.len();
-    while end > 0 && hay[end - 1].is_ascii_whitespace() {
+    while end > 0 && bytes_ascii_space(hay[end - 1]) {
         end -= 1;
     }
     if end == 0 {
         return Some(list_bits);
     }
     if maxsplit == 0 {
-        let mut start = 0usize;
-        while start < end && hay[start].is_ascii_whitespace() {
-            start += 1;
-        }
-        let ptr = alloc(&hay[start..end]);
+        // Only trailing whitespace is stripped before an unsplit remainder.
+        let ptr = alloc(&hay[..end]);
         if ptr.is_null() {
             dec_ref_bits(_py, list_bits);
             return None;
@@ -1405,7 +1405,7 @@ where
     let mut splits = 0i64;
     let mut idx = end;
     while splits < maxsplit {
-        while idx > 0 && !hay[idx - 1].is_ascii_whitespace() {
+        while idx > 0 && !bytes_ascii_space(hay[idx - 1]) {
             idx -= 1;
         }
         if idx == 0 {
@@ -1413,7 +1413,7 @@ where
         }
         parts.push((idx, end));
         splits += 1;
-        while idx > 0 && hay[idx - 1].is_ascii_whitespace() {
+        while idx > 0 && bytes_ascii_space(hay[idx - 1]) {
             idx -= 1;
         }
         end = idx;
@@ -1422,13 +1422,7 @@ where
         }
     }
     if end > 0 {
-        let mut start = 0usize;
-        while start < end && hay[start].is_ascii_whitespace() {
-            start += 1;
-        }
-        if start < end {
-            parts.push((start, end));
-        }
+        parts.push((0, end));
     }
     parts.reverse();
     for (start, end) in parts {
@@ -1502,245 +1496,85 @@ where
     Some(list_bits)
 }
 
-fn split_string_whitespace_to_list(_py: &PyToken<'_>, hay: &[u8]) -> Option<u64> {
-    let Ok(hay_str) = std::str::from_utf8(hay) else {
-        return None;
-    };
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
+/// Advance one Python string code point in either direction. The storage is
+/// WTF-8, not UTF-8: lone surrogates are ordinary non-whitespace code points.
+fn string_whitespace_step(hay: &[u8], cursor: usize, from_right: bool) -> Option<(usize, bool)> {
+    let (next, code) = wtf8_step(hay, cursor, from_right)?;
+    Some((next, unicode_space_table::is_space(code)))
+}
+
+fn string_whitespace_split(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    maxsplit: i64,
+    from_right: bool,
+) -> Option<u64> {
+    let mut cursor = if from_right { hay.len() } else { 0 };
+    let mut parts = Vec::new();
+    let mut splits = 0i64;
+    loop {
+        while let Some((next, true)) = string_whitespace_step(hay, cursor, from_right) {
+            cursor = next;
+        }
+        if if from_right {
+            cursor == 0
+        } else {
+            cursor == hay.len()
+        } {
+            break;
+        }
+        if maxsplit >= 0 && splits == maxsplit {
+            parts.push(if from_right {
+                (0, cursor)
+            } else {
+                (cursor, hay.len())
+            });
+            break;
+        }
+        let boundary = cursor;
+        while let Some((next, false)) = string_whitespace_step(hay, cursor, from_right) {
+            cursor = next;
+        }
+        parts.push(if from_right {
+            (cursor, boundary)
+        } else {
+            (boundary, cursor)
+        });
+        splits += 1;
+    }
+    if from_right {
+        parts.reverse();
+    }
+    let list_ptr = alloc_list_empty_with_capacity(_py, parts.len());
     if list_ptr.is_null() {
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    for part in hay_str.split_whitespace() {
-        let ptr = alloc_string(_py, part.as_bytes());
+    for (start, end) in parts {
+        let ptr = alloc_string(_py, &hay[start..end]);
         if ptr.is_null() {
             dec_ref_bits(_py, list_bits);
             return None;
         }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
+        unsafe { list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits()) };
     }
     Some(list_bits)
 }
 
 pub(crate) fn split_string_whitespace_to_list_maxsplit(
     _py: &PyToken<'_>,
-    hay: &str,
+    hay: &[u8],
     maxsplit: i64,
 ) -> Option<u64> {
-    if maxsplit < 0 {
-        return split_string_whitespace_to_list(_py, hay.as_bytes());
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let bytes = hay.as_bytes();
-    let mut start_opt = None;
-    for (idx, ch) in hay.char_indices() {
-        if !ch.is_whitespace() {
-            start_opt = Some(idx);
-            break;
-        }
-    }
-    let Some(mut start) = start_opt else {
-        return Some(list_bits);
-    };
-    if maxsplit == 0 {
-        let ptr = alloc_string(_py, &bytes[start..]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-        return Some(list_bits);
-    }
-    let mut splits = 0i64;
-    let mut iter = hay.char_indices();
-    while let Some((idx, ch)) = iter.next() {
-        if idx < start {
-            continue;
-        }
-        if ch.is_whitespace() {
-            let part = &bytes[start..idx];
-            let ptr = alloc_string(_py, part);
-            if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
-            }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
-            splits += 1;
-            if splits >= maxsplit {
-                let mut rest_start = None;
-                for (j, ch2) in iter.by_ref() {
-                    if !ch2.is_whitespace() {
-                        rest_start = Some(j);
-                        break;
-                    }
-                }
-                if let Some(rest_start) = rest_start {
-                    let ptr = alloc_string(_py, &bytes[rest_start..]);
-                    if ptr.is_null() {
-                        dec_ref_bits(_py, list_bits);
-                        return None;
-                    }
-                    unsafe {
-                        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-                    }
-                }
-                return Some(list_bits);
-            }
-            let mut next_start = None;
-            for (j, ch2) in iter.by_ref() {
-                if !ch2.is_whitespace() {
-                    next_start = Some(j);
-                    break;
-                }
-            }
-            if let Some(next_start) = next_start {
-                start = next_start;
-            } else {
-                return Some(list_bits);
-            }
-        }
-    }
-    let ptr = alloc_string(_py, &bytes[start..]);
-    if ptr.is_null() {
-        dec_ref_bits(_py, list_bits);
-        return None;
-    }
-    unsafe {
-        list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-    }
-    Some(list_bits)
+    string_whitespace_split(_py, hay, maxsplit, false)
 }
 
 pub(crate) fn rsplit_string_whitespace_to_list_maxsplit(
     _py: &PyToken<'_>,
-    hay: &str,
+    hay: &[u8],
     maxsplit: i64,
 ) -> Option<u64> {
-    if maxsplit < 0 {
-        return split_string_whitespace_to_list(_py, hay.as_bytes());
-    }
-    let list_ptr = alloc_list_empty_with_capacity(_py, 4);
-    if list_ptr.is_null() {
-        return None;
-    }
-    let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let bytes = hay.as_bytes();
-    let indices: Vec<(usize, char)> = hay.char_indices().collect();
-    let mut end = hay.len();
-    let mut pos = indices.len();
-    while pos > 0 {
-        let (_byte_idx, ch) = indices[pos - 1];
-        if ch.is_whitespace() {
-            end = indices[pos - 1].0;
-            pos -= 1;
-        } else {
-            break;
-        }
-    }
-    if end == 0 {
-        return Some(list_bits);
-    }
-    if maxsplit == 0 {
-        let mut start_opt = None;
-        for (byte_idx, ch) in indices.iter() {
-            if *byte_idx >= end {
-                break;
-            }
-            if !ch.is_whitespace() {
-                start_opt = Some(*byte_idx);
-                break;
-            }
-        }
-        if let Some(start) = start_opt {
-            let ptr = alloc_string(_py, &bytes[start..end]);
-            if ptr.is_null() {
-                dec_ref_bits(_py, list_bits);
-                return None;
-            }
-            unsafe {
-                list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-            }
-        }
-        return Some(list_bits);
-    }
-    let mut parts: Vec<(usize, usize)> = Vec::new();
-    let mut splits = 0i64;
-    while splits < maxsplit {
-        while pos > 0 {
-            let (byte_idx, ch) = indices[pos - 1];
-            if byte_idx >= end {
-                pos -= 1;
-                continue;
-            }
-            if !ch.is_whitespace() {
-                pos -= 1;
-                continue;
-            }
-            break;
-        }
-        if pos == 0 {
-            break;
-        }
-        let mut ws_start = pos;
-        while ws_start > 0 {
-            let (byte_idx, ch) = indices[ws_start - 1];
-            if byte_idx >= end {
-                ws_start -= 1;
-                continue;
-            }
-            if ch.is_whitespace() {
-                ws_start -= 1;
-            } else {
-                break;
-            }
-        }
-        let (ws_last_idx, ws_last_ch) = indices[pos - 1];
-        let part_start = ws_last_idx + ws_last_ch.len_utf8();
-        parts.push((part_start, end));
-        end = indices[ws_start].0;
-        splits += 1;
-        pos = ws_start;
-        if end == 0 {
-            break;
-        }
-    }
-    if end > 0 {
-        let mut start_opt = None;
-        for (byte_idx, ch) in indices.iter() {
-            if *byte_idx >= end {
-                break;
-            }
-            if !ch.is_whitespace() {
-                start_opt = Some(*byte_idx);
-                break;
-            }
-        }
-        if let Some(start) = start_opt {
-            parts.push((start, end));
-        }
-    }
-    parts.reverse();
-    for (start, end) in parts {
-        let ptr = alloc_string(_py, &bytes[start..end]);
-        if ptr.is_null() {
-            dec_ref_bits(_py, list_bits);
-            return None;
-        }
-        unsafe {
-            list_push_owned(list_ptr, MoltObject::from_ptr(ptr).bits());
-        }
-    }
-    Some(list_bits)
+    string_whitespace_split(_py, hay, maxsplit, true)
 }
 
 fn is_linebreak_char(ch: char) -> bool {

@@ -120,6 +120,7 @@ EXPECTED_MIXINS = [
     "CallNamedBuiltinFallbackDispatchMixin",
     "CallImportedAttributeDispatchMixin",
     "CallAttributeDispatchMixin",
+    "CallSplitDispatchMixin",
     "CallRuntimeHelperMixin",
     "CallMethodDispatchMixin",
     "CallModuleDispatchMixin",

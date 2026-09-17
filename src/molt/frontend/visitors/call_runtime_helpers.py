@@ -26,34 +26,6 @@ else:
 
 
 class CallRuntimeHelperMixin(_MixinBase):
-    def _emit_nullcontext(self, payload: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="context_manager")
-        self.emit(MoltOp(kind="CONTEXT_NULL", args=[payload], result=res))
-        return res
-
-    def _emit_closing(self, payload: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="context_manager")
-        self.emit(MoltOp(kind="CONTEXT_CLOSING", args=[payload], result=res))
-        return res
-
-    def _emit_open_call(self, node: ast.Call) -> MoltValue:
-        mode_expr = None
-        if len(node.args) > 1:
-            mode_expr = node.args[1]
-        for kw in node.keywords:
-            if kw.arg == "mode" and mode_expr is None:
-                mode_expr = kw.value
-        mode_hint = None
-        if mode_expr is None:
-            mode_hint = "file_text"
-        elif isinstance(mode_expr, ast.Constant) and isinstance(mode_expr.value, str):
-            mode_hint = "file_bytes" if "b" in mode_expr.value else "file_text"
-        res = MoltValue(self.next_var(), type_hint=mode_hint or "file")
-        callee = self._emit_builtin_function("open")
-        callargs = self._emit_call_args_builder(node)
-        self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
-        return res
-
     @staticmethod
     def _is_gpu_intrinsic_call(node: ast.Call) -> str | None:
         """If *node* is a gpu.thread_id() / gpu.block_id() / etc., return the
@@ -346,12 +318,26 @@ class CallRuntimeHelperMixin(_MixinBase):
             return True
         return any(isinstance(arg, ast.Starred) for arg in node.args)
 
-    def _emit_call_args_builder(self, node: ast.Call) -> MoltValue:
+    def _emit_call_args_builder(
+        self, node: ast.Call, *, evaluated: tuple[MoltValue, ...] | None = None
+    ) -> MoltValue:
+        # Guarded dispatch shares argument assembly without revisiting source
+        # expressions. Pre-evaluation is valid only for flat calls: expansions
+        # have interleaved observable work owned by call_argument_schedule.
+        if evaluated is not None and (
+            len(evaluated) != len(node.args) + len(node.keywords)
+            or any(isinstance(argument, ast.Starred) for argument in node.args)
+            or any(keyword.arg is None for keyword in node.keywords)
+        ):
+            raise AssertionError("pre-evaluated call requires flat argument syntax")
         callargs = MoltValue(self.next_var(), type_hint="callargs")
         self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
         pending: dict[int, MoltValue] = {}
         for step in call_argument_schedule(node):
             if step.action == "evaluate":
+                if evaluated is not None:
+                    pending[step.index] = evaluated[step.index]
+                    continue
                 # Only values actually live across this suspension need storage.
                 # Consuming each scratch cell clears its retained frame reference.
                 suspends = self.is_async() and self._expr_may_yield(step.expression)
@@ -538,27 +524,34 @@ class CallRuntimeHelperMixin(_MixinBase):
         return self._emit_format_tokens(tokens, args, kwargs)
 
     def _emit_dynamic_call(self, node: ast.Call, callee: MoltValue) -> MoltValue:
-        res_hint = "Any"
-        index = self.python_binding_index
-        fact = index.call_fact(node) if index is not None else None
-        if (
-            index is not None
-            and fact is not None
-            and fact.exact_builtin_name() is not None
-        ):
-            kind = index.expression_result(node).kind
-            if kind != "unknown":
-                # Identity authorizes only the normal-result fact here. The
-                # real callable, argument evaluation and cleanup remain intact.
-                res_hint = "None" if kind == "NoneType" else kind
+        # The result authority already proves exactness at this source point.
+        # It is independent of whether the callee is a constructor, method or
+        # open alias, and never authorizes eliding the retained real callable.
+        res_hint = self._builtin_exact_type_from_expr(node) or "Any"
+        suspends = self.is_async() and any(
+            self._expr_may_yield(expression)
+            for expression in [
+                *node.args,
+                *(keyword.value for keyword in node.keywords),
+            ]
+        )
+        callee_cell = (
+            self._new_scratch_cell(callee, type_hint=callee.type_hint)
+            if suspends
+            else None
+        )
         if self._call_needs_bind(node):
             callargs = self._emit_call_args_builder(node)
+            if callee_cell is not None:
+                callee = self._consume_scratch_cell(callee_cell)
             res = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
             return res
+        args = self._emit_call_args(node.args)
+        if callee_cell is not None:
+            callee = self._consume_scratch_cell(callee_cell)
         if callee.type_hint.startswith("Func:"):
             func_symbol = callee.type_hint.split(":", 1)[1]
-            args = self._emit_call_args(node.args)
             res = MoltValue(self.next_var(), type_hint=res_hint)
             # A code-symbol hint is not a namespace or callable-identity proof.
             # Reuse guarded object dispatch so its fast path also transports the
@@ -575,7 +568,6 @@ class CallRuntimeHelperMixin(_MixinBase):
         # Positional object dispatch already owns callable admission and live
         # defaults, including bound-method self. Only keyword/starred syntax
         # requires a callargs builder, never a lexical hint or caller override.
-        args = self._emit_call_args(node.args)
         res = MoltValue(self.next_var(), type_hint=res_hint)
         self.emit(MoltOp(kind="CALL_FUNC", args=[callee, *args], result=res))
         return res
