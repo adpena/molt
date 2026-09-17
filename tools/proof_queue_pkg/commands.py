@@ -536,30 +536,48 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_reclaim_cargo_generation(args: argparse.Namespace) -> int:
-    """Inspect by default; delete only a persisted terminal run's owned output."""
+def _load_terminal_cargo_generation(
+    args: argparse.Namespace,
+) -> tuple[Path, dict[str, object], dict[str, object], Path]:
+    """Load one exact terminal generation without provisioning queue state."""
+    db = state._db_path(args).resolve()
+    with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
+        row = state._row_by_run_id(conn, args.run_id)
+    if row is None:
+        raise ValueError(f"unknown proof run {args.run_id!r}")
+    raw = state._row_value(row, "receipt_context_json")
+    context = json.loads(raw) if isinstance(raw, str) else None
+    if not isinstance(context, dict):
+        raise ValueError("proof run has no persisted terminal receipt context")
+    evidence._validate_terminal_evidence(row, context)
+    generation = evidence._cargo_generation_terminal(row, context, required=True)
+    assert generation is not None
+    provenance, projection = generation
+    return db, provenance, projection, Path(str(row["log_path"])).parent
+
+
+def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -> int:
+    """One CLI custody/notes boundary for the two explicit owner policies."""
+    action = "retirement" if retire else "reclamation"
+    schema = "sealed-retirement" if retire else "reclamation"
+    inspect = (
+        cargo_cache_custody.inspect_terminal_sealed_retirement
+        if retire
+        else cargo_cache_custody.inspect_terminal_generation
+    )
+    apply = (
+        cargo_cache_custody.retire_terminal_sealed_failed
+        if retire
+        else cargo_cache_custody.reclaim_terminal_unsealed
+    )
     payload: dict[str, object] = {
-        "schema": "molt.proof-cargo-generation-reclamation.v1",
+        "schema": f"molt.proof-cargo-generation-{schema}.v1",
         "run_id": args.run_id,
         "apply": args.apply,
         "state": "not-authorized" if args.apply else "inspection-failed",
     }
     try:
-        db = state._db_path(args).resolve()
-        # Inspection must not provision a queue database or migrate its schema.
-        with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
-            row = state._row_by_run_id(conn, args.run_id)
-        if row is None:
-            raise ValueError(f"unknown proof run {args.run_id!r}")
-        raw = state._row_value(row, "receipt_context_json")
-        context = json.loads(raw) if isinstance(raw, str) else None
-        if not isinstance(context, dict):
-            raise ValueError("proof run has no persisted terminal receipt context")
-        evidence._validate_terminal_evidence(row, context)
-        generation = evidence._cargo_generation_terminal(row, context, required=True)
-        assert generation is not None
-        provenance, projection = generation
-        result_root = Path(str(row["log_path"])).parent
+        db, provenance, projection, result_root = _load_terminal_cargo_generation(args)
         if args.apply:
             # Persist intent before touching artifacts; the owner retains the
             # result even if a later queue-note write is interrupted.
@@ -574,8 +592,8 @@ def _cmd_reclaim_cargo_generation(args: argparse.Namespace) -> int:
                         sort_keys=True,
                     ),
                 )
-                payload["state"] = "reclamation-in-progress"
-                outcome = cargo_cache_custody.reclaim_terminal_unsealed(
+                payload["state"] = f"{action}-in-progress"
+                outcome = apply(
                     result_root=result_root,
                     provenance=provenance,
                     projection=projection,
@@ -591,20 +609,33 @@ def _cmd_reclaim_cargo_generation(args: argparse.Namespace) -> int:
                 conn.close()
         else:
             payload.update(
-                cargo_cache_custody.inspect_terminal_generation(
+                inspect(
                     result_root=result_root,
                     provenance=provenance,
                     projection=projection,
                 )
             )
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        if payload["state"] == "reclamation-in-progress":
-            payload["state"] = "reclamation-indeterminate"
+        if payload["state"] == f"{action}-in-progress":
+            payload["state"] = f"{action}-indeterminate"
         payload["error"] = f"{type(exc).__name__}: {exc}"
         print(json.dumps(payload, sort_keys=True))
         return 2
     print(json.dumps(payload, sort_keys=True))
-    return 2 if payload["state"] in {"not-reclaimable", "reclaim-blocked"} else 0
+    return (
+        2
+        if payload["state"]
+        in {"not-reclaimable", "reclaim-blocked", "not-retirable", "retire-blocked"}
+        else 0
+    )
+
+
+def _cmd_reclaim_cargo_generation(args: argparse.Namespace) -> int:
+    return _cmd_terminal_cargo_disposition(args, retire=False)
+
+
+def _cmd_retire_terminal_sealed_generation(args: argparse.Namespace) -> int:
+    return _cmd_terminal_cargo_disposition(args, retire=True)
 
 
 def _cmd_prune_stale(args: argparse.Namespace) -> int:

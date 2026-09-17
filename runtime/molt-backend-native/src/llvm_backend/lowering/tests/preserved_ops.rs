@@ -159,6 +159,11 @@ fn callable_constructors_release_only_discarded_owned_results() {
         for bound in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
+            // Generic boxed calls require both semantic ABI classification
+            // and availability in the selected linked runtime profile.
+            backend
+                .runtime_callable_symbols
+                .insert(format!("molt_{kind}"));
             backend.function_linkage_abis.insert(
                 "callable_result_target".into(),
                 test_native_linkage_abi(
@@ -194,6 +199,78 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 "owned constructor result is transferred, not retained: {ir}"
             );
         }
+    }
+}
+
+#[test]
+fn descriptor_constructors_share_boxed_admission_and_argument_materialization() {
+    for (kind, arity) in [
+        ("classmethod_new", 1),
+        ("staticmethod_new", 1),
+        ("property_new", 3),
+        ("bound_method_new", 2),
+    ] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        let symbol = format!("molt_{kind}");
+        backend.runtime_callable_symbols.remove(&symbol);
+        let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
+            .expect_err("descriptor construction must require the linked runtime symbol");
+        assert_lowering_error_contains(&error, "unhandled preserved SimpleIR op");
+        assert!(backend.module.get_function(&symbol).is_none());
+
+        backend.runtime_callable_symbols.insert(symbol.clone());
+        for supplied in [arity - 1, arity + 1] {
+            let error = lower_preserved_kind_ir(&backend, kind, supplied, false, None)
+                .expect_err("descriptor construction must use exact generated arity");
+            assert_lowering_error_contains(&error, "no positional boxed-value ABI classification");
+            assert!(backend.module.get_function(&symbol).is_none());
+        }
+
+        // A raw integer carrier is not already a Python object. The common
+        // runtime route must materialize each argument according to its type.
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.runtime_callable_symbols.insert(symbol.clone());
+        let mut func = TirFunction::new(format!("boxed_{kind}"), vec![], TirType::DynBox);
+        let input = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(input, 7));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![input; arity],
+            results: vec![result],
+            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+            .print_to_string()
+            .to_string();
+        let boxed = (nanbox::QNAN | nanbox::TAG_INT | 7) as i64;
+        let call = ir
+            .lines()
+            .find(|line| line.contains(&format!("call i64 @{symbol}(")))
+            .unwrap_or_else(|| panic!("missing descriptor call: {ir}"));
+        assert_eq!(call.matches("i64 %boxed_int").count(), arity, "{ir}");
+        assert_eq!(
+            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_int")
+                .count(),
+            arity,
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches(&format!("phi i64 [ {boxed}, %box_int_inline"))
+                .count(),
+            arity,
+            "{ir}"
+        );
+        backend.module.verify().expect("boxed descriptor arguments");
     }
 }
 

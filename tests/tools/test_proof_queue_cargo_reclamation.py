@@ -29,7 +29,9 @@ from tools.proof_queue_pkg import (
 
 @pytest.fixture
 def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
-    command_rc, source_eligible = getattr(request, "param", (101, True))
+    parameters = getattr(request, "param", (101, True))
+    command_rc, source_eligible = parameters[:2]
+    sealed = len(parameters) == 3 and parameters[2]
     nonce = "reclamation-fixture"
     nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
     monkeypatch.setattr(
@@ -68,6 +70,11 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
         source_content=source_content,
     )
     (lease.target / "partial.rlib").write_bytes(b"partial artifact")
+    if sealed:
+        # This fixture tests the persisted CLI boundary, not process capture.
+        # Keep real seal/manifest/CAS publication and terminal binding below.
+        monkeypatch.setattr(cache, "_complete_custody", lambda result, **kwargs: True)
+        lease.publish({})
     lease.close()
     args = argparse.Namespace(
         db=str(tmp_path / "queue.sqlite3"),
@@ -201,6 +208,38 @@ def test_parser_requires_explicit_apply():
     assert parsed.func is commands._cmd_reclaim_cargo_generation
     assert parsed.apply is False
 
+    retire = cli._build_parser().parse_args(
+        ["retire-terminal-sealed-generation", "--run-id", "unit"]
+    )
+    assert retire.func is commands._cmd_retire_terminal_sealed_generation
+    assert retire.apply is False
+
+
+@pytest.mark.parametrize("generation", [(101, True, True)], indirect=True)
+def test_retirement_cli_preserves_terminal_receipt_and_records_disposition(
+    generation, capsys
+):
+    args, lease, context = generation
+    before = lease.owner_path.read_bytes()
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    assert json.loads(capsys.readouterr().out)["retirement_eligible"] is True
+    assert lease.owner_path.read_bytes() == before
+    args.apply = True
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "retired-sealed"
+    assert not lease.target.exists()
+    assert json.loads(lease.owner_path.read_text())["lifecycle"] == "retired-sealed"
+    assert json.loads(lease.pointer.read_text())["state"] == "retired-sealed"
+    with closing(state._connect(Path(args.db))) as conn:
+        row = state._row_by_run_id(conn, args.run_id)
+        assert json.loads(row["receipt_context_json"]) == context
+        evidence._validate_terminal_evidence(row, context)
+        assert {row[0] for row in conn.execute("SELECT kind FROM proof_notes")} == {
+            "decision",
+            "finding",
+        }
+
 
 def test_default_inspection_preserves_artifacts_and_queue(generation, capsys):
     args, lease, _ = generation
@@ -211,6 +250,26 @@ def test_default_inspection_preserves_artifacts_and_queue(generation, capsys):
     assert lease.target.is_dir() and lease.owner_path.read_bytes() == before
     with closing(sqlite3.connect(args.db)) as conn:
         assert conn.execute("SELECT count(*) FROM proof_notes").fetchone()[0] == 0
+
+
+def test_sealed_retirement_inspection_and_apply_reject_unsealed_generation(
+    generation, capsys
+):
+    args, lease, _ = generation
+    before = lease.owner_path.read_bytes()
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    inspection = json.loads(capsys.readouterr().out)
+    assert inspection["retirement_eligible"] is False
+    assert inspection["retirement_reason"] == "owner-lifecycle-not-retirable"
+    assert lease.target.is_dir() and lease.owner_path.read_bytes() == before
+
+    args.apply = True
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 2
+    outcome = json.loads(capsys.readouterr().out)
+    assert outcome["state"] == "not-retirable"
+    assert lease.target.is_dir()
+    with closing(sqlite3.connect(args.db)) as conn:
+        assert conn.execute("SELECT count(*) FROM proof_notes").fetchone()[0] == 2
 
 
 def test_apply_reclaims_fixture_and_retains_original_terminal_custody(
@@ -229,6 +288,14 @@ def test_apply_reclaims_fixture_and_retains_original_terminal_custody(
         assert conn.execute("SELECT count(*) FROM proof_notes").fetchone()[0] == 2
 
 
+@pytest.mark.parametrize(
+    "generation,command",
+    [
+        ((101, True), commands._cmd_reclaim_cargo_generation),
+        ((101, True, True), commands._cmd_retire_terminal_sealed_generation),
+    ],
+    indirect=["generation"],
+)
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -250,7 +317,9 @@ def test_apply_reclaims_fixture_and_retains_original_terminal_custody(
         "wrong-command-returncode",
     ],
 )
-def test_apply_rejects_ambiguous_or_substituted_custody(generation, capsys, mutation):
+def test_apply_rejects_ambiguous_or_substituted_custody(
+    generation, command, capsys, mutation
+):
     args, lease, context = generation
     updates = {}
     if mutation in {"queued", "dispatched", "running", "stale", "blocked"}:
@@ -290,7 +359,7 @@ def test_apply_rejects_ambiguous_or_substituted_custody(generation, capsys, muta
         state._update_run(conn, args.run_id, **updates)
     args.apply = True
     before = lease.owner_path.read_bytes()
-    assert commands._cmd_reclaim_cargo_generation(args) == 2
+    assert command(args) == 2
     assert json.loads(capsys.readouterr().out)["state"] == "not-authorized"
     assert lease.target.is_dir() and lease.owner_path.read_bytes() == before
 
@@ -309,8 +378,20 @@ def test_missing_database_inspection_does_not_provision_state(tmp_path, capsys):
     assert not db.parent.exists()
 
 
+@pytest.mark.parametrize(
+    "generation,command,expected_state",
+    [
+        ((101, True), commands._cmd_reclaim_cargo_generation, "reclaimed"),
+        (
+            (101, True, True),
+            commands._cmd_retire_terminal_sealed_generation,
+            "retired-sealed",
+        ),
+    ],
+    indirect=["generation"],
+)
 def test_post_delete_note_error_does_not_claim_artifacts_were_retained(
-    generation, monkeypatch, capsys
+    generation, command, expected_state, monkeypatch, capsys
 ):
     args, lease, _ = generation
     insert = state._insert_note
@@ -322,7 +403,7 @@ def test_post_delete_note_error_does_not_claim_artifacts_were_retained(
 
     monkeypatch.setattr(state, "_insert_note", fail_outcome)
     args.apply = True
-    assert commands._cmd_reclaim_cargo_generation(args) == 2
+    assert command(args) == 2
     result = json.loads(capsys.readouterr().out)
-    assert result["state"] == "reclaimed" and "error" in result
+    assert result["state"] == expected_state and "error" in result
     assert not lease.target.exists()

@@ -92,6 +92,25 @@ def test_mixed_and_borrowed_ops_have_real_dedicated_llvm_handlers() -> None:
     assert audit_op_kinds.extract_llvm_preserved_handler_routing_drifts() == []
 
 
+def test_descriptor_constructors_use_only_generated_boxed_contracts() -> None:
+    from tools import audit_op_kinds
+
+    dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=ROOT)
+    boxed = AUDIT.runtime_boxed_abi_facts()
+    machine, duplicates = AUDIT.runtime_import_abi_facts()
+    assert not duplicates
+    for kind, arity in (
+        ("classmethod_new", 1),
+        ("staticmethod_new", 1),
+        ("property_new", 3),
+        ("bound_method_new", 2),
+    ):
+        assert kind not in dedicated
+        key = (f"molt_{kind}", arity)
+        assert key not in machine
+        assert boxed[key] == AUDIT.AbiFact(key[0], arity, "I64", ("I64",) * arity)
+
+
 def test_machine_i64_fact_cannot_hide_missing_generic_semantics(monkeypatch) -> None:
     from tools import audit_op_kinds
 

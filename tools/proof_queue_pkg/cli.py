@@ -329,6 +329,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reclaim_p.set_defaults(func=commands._cmd_reclaim_cargo_generation)
 
+    retire_p = sub.add_parser(
+        "retire-terminal-sealed-generation",
+        help="inspect one failed sealed Cargo generation; retain receipts and legacy artifacts",
+    )
+    retire_p.add_argument("--run-id", required=True)
+    retire_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="retire only failed non-reusable sealed output after receipt-preserving capture",
+    )
+    retire_p.set_defaults(func=commands._cmd_retire_terminal_sealed_generation)
+
     evidence_p = sub.add_parser(
         "evidence", help="export machine-readable proof evidence"
     )
