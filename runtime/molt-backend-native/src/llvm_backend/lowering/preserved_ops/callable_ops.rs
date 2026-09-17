@@ -10,9 +10,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "code_new",
     "code_slot_set",
     "code_slots_init",
-    "classmethod_new",
-    "staticmethod_new",
-    "property_new",
     "trace_enter_slot",
     "trace_exit",
     "frame_locals_set",
@@ -329,60 +326,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "code_slots_init",
                     )
                     .unwrap();
-                true
-            }
-            "classmethod_new" => {
-                let Some(&func_id) = op.operands.first() else {
-                    return false;
-                };
-                let func_bits = self.ensure_i64(self.resolve(func_id));
-                let classmethod_fn = self.ensure_runtime_i64_fn("molt_classmethod_new", 1);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(classmethod_fn, &[func_bits.into()], "classmethod_new")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.bind_owned_runtime_result(op, result);
-                true
-            }
-            "staticmethod_new" => {
-                let Some(&func_id) = op.operands.first() else {
-                    return false;
-                };
-                let func_bits = self.ensure_i64(self.resolve(func_id));
-                let staticmethod_fn = self.ensure_runtime_i64_fn("molt_staticmethod_new", 1);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(staticmethod_fn, &[func_bits.into()], "staticmethod_new")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.bind_owned_runtime_result(op, result);
-                true
-            }
-            "property_new" => {
-                if op.operands.len() != 3 {
-                    return false;
-                }
-                let getter_bits = self.ensure_i64(self.resolve(op.operands[0]));
-                let setter_bits = self.ensure_i64(self.resolve(op.operands[1]));
-                let deleter_bits = self.ensure_i64(self.resolve(op.operands[2]));
-                let property_fn = self.ensure_runtime_i64_fn("molt_property_new", 3);
-                let result = self
-                    .backend
-                    .builder
-                    .build_call(
-                        property_fn,
-                        &[getter_bits.into(), setter_bits.into(), deleter_bits.into()],
-                        "property_new",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                self.bind_owned_runtime_result(op, result);
                 true
             }
             "trace_enter_slot" => {

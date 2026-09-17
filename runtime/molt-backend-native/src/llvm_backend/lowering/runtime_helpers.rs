@@ -51,24 +51,38 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ));
             return;
         }
+        if return_abi == RuntimeReturnAbi::Void && !op.results.is_empty() {
+            self.record_fatal(format!(
+                "call to void runtime symbol `{symbol}` has result values"
+            ));
+            return;
+        }
+        // Runtime arguments borrow their object values. Materializing a raw
+        // full-width integer may mint a temporary BigInt owner; the original
+        // raw SSA value's RC cannot retire that owner. Already-boxed values
+        // remain borrowed and must not enter this cleanup list.
+        let mut temporary_owners = Vec::new();
         let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
             .operands
             .iter()
-            .map(|&id| self.materialize_dynbox_operand(id).into())
-            .collect();
-        match return_abi {
-            RuntimeReturnAbi::Void => {
-                if !op.results.is_empty() {
-                    self.record_fatal(format!(
-                        "call to void runtime symbol `{symbol}` has result values"
-                    ));
-                    return;
+            .map(|&id| {
+                let bits = self.materialize_dynbox_operand(id);
+                if self.value_types.get(&id) == Some(&TirType::I64)
+                    && !self.repr_facts.is_inline_safe_int(id)
+                {
+                    temporary_owners.push(bits);
                 }
+                bits.into()
+            })
+            .collect();
+        let result = match return_abi {
+            RuntimeReturnAbi::Void => {
                 let func = self.ensure_runtime_void_fn(symbol, op.operands.len());
                 self.backend
                     .builder
                     .build_call(func, &arg_bits, symbol)
                     .unwrap();
+                None
             }
             RuntimeReturnAbi::I64 => {
                 let func = self.ensure_runtime_i64_fn(symbol, op.operands.len());
@@ -79,10 +93,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                // The boxed-call contract transfers an owned result. A call
-                // without an SSA result still has to retire that ownership.
-                self.bind_owned_runtime_result(op, result);
+                Some(result)
             }
+        };
+        if !temporary_owners.is_empty() {
+            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+            for bits in temporary_owners {
+                self.backend
+                    .builder
+                    .build_call(release, &[bits.into()], "")
+                    .unwrap();
+            }
+        }
+        if let Some(result) = result {
+            // The boxed-call contract transfers an owned result. A call
+            // without an SSA result still has to retire that ownership.
+            self.bind_owned_runtime_result(op, result);
         }
     }
 

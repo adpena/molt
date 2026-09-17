@@ -39,6 +39,9 @@ _INPUT_KIND = "molt.proof-cargo-cache-inputs.v2"
 _SEAL_KIND = "molt.proof-cargo-cache-seal.v1"
 _TERMINAL_RECEIPT_KIND = TERMINAL_RECEIPT_SCHEMA
 _RECLAIM_EVIDENCE_KIND = "molt.proof-cargo-cache-reclaim-evidence.v1"
+_SEALED_RETIREMENT_EVIDENCE_KIND = (
+    "molt.proof-cargo-cache-sealed-retirement-evidence.v1"
+)
 _TIMINGS_KIND = "molt.proof-cargo-cache-timings.v1"
 _HEX_64 = re.compile(r"[0-9a-f]{64}")
 _HEX_16 = re.compile(r"[0-9a-f]{16}")
@@ -714,6 +717,76 @@ def inspect_terminal_generation(
     }
 
 
+def _sealed_retirement_rejection(
+    *,
+    owner: Mapping[str, object],
+    projection: Mapping[str, object],
+    receipt: Mapping[str, object],
+    publication: Mapping[str, object],
+    target_present: bool,
+) -> str | None:
+    """One sealed-retirement admission policy for inspection and locked apply."""
+    if owner.get("lifecycle") != "terminal-sealed-retained":
+        return "owner-lifecycle-not-retirable"
+    if projection.get("state") != "terminal-sealed-retained":
+        return "terminal-projection-not-retirable"
+    if publication.get("state") != "sealed":
+        return "publication-not-sealed"
+    if (
+        publication.get("purpose") != "preserved-candidate"
+        or publication.get("reusable") is not False
+        or publication.get("reuse_rejection_code") != "cargo-input-closure-unproven"
+    ):
+        return "publication-may-be-reusable"
+    if receipt.get("process_cleanup_safe") is not True:
+        return "terminal-receipt-not-cleanup-safe"
+    terminal = receipt.get("queue_terminal")
+    if not isinstance(terminal, Mapping) or terminal.get("status") != "failed":
+        return "terminal-run-not-failed"
+    if not target_present:
+        return "target-absent"
+    return None
+
+
+def inspect_terminal_sealed_retirement(
+    *,
+    result_root: Path,
+    provenance: Mapping[str, object],
+    projection: Mapping[str, object],
+) -> dict[str, object]:
+    """Inspect whether one failed sealed generation has retirement authority."""
+    _identity_root, _generation, target, owner_path = _generation_paths(
+        result_root, provenance
+    )
+    owner, immutable_receipt, publication = _validate_terminal_generation_authority(
+        result_root=result_root,
+        provenance=provenance,
+        projection=projection,
+        target=target,
+        owner_path=owner_path,
+    )
+    lifecycle = owner.get("lifecycle")
+    target_present = target.exists()
+    rejection = _sealed_retirement_rejection(
+        owner=owner,
+        projection=projection,
+        receipt=immutable_receipt,
+        publication=publication,
+        target_present=target_present,
+    )
+    return {
+        "state": lifecycle,
+        "target": str(target),
+        "owner": str(owner_path),
+        "target_present": target_present,
+        "terminal_state": projection.get("state"),
+        "publication_state": publication.get("state"),
+        "process_cleanup_safe": immutable_receipt.get("process_cleanup_safe"),
+        "retirement_eligible": rejection is None,
+        "retirement_reason": rejection or "terminal-sealed-failed-cleanup-safe",
+    }
+
+
 def _preserve_timings(target: Path, *, cas_root: Path) -> dict[str, object]:
     timings = target / "cargo-timings"
     if not timings.exists():
@@ -755,14 +828,119 @@ def _preserve_timings(target: Path, *, cas_root: Path) -> dict[str, object]:
     )
 
 
-def reclaim_terminal_unsealed(
+def _preserve_terminal_output_evidence(
+    *,
+    target: Path,
+    cas_root: Path,
+    kind: str,
+    publication: Mapping[str, object],
+    terminal_receipt: Mapping[str, object],
+    provenance: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], int | None, int]:
+    """Capture immutable output evidence before either terminal payload transition."""
+    output_before = command_identity._directory_manifest_identity(
+        target, label="terminal Cargo output", strict_owned=True
+    )
+    if provenance is not None:
+        seal = _read(publication.get("seal"), cas_root, _SEAL_KIND)
+        if (
+            seal.get("input_sha256") != provenance.get("input_sha256")
+            or seal.get("target") != str(target)
+            or seal.get("manifest") != output_before
+        ):
+            raise ValueError("sealed Cargo output differs from its immutable seal")
+    timings = _preserve_timings(target, cas_root=cas_root)
+    output_after = command_identity._directory_manifest_identity(
+        target, label="terminal Cargo output", strict_owned=True
+    )
+    if output_after != output_before:
+        raise ValueError("terminal Cargo output changed during evidence capture")
+    evidence = _artifact(
+        cas_root,
+        kind,
+        target=str(target),
+        publication=dict(publication),
+        terminal_receipt=dict(terminal_receipt),
+        output_manifest=output_before,
+        timings=timings,
+    )
+    files = output_before.get("files")
+    file_rows = files if isinstance(files, list) else []
+    return (
+        evidence,
+        (
+            output_before.get("file_count")
+            if isinstance(output_before.get("file_count"), int)
+            else None
+        ),
+        sum(
+            int(row.get("size", 0))
+            for row in file_rows
+            if isinstance(row, Mapping) and isinstance(row.get("size"), int)
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _TerminalOutputDisposition:
+    eligible_lifecycle: str
+    in_progress_lifecycle: str
+    completed_lifecycle: str
+    blocked_lifecycle: str
+    projection_state: str
+    publication_state: str
+    evidence_kind: str
+    detail_field: str
+    action: str
+    started_at_field: str
+    completed_at_field: str
+    blocked_at_field: str
+    prior_failure_reason: str
+    require_failed_nonreusable_seal: bool = False
+
+
+_UNSEALED_RECLAIM = _TerminalOutputDisposition(
+    "terminal-unsealed-reclaimable",
+    "reclaiming",
+    "reclaimed",
+    "reclaim-blocked",
+    "terminal-unsealed-reclaimable",
+    "unsealed",
+    _RECLAIM_EVIDENCE_KIND,
+    "reclaim",
+    "reclaim",
+    "reclaim_started_at",
+    "reclaimed_at",
+    "reclaim_blocked_at",
+    "prior-reclaim-failure",
+)
+_SEALED_FAILED_RETIREMENT = _TerminalOutputDisposition(
+    "terminal-sealed-retained",
+    "retiring-sealed",
+    "retired-sealed",
+    "retire-blocked",
+    "terminal-sealed-retained",
+    "sealed",
+    _SEALED_RETIREMENT_EVIDENCE_KIND,
+    "retirement",
+    "retire",
+    "retire_started_at",
+    "retired_at",
+    "retire_blocked_at",
+    "prior-retirement-failure",
+    True,
+)
+
+
+def _transition_terminal_output(
     *,
     result_root: Path,
     provenance: Mapping[str, object],
     projection: Mapping[str, object],
-    timeout_s: float = 30.0,
+    disposition: _TerminalOutputDisposition,
+    timeout_s: float,
 ) -> dict[str, object]:
-    """Reclaim one terminal unsealed target; retain immutable evidence and owner."""
+    """One locked, receipt-preserving target-removal state machine."""
     identity_root, _generation, target, owner_path = _generation_paths(
         result_root, provenance
     )
@@ -771,8 +949,9 @@ def reclaim_terminal_unsealed(
         timeout_s=max(0.0, min(timeout_s, 30.0)),
         timeout_message=f"Cargo cache target is busy: {identity_root}",
     )
+    not_state = "not-retirable" if disposition.action == "retire" else "not-reclaimable"
     try:
-        owner, immutable_receipt, publication = _validate_terminal_generation_authority(
+        owner, receipt, publication = _validate_terminal_generation_authority(
             result_root=result_root,
             provenance=provenance,
             projection=projection,
@@ -782,163 +961,211 @@ def reclaim_terminal_unsealed(
         terminal_receipt = projection.get("terminal_receipt")
         assert isinstance(terminal_receipt, Mapping)
         lifecycle = owner.get("lifecycle")
-        if lifecycle == "reclaimed":
+        if lifecycle == disposition.completed_lifecycle:
             _update_pointer_if_current(
                 identity_root / "state.json",
                 target=target,
-                state="reclaimed",
+                state=disposition.completed_lifecycle,
                 owner_path=owner_path,
                 terminal_receipt=terminal_receipt,
             )
             return {
-                "state": "reclaimed",
+                "state": disposition.completed_lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
                 "idempotent": True,
             }
-        if lifecycle == "reclaim-blocked":
+        if lifecycle == disposition.blocked_lifecycle:
             return {
-                "state": "reclaim-blocked",
+                "state": disposition.blocked_lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
-                "reason": "prior-reclaim-failure",
+                "reason": disposition.prior_failure_reason,
             }
-        if lifecycle == "reclaiming":
+        if lifecycle == disposition.in_progress_lifecycle:
             if not target.exists():
-                owner.update(lifecycle="reclaimed", reclaimed_at=_utc_now())
+                owner.update(
+                    lifecycle=disposition.completed_lifecycle,
+                    **{disposition.completed_at_field: _utc_now()},
+                )
                 _write_owner(owner_path, owner)
                 _update_pointer_if_current(
                     identity_root / "state.json",
                     target=target,
-                    state="reclaimed",
+                    state=disposition.completed_lifecycle,
                     owner_path=owner_path,
                     terminal_receipt=terminal_receipt,
                 )
                 return {
-                    "state": "reclaimed",
+                    "state": disposition.completed_lifecycle,
                     "target": str(target),
                     "owner": str(owner_path),
                     "idempotent": True,
                 }
             owner.update(
-                lifecycle="reclaim-blocked",
-                reclaim_blocked_at=_utc_now(),
-                reclaim_error="prior reclaim was interrupted; automatic retry refused",
+                lifecycle=disposition.blocked_lifecycle,
+                **{
+                    disposition.blocked_at_field: _utc_now(),
+                    f"{disposition.action}_error": f"prior {disposition.action} was interrupted; automatic retry refused",
+                },
             )
             _write_owner(owner_path, owner)
             return {
-                "state": "reclaim-blocked",
+                "state": disposition.blocked_lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
-                "reason": "prior-reclaim-interrupted",
+                "reason": f"prior-{disposition.action}-interrupted",
             }
-        if lifecycle != "terminal-unsealed-reclaimable":
+        if lifecycle != disposition.eligible_lifecycle:
             return {
-                "state": "not-reclaimable",
+                "state": not_state,
                 "lifecycle": lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
             }
-        if (
-            projection.get("state") != "terminal-unsealed-reclaimable"
-            or publication.get("state") != "unsealed"
-            or immutable_receipt.get("process_cleanup_safe") is not True
-        ):
-            raise ValueError("Cargo cache reclaim state lacks terminal evidence")
-        try:
-            output_before = command_identity._directory_manifest_identity(
-                target, label="terminal unsealed Cargo output", strict_owned=True
-            )
-            timings = _preserve_timings(target, cas_root=result_root / "custody-cas")
-            output_after = command_identity._directory_manifest_identity(
-                target, label="terminal unsealed Cargo output", strict_owned=True
-            )
-            if output_after != output_before:
-                raise ValueError(
-                    "terminal Cargo output changed during evidence capture"
+        sealed = disposition.require_failed_nonreusable_seal
+        eligible = (
+            projection.get("state") == disposition.projection_state
+            and publication.get("state") == disposition.publication_state
+            and receipt.get("process_cleanup_safe") is True
+        )
+        if sealed:
+            eligible = (
+                _sealed_retirement_rejection(
+                    owner=owner,
+                    projection=projection,
+                    receipt=receipt,
+                    publication=publication,
+                    target_present=target.exists(),
                 )
-            evidence = _artifact(
-                result_root / "custody-cas",
-                _RECLAIM_EVIDENCE_KIND,
-                target=str(target),
-                publication=dict(publication),
-                terminal_receipt=dict(terminal_receipt),
-                output_manifest=output_before,
-                timings=timings,
+                is None
+            )
+        if not eligible or not target.exists():
+            return {
+                "state": not_state,
+                "lifecycle": lifecycle,
+                "target": str(target),
+                "owner": str(owner_path),
+            }
+        try:
+            evidence, file_count, size_bytes = _preserve_terminal_output_evidence(
+                target=target,
+                cas_root=result_root / "custody-cas",
+                kind=disposition.evidence_kind,
+                publication=publication,
+                terminal_receipt=terminal_receipt,
+                provenance=provenance if sealed else None,
             )
         except (OSError, ValueError) as exc:
             owner.update(
-                lifecycle="reclaim-blocked",
-                reclaim_blocked_at=_utc_now(),
-                reclaim_error=f"{type(exc).__name__}: {exc}",
+                lifecycle=disposition.blocked_lifecycle,
+                **{
+                    disposition.blocked_at_field: _utc_now(),
+                    f"{disposition.action}_error": f"{type(exc).__name__}: {exc}",
+                },
             )
             _write_owner(owner_path, owner)
             return {
-                "state": "reclaim-blocked",
+                "state": disposition.blocked_lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
                 "reason": "evidence-preservation-failed",
-                "error": owner["reclaim_error"],
+                "error": owner[f"{disposition.action}_error"],
             }
-        files = output_before.get("files")
-        file_rows = files if isinstance(files, list) else []
         owner.update(
-            lifecycle="reclaiming",
-            reclaim_started_at=_utc_now(),
-            reclaim={
-                "evidence": evidence,
-                "file_count": output_before.get("file_count"),
-                "size_bytes": sum(
-                    int(row.get("size", 0))
-                    for row in file_rows
-                    if isinstance(row, Mapping) and isinstance(row.get("size"), int)
-                ),
+            lifecycle=disposition.in_progress_lifecycle,
+            **{
+                disposition.started_at_field: _utc_now(),
+                disposition.detail_field: {
+                    "evidence": evidence,
+                    "file_count": file_count,
+                    "size_bytes": size_bytes,
+                },
             },
         )
         _write_owner(owner_path, owner)
         deleted, error = delete_path(target)
         if not deleted:
             owner.update(
-                lifecycle="reclaim-blocked",
-                reclaim_blocked_at=_utc_now(),
-                reclaim_error=error,
+                lifecycle=disposition.blocked_lifecycle,
+                **{
+                    disposition.blocked_at_field: _utc_now(),
+                    f"{disposition.action}_error": error,
+                },
             )
             _write_owner(owner_path, owner)
             _update_pointer_if_current(
                 identity_root / "state.json",
                 target=target,
-                state="reclaim-blocked",
+                state=disposition.blocked_lifecycle,
                 owner_path=owner_path,
                 terminal_receipt=terminal_receipt,
             )
             return {
-                "state": "reclaim-blocked",
+                "state": disposition.blocked_lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
                 "reason": "delete-failed",
                 "error": error,
             }
-        owner.update(lifecycle="reclaimed", reclaimed_at=_utc_now())
+        owner.update(
+            lifecycle=disposition.completed_lifecycle,
+            **{disposition.completed_at_field: _utc_now()},
+        )
         _write_owner(owner_path, owner)
         _update_pointer_if_current(
             identity_root / "state.json",
             target=target,
-            state="reclaimed",
+            state=disposition.completed_lifecycle,
             owner_path=owner_path,
             terminal_receipt=terminal_receipt,
         )
-        reclaim = owner["reclaim"]
-        assert isinstance(reclaim, Mapping)
+        detail = owner[disposition.detail_field]
+        assert isinstance(detail, Mapping)
         return {
-            "state": "reclaimed",
+            "state": disposition.completed_lifecycle,
             "target": str(target),
             "owner": str(owner_path),
-            "file_count": reclaim.get("file_count"),
-            "size_bytes": reclaim.get("size_bytes"),
-            "evidence": reclaim.get("evidence"),
+            "file_count": detail.get("file_count"),
+            "size_bytes": detail.get("size_bytes"),
+            "evidence": detail.get("evidence"),
         }
     finally:
         _release_file_lock(lock)
+
+
+def reclaim_terminal_unsealed(
+    *,
+    result_root: Path,
+    provenance: Mapping[str, object],
+    projection: Mapping[str, object],
+    timeout_s: float = 30.0,
+) -> dict[str, object]:
+    """Reclaim one terminal unsealed target through shared disposition custody."""
+    return _transition_terminal_output(
+        result_root=result_root,
+        provenance=provenance,
+        projection=projection,
+        disposition=_UNSEALED_RECLAIM,
+        timeout_s=timeout_s,
+    )
+
+
+def retire_terminal_sealed_failed(
+    *,
+    result_root: Path,
+    provenance: Mapping[str, object],
+    projection: Mapping[str, object],
+    timeout_s: float = 30.0,
+) -> dict[str, object]:
+    """Retire one failed non-reusable sealed target through shared custody."""
+    return _transition_terminal_output(
+        result_root=result_root,
+        provenance=provenance,
+        projection=projection,
+        disposition=_SEALED_FAILED_RETIREMENT,
+        timeout_s=timeout_s,
+    )
 
 
 def inventory_legacy_generations(result_root: Path) -> list[dict[str, object]]:
@@ -1051,8 +1278,14 @@ def acquire(
                 "terminal-indeterminate-retained",
                 "reclaimed",
                 "reclaim-blocked",
+                "retired-sealed",
+                "retire-blocked",
             }:
-                cold_reason = "prior-generation-unsealed"
+                cold_reason = (
+                    "prior-generation-retired-sealed"
+                    if previous.get("state") == "retired-sealed"
+                    else "prior-generation-unsealed"
+                )
             else:
                 raise ValueError("Cargo cache generation state is invalid")
         generation = root / secrets.token_hex(8)

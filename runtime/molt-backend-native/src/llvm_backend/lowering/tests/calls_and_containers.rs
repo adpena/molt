@@ -167,6 +167,89 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
 }
 
 #[test]
+fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results() {
+    for opcode in [OpCode::Call, OpCode::Copy] {
+        for (kind, returns_value) in [("cell_new", true), ("spawn", false)] {
+            for (value, inline_proven) in
+                [(7, false), (7, true), (i64::MAX, false), (i64::MIN, false)]
+            {
+                for bound in [false, true] {
+                    if bound && !returns_value {
+                        continue;
+                    }
+                    let ctx = Context::create();
+                    let mut backend = make_backend(&ctx);
+                    let symbol = format!("molt_{kind}");
+                    backend.runtime_callable_symbols.insert(symbol.clone());
+                    let mut func =
+                        TirFunction::new("boxed_argument_owner".into(), vec![], TirType::DynBox);
+                    let arg = func.fresh_value();
+                    let none = func.fresh_value();
+                    let result = func.fresh_value();
+                    if inline_proven {
+                        let mut facts = crate::representation_plan::LlvmReprFacts::default();
+                        facts.repr_by_value.insert(arg, crate::Repr::RawI64Safe);
+                        backend.function_repr_facts.insert(func.name.clone(), facts);
+                    }
+                    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                    entry.ops.push(const_int_def(arg, value));
+                    entry.ops.push(const_none_def(none));
+                    entry.ops.push(TirOp {
+                        dialect: Dialect::Molt,
+                        opcode,
+                        operands: vec![arg],
+                        results: if bound { vec![result] } else { vec![] },
+                        attrs: AttrDict::from([
+                            (
+                                "_original_kind".into(),
+                                AttrValue::Str(
+                                    if opcode == OpCode::Call { "call" } else { kind }.into(),
+                                ),
+                            ),
+                            ("s_value".into(), AttrValue::Str(symbol.clone())),
+                        ]),
+                        source_span: None,
+                    });
+                    entry.terminator = Terminator::Return {
+                        values: vec![if bound { result } else { none }],
+                    };
+                    let ir = try_lower_tir_to_llvm(&func, &backend)
+                        .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()))
+                        .print_to_string()
+                        .to_string();
+                    backend
+                        .module
+                        .verify()
+                        .expect("boxed argument owner lifetime");
+                    assert!(
+                        ir.contains(&format!("call i64 @molt_int_from_i64(i64 {value})")),
+                        "{ir}"
+                    );
+                    let release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+                    assert_eq!(
+                        ir.matches(release).count(),
+                        usize::from(!inline_proven),
+                        "{ir}"
+                    );
+                    assert_eq!(
+                        ir.matches("call void @molt_dec_ref_obj(").count(),
+                        usize::from(!inline_proven) + usize::from(returns_value && !bound),
+                        "{ir}"
+                    );
+                    let call = format!(
+                        "call {} @{symbol}(",
+                        if returns_value { "i64" } else { "void" }
+                    );
+                    if !inline_proven {
+                        assert!(ir.find(&call).unwrap() < ir.find(release).unwrap(), "{ir}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn callable_dispatch_retires_only_discarded_owned_results() {
     for (opcode, kind, argc, result_name) in [
         (OpCode::Call, "call_func", 1, "call_func_or_bind_phi"),
@@ -189,7 +272,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             "molt_call_super_method_ic0",
         ),
         (OpCode::CallBuiltin, "call_builtin", 2, "call_builtin"),
-        (OpCode::CallBuiltin, "named_builtin", 1, "call_builtin"),
+        (OpCode::CallBuiltin, "named_builtin", 1, "owned_name_result"),
         (OpCode::CallBuiltin, "range_new", 3, "range_new"),
     ] {
         for bound in [false, true] {
@@ -200,20 +283,12 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             let result = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(const_none_def(input));
-            let mut attrs = AttrDict::from([
-                (
-                    "_original_kind".into(),
-                    AttrValue::Str(
-                        if kind == "named_builtin" {
-                            "call_builtin"
-                        } else {
-                            kind
-                        }
-                        .into(),
-                    ),
-                ),
-                ("method".into(), AttrValue::Str("m".into())),
-            ]);
+            let mut attrs = AttrDict::from([("method".into(), AttrValue::Str("m".into()))]);
+            // Generic CallBuiltin has no preserved source-kind metadata;
+            // only specialized primitives such as range_new retain it.
+            if !matches!(kind, "call_builtin" | "named_builtin") {
+                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            }
             if kind == "named_builtin" {
                 attrs.insert("name".into(), AttrValue::Str("len".into()));
             }
