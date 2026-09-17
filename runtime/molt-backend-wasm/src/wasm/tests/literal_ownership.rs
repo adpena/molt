@@ -245,6 +245,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
         ("func_new", 0),
         ("func_new_closure", 1),
         ("builtin_func", 0),
+        ("builtin_func", 1),
         ("code_new", 9),
         ("callargs_new", 0),
         ("classmethod_new", 1),
@@ -256,39 +257,42 @@ fn callable_constructors_release_only_discarded_owned_results() {
         for bound in [false, true] {
             let mut constructor =
                 wasm_test_op(kind, bound.then_some("created"), vec!["value"; argc]);
-            if matches!(kind, "func_new" | "func_new_closure" | "builtin_func") {
+            if matches!(kind, "func_new" | "func_new_closure") {
                 constructor.s_value = Some("callable_result_target".into());
                 constructor.value = Some(0);
+            } else if kind == "builtin_func" {
+                // Builtin constructors target the runtime callable manifest,
+                // not a compiled FunctionIR body. The optional local supplies
+                // a name to FuncNewBuiltinNamed, not another callable argument.
+                constructor.s_value = Some("molt_abs_builtin".into());
+                constructor.value = Some(1);
+            }
+            let mut functions = vec![wasm_test_function(
+                "molt_main",
+                vec!["value"],
+                None,
+                vec![
+                    constructor,
+                    wasm_test_op("ret", None, vec![if bound { "created" } else { "value" }]),
+                ],
+            )];
+            if matches!(kind, "func_new" | "func_new_closure") {
+                functions.push(wasm_test_function(
+                    "callable_result_target",
+                    if kind == "func_new_closure" {
+                        vec![crate::MOLT_CLOSURE_PARAM_NAME]
+                    } else {
+                        vec![]
+                    },
+                    None,
+                    vec![
+                        wasm_test_op("const_none", Some("nothing"), vec![]),
+                        wasm_test_op("ret", None, vec!["nothing"]),
+                    ],
+                ));
             }
             let ir = SimpleIR {
-                functions: vec![
-                    wasm_test_function(
-                        "molt_main",
-                        vec!["value"],
-                        None,
-                        vec![
-                            constructor,
-                            wasm_test_op(
-                                "ret",
-                                None,
-                                vec![if bound { "created" } else { "value" }],
-                            ),
-                        ],
-                    ),
-                    wasm_test_function(
-                        "callable_result_target",
-                        if kind == "func_new_closure" {
-                            vec!["closure"]
-                        } else {
-                            vec![]
-                        },
-                        None,
-                        vec![
-                            wasm_test_op("const_none", Some("nothing"), vec![]),
-                            wasm_test_op("ret", None, vec!["nothing"]),
-                        ],
-                    ),
-                ],
+                functions,
                 profile: None,
             };
             let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
@@ -298,7 +302,12 @@ fn callable_constructors_release_only_discarded_owned_results() {
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
             let imports = wasm_function_import_indices(&output.wasm);
             let symbol = if kind == "builtin_func" {
-                "func_new_builtin"
+                assert!(imports.contains_key("abs_builtin"));
+                if argc == 0 {
+                    "func_new_builtin"
+                } else {
+                    "func_new_builtin_named"
+                }
             } else {
                 kind
             };

@@ -227,6 +227,9 @@ Descriptor construction (`classmethod_new`, `staticmethod_new`, `property_new`,
 and `bound_method_new`) uses that shared boxed route, including exact arity,
 selected-runtime symbol availability, typed argument materialization and owned
 result transfer/release. There is no separate descriptor signature/lowering table.
+Direct and preserved boxed calls share selected-runtime availability admission
+before symbol declaration or argument materialization; a generated ABI fact does
+not prove the symbol exists in the selected runtime profile.
 Boxed runtime calls borrow arguments: temporary owners minted when boxing raw
 integers are released after the call independently of result ownership, while
 already-boxed operand owners remain with their original SSA values.
