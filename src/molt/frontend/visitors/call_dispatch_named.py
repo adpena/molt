@@ -907,27 +907,6 @@ class CallNamedDispatchMixin(_MixinBase):
                         )
                     )
                 return res
-            if func_id == "open":
-                return self._emit_open_call(node)
-            if func_id == "nullcontext":
-                if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "nullcontext expects 0 or 1 argument",
-                    )
-                if node.args:
-                    payload = self.visit(node.args[0])
-                else:
-                    payload = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=payload))
-                return self._emit_nullcontext(payload)
-            if func_id == "closing":
-                if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "closing expects 1 argument"
-                    )
-                payload = self.visit(node.args[0])
-                return self._emit_closing(payload)
             if func_id == "print":
                 # Print is an ordinary value-producing builtin call. Its runtime
                 # authority owns per-argument writes, conversion failures, stream

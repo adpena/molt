@@ -1124,6 +1124,54 @@ def test_binding_result_join_keeps_bound_unknown_alternatives_widening(
     assert pool.result(joined, 0) == UNKNOWN_EXPRESSION_RESULT
 
 
+def test_callback_capable_method_keeps_binding_invalidated() -> None:
+    source = "items = [1]\nitems.extend(source)\nresult = items\n"
+    tree = ast.parse(source)
+    result_statement = tree.body[-1]
+    assert isinstance(result_statement, ast.Assign)
+    fact = analyze_python_source_bindings(source).expression_fact(
+        result_statement.value
+    )
+
+    assert fact is not None
+    assert fact.binding_invalidated
+    assert fact.result == UNKNOWN_EXPRESSION_RESULT
+
+
+def test_append_retains_nested_argument_until_receiver_drop() -> None:
+    source = (
+        "def run(payload):\n"
+        "    items = []\n"
+        "    items.append([payload])\n"
+        "    items\n"
+        "    payload = None\n"
+        "    items = None\n"
+    )
+    tree = ast.parse(source)
+    function = tree.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    append_statement = function.body[1]
+    result_statement = function.body[-3]
+    drop_statement = function.body[-1]
+    assert isinstance(append_statement, ast.Expr)
+    assert isinstance(append_statement.value, ast.Call)
+    assert isinstance(result_statement, ast.Expr)
+    assert isinstance(drop_statement, ast.Assign)
+    index = analyze_python_source_bindings(source)
+    call_fact = index.call_fact(append_statement.value)
+    result_fact = index.expression_fact(result_statement.value)
+    drop_fact = index.statement_fact(drop_statement)
+
+    assert call_fact is not None
+    assert not call_fact.cleanup_effects & python_binding_flow.RUNS_FINALIZER
+    assert result_fact is not None
+    assert not result_fact.binding_invalidated
+    assert result_fact.result.kind == "list"
+    assert result_fact.result.release_may_call
+    assert drop_fact is not None
+    assert drop_fact.effects & python_binding_flow.RUNS_FINALIZER
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -1681,6 +1729,46 @@ def test_loop_fixpoint_does_not_conflate_identical_storage_with_tainted_binding(
     assert states.binding(exact, 0) == int(PythonIdentity.IMPORTLIB_MODULE)
     assert states.binding(loop_header, 0) & OTHER_IDENTITY
     assert not states.equivalent(exact, loop_header)
+
+
+def test_loop_join_collapses_owner_tokens_without_semantic_fixpoint_churn() -> None:
+    states = python_binding_flow._StatePool()
+    result = StaticExpressionResult(
+        kind="list", element_result=StaticExpressionResult.scalar(1)
+    )
+    initial = states.set_binding(0, 0, OTHER_IDENTITY, result=result, owner_token=1)
+    backedge = states.set_binding(
+        initial, 0, OTHER_IDENTITY, result=result, owner_token=2
+    )
+
+    loop_header = states.join(initial, backedge)
+    stabilized = states.join(loop_header, backedge)
+
+    assert states.owner_token(loop_header, 0) == 0
+    assert states.owner_token(stabilized, 0) == 0
+    assert states.changed_slots_between(initial, loop_header) == ()
+    assert states.slot_updated_between(initial, loop_header, 0)
+    assert states.equivalent(initial, backedge)
+    assert not states.owner_tokens_equal(initial, backedge)
+    assert states.equivalent(loop_header, stabilized)
+    assert states.owner_tokens_equal(loop_header, stabilized)
+
+
+def test_recorded_same_shape_store_remains_a_transition_after_owner_collapse() -> None:
+    states = python_binding_flow._StatePool()
+    result = StaticExpressionResult(
+        kind="list", element_result=StaticExpressionResult.scalar("value")
+    )
+    original = states.set_binding(0, 0, OTHER_IDENTITY, result=result)
+    rewritten = states.set_bindings(
+        original,
+        ((0, OTHER_IDENTITY, None, result, 0),),
+        record_writes=True,
+    )
+
+    assert rewritten != original
+    assert states.changed_slots_between(original, rewritten) == ()
+    assert states.slot_updated_between(original, rewritten, 0)
 
 
 def test_binding_cache_single_flight_exception_wakes_waiters_and_recovers() -> None:

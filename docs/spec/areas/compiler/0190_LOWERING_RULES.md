@@ -10,8 +10,11 @@
 methods, file modes, `range`, and `len`. `PythonBindingIndex` transports their results
 through source-ordered bindings, aliases, joins and loop fixpoints using
 `StaticExpressionResult`; frontend spelling and annotations are not proofs.
-Published mutable containers retain exact kind but not concrete contents,
-cardinality or truth facts. Homogeneous element results have a separate lifetime:
+Arbitrarily exposed mutable containers retain exact kind but not concrete
+contents, cardinality or truth facts. Publishing a tracked allocation into a
+binding preserves its current contents while removing unexposed freshness;
+the binding's owner token and all subsequent mutation boundaries govern those
+facts. Homogeneous element results have a separate lifetime:
 object writes and callbacks expire them, including mutable descendants inside
 immutable owners. Iteration and frontend specialization consume that shared
 projection; annotations and method spelling cannot manufacture element facts.
@@ -26,6 +29,15 @@ Kind facts mean exact builtin types, not subclass compatibility: callbackful
 `str`/`bytes` conversions can return user subclasses and cannot publish an
 exact-kind or inert-release fact without stronger operand/protocol evidence.
 
+Allocation custody is separate from result shape. Persistent binding states
+carry evaluated-allocation owner tokens through aliases; disagreement at a join
+or invalidated binding yields unknown ownership. A read cannot turn unknown
+ownership into a new allocation. Receiver mutation may exempt a replacement
+allocated after callee capture, but still expires mutable descendants inside
+that replacement, both per-member and homogeneous element projections, and
+their reference-release safety. Loop convergence includes loss of owner custody before
+publishing facts for subsequent iterations.
+
 `PythonCallSiteFact` separates evaluated callee/argument effects, invocation
 effects and post-invocation cleanup. A known normal-result kind does not imply
 a callback-free invocation. `callee_elision_safe` is the authorization for
@@ -35,6 +47,66 @@ the actual callable before evaluating arguments and uses ordinary object call
 dispatch, retaining any independently proven normal-result kind. Fresh lookups
 consume builtin-member invalidation; aliases retain their captured object
 identity independently of later changes to the builtin slot.
+Argument cleanup also retains each argument's exposure to later argument
+callbacks. Inert invocation does not erase that history or make the old name
+an owner again; callee and argument release safety remain independent.
+
+Normal-result transport uses that same expression-result authority for every
+generic call, including imported or captured `open` aliases. There is no second
+frontend file-mode classifier or replacement of an evaluated alias with a new
+builtin wrapper. Builtin identity/member projections derive from the same
+normal-result catalog, including callbackful operations such as `open`; catalog
+membership alone never authorizes intrinsic replacement. File-mode facts
+describe the returned file family, not exact iteration elements or the identity
+of an instance's `read`, `write`, `close`,
+or `flush` attribute; those calls retain ordinary descriptor lookup and argument
+binding. Text decoders can return string subclasses, and unbuffered file
+iteration calls the live `readline` attribute. Exact element specialization
+requires an independently proved iterator result, not a text/binary mode hint.
+The same rule applies to `contextlib.nullcontext`, `contextlib.closing`, and
+`math.trunc`: module/member spelling cannot replace the evaluated callable or
+its signature. Context construction belongs to the actual library callable;
+there is no second frontend constructor or serialization lane for those names.
+File iteration and context protocols retain their callback effects (including
+custom codecs) independently of their normal item/entry result. Normal-result
+exactness applies to the evaluated value, not automatically to its destination
+name: assignment publishes the new value before releasing the old one, whose
+finalizer can rebind a callback-visible destination. A later name load must use
+the post-cleanup binding fact. Specialization requires that fact or an explicit
+runtime guard; neither a yielded type nor a previous annotation can restore it.
+
+`split` uses one str/bytes/bytearray emission family. Exact source-point receivers
+can use the intrinsic directly. Otherwise, canonical builtin class identity
+guards capture a tagged target before arguments: an exact receiver for a builtin
+arm, or the actual generic descriptor result. The generic arm does not retain the
+original receiver after lookup; its finalizer may run before the arguments.
+Positional and keyword values are evaluated once in source order, then mapped to
+the intrinsic parameters. Unknown/expanded/duplicate signatures retain ordinary
+runtime binding and errors. Generic keyword calls use the shared argument builder;
+only exact arms carry list-element facts and the joined result remains unknown.
+Suspended target and argument storage is consumed and cleared before invocation,
+so temporary frame references do not postpone cleanup.
+List mutators and set algebra/update families share this retained-receiver
+argument capture. All arguments precede set iteration/mutation, including when
+later arguments suspend. Malformed positional-only method signatures stay on
+the real runtime binder rather than discarding keywords or expansions.
+
+Runtime split/rsplit entrypoints share validation and directional implementations
+across str, bytes and bytearray. Receiver admission precedes maxsplit's index
+protocol; separator admission and all mutable storage borrows follow it. Index
+callbacks may resize or mutate bytearray receivers/separators, and splitting
+must observe their resulting contents. Out-of-range maxsplit values raise rather
+than saturating. Capped right-whitespace splitting preserves leading whitespace
+in the unsplit remainder. String whitespace scanning accepts surrogate-containing
+WTF-8 and uses Python's whitespace definition; byte scanning uses one ASCII
+whitespace predicate for scalar and vectorized paths. The replayable
+`split_protocol_order.py` corpus owns these protocol/error cases, separately from
+callable capture and finalizer cases in `builtin_shape_lifetimes.py`.
+The same generated Unicode-space authority and bidirectional WTF-8 traversal
+govern `strip`/`lstrip`/`rstrip` and `isspace`, including custom surrogate trim
+characters. Text ASCII SIMD classification includes Python's U+001C..U+001F;
+bytes/bytearray classification does not. Scalar/vector agreement is checked
+against the generated table, not Rust's independent whitespace definition.
 
 Private helper names do not confer compiler privileges. In particular,
 `_load_optional_intrinsic` is an ordinary Python callable: assignments evaluate

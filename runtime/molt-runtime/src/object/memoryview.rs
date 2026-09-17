@@ -6,10 +6,9 @@ use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
     TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bigint_bits, bytes_data, bytes_len,
     index_bigint_from_obj, is_truthy, memoryview_base_bits, memoryview_data,
-    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_offset,
-    memoryview_readonly, memoryview_released, memoryview_shape, memoryview_stride,
-    memoryview_strides, obj_from_bits, object_type_id, raise_exception, string_bytes, string_len,
-    string_obj_to_owned, to_f64,
+    memoryview_format_bits, memoryview_itemsize, memoryview_offset, memoryview_readonly,
+    memoryview_released, memoryview_shape, memoryview_strides, obj_from_bits, object_type_id,
+    raise_exception, string_bytes, string_len, string_obj_to_owned, to_f64,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -199,16 +198,7 @@ impl TypedStridedStorage {
     }
 
     pub(crate) fn fits_in_base_len(&self, base_len: usize) -> bool {
-        let origin = self.offset as i128;
-        let start = match origin.checked_add(self.min_offset as i128) {
-            Some(value) => value,
-            None => return false,
-        };
-        let end = match origin.checked_add(self.max_end_offset as i128) {
-            Some(value) => value,
-            None => return false,
-        };
-        start >= 0 && end >= 0 && end <= base_len as i128
+        memoryview_bounds_fit_base(self.offset, self.min_offset, self.max_end_offset, base_len)
     }
 
     pub(crate) unsafe fn backing_capacity_len(&self) -> Option<usize> {
@@ -401,6 +391,17 @@ pub(crate) struct MemoryViewStridedBounds {
     pub(crate) span_len: usize,
 }
 
+fn memoryview_bounds_fit_base(
+    offset: isize,
+    min_offset: isize,
+    max_end_offset: isize,
+    base_len: usize,
+) -> bool {
+    let start = offset as i128 + min_offset as i128;
+    let end = offset as i128 + max_end_offset as i128;
+    start >= 0 && end >= 0 && end <= base_len as i128
+}
+
 pub(crate) fn memoryview_strided_bounds(
     shape: &[isize],
     strides: &[isize],
@@ -481,14 +482,16 @@ pub(crate) fn memoryview_linear_offset(index: usize, stride: isize) -> Option<is
 }
 
 fn memoryview_is_c_contiguous(shape: &[isize], strides: &[isize], itemsize: usize) -> bool {
-    if shape.len() != strides.len() {
+    if shape.len() != strides.len() || itemsize == 0 {
         return false;
     }
     let mut expected = itemsize as isize;
     for idx in (0..shape.len()).rev() {
         let dim = shape[idx];
         let stride = strides[idx];
-        if dim > 1 && stride != expected {
+        // A singleton axis has no second element whose stride can matter.
+        // An empty strided view still retains its non-contiguous layout.
+        if dim < 0 || (dim != 1 && stride != expected) {
             return false;
         }
         let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
@@ -500,14 +503,7 @@ fn memoryview_is_c_contiguous(shape: &[isize], strides: &[isize], itemsize: usiz
 }
 
 pub(crate) unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
-    unsafe {
-        if memoryview_released(ptr) {
-            return false;
-        }
-        let shape = memoryview_shape(ptr).unwrap_or(&[]);
-        let strides = memoryview_strides(ptr).unwrap_or(&[]);
-        memoryview_is_c_contiguous(shape, strides, memoryview_itemsize(ptr))
-    }
+    unsafe { memoryview_contiguous_byte_span(ptr).is_ok() }
 }
 
 pub(crate) unsafe fn memoryview_nbytes(ptr: *mut u8) -> usize {
@@ -553,36 +549,22 @@ unsafe fn bytes_like_slice_raw_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
 
 pub(crate) unsafe fn memoryview_bytes_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe {
-        if memoryview_released(ptr) {
-            return None;
-        }
-        if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
-            return None;
-        }
-        let data = memoryview_data(ptr);
-        if data.is_null() {
-            return None;
-        }
-        let len = memoryview_len(ptr);
-        Some(std::slice::from_raw_parts(data.cast_const(), len))
+        let storage = memoryview_contiguous_byte_span(ptr).ok()?;
+        Some(std::slice::from_raw_parts(
+            storage.data.cast_const(),
+            storage.len,
+        ))
     }
 }
 
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) unsafe fn memoryview_bytes_slice_mut(ptr: *mut u8) -> Option<&'static mut [u8]> {
     unsafe {
-        if memoryview_released(ptr) {
+        let storage = memoryview_contiguous_byte_span(ptr).ok()?;
+        if storage.readonly {
             return None;
         }
-        if memoryview_itemsize(ptr) != 1 || memoryview_stride(ptr) != 1 {
-            return None;
-        }
-        let data = memoryview_data(ptr);
-        if data.is_null() {
-            return None;
-        }
-        let len = memoryview_len(ptr);
-        Some(std::slice::from_raw_parts_mut(data, len))
+        Some(std::slice::from_raw_parts_mut(storage.data, storage.len))
     }
 }
 
@@ -947,6 +929,61 @@ pub(crate) unsafe fn memoryview_write_scalar_at(
 pub(crate) enum BytesLikeSliceError {
     NotBytesLike,
     ReleasedMemoryView,
+    NonContiguousMemoryView,
+}
+
+struct MemoryViewByteSpan {
+    data: *mut u8,
+    len: usize,
+    readonly: bool,
+}
+
+/// Borrow the existing descriptor without rebuilding its owned shape, strides
+/// or format. Read, write and contiguity queries share the same admission and
+/// bounds authorities as descriptor construction; element count is not bytes.
+unsafe fn memoryview_contiguous_byte_span(
+    ptr: *mut u8,
+) -> Result<MemoryViewByteSpan, BytesLikeSliceError> {
+    unsafe {
+        if memoryview_released(ptr) {
+            return Err(BytesLikeSliceError::ReleasedMemoryView);
+        }
+        let shape = memoryview_shape(ptr).ok_or(BytesLikeSliceError::NotBytesLike)?;
+        let strides = memoryview_strides(ptr).ok_or(BytesLikeSliceError::NotBytesLike)?;
+        let itemsize = memoryview_itemsize(ptr);
+        if itemsize == 0 || shape.len() != strides.len() {
+            return Err(BytesLikeSliceError::NotBytesLike);
+        }
+        if !memoryview_is_c_contiguous(shape, strides, itemsize) {
+            return Err(BytesLikeSliceError::NonContiguousMemoryView);
+        }
+        let len = memoryview_nbytes_big(shape, itemsize)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(BytesLikeSliceError::NotBytesLike)?;
+        let bounds = memoryview_strided_bounds(shape, strides, itemsize)
+            .ok_or(BytesLikeSliceError::NotBytesLike)?;
+        let data = memoryview_data(ptr);
+        let offset = memoryview_offset(ptr);
+        if data.is_null() || offset < 0 {
+            return Err(BytesLikeSliceError::NotBytesLike);
+        }
+        if let Some(base) = obj_from_bits(memoryview_base_bits(ptr)).as_ptr()
+            && let Some(bytes) = bytes_like_slice_raw(base)
+            && !memoryview_bounds_fit_base(
+                offset,
+                bounds.min_offset,
+                bounds.max_end_offset,
+                bytes.len(),
+            )
+        {
+            return Err(BytesLikeSliceError::NotBytesLike);
+        }
+        Ok(MemoryViewByteSpan {
+            data,
+            len,
+            readonly: memoryview_readonly(ptr),
+        })
+    }
 }
 
 pub(crate) unsafe fn bytes_like_slice_checked(
@@ -955,10 +992,11 @@ pub(crate) unsafe fn bytes_like_slice_checked(
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id == TYPE_ID_MEMORYVIEW {
-            if memoryview_released(ptr) {
-                return Err(BytesLikeSliceError::ReleasedMemoryView);
-            }
-            return memoryview_bytes_slice(ptr).ok_or(BytesLikeSliceError::NotBytesLike);
+            let storage = memoryview_contiguous_byte_span(ptr)?;
+            return Ok(std::slice::from_raw_parts(
+                storage.data.cast_const(),
+                storage.len,
+            ));
         }
         bytes_like_slice_raw(ptr).ok_or(BytesLikeSliceError::NotBytesLike)
     }
@@ -966,4 +1004,119 @@ pub(crate) unsafe fn bytes_like_slice_checked(
 
 pub(crate) unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe { bytes_like_slice_checked(ptr).ok() }
+}
+
+#[cfg(test)]
+mod split_buffer_contract_tests {
+    use super::*;
+    use crate::*;
+
+    #[test]
+    fn split_contract_typed_buffer_admission_uses_shape_stride_and_byte_extent() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (data, itemsize, shape, strides, expected) in [
+                (b"".as_slice(), 1, vec![0], vec![1], Ok(b"".as_slice())),
+                (
+                    b"|x|".as_slice(),
+                    1,
+                    vec![0],
+                    vec![2],
+                    Err(BytesLikeSliceError::NonContiguousMemoryView),
+                ),
+                (b"|x".as_slice(), 1, vec![1], vec![2], Ok(b"|".as_slice())),
+                (
+                    b"|x|".as_slice(),
+                    1,
+                    vec![2],
+                    vec![2],
+                    Err(BytesLikeSliceError::NonContiguousMemoryView),
+                ),
+                (b"||".as_slice(), 2, vec![1], vec![2], Ok(b"||".as_slice())),
+                (
+                    b"||".as_slice(),
+                    1,
+                    vec![1, 2],
+                    vec![2, 1],
+                    Ok(b"||".as_slice()),
+                ),
+            ] {
+                let base = alloc_bytes(py, data);
+                assert!(!base.is_null());
+                let base_bits = MoltObject::from_ptr(base).bits();
+                let format = alloc_string(py, if itemsize == 2 { b"H" } else { b"B" });
+                assert!(!format.is_null());
+                let format_bits = MoltObject::from_ptr(format).bits();
+                let storage = TypedStridedStorage::new(
+                    unsafe { bytes_data(base) } as *mut u8,
+                    true,
+                    itemsize,
+                    0,
+                    base_bits,
+                    format_bits,
+                    shape,
+                    strides,
+                )
+                .unwrap();
+                let view = crate::object::builders::alloc_memoryview_from_storage(py, storage);
+                assert!(!view.is_null());
+                let view_bits = MoltObject::from_ptr(view).bits();
+                unsafe {
+                    assert_eq!(memoryview_is_c_contiguous_view(view), expected.is_ok());
+                    assert_eq!(bytes_like_slice_checked(view), expected);
+                    assert_eq!(memoryview_bytes_slice(view), expected.ok());
+                    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+                    assert!(memoryview_bytes_slice_mut(view).is_none());
+                }
+                molt_memoryview_release(view_bits);
+                unsafe {
+                    assert!(!memoryview_is_c_contiguous_view(view));
+                    assert_eq!(
+                        bytes_like_slice_checked(view),
+                        Err(BytesLikeSliceError::ReleasedMemoryView)
+                    );
+                }
+                for bits in [view_bits, format_bits, base_bits] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    #[test]
+    fn split_contract_mutable_typed_buffer_uses_the_same_byte_extent() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let base = alloc_bytearray(py, b"ab");
+            assert!(!base.is_null());
+            let base_bits = MoltObject::from_ptr(base).bits();
+            let format = alloc_string(py, b"H");
+            assert!(!format.is_null());
+            let format_bits = MoltObject::from_ptr(format).bits();
+            let storage = TypedStridedStorage::one_dim(
+                unsafe { bytes_data(base) } as *mut u8,
+                false,
+                1,
+                2,
+                2,
+                0,
+                base_bits,
+                format_bits,
+            )
+            .unwrap();
+            let view = crate::object::builders::alloc_memoryview_from_storage(py, storage);
+            assert!(!view.is_null());
+            unsafe {
+                memoryview_bytes_slice_mut(view)
+                    .unwrap()
+                    .copy_from_slice(b"cd");
+                assert_eq!(bytes_like_slice_checked(base).unwrap(), b"cd");
+            }
+            for bits in [MoltObject::from_ptr(view).bits(), format_bits, base_bits] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
 }

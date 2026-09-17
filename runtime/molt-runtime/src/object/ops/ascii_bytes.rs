@@ -144,6 +144,14 @@ pub(crate) fn bytes_ascii_lower(bytes: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
+    simd_is_all_ascii_whitespace_impl::<false>(bytes)
+}
+
+pub(crate) fn simd_is_all_ascii_text_whitespace(bytes: &[u8]) -> bool {
+    simd_is_all_ascii_whitespace_impl::<true>(bytes)
+}
+
+fn simd_is_all_ascii_whitespace_impl<const TEXT: bool>(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
@@ -172,6 +180,14 @@ pub(crate) fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
                         vorrq_u8(vceqq_u8(chunk, vt), vceqq_u8(chunk, ff)),
                     ),
                 );
+                let is_ws = if TEXT {
+                    vorrq_u8(
+                        is_ws,
+                        vceqq_u8(vandq_u8(chunk, vdupq_n_u8(0xfc)), vdupq_n_u8(0x1c)),
+                    )
+                } else {
+                    is_ws
+                };
                 // If any byte is NOT whitespace, vminvq will be 0
                 if vminvq_u8(is_ws) == 0 {
                     return false;
@@ -203,6 +219,17 @@ pub(crate) fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
                         _mm_or_si128(_mm_cmpeq_epi8(chunk, vt), _mm_cmpeq_epi8(chunk, ff)),
                     ),
                 );
+                let is_ws = if TEXT {
+                    _mm_or_si128(
+                        is_ws,
+                        _mm_cmpeq_epi8(
+                            _mm_and_si128(chunk, _mm_set1_epi8(-4)),
+                            _mm_set1_epi8(0x1c),
+                        ),
+                    )
+                } else {
+                    is_ws
+                };
                 // All bytes must be whitespace → all mask bits must be set
                 if _mm_movemask_epi8(is_ws) != 0xFFFF {
                     return false;
@@ -234,6 +261,14 @@ pub(crate) fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
                         v128_or(u8x16_eq(chunk, vt), u8x16_eq(chunk, ff)),
                     ),
                 );
+                let is_ws = if TEXT {
+                    v128_or(
+                        is_ws,
+                        u8x16_eq(v128_and(chunk, u8x16_splat(0xfc)), u8x16_splat(0x1c)),
+                    )
+                } else {
+                    is_ws
+                };
                 // All bytes must be whitespace → all bitmask bits set
                 if u8x16_bitmask(is_ws) != 0xFFFF {
                     return false;
@@ -245,7 +280,12 @@ pub(crate) fn simd_is_all_ascii_whitespace(bytes: &[u8]) -> bool {
 
     // Scalar tail
     while i < bytes.len() {
-        if !bytes_ascii_space(bytes[i]) {
+        let whitespace = if TEXT {
+            unicode_space_table::is_space(u32::from(bytes[i]))
+        } else {
+            bytes_ascii_space(bytes[i])
+        };
+        if !whitespace {
             return false;
         }
         i += 1;

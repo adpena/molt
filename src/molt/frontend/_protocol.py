@@ -425,6 +425,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, name: str, value: MoltValue | None
     ) -> MoltValue | None: ...
 
+    def _capture_split_target(
+        self,
+        attribute: ast.Attribute,
+        receiver: MoltValue,
+        actual_type: MoltValue,
+        index: int = ...,
+    ) -> tuple[MoltValue, MoltValue]: ...
+
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]: ...
 
     def _class_attr_is_data_descriptor(self, class_name: str, attr: str) -> bool: ...
@@ -706,6 +714,17 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _dict_value_hint(self, value: MoltValue) -> str | None: ...
 
+    def _dispatch_split_target(
+        self,
+        node: ast.Call,
+        tag: MoltValue,
+        target: MoltValue,
+        values: list[MoltValue],
+        separator: MoltValue,
+        maxsplit: MoltValue | None,
+        index: int = ...,
+    ) -> MoltValue: ...
+
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str: ...
 
@@ -772,6 +791,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         obj: MoltValue,
         obj_name: str | None,
         exact_class: str | None,
+        *,
+        generic: bool = ...,
     ) -> MoltValue: ...
 
     def _emit_attribute_load_inner(
@@ -780,6 +801,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         obj: MoltValue,
         obj_name: str | None,
         exact_class: str | None,
+        *,
+        generic: bool = ...,
     ) -> MoltValue: ...
 
     def _emit_attribute_store(
@@ -821,7 +844,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]: ...
 
-    def _emit_call_args_builder(self, node: ast.Call) -> MoltValue: ...
+    def _emit_call_args_builder(
+        self, node: ast.Call, *, evaluated: tuple[MoltValue, ...] | None = ...
+    ) -> MoltValue: ...
 
     def _emit_call_bind_for_known_module_func(
         self, node: ast.Call, *, result_hint: str
@@ -852,8 +877,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_class_ref(self, class_name: str) -> MoltValue: ...
-
-    def _emit_closing(self, payload: MoltValue) -> MoltValue: ...
 
     def _emit_compare_op(
         self, op: ast.cmpop, left: MoltValue, right: MoltValue
@@ -1338,10 +1361,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_not(self, value: MoltValue) -> MoltValue: ...
 
-    def _emit_nullcontext(self, payload: MoltValue) -> MoltValue: ...
-
-    def _emit_open_call(self, node: ast.Call) -> MoltValue: ...
-
     def _emit_plain_local_alias_retain(
         self, name: str, value: MoltValue
     ) -> MoltValue: ...
@@ -1380,6 +1399,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_range_step_zero_guard(
         self, step: MoltValue, step_const: int | None
     ) -> None: ...
+
+    def _emit_receiver_call_args(
+        self, receiver: MoltValue, args: list[ast.expr]
+    ) -> tuple[MoltValue, list[MoltValue]]: ...
 
     def _emit_relative_import_error(self, kind: str | None) -> None: ...
 
@@ -1428,6 +1451,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_split_dict_increment_for_loop(self, node: ast.For) -> bool: ...
+
+    def _emit_split_intrinsic(
+        self,
+        index: int,
+        receiver: MoltValue,
+        separator: MoltValue,
+        maxsplit: MoltValue | None,
+    ) -> MoltValue: ...
 
     def _emit_stable_module_func_ref(self, name: str) -> "MoltValue": ...
 
@@ -1998,10 +2029,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _maybe_record_local_intrinsic_wrapper(self, node: ast.FunctionDef) -> None: ...
 
     def _maybe_report_midend_stats(self) -> None: ...
-
-    def _maybe_spill_receiver(
-        self, receiver: MoltValue, args: list[ast.expr]
-    ) -> tuple[MoltValue, int | None]: ...
 
     @staticmethod
     def _midend_csv_tokens(value: str) -> set[str]: ...
@@ -2647,6 +2674,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
 
     def _try_emit_shape_builtin_call(self, node: ast.Call) -> Any: ...
+
+    def _try_emit_split_call(self, node: ast.Call) -> Any: ...
 
     def _try_emit_static_dataclass_constructor(
         self, node: ast.Call, class_id: str, class_info: ClassInfo, class_ref: MoltValue

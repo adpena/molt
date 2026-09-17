@@ -16,6 +16,7 @@ from molt.frontend._types import (
     MethodInfo,
     MoltOp,
     MoltValue,
+    ScratchCell,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -122,15 +123,19 @@ class CallMethodDispatchMixin(_MixinBase):
             return res
         return cached
 
-    def _maybe_spill_receiver(
+    def _emit_receiver_call_args(
         self, receiver: MoltValue, args: list[ast.expr]
-    ) -> tuple[MoltValue, int | None]:
-        if not self.is_async() or not args:
-            return receiver, None
-        if not any(self._expr_may_yield(arg) for arg in args):
-            return receiver, None
-        slot = self._spill_async_value(receiver)
-        return receiver, slot
+    ) -> tuple[MoltValue, list[MoltValue]]:
+        suspends = self.is_async() and any(self._expr_may_yield(arg) for arg in args)
+        cell = (
+            self._new_scratch_cell(receiver, type_hint=receiver.type_hint)
+            if suspends
+            else None
+        )
+        values = self._emit_call_args(args)
+        if cell is not None:
+            receiver = self._consume_scratch_cell(cell)
+        return receiver, values
 
     def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]:
         if not args:
@@ -157,7 +162,7 @@ class CallMethodDispatchMixin(_MixinBase):
                 values.append(arg)
             return values
         values = []
-        spills: list[tuple[int, int, str]] = []
+        spills: list[tuple[int, ScratchCell]] = []
         for idx, expr in enumerate(args):
             arg = self.visit(expr)
             if arg is None:
@@ -166,10 +171,10 @@ class CallMethodDispatchMixin(_MixinBase):
                 )
             values.append(arg)
             if any(yield_flags[idx + 1 :]):
-                slot = self._spill_async_value(arg)
-                spills.append((idx, slot, arg.type_hint))
-        for idx, slot, hint in spills:
-            values[idx] = self._reload_async_value(slot, hint)
+                cell = self._new_scratch_cell(arg, type_hint=arg.type_hint)
+                spills.append((idx, cell))
+        for idx, cell in spills:
+            values[idx] = self._consume_scratch_cell(cell)
         return values
 
     def _try_emit_static_dataclass_constructor(

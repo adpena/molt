@@ -602,10 +602,16 @@ pub(crate) fn split_maxsplit_from_obj(_py: &PyToken<'_>, obj_bits: u64) -> i64 {
     let Some(value) = index_bigint_from_obj(_py, obj_bits, &msg) else {
         return 0;
     };
-    if value.is_negative() {
-        return -1;
+    // The boxed transport is i64 on every backend, but Python's index-sized
+    // admission follows the target pointer width (also used by sys.maxsize).
+    match value.to_isize() {
+        Some(value) => value as i64,
+        None => raise_exception::<i64>(
+            _py,
+            "OverflowError",
+            "Python int too large to convert to C ssize_t",
+        ),
     }
-    value.to_i64().unwrap_or(i64::MAX)
 }
 
 pub(crate) fn index_i64_with_overflow(

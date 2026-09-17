@@ -20,6 +20,7 @@ from molt.frontend.visitors.call_dispatch_named import CallNamedDispatchMixin
 from molt.frontend.visitors.call_dispatch_named_builtins import (
     CallNamedBuiltinDispatchMixin,
 )
+from molt.frontend.visitors.call_dispatch_split import CallSplitDispatchMixin
 from molt.frontend.visitors.call_method_dispatch import CallMethodDispatchMixin
 from molt.frontend.visitors.call_module_dispatch import CallModuleDispatchMixin
 from molt.frontend.visitors.call_reductions import CallReductionMixin
@@ -39,6 +40,7 @@ class CallVisitorMixin(
     CallNamedBuiltinDispatchMixin,
     CallImportedAttributeDispatchMixin,
     CallAttributeDispatchMixin,
+    CallSplitDispatchMixin,
     CallRuntimeHelperMixin,
     CallMethodDispatchMixin,
     CallModuleDispatchMixin,
@@ -46,6 +48,9 @@ class CallVisitorMixin(
     _MixinBase,
 ):
     def visit_Call(self, node: ast.Call) -> Any:
+        split_result = self._try_emit_split_call(node)
+        if split_result is not CALL_NOT_HANDLED:
+            return split_result
         if self._expression_has_invalidated_binding(node.func) or (
             self._call_has_bound_builtin_name(node.func)
             and self._specializable_builtin_name(node) is None
