@@ -443,7 +443,7 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
 }
 
 #[test]
-#[should_panic(expected = "call_internal declaration mismatch for `helper`")]
+#[should_panic(expected = "conflicting static call ABI for helper")]
 fn call_internal_signature_mismatch_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![

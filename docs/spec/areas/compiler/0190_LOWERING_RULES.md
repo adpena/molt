@@ -223,6 +223,13 @@ ABI facts, argument boxing and result handling. Machine `i64` carriers alone do
 not distinguish objects from raw integers, addresses or opaque handles. The
 runtime manifest owns representation contracts; machine declarations and
 dedicated raw/mixed lowering do not confer generic boxed-call eligibility.
+Descriptor construction (`classmethod_new`, `staticmethod_new`, `property_new`,
+and `bound_method_new`) uses that shared boxed route, including exact arity,
+selected-runtime symbol availability, typed argument materialization and owned
+result transfer/release. There is no separate descriptor signature/lowering table.
+Boxed runtime calls borrow arguments: temporary owners minted when boxing raw
+integers are released after the call independently of result ownership, while
+already-boxed operand owners remain with their original SSA values.
 Class allocation publishes initialized storage before exposing an owned result;
 generator locals registration preserves raw function addresses alongside boxed
 metadata. Borrowed closure edges acquire a reference only when retained as an IR

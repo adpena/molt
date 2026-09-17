@@ -378,7 +378,7 @@ fn preserved_runtime_call_rejects_name_only_symbol_drift() {
 
     let err = lower_preserved_kind_ir(&backend, "unclassified_runtime_symbol", 2, true, None)
         .expect_err("name-only preserved runtime symbols must fail before LLVM declaration");
-    assert_lowering_error_contains(&err, "has no LLVM ABI classification");
+    assert_lowering_error_contains(&err, "has no positional boxed-value ABI classification");
     assert_lowering_error_contains(&err, "molt_unclassified_runtime_symbol");
 }
 
