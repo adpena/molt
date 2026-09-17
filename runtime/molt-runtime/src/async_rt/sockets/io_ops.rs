@@ -117,42 +117,13 @@ pub unsafe extern "C" fn molt_socket_recv_into(
             if socket_ptr.is_null() {
                 return MoltObject::from_int(0).bits();
             }
-            let buffer_obj = obj_from_bits(buffer_bits);
-            let buffer_ptr = buffer_obj.as_ptr();
-            if buffer_ptr.is_none() {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recv_into requires a writable buffer",
-                );
-            }
-            let buffer_ptr = buffer_ptr.unwrap();
+            let buffer =
+                match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
+                    Ok(buffer) => buffer,
+                    Err(err) => return err.raise(_py, "recv_into requires a writable buffer"),
+                };
             let size = to_i64(obj_from_bits(size_bits)).unwrap_or(-1);
-            let target_len;
-            let mut use_memoryview = false;
-            let type_id = object_type_id(buffer_ptr);
-            if type_id == TYPE_ID_BYTEARRAY {
-                target_len = bytearray_len(buffer_ptr);
-            } else if type_id == TYPE_ID_MEMORYVIEW {
-                if memoryview_released(buffer_ptr) {
-                    return raise_released_memoryview(_py);
-                }
-                if memoryview_readonly(buffer_ptr) {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "recv_into requires a writable buffer",
-                    );
-                }
-                target_len = memoryview_len(buffer_ptr);
-                use_memoryview = true;
-            } else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recv_into requires a writable buffer",
-                );
-            }
+            let target_len = buffer.len();
             let size = if size < 0 {
                 target_len
             } else {
@@ -173,57 +144,20 @@ pub unsafe extern "C" fn molt_socket_recv_into(
                     let fd = inner.raw_socket().ok_or_else(|| {
                         std::io::Error::new(ErrorKind::NotConnected, "socket closed")
                     })?;
-                    if use_memoryview {
-                        if let Some(slice) = memoryview_bytes_slice_mut(buffer_ptr) {
-                            let len = size.min(slice.len());
-                            let ret = libc::recv(
-                                libc_socket(fd),
-                                slice.as_mut_ptr() as *mut c_void,
-                                len,
-                                flags,
-                            );
-                            if ret >= 0 {
-                                Ok((ret as usize, None))
-                            } else {
-                                Err(std::io::Error::last_os_error())
-                            }
-                        } else {
-                            let mut tmp = vec![0u8; size];
-                            let ret = libc::recv(
-                                libc_socket(fd),
-                                tmp.as_mut_ptr() as *mut c_void,
-                                tmp.len(),
-                                flags,
-                            );
-                            if ret >= 0 {
-                                Ok((ret as usize, Some(tmp)))
-                            } else {
-                                Err(std::io::Error::last_os_error())
-                            }
-                        }
+                    let ret = libc::recv(
+                        libc_socket(fd),
+                        buffer.as_mut_ptr() as *mut c_void,
+                        size,
+                        flags,
+                    );
+                    if ret >= 0 {
+                        Ok(ret as usize)
                     } else {
-                        let buf = bytearray_vec(buffer_ptr);
-                        let ret = libc::recv(
-                            libc_socket(fd),
-                            buf.as_mut_ptr() as *mut c_void,
-                            size,
-                            flags,
-                        );
-                        if ret >= 0 {
-                            Ok((ret as usize, None))
-                        } else {
-                            Err(std::io::Error::last_os_error())
-                        }
+                        Err(std::io::Error::last_os_error())
                     }
                 });
                 match res {
-                    Ok((n, tmp)) => {
-                        if use_memoryview
-                            && let Some(tmp) = tmp.as_ref()
-                            && let Err(msg) = memoryview_write_bytes(buffer_ptr, &tmp[..n])
-                        {
-                            return raise_exception::<u64>(_py, "TypeError", &msg);
-                        }
+                    Ok(n) => {
                         return MoltObject::from_int(n as i64).bits();
                     }
                     Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -615,43 +549,13 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
         if socket_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let buffer_obj = obj_from_bits(buffer_bits);
-        let buffer_ptr = match buffer_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recvfrom_into requires a writable buffer",
-                );
-            }
-        };
+        let buffer =
+            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
+                Ok(buffer) => buffer,
+                Err(err) => return err.raise(_py, "recvfrom_into requires a writable buffer"),
+            };
         let size = to_i64(obj_from_bits(size_bits)).unwrap_or(-1);
-        let target_len;
-        let mut use_memoryview = false;
-        let type_id = unsafe { object_type_id(buffer_ptr) };
-        if type_id == TYPE_ID_BYTEARRAY {
-            target_len = unsafe { bytearray_len(buffer_ptr) };
-        } else if type_id == TYPE_ID_MEMORYVIEW {
-            if unsafe { memoryview_released(buffer_ptr) } {
-                return raise_released_memoryview(_py);
-            }
-            if unsafe { memoryview_readonly(buffer_ptr) } {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "recvfrom_into requires a writable buffer",
-                );
-            }
-            target_len = unsafe { memoryview_len(buffer_ptr) };
-            use_memoryview = true;
-        } else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "recvfrom_into requires a writable buffer",
-            );
-        }
+        let target_len = buffer.len();
         let size = if size < 0 {
             target_len
         } else {
@@ -674,74 +578,24 @@ pub unsafe extern "C" fn molt_socket_recvfrom_into(
                     .ok_or_else(|| std::io::Error::new(ErrorKind::NotConnected, "socket closed"))?;
                 let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
                 let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-                if use_memoryview {
-                    if let Some(slice) = unsafe { memoryview_bytes_slice_mut(buffer_ptr) } {
-                        let recv_len = size.min(slice.len());
-                        let ret = unsafe {
-                            libc::recvfrom(
-                                libc_socket(fd),
-                                slice.as_mut_ptr() as *mut c_void,
-                                recv_len,
-                                flags,
-                                &mut storage as *mut _ as *mut libc::sockaddr,
-                                &mut len,
-                            )
-                        };
-                        if ret >= 0 {
-                            Ok((ret as usize, sock_addr_from_storage(storage, len), None))
-                        } else {
-                            Err(std::io::Error::last_os_error())
-                        }
-                    } else {
-                        let mut tmp = vec![0u8; size];
-                        let ret = unsafe {
-                            libc::recvfrom(
-                                libc_socket(fd),
-                                tmp.as_mut_ptr() as *mut c_void,
-                                tmp.len(),
-                                flags,
-                                &mut storage as *mut _ as *mut libc::sockaddr,
-                                &mut len,
-                            )
-                        };
-                        if ret >= 0 {
-                            Ok((
-                                ret as usize,
-                                sock_addr_from_storage(storage, len),
-                                Some(tmp),
-                            ))
-                        } else {
-                            Err(std::io::Error::last_os_error())
-                        }
-                    }
+                let ret = unsafe {
+                    libc::recvfrom(
+                        libc_socket(fd),
+                        buffer.as_mut_ptr() as *mut c_void,
+                        size,
+                        flags,
+                        &mut storage as *mut _ as *mut libc::sockaddr,
+                        &mut len,
+                    )
+                };
+                if ret >= 0 {
+                    Ok((ret as usize, sock_addr_from_storage(storage, len)))
                 } else {
-                    let buf = unsafe { bytearray_vec(buffer_ptr) };
-                    let recv_len = size.min(buf.len());
-                    let ret = unsafe {
-                        libc::recvfrom(
-                            libc_socket(fd),
-                            buf.as_mut_ptr() as *mut c_void,
-                            recv_len,
-                            flags,
-                            &mut storage as *mut _ as *mut libc::sockaddr,
-                            &mut len,
-                        )
-                    };
-                    if ret >= 0 {
-                        Ok((ret as usize, sock_addr_from_storage(storage, len), None))
-                    } else {
-                        Err(std::io::Error::last_os_error())
-                    }
+                    Err(std::io::Error::last_os_error())
                 }
             });
             match res {
-                Ok((n, addr, tmp)) => {
-                    if use_memoryview
-                        && let Some(tmp) = tmp.as_ref()
-                        && let Err(msg) = unsafe { memoryview_write_bytes(buffer_ptr, &tmp[..n]) }
-                    {
-                        return raise_exception::<u64>(_py, "TypeError", &msg);
-                    }
+                Ok((n, addr)) => {
                     let n_bits = MoltObject::from_int(n as i64).bits();
                     let addr_bits = sockaddr_to_bits(_py, &addr);
                     let tuple_ptr = alloc_tuple(_py, &[n_bits, addr_bits]);
@@ -1300,10 +1154,7 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
             });
             match res {
                 Ok((n, msg_flags, addr_bits, ancillary_items)) => {
-                    if let Err(bits) = write_recvmsg_into_targets(_py, &targets, &tmp[..n]) {
-                        dec_ref_bits(_py, addr_bits);
-                        return bits;
-                    }
+                    write_recvmsg_into_targets(&targets, &tmp[..n]);
                     let anc_bits = match build_ancillary_list_bits(_py, ancillary_items.as_slice())
                     {
                         Ok(bits) => bits,

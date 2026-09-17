@@ -739,11 +739,9 @@ unsafe fn list_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> b
 
 unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64) -> bool {
     unsafe {
-        let vec_ptr = bytearray_vec_ptr(ptr);
-        let elems = &mut *vec_ptr;
         if count <= 0 {
-            elems.clear();
-            return true;
+            return crate::object::buffer_exports::bytearray_mutate(_py, ptr, 0, Vec::clear)
+                .is_some();
         }
         let count = match usize::try_from(count) {
             Ok(val) => val,
@@ -758,11 +756,11 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
         if count == 1 {
             return true;
         }
-        let snapshot = elems.clone();
-        if snapshot.is_empty() {
+        let len = bytearray_len(ptr);
+        if len == 0 {
             return true;
         }
-        let total = match snapshot.len().checked_mul(count) {
+        let total = match len.checked_mul(count) {
             Some(total) => total,
             None => {
                 return raise_exception::<_>(
@@ -772,18 +770,12 @@ unsafe fn bytearray_repeat_in_place(_py: &PyToken<'_>, ptr: *mut u8, count: i64)
                 );
             }
         };
-        if !crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            vec_ptr,
-            total,
-            "bytearray allocation failed",
-        ) {
-            return false;
-        }
-        for _ in 1..count {
-            elems.extend_from_slice(&snapshot);
-        }
-        true
+        crate::object::buffer_exports::bytearray_mutate(_py, ptr, total, |elems| {
+            for _ in 1..count {
+                elems.extend_from_within(..len);
+            }
+        })
+        .is_some()
     }
 }
 
@@ -817,21 +809,13 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             let msg = format!("can't concat {} to bytearray", type_name(_py, other));
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        let vec_ptr = bytearray_vec_ptr(ptr);
-        let elems = &mut *vec_ptr;
-        let Some(required_len) = elems.len().checked_add(payload.len()) else {
+        let Some(required_len) = bytearray_len(ptr).checked_add(payload.len()) else {
             return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
         };
-        if !crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            vec_ptr,
-            required_len,
-            "bytearray allocation failed",
-        ) {
-            return false;
-        }
-        elems.extend_from_slice(&payload);
-        true
+        crate::object::buffer_exports::bytearray_mutate(_py, ptr, required_len, |elems| {
+            elems.extend_from_slice(&payload)
+        })
+        .is_some()
     }
 }
 
@@ -2464,7 +2448,9 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
                 "boolean negation or ~int(x) if you really want the bitwise ",
                 "inversion of the underlying int."
             );
-            crate::builtins::warnings_ext::emit_deprecation_warning(_py, msg);
+            if !crate::builtins::warnings_ext::emit_deprecation_warning(_py, msg) {
+                return MoltObject::none().bits();
+            }
         }
         if let Some(i) = to_i64(obj) {
             let res = -(i as i128) - 1;

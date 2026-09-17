@@ -75,6 +75,10 @@ for right in (False, True):
                 ("base-empty", memoryview(b"")),
                 ("singleton-strided", memoryview(b"|x")[::2]),
                 ("two-dimensional", memoryview(b"||").cast("B", (1, 2))),
+                (
+                    "empty-two-dimensional-strided",
+                    memoryview(bytearray(6)).cast("B", (3, 2))[0:0:2],
+                ),
             ):
                 if buffer_label != "released":
                     print(
@@ -163,4 +167,11 @@ for method in ("strip", "lstrip", "rstrip"):
         observe(
             ("custom-trim", method, repr(chars)),
             lambda: getattr("\ud800x\ud800", method)(chars),
+        )
+
+for method in ("strip", "lstrip", "rstrip", "isspace"):
+    for receiver in (1, None, b" ", bytearray(b" ")):
+        observe(
+            ("text-descriptor", method, type(receiver).__name__),
+            lambda: getattr(str, method)(receiver),
         )

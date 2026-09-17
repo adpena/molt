@@ -50,6 +50,16 @@ def test_cpython_split_protocol_capsule() -> None:
     )
 
 
+def test_cpython_string_predicate_capsule() -> None:
+    runpy.run_path(
+        str(Path(__file__).parent / "differential/basic/string_predicate_protocol.py")
+    )
+
+
+def test_cpython_float_protocol_capsule() -> None:
+    runpy.run_path(str(Path(__file__).parent / "differential/basic/float_protocol.py"))
+
+
 @pytest.mark.parametrize("source", ["[]", "[1]", "{}", "{'key': 1}", "{1}"])
 def test_tracked_allocation_binding_preserves_current_contents_not_freshness(
     source: str,

@@ -53,9 +53,9 @@ unsafe fn set_type_error(message: &'static [u8]) {
 /// `view.format`/`shape`/`strides` pointers point into it for the whole view
 /// lifetime. It replaces the former 1112 B `BufferInternal` box (a wholesale
 /// `MoltBufferView` copy): the runtime release hook (`molt_buffer_release`)
-/// consumes ONLY `owner`, and C consumes only `format` plus `ndim`-many
-/// shape/stride entries, so that is all we store — 32 B + 16 B/dim instead of
-/// a fixed 1112 B.
+/// consumes `owner` and a distinct `base`, and C consumes only `format` plus
+/// `ndim`-many shape/stride entries, so that is all we store — a 40 B header
+/// plus two isizes per dimension (16 B/dim on 64-bit) instead of a fixed 1112 B.
 ///
 /// `ndim` is stored in the header (self-describing) so release re-derives the
 /// exact allocation [`Layout`] from the allocation itself rather than trusting
@@ -66,6 +66,10 @@ struct ExportInternal {
     /// strong ref minted by `molt_buffer_acquire`, dropped exactly once at
     /// release via the `buffer_release` hook.
     owner: u64,
+    /// Descriptor base edge retained by acquisition when distinct from owner.
+    /// Preserve even equal/zero values: the runtime release hook alone decides
+    /// whether this is a second owned reference, avoiding duplicate decrefs.
+    base: u64,
     /// Number of dimensions = half the tail length. Bounded by
     /// [`MOLT_BUFFER_MAX_NDIM`], enforced before allocation.
     ndim: u32,
@@ -110,13 +114,14 @@ unsafe fn export_internal_dims(internal: *mut ExportInternal, ndim: usize) -> *m
 unsafe fn export_internal_new(descriptor: &MoltBufferView) -> *mut ExportInternal {
     let ndim = descriptor.ndim as usize;
     let (layout, dims_offset) = export_internal_layout(ndim);
-    // SAFETY: the layout has non-zero size (the header alone is 32 bytes).
+    // SAFETY: the layout has non-zero size (the header alone is 40 bytes).
     let internal = unsafe { std::alloc::alloc(layout) }.cast::<ExportInternal>();
     if internal.is_null() {
         return internal;
     }
     unsafe {
         (&raw mut (*internal).owner).write(descriptor.owner);
+        (&raw mut (*internal).base).write(descriptor.base);
         (&raw mut (*internal).ndim).write(descriptor.ndim);
         (&raw mut (*internal)._reserved).write(0);
         (&raw mut (*internal).format).write(descriptor.format);
@@ -129,23 +134,28 @@ unsafe fn export_internal_new(descriptor: &MoltBufferView) -> *mut ExportInterna
     internal
 }
 
-/// Release a molt-native export: drop the runtime pin recorded in `owner`
-/// (via the `buffer_release` hook — `molt_buffer_release` consumes ONLY
-/// `view.owner`), then free the right-sized allocation using the layout
-/// re-derived from the header's own `ndim`.
+/// Release a molt-native export: pass the exact acquired owner/base pair to
+/// the runtime release hook, then free the right-sized allocation using the
+/// layout re-derived from the header's own `ndim`. The hook is supplied by the
+/// caller so this operation does not install or mutate a global hook table.
 ///
 /// # Safety
 /// `internal` must be a live allocation created by [`export_internal_new`];
 /// it is freed here and must not be used afterwards.
-unsafe fn export_internal_release(internal: *mut ExportInternal) {
+unsafe fn export_internal_release(
+    internal: *mut ExportInternal,
+    release_hook: unsafe extern "C" fn(*mut MoltBufferView) -> c_int,
+) {
     unsafe {
         let owner = (&raw const (*internal).owner).read();
+        let base = (&raw const (*internal).base).read();
         let ndim = (&raw const (*internal).ndim).read() as usize;
         let mut descriptor = MoltBufferView {
             owner,
+            base,
             ..Default::default()
         };
-        let _ = (hooks_or_stubs().buffer_release)(&mut descriptor as *mut MoltBufferView);
+        let _ = release_hook(&mut descriptor as *mut MoltBufferView);
         let (layout, _) = export_internal_layout(ndim);
         std::alloc::dealloc(internal.cast(), layout);
     }
@@ -598,7 +608,10 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
                 // Ours: only molt's own `PyObject_GetBuffer` publishes a
                 // non-NULL `internal` on a view whose exporter is molt-native,
                 // so the deref is safe AFTER the obj-nature check above.
-                export_internal_release(internal.cast::<ExportInternal>());
+                export_internal_release(
+                    internal.cast::<ExportInternal>(),
+                    hooks_or_stubs().buffer_release,
+                );
             }
         } else if let Some(releasebuffer) = foreign_bf_releasebuffer(obj) {
             // View filled by a C-extension bf_getbuffer: CPython calls
@@ -819,12 +832,12 @@ mod export_internal_tests {
     use super::*;
 
     /// Right-sized-allocation gate: the per-export internal for a molt-native
-    /// `PyObject_GetBuffer` is a 32 B header + 16 B/dim tail — NOT the former
+    /// `PyObject_GetBuffer` is a 40 B header + two isizes/dim tail — NOT the former
     /// fixed 1112 B `BufferInternal` box. If a field is added to
     /// [`ExportInternal`] this updates deliberately.
     #[test]
     fn export_internal_is_right_sized() {
-        assert_eq!(std::mem::size_of::<ExportInternal>(), 32);
+        assert_eq!(std::mem::size_of::<ExportInternal>(), 40);
         for ndim in [0usize, 1, 2, 3, 4, MOLT_BUFFER_MAX_NDIM] {
             let (layout, dims_offset) = export_internal_layout(ndim);
             assert_eq!(dims_offset, std::mem::size_of::<ExportInternal>());
@@ -837,7 +850,7 @@ mod export_internal_tests {
     }
 
     /// Alloc→read→release roundtrip: the tail carries shape then strides, the
-    /// header carries format/ndim/owner, and release (under stub hooks) frees
+    /// header carries format/ndim/owner/base, and release (under stub hooks) frees
     /// the allocation with the layout re-derived from the header's `ndim`.
     #[test]
     fn export_internal_roundtrip_preserves_dims_and_format() {
@@ -859,7 +872,45 @@ mod export_internal_tests {
             let format = (&raw const (*internal).format).cast::<u8>();
             assert_eq!(*format, b'd');
             assert_eq!((&raw const (*internal).ndim).read(), 3);
-            export_internal_release(internal);
+            export_internal_release(internal, crate::hooks::STUB_HOOKS.buffer_release);
         }
+    }
+
+    std::thread_local! {
+        static RELEASE_PAYLOADS: std::cell::RefCell<Vec<(u64, u64)>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+    }
+
+    unsafe extern "C" fn record_release_payload(descriptor: *mut MoltBufferView) -> c_int {
+        let owner = unsafe { (&raw const (*descriptor).owner).read() };
+        let base = unsafe { (&raw const (*descriptor).base).read() };
+        RELEASE_PAYLOADS.with(|payloads| payloads.borrow_mut().push((owner, base)));
+        0
+    }
+
+    #[test]
+    fn buffer_export_contract_compact_release_preserves_owner_and_base() {
+        RELEASE_PAYLOADS.with(|payloads| payloads.borrow_mut().clear());
+        let cases = [(7, 11), (7, 7), (7, 0), (0, 0)];
+        for (owner, base) in cases {
+            let descriptor = MoltBufferView {
+                owner,
+                base,
+                ndim: 2,
+                ..Default::default()
+            };
+            unsafe {
+                let internal = export_internal_new(&descriptor);
+                assert!(!internal.is_null());
+                // Exercise the exact release-to-hook payload, not just field
+                // storage. Equality is preserved for runtime deduplication.
+                export_internal_release(internal, record_release_payload);
+            }
+        }
+        RELEASE_PAYLOADS.with(|payloads| {
+            assert_eq!(payloads.borrow().as_slice(), &cases);
+            payloads.borrow_mut().clear();
+        });
     }
 }

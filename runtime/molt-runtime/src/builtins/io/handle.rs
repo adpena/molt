@@ -233,25 +233,10 @@ pub(crate) unsafe fn file_handle_enter(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
 }
 
 pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits: u64) -> u64 {
-    unsafe {
-        let handle_ptr = file_handle_ptr(ptr);
-        if !handle_ptr.is_null() {
-            let handle = &mut *handle_ptr;
-            if let Err(bits) = file_handle_require_attached(_py, handle) {
-                return bits;
-            }
-            let backend_state = Arc::clone(&handle.state);
-            {
-                let mut guard = backend_state.backend.lock().unwrap();
-                if let Some(backend) = guard.as_mut()
-                    && let Err(bits) = flush_write_buffer(_py, handle, backend)
-                {
-                    return bits;
-                }
-            }
-            file_handle_close_ptr(ptr);
-            handle.closed = true;
-        }
+    let result = molt_file_close(MoltObject::from_ptr(ptr).bits());
+    if exception_pending(_py) {
+        result
+    } else {
         MoltObject::from_bool(false).bits()
     }
 }
@@ -264,14 +249,7 @@ pub(crate) fn close_payload(_py: &PyToken<'_>, payload_bits: u64) {
     };
     unsafe {
         if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
-            let handle_ptr = file_handle_ptr(ptr);
-            if !handle_ptr.is_null() {
-                let handle = &*handle_ptr;
-                if file_handle_require_attached(_py, handle).is_err() {
-                    return;
-                }
-            }
-            file_handle_close_ptr(ptr);
+            let _ = molt_file_close(payload_bits);
             return;
         }
     }

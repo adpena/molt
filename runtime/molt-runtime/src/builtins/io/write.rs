@@ -149,6 +149,18 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             };
             let should_flush = handle.write_through || (handle.line_buffering && flush_newline);
             if handle.buffer_size == 0 {
+                if matches!(backend, MoltFileBackend::Memory(_)) {
+                    let ptr = super::buffer::memory_backend_ptr_from_bits(
+                        _py,
+                        memory_backend_bits(handle),
+                    );
+                    match ptr.and_then(|ptr| {
+                        crate::object::buffer_exports::bytearray_require_unexported(_py, ptr)
+                    }) {
+                        Ok(()) => {}
+                        Err(bits) => return bits,
+                    }
+                }
                 let mut written = 0usize;
                 while written < bytes.len() {
                     let n = match backend_write_bytes(
@@ -331,6 +343,18 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
             // "I/O operation on closed file" on a second close.
             if file_handle_is_closed(handle) {
                 return MoltObject::none().bits();
+            }
+            let mem_bits = memory_backend_bits(handle);
+            if mem_bits != 0 && !obj_from_bits(mem_bits).is_none() {
+                let mem_ptr = match super::buffer::memory_backend_ptr_from_bits(_py, mem_bits) {
+                    Ok(ptr) => ptr,
+                    Err(bits) => return bits,
+                };
+                if let Err(bits) =
+                    crate::object::buffer_exports::bytearray_require_unexported(_py, mem_ptr)
+                {
+                    return bits;
+                }
             }
         }
         // CPython closes a stream by flushing it first; for a `TextIOWrapper`

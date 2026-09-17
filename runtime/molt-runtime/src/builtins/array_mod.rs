@@ -145,7 +145,7 @@ impl ArrayElem {
 pub(crate) struct ArrayHandle {
     typecode: Typecode,
     data: Vec<u8>,
-    exports: usize,
+    exports: crate::object::buffer_exports::BufferExports,
 }
 
 impl ArrayHandle {
@@ -153,7 +153,7 @@ impl ArrayHandle {
         ArrayHandle {
             typecode,
             data: Vec::new(),
-            exports: 0,
+            exports: crate::object::buffer_exports::BufferExports::new(),
         }
     }
 
@@ -390,7 +390,7 @@ impl ArrayHandle {
     }
 
     fn resize_blocked(&self) -> bool {
-        self.exports != 0
+        self.exports.is_exported()
     }
 }
 
@@ -420,11 +420,11 @@ pub(crate) struct ArrayBufferLease {
 
 impl Drop for ArrayBufferLease {
     fn drop(&mut self) {
-        let mut guard = self
+        let guard = self
             .cell
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.exports = guard.exports.saturating_sub(1);
+        guard.exports.release();
     }
 }
 
@@ -476,6 +476,9 @@ fn ensure_array_resizable(_py: &PyToken<'_>, handle: &ArrayHandle) -> Result<(),
 fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<ArrayCell>> {
     if let Some(cell) = array_arc_from_bits(bits) {
         return Some(cell);
+    }
+    if let Some(lease) = array_lease_arc_from_bits(bits) {
+        return Some(Arc::clone(&lease.cell));
     }
     let ptr = obj_from_bits(bits).as_ptr()?;
     unsafe {
@@ -541,44 +544,34 @@ pub(crate) fn array_storage_from_object_bits(
     let stride =
         isize::try_from(itemsize).map_err(|_| TypedStridedStorageError::InvalidDescriptor)?;
     let data = guard.data.as_ptr().cast_mut();
-    let format_ptr = alloc_string(_py, &[guard.typecode.as_char() as u8]);
-    if format_ptr.is_null() {
-        return Err(TypedStridedStorageError::InvalidDescriptor);
-    }
-    let format_bits = MoltObject::from_ptr(format_ptr).bits();
-    let storage = TypedStridedStorage::one_dim(
-        data,
-        false,
-        guard.len(),
-        itemsize,
-        stride,
-        0,
-        bits,
-        format_bits,
-    );
-    // `one_dim`/`new` copies the typecode into the descriptor's inline `format`
-    // bytes during construction, so the transient format-string object is no
-    // longer needed. Drop it and clear `format_bits`: a `MoltBufferView` carries
-    // the inline bytes (not a string handle), and nothing downstream owns this
-    // reference — leaving it set would leak the string on every buffer export.
-    dec_ref_bits(_py, format_bits);
+    let format = guard.typecode.as_char() as u8;
+    let storage =
+        TypedStridedStorage::one_dim(data, false, guard.len(), itemsize, stride, 0, bits, 0);
+    // C descriptors carry their format inline. No transient Python allocation
+    // may run finalizers while the backing lock is held.
     let mut storage = storage.ok_or(TypedStridedStorageError::InvalidDescriptor)?;
-    storage.format_bits = 0;
+    storage.format[0] = format;
     Ok(storage)
 }
 
 pub(crate) fn array_buffer_owner_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<u64>, ()> {
     if array_lease_arc_from_bits(bits).is_some() {
-        crate::inc_ref_bits(_py, bits);
+        // Derived consumers share the already-counted lease. Its native-handle
+        // refcount keeps the pin until the last owner disappears; allocating a
+        // second lease here would duplicate both the counter and heap work.
+        inc_ref_bits(_py, bits);
         return Ok(Some(bits));
     }
     let Some(cell) = array_cell_from_export_source(_py, bits) else {
         return Ok(None);
     };
-    {
-        let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.exports = guard.exports.checked_add(1).ok_or(())?;
-    }
+    let acquired = {
+        let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.exports.acquire()
+    };
+    acquired.map_err(|()| {
+        let _ = raise_exception::<u64>(_py, "OverflowError", "too many exported buffers");
+    })?;
     let lease_bits = native_handle_new(
         _py,
         Arc::new(ArrayBufferLease {
@@ -586,8 +579,8 @@ pub(crate) fn array_buffer_owner_bits(_py: &PyToken<'_>, bits: u64) -> Result<Op
         }),
     );
     if lease_bits == 0 {
-        let mut guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.exports = guard.exports.saturating_sub(1);
+        // native_handle_new consumes its Arc on failure; lease Drop already
+        // released the pin. A second decrement steals another live export.
         return Err(());
     }
     Ok(Some(lease_bits))

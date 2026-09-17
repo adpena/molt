@@ -3,6 +3,7 @@
 //! Each `pub extern "C" fn molt_bytes_*` / `molt_bytearray_*` is a separate
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
+use crate::object::buffer_exports::bytearray_mutate;
 use crate::object::ops_encoding::DecodeFailure;
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -137,20 +138,16 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
             return MoltObject::none().bits();
         };
         unsafe {
-            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
-            let vec = &mut *vec_ptr;
-            let Some(required_len) = vec.len().checked_add(payload.len()) else {
+            let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(payload.len()) else {
                 return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
             };
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                required_len,
-                "bytearray allocation failed",
-            ) {
+            if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| {
+                vec.extend_from_slice(&payload)
+            })
+            .is_none()
+            {
                 return MoltObject::none().bits();
             }
-            vec.extend_from_slice(&payload);
         }
         MoltObject::none().bits()
     })
@@ -176,17 +173,12 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
             return MoltObject::none().bits();
         };
         unsafe {
-            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
-            let vec = &mut *vec_ptr;
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                vec.len().saturating_add(1),
-                "bytearray allocation failed",
-            ) {
+            let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(1) else {
+                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+            };
+            if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| vec.push(byte)).is_none() {
                 return MoltObject::none().bits();
             }
-            vec.push(byte);
         }
         MoltObject::none().bits()
     })
@@ -263,7 +255,7 @@ pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(_py, "TypeError", "bytearray.clear expects bytearray");
             }
-            bytearray_vec(bytearray_ptr).clear();
+            let _ = bytearray_mutate(_py, bytearray_ptr, 0, Vec::clear);
         }
         MoltObject::none().bits()
     })
@@ -309,10 +301,6 @@ pub extern "C" fn molt_bytearray_insert(
                     "bytearray.insert expects bytearray",
                 );
             }
-            let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
-                return MoltObject::none().bits();
-            };
-            let len = bytearray_vec_ref(bytearray_ptr).len() as i64;
             let mut idx = index_i64_from_obj(
                 _py,
                 index_bits,
@@ -321,6 +309,10 @@ pub extern "C" fn molt_bytearray_insert(
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
+            let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
+                return MoltObject::none().bits();
+            };
+            let len = bytearray_len(bytearray_ptr) as i64;
             if idx < 0 {
                 idx += len;
             }
@@ -330,17 +322,16 @@ pub extern "C" fn molt_bytearray_insert(
             if idx > len {
                 idx = len;
             }
-            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
-            let vec = &mut *vec_ptr;
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                vec.len().saturating_add(1),
-                "bytearray allocation failed",
-            ) {
+            let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(1) else {
+                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+            };
+            if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| {
+                vec.insert(idx as usize, byte)
+            })
+            .is_none()
+            {
                 return MoltObject::none().bits();
             }
-            vec.insert(idx as usize, byte);
             MoltObject::none().bits()
         }
     })
@@ -358,13 +349,8 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
             }
-            let elems = bytearray_vec(bytearray_ptr);
-            let len = elems.len() as i64;
-            if len == 0 {
-                return raise_exception::<_>(_py, "IndexError", "pop from empty bytearray");
-            }
             let mut idx = if index_obj.is_none() {
-                len - 1
+                -1
             } else {
                 index_i64_from_obj(
                     _py,
@@ -375,13 +361,21 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
+            let len = bytearray_len(bytearray_ptr) as i64;
+            if len == 0 {
+                return raise_exception::<_>(_py, "IndexError", "pop from empty bytearray");
+            }
             if idx < 0 {
                 idx += len;
             }
             if idx < 0 || idx >= len {
                 return raise_exception::<_>(_py, "IndexError", "pop index out of range");
             }
-            let out = elems.remove(idx as usize);
+            let Some(out) = bytearray_mutate(_py, bytearray_ptr, len as usize - 1, |elems| {
+                elems.remove(idx as usize)
+            }) else {
+                return MoltObject::none().bits();
+            };
             MoltObject::from_int(i64::from(out)).bits()
         }
     })
@@ -405,9 +399,10 @@ pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u
             let Some(byte) = bytes_item_to_u8(_py, val_bits, BytesCtorKind::Bytearray) else {
                 return MoltObject::none().bits();
             };
-            let elems = bytearray_vec(bytearray_ptr);
+            let elems = bytearray_vec_ref(bytearray_ptr);
             if let Some(pos) = elems.iter().position(|item| *item == byte) {
-                elems.remove(pos);
+                let len = elems.len();
+                let _ = bytearray_mutate(_py, bytearray_ptr, len - 1, |elems| elems.remove(pos));
                 return MoltObject::none().bits();
             }
             raise_exception::<_>(_py, "ValueError", "value not found in bytearray")
@@ -463,17 +458,16 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
                     "bytearray.resize expects bytearray",
                 );
             }
-            let size = size as usize;
-            let vec_ptr = bytearray_vec_ptr(bytearray_ptr);
-            if !crate::object::backing::tracked_vec_reserve_or_raise(
-                _py,
-                vec_ptr,
-                size,
-                "bytearray allocation failed",
-            ) {
+            let Ok(size) = usize::try_from(size) else {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
+            };
+            if bytearray_mutate(_py, bytearray_ptr, size, |vec| vec.resize(size, 0)).is_none() {
                 return MoltObject::none().bits();
             }
-            bytearray_vec(bytearray_ptr).resize(size, 0u8);
         }
         MoltObject::none().bits()
     })

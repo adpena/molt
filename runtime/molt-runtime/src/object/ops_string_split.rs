@@ -4,6 +4,7 @@ use crate::*;
 use memchr::memmem;
 use molt_obj_model::MoltObject;
 
+use super::ops_string::validate_string_receiver;
 use super::ops_string_utf8::{utf8_codepoint_count_cached, wtf8_codepoint_at};
 fn partition_string_bytes(
     _py: &PyToken<'_>,
@@ -153,32 +154,6 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-/// Validate a split descriptor receiver before any argument protocol executes.
-///
-/// # Safety
-/// Caller must hold the GIL and pass object bits whose pointees stay live for
-/// the returned raw pointers. The returned pointers are only borrowed; callers
-/// must not store them beyond the current GIL entry.
-unsafe fn validate_string_split_receiver(
-    _py: &PyToken<'_>,
-    hay_bits: u64,
-    from_right: bool,
-) -> Option<*mut u8> {
-    let hay = obj_from_bits(hay_bits);
-    if let Some(ptr) = hay.as_ptr() {
-        if unsafe { object_type_id(ptr) } == TYPE_ID_STRING {
-            return Some(ptr);
-        }
-    }
-    let method = if from_right { "rsplit" } else { "split" };
-    let msg = format!(
-        "descriptor '{method}' for 'str' objects doesn't apply to a '{}' object",
-        type_name(_py, hay)
-    );
-    raise_exception::<()>(_py, "TypeError", &msg);
-    None
-}
-
 unsafe fn validate_string_split_separator(_py: &PyToken<'_>, needle_bits: u64) -> Option<*mut u8> {
     let needle = obj_from_bits(needle_bits);
     if let Some(ptr) = needle.as_ptr() {
@@ -202,7 +177,7 @@ unsafe fn validate_explicit_string_split_args(
 ) -> Option<(*mut u8, *mut u8)> {
     unsafe {
         Some((
-            validate_string_split_receiver(_py, hay_bits, false)?,
+            validate_string_receiver(_py, hay_bits, "split")?,
             validate_string_split_separator(_py, needle_bits)?,
         ))
     }
@@ -597,8 +572,8 @@ fn string_split_impl(
 ) -> u64 {
     // Descriptor admission precedes user code. Separator validation and every
     // storage borrow follow __index__, which may mutate a separator's owner.
-    let Some(hay_ptr) = (unsafe { validate_string_split_receiver(_py, hay_bits, from_right) })
-    else {
+    let method = if from_right { "rsplit" } else { "split" };
+    let Some(hay_ptr) = validate_string_receiver(_py, hay_bits, method) else {
         return MoltObject::none().bits();
     };
     let maxsplit = split_maxsplit_from_obj(_py, maxsplit_bits);

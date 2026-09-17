@@ -121,7 +121,30 @@ def test_real_build_generators_ignore_ambient_imports(
             {path.relative_to(out): path.read_bytes() for path in out.rglob("*.rs")}
         )
     assert outputs[0] == outputs[1]
-    assert len(outputs[0]) == 12  # Six runtime, five ABI, one errno module.
+    # Both consumers emit the same complete projection of the one selected
+    # CPython Unicode authority; only the runtime needs titlecase mappings.
+    properties = {
+        "digit",
+        "decimal",
+        "numeric",
+        "space",
+        "printable",
+        "alpha",
+        "lower",
+        "upper",
+        "title",
+        "identifier_start",
+        "identifier_continue",
+    }
+    expected = {
+        Path(consumer) / f"unicode_{name}_ranges.rs"
+        for consumer in ("runtime", "abi")
+        for name in properties
+    }
+    expected.update(
+        (Path("runtime/unicode_titlecase_map.rs"), Path("errno_constants.rs"))
+    )
+    assert set(outputs[0]) == expected
     assert b"EINVAL" in outputs[0][Path("errno_constants.rs")]
     assert not tuple(poison.rglob("*.pyc"))
     for relative, content in outputs[0].items():
