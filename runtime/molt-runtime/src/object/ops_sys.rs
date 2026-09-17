@@ -62,20 +62,6 @@ pub(crate) fn decode_slice_bound(
     ))
 }
 
-pub(crate) fn decode_slice_bound_neg(
-    _py: &PyToken<'_>,
-    obj: MoltObject,
-    len: isize,
-    default: isize,
-) -> Result<isize, SliceError> {
-    Ok(adjust_slice_bound(
-        decode_slice_index(_py, obj)?.as_ref(),
-        len,
-        default,
-        true,
-    ))
-}
-
 fn decode_slice_index(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<BigInt>, SliceError> {
     if obj.is_none() {
         return Ok(None);
