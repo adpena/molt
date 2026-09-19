@@ -47,7 +47,10 @@ Provider v2 records lexical compiler entrypoints, content images, target command
 the WASI sysroot manifest and the selected compiler-builtins archive. Capture
 uses the explicit selected environment; validation consumes recorded identities.
 The child consumes the captured archive through the queue-owned link-input
-contract instead of rediscovering it. Preconfigured compiler arguments share a
+contract instead of rediscovering it. The typed link-input contract lives in
+`molt.source_extension_link_inputs`; its CLI resolver alone selects tools and
+archives. Both enter source custody, while ordinary proof-cache imports do not
+load the CLI or frontend. Preconfigured compiler arguments share a
 positive grammar: unknown or external-input/helper selectors fail before probes.
 Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
 the producer's source/input/seal validation or prove an ecosystem matrix cell.

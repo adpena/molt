@@ -12,12 +12,12 @@ import pytest
 
 from molt.cli import llvm_wasi_tools, source_extension_toolchain, wasm_link_inputs
 from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
-from molt.cli.source_extension_link_inputs import SourceExtensionLinkInputs
 from molt.cli.source_extension_set_validation_target import (
     _source_extension_tool_role_contract,
 )
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.exact_json import canonical_json_sha256
+from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from tools import proof_plan
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.proof_queue_pkg import target_derived_toolchains as provider

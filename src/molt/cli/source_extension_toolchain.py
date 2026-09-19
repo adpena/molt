@@ -36,8 +36,10 @@ from molt.cli.source_extension_compiler_inputs import (
     validate_source_extension_compiler_command,
 )
 from molt.cli.source_extension_link_inputs import (
-    SourceExtensionLinkInputs,
     resolve_source_extension_link_inputs,
+)
+from molt.source_extension_link_inputs import (
+    SourceExtensionLinkInputs,
     validate_source_extension_link_inputs,
 )
 from molt.target_python import _parse_target_python_version
