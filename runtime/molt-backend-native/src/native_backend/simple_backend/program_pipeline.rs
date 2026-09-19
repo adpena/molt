@@ -67,7 +67,6 @@ impl SimpleBackend {
                 fold_constants(&mut func_ir.ops);
                 fold_constants_cross_block(&mut func_ir.ops);
                 elide_safe_exception_checks(func_ir);
-                hoist_loop_invariants(func_ir);
             });
         }
 

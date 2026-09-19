@@ -31,7 +31,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         let call_site_abi = self.call_site_abi;
         let import_ids = self.import_ids;
         let native_callable_imports = ctx.native_callable_imports;
-        let exception_handler_region_indices = self.exception_handler_region_indices;
         let frame = self.frame;
         let runtime_lookup_only_vars = frame.runtime_lookup_only_vars();
         let locals = frame.locals();
@@ -162,8 +161,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     frame,
                     reloc_enabled,
                     native_eh_enabled,
-                    raise_exits_function: try_stack.is_empty()
-                        && !exception_handler_region_indices.contains(&op_idx),
+                    raise_exits_function: try_stack.is_empty(),
                     func_index,
                     func_import_count: backend.func_import_count,
                     table_relocations: &mut backend.table_relocations,
@@ -200,7 +198,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     const_cache,
                     scalar_plan,
                     frame,
-                    exception_handler_region_indices,
                     control_stack,
                     try_stack,
                     label_stack,

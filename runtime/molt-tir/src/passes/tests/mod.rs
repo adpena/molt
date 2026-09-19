@@ -1,5 +1,4 @@
 use super::*;
-use crate::tir::effect_proof::EffectProof;
 use crate::tir::target_info::TargetInfo;
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;

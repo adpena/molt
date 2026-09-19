@@ -252,10 +252,6 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 "args": [op.args[0].name],
                 "out": op.result.name,
             }
-            if op.metadata is not None:
-                effect_proof = op.metadata.get("effect_proof")
-                if isinstance(effect_proof, str) and effect_proof:
-                    entry["effect_proof"] = effect_proof
             ctx.json_ops.append(entry)
         elif op.kind == "MODULE_IMPORT":
             ctx.json_ops.append(
@@ -288,9 +284,6 @@ class SerializationFunctionOpsMixin(_MixinBase):
                 "out": op.result.name,
             }
             if op.metadata is not None:
-                effect_proof = op.metadata.get("effect_proof")
-                if isinstance(effect_proof, str) and effect_proof:
-                    entry["effect_proof"] = effect_proof
                 runtime_symbol = op.metadata.get("runtime_symbol")
                 if isinstance(runtime_symbol, str) and runtime_symbol:
                     entry["runtime_symbol"] = runtime_symbol
@@ -379,24 +372,6 @@ class SerializationFunctionOpsMixin(_MixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "context_exit",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CONTEXT_UNWIND":
-            ctx.json_ops.append(
-                {
-                    "kind": "context_unwind",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CONTEXT_DEPTH":
-            ctx.json_ops.append({"kind": "context_depth", "out": op.result.name})
-        elif op.kind == "CONTEXT_UNWIND_TO":
-            ctx.json_ops.append(
-                {
-                    "kind": "context_unwind_to",
                     "args": [op.args[0].name, op.args[1].name],
                     "out": op.result.name,
                 }

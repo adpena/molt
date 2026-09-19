@@ -69,11 +69,11 @@ class ComprehensionMixin(_MixinBase):
             )
         # CPython evaluates AND iterates the outermost iterable at generator
         # construction time; only the loop body and every nested iterable are
-        # lazy.  Transport that already-created iterator into the poll frame as
-        # an ordinary closure cell.  Deferring the outer expression into the
-        # state-machine body changes exception/side-effect ordering and also
-        # leaves its one-shot expression temporaries under the legacy poll RC
-        # lane instead of the enclosing function's DropInsertion authority.
+        # lazy.  Transport that already-created iterator as the hidden .0
+        # parameter through the shared callable's task payload.  Evaluating the
+        # outer expression here preserves exception/side-effect ordering and
+        # leaves its one-shot temporaries under the enclosing function's
+        # DropInsertion authority.
         func_symbol = self._genexpr_symbol()
         poll_func_name = f"{func_symbol}_poll"
         outer = node.generators[0]

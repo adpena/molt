@@ -285,14 +285,14 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         .collect();
         let owning_tokens: BTreeSet<_> = producer_states
             .iter()
-            .filter_map(|state| state.owners.last().copied())
+            .filter_map(|state| state.handler_owner())
             .collect();
         let unowned_non_finally_reachable = producer_states
             .iter()
-            .any(|state| state.owners.is_empty() && state.normal_closures.is_empty());
+            .any(|state| !state.has_observer_custody());
         if producer_states
             .iter()
-            .all(|state| state.owners.is_empty() && state.normal_closures.is_empty())
+            .all(|state| !state.has_observer_custody())
         {
             // Depth-zero exception reads are observers of pending/global
             // exception state, not handler-owned MatchRefs. They have no
@@ -335,7 +335,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         let mut unmapped_non_finally_state_reachable = false;
         for state in &producer_states {
             let Some(owner) = match_ref_release_owner(source_kind, state, &owning_tokens) else {
-                if state.owners.is_empty() && state.normal_closures.is_empty() {
+                if !state.has_observer_custody() {
                     unmapped_non_finally_state_reachable = true;
                 }
                 continue;

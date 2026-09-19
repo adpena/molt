@@ -14,11 +14,7 @@ mod source_text;
 use cleanup_artifacts::{
     eliminate_nil_missing_wrappers, strip_dead_locals_dict_stores, strip_unbound_local_checks,
 };
-use control_flow::{
-    eliminate_goto_labels, rehoist_escaped_locals, strip_dead_code_after_terminators,
-    strip_dead_gotos_and_labels, strip_exception_cleanup_blocks, structure_forward_if_else_blocks,
-    structure_pcall_failure_blocks,
-};
+use control_flow::{rehoist_escaped_locals, strip_dead_code_after_terminators};
 use local_values::{
     inline_single_use_constants, propagate_single_use_copies, simplify_return_chain,
     sink_single_use_locals, strip_undefined_rhs_assignments,
@@ -27,11 +23,6 @@ use loop_folds::{fold_range_indices, simplify_comparison_break, strip_trailing_c
 use source_text::{find_matching_paren, is_ident_char, is_pure_expr};
 
 pub(super) fn optimize_luau_source(source: &mut String) {
-    // Phase 2a: Strip dead exception boilerplate early, but only the
-    // simple nil-check patterns. More aggressive cleanup happens later.
-    strip_exception_cleanup_blocks(source);
-    strip_dead_gotos_and_labels(source);
-
     // Phase 2b: Core optimization passes.
     inline_single_use_constants(source);
     eliminate_nil_missing_wrappers(source);
@@ -46,25 +37,16 @@ pub(super) fn optimize_luau_source(source: &mut String) {
     // expressions, unlocking more copy propagation.
     propagate_single_use_copies(source);
     eliminate_common_subexpressions(source);
-    hoist_loop_invariants(source);
     sink_single_use_locals(source);
     simplify_return_chain(source);
     fold_range_indices(source);
 
-    // Phase 2c: Final cleanup. Re-strip exception blocks that survived
-    // initial cleanup, then re-run key passes that benefit from cleaner code.
-    strip_exception_cleanup_blocks(source);
-    strip_dead_gotos_and_labels(source);
+    // Final local cleanup. Logical edges were already emitted structurally;
+    // source postprocessing never invents, deletes, or reroutes handler edges.
     inline_single_use_constants(source);
     propagate_single_use_copies(source);
     sink_single_use_locals(source);
     rehoist_escaped_locals(source);
-    structure_pcall_failure_blocks(source);
-    structure_forward_if_else_blocks(source);
-
-    // Phase 2d: Convert goto/label pairs to structured control flow.
-    eliminate_goto_labels(source);
-
     // Phase 2e: Strip dead code after terminators.
     strip_dead_code_after_terminators(source);
 
@@ -215,204 +197,6 @@ fn eliminate_common_subexpressions(source: &mut String) {
     }
     *source = result;
     eprintln!("[molt-luau] Eliminated {} common subexpressions", count);
-}
-
-/// Loop-invariant code motion (LICM).
-///
-/// Finds `while true do … end` and `for … do … end` loops.  Inside the
-/// immediate loop body (one indent level deeper than the loop header),
-/// identifies `local vN = <pure_expr>` where *all* referenced variables
-/// are defined outside the loop and are never modified inside the loop.
-/// Those declarations are hoisted to just before the loop.
-fn hoist_loop_invariants(source: &mut String) {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut hoisted_lines: BTreeSet<usize> = BTreeSet::new();
-    let mut insertions: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    let mut count: usize = 0;
-
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim();
-        let is_loop =
-            trimmed == "while true do" || (trimmed.starts_with("for ") && trimmed.ends_with(" do"));
-        if !is_loop {
-            i += 1;
-            continue;
-        }
-
-        let loop_start = i;
-        let loop_indent = lines[i].len() - trimmed.len();
-
-        // Find matching `end` at the same indent.
-        let mut depth: usize = 1;
-        let mut loop_end = i + 1;
-        while loop_end < lines.len() && depth > 0 {
-            let t = lines[loop_end].trim();
-            // Count nesting openers.
-            if t == "while true do"
-                || (t.starts_with("for ") && t.ends_with(" do"))
-                || (t.starts_with("if ") && t.ends_with(" then"))
-                || t == "else"
-                || (t.starts_with("elseif ") && t.ends_with(" then"))
-                || t.starts_with("local function ")
-            {
-                // `else` / `elseif` don't add depth, they just continue the
-                // block opened by `if`.  Only count real block openers.
-                if !t.starts_with("else") {
-                    depth += 1;
-                }
-            } else if t == "end" {
-                depth -= 1;
-            }
-            if depth > 0 {
-                loop_end += 1;
-            }
-        }
-
-        if depth != 0 {
-            i += 1;
-            continue;
-        }
-
-        // Collect every variable modified inside the loop body.
-        let mut modified_in_loop: BTreeSet<String> = BTreeSet::new();
-        for j in (loop_start + 1)..loop_end {
-            let t = lines[j].trim();
-            // Bare assignment: `vN = ...`
-            if t.starts_with('v')
-                && let Some(eq) = t.find(" = ")
-            {
-                let lhs = &t[..eq];
-                if lhs.starts_with('v') && lhs[1..].chars().all(|c| c.is_ascii_digit()) {
-                    modified_in_loop.insert(lhs.to_string());
-                }
-            }
-            // `local vN = ...` or `local vN: type = ...` also defines vN.
-            if let Some(rest) = t.strip_prefix("local v")
-                && let Some(eq) = rest.find(" = ")
-            {
-                let before_eq = &rest[..eq];
-                let suffix = if let Some(colon) = before_eq.find(':') {
-                    &before_eq[..colon]
-                } else {
-                    before_eq
-                };
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
-                    modified_in_loop.insert(format!("v{suffix}"));
-                }
-            }
-            // `for` iteration variables.
-            if t.starts_with("for ") {
-                if let Some(in_pos) = t.find(" in ") {
-                    let vars_part = &t[4..in_pos];
-                    for v in vars_part.split(", ") {
-                        modified_in_loop.insert(v.trim().to_string());
-                    }
-                }
-                // Numeric for: `for vN = ...`
-                if let Some(eq_pos) = t.find(" = ") {
-                    let var_part = &t[4..eq_pos];
-                    if !var_part.contains(' ') {
-                        modified_in_loop.insert(var_part.trim().to_string());
-                    }
-                }
-            }
-        }
-
-        // Find hoistable declarations at exactly one indent deeper.
-        let body_indent = loop_indent + 1;
-        for j in (loop_start + 1)..loop_end {
-            let t = lines[j].trim();
-            let line_indent = lines[j].len() - t.len();
-
-            if line_indent != body_indent {
-                continue;
-            }
-
-            if let Some(rest) = t.strip_prefix("local v")
-                && let Some(eq) = rest.find(" = ")
-            {
-                let before_eq = &rest[..eq];
-                let suffix = if let Some(colon) = before_eq.find(':') {
-                    &before_eq[..colon]
-                } else {
-                    before_eq
-                };
-                if !suffix.chars().all(|c| c.is_ascii_digit()) {
-                    continue;
-                }
-                let var = format!("v{suffix}");
-                let rhs = rest[eq + 3..].trim();
-
-                if !is_pure_expr(rhs) {
-                    continue;
-                }
-
-                // The declared variable itself must not be modified in loop.
-                if modified_in_loop.contains(&var) {
-                    continue;
-                }
-
-                // All vN references in the RHS must not be modified in loop.
-                let mut all_invariant = true;
-                let bytes = rhs.as_bytes();
-                let mut pos = 0;
-                while pos < bytes.len() {
-                    if bytes[pos] == b'v' && (pos == 0 || !is_ident_char(bytes[pos - 1])) {
-                        let start = pos;
-                        pos += 1;
-                        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
-                            pos += 1;
-                        }
-                        if pos > start + 1 && (pos >= bytes.len() || !is_ident_char(bytes[pos])) {
-                            let ref_var = std::str::from_utf8(&bytes[start..pos]).unwrap_or("");
-                            if modified_in_loop.contains(ref_var) {
-                                all_invariant = false;
-                                break;
-                            }
-                        }
-                    } else {
-                        pos += 1;
-                    }
-                }
-
-                if !all_invariant {
-                    continue;
-                }
-
-                // Hoist: emit at the same indent as the loop header.
-                let hoist_indent = &lines[loop_start][..loop_indent];
-                insertions
-                    .entry(loop_start)
-                    .or_default()
-                    .push(format!("{hoist_indent}{t}"));
-                hoisted_lines.insert(j);
-                count += 1;
-            }
-        }
-
-        i += 1;
-    }
-
-    if hoisted_lines.is_empty() {
-        return;
-    }
-
-    let mut result = String::with_capacity(source.len());
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(hoisted) = insertions.get(&i) {
-            for h in hoisted {
-                result.push_str(h);
-                result.push('\n');
-            }
-        }
-        if !hoisted_lines.contains(&i) {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-    *source = result;
-    eprintln!("[molt-luau] Hoisted {} loop-invariant locals", count);
 }
 
 /// Performance optimization pass over emitted Luau source.

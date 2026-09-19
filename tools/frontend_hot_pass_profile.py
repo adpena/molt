@@ -63,7 +63,7 @@ if str(SRC_ROOT) not in sys.path:
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from molt.frontend import SimpleTIRGenerator, _ic_counter  # noqa: E402
+from molt.frontend import SimpleTIRGenerator  # noqa: E402
 from molt.target_python import (  # noqa: E402
     _DEFAULT_TARGET_PYTHON_VERSION,
     _parse_target_python_version,
@@ -427,7 +427,6 @@ def profile_one(
                 "midend_pass_stats_by_function": {},
                 "midend_policy_outcomes_by_function": {},
             }, []
-        _ic_counter[0] = 0
         profiler.enable()
         parse_start = time.perf_counter()
         tree = ast.parse(source, filename=str(path))
@@ -606,7 +605,9 @@ def format_markdown(report: Mapping[str, Any]) -> str:
         )
     )
     errors = [
-        source for source in report.get("sources", []) if source.get("status") == "error"
+        source
+        for source in report.get("sources", [])
+        if source.get("status") == "error"
     ]
     if errors:
         lines.extend(["", "## Errors", ""])

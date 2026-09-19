@@ -15,8 +15,8 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::target_info::TargetInfo;
 use crate::{FunctionIR, SimpleIR};
 
-/// Validate transport shape and every generated semantic-role family before
-/// any target source buffer is touched.
+/// Validate transport shape, the shared control-flow graph, and every generated
+/// semantic-role family before any target source buffer is touched.
 pub fn validate_target_contract(ir: &SimpleIR, target_info: &TargetInfo) -> Result<(), String> {
     validate_target_contract_with_representation_plan(ir, target_info, |_, _| Ok(()))
 }
@@ -36,6 +36,8 @@ where
     let target = target_info.target.as_str();
     crate::validate_simple_ir(ir)
         .map_err(|error| format!("{target} SimpleIR validation failed: {error}"))?;
+    molt_ir::simple_verify::validate_simple_ir_control_flow(ir)
+        .map_err(|error| format!("{target} SimpleIR control-flow validation failed: {error}"))?;
     if !target_info.extern_function_linkage
         && let Some(function) = ir.functions.iter().find(|function| function.is_extern)
     {

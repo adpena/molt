@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from molt.frontend._types import MoltOp, MoltValue, ScratchCell
+from molt.frontend._types import LoopScope, MoltOp, MoltValue, ScratchCell
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -104,14 +104,15 @@ class LoopLoweringMixin(_MixinBase):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, guard_map, loop_break_flag=loop_break_flag
             )
-            if not body_terminated:
+            if scope.needs_latch:
                 self.emit(
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
             return
         guard_map = (
             {}
@@ -140,14 +141,15 @@ class LoopLoweringMixin(_MixinBase):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
             self._emit_assign_target(target, item, None)
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, None, loop_break_flag=loop_break_flag
             )
-            if not body_terminated:
+            if scope.needs_latch:
                 self.emit(
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)
@@ -239,12 +241,10 @@ class LoopLoweringMixin(_MixinBase):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
             self._emit_assign_target(target, item, None)
-            self.async_index_loop_stack.append(idx_slot)
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, guard_map, loop_break_flag=loop_break_flag
             )
-            self.async_index_loop_stack.pop()
-            if not body_terminated:
+            if scope.needs_latch:
                 idx_after = MoltValue(self.next_var(), type_hint="int")
                 self.emit(
                     MoltOp(
@@ -268,6 +268,7 @@ class LoopLoweringMixin(_MixinBase):
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
             return
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
@@ -294,12 +295,10 @@ class LoopLoweringMixin(_MixinBase):
             item = MoltValue(self.next_var(), type_hint=item_hint)
             self.emit(MoltOp(kind="INDEX", args=[iterable, idx], result=item))
             self._emit_assign_target(target, item, None)
-            self.range_loop_stack.append((idx, one))
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, None, loop_break_flag=loop_break_flag
             )
-            self.range_loop_stack.pop()
-            if not body_terminated:
+            if scope.needs_latch:
                 next_idx = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
                 self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
@@ -307,6 +306,7 @@ class LoopLoweringMixin(_MixinBase):
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)
@@ -444,12 +444,10 @@ class LoopLoweringMixin(_MixinBase):
                         self._emit_assign_target(target, idx, None)
                 if not simple_name_target:
                     self._emit_assign_target(target, idx, None)
-                self.range_loop_stack.append((idx, step))
-                body_terminated = self._visit_loop_body(
+                scope = self._visit_loop_body(
                     node.body, None, loop_break_flag=loop_break_flag
                 )
-                self.range_loop_stack.pop()
-                if not body_terminated:
+                if scope.needs_latch:
                     with self._suppress_check_exception(emit_on_exit=False):
                         next_idx = MoltValue(self.next_var(), type_hint="int")
                         self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
@@ -461,9 +459,8 @@ class LoopLoweringMixin(_MixinBase):
                                 kind="LOOP_CONTINUE", args=[], result=MoltValue("none")
                             )
                         )
-                    self.emit(
-                        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-                    )
+                self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+                self._emit_loop_exit(scope)
                 return None
             with self._suppress_check_exception(emit_on_exit=False):
                 one = MoltValue(self.next_var(), type_hint="int")
@@ -490,12 +487,10 @@ class LoopLoweringMixin(_MixinBase):
                     self._emit_assign_target(target, idx, None)
             if not simple_name_target:
                 self._emit_assign_target(target, idx, None)
-            self.range_loop_stack.append((idx, step))
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, None, loop_break_flag=loop_break_flag
             )
-            self.range_loop_stack.pop()
-            if not body_terminated:
+            if scope.needs_latch:
                 with self._suppress_check_exception(emit_on_exit=False):
                     next_idx = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
@@ -505,9 +500,8 @@ class LoopLoweringMixin(_MixinBase):
                     self.emit(
                         MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                     )
-                    self.emit(
-                        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-                    )
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             with self._suppress_check_exception(emit_on_exit=False):
                 step_neg = MoltValue(self.next_var(), type_hint="bool")
@@ -530,12 +524,10 @@ class LoopLoweringMixin(_MixinBase):
                     self._emit_assign_target(target, idx_neg, None)
             if not simple_name_target:
                 self._emit_assign_target(target, idx_neg, None)
-            self.range_loop_stack.append((idx_neg, step))
-            body_terminated = self._visit_loop_body(
+            scope = self._visit_loop_body(
                 node.body, None, loop_break_flag=loop_break_flag
             )
-            self.range_loop_stack.pop()
-            if not body_terminated:
+            if scope.needs_latch:
                 with self._suppress_check_exception(emit_on_exit=False):
                     next_idx_neg = MoltValue(self.next_var(), type_hint="int")
                     self.emit(
@@ -549,9 +541,8 @@ class LoopLoweringMixin(_MixinBase):
                     self.emit(
                         MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                     )
-                    self.emit(
-                        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-                    )
+            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+            self._emit_loop_exit(scope)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -924,7 +915,6 @@ class LoopLoweringMixin(_MixinBase):
         stop = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[bound], result=stop))
         guard_map = self._emit_hoisted_loop_guards(body)
-        self._push_loop_static_class_refs(body)
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
         idx = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LOOP_INDEX_START", args=[start], result=idx))
@@ -947,14 +937,14 @@ class LoopLoweringMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-        body_terminated = self._visit_loop_body(body, guard_map)
-        if not body_terminated:
+        scope = self._visit_loop_body(body, guard_map)
+        if scope.needs_latch:
             next_idx = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ADD", args=[idx, one], result=next_idx))
             self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=idx))
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-        self._pop_loop_static_class_refs()
+        self._emit_loop_exit(scope)
         self._store_local_value(index_name, idx)
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             key2 = MoltValue(self.next_var(), type_hint="str")
@@ -1081,7 +1071,13 @@ class LoopLoweringMixin(_MixinBase):
                 header_false,
                 None,
             )
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            scope = self.loop_scopes[-1]
+            scope.continue_used = True
+            self.emit(
+                MoltOp(
+                    kind="JUMP", args=[scope.continue_label], result=MoltValue("none")
+                )
+            )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         data_val = self._load_local_value(data_name)
@@ -1173,15 +1169,17 @@ class LoopLoweringMixin(_MixinBase):
         body: list[ast.stmt],
         prefill: dict[str, tuple[str, MoltValue, int]] | None = None,
         loop_break_flag: int | ScratchCell | None = None,
-    ) -> bool:
-        if not self.is_async() and self._emit_taq_ingest_loop_body(body):
-            return True
+    ) -> LoopScope:
+        scope = LoopScope(
+            break_label=self.next_label(),
+            continue_label=self.next_label(),
+            try_depth=len(self.try_scopes),
+            break_flag=loop_break_flag,
+        )
         if not self.is_async():
             guard_map = dict(prefill) if prefill else {}
             self.loop_layout_guards.append(guard_map)
-        self.loop_break_flags.append(loop_break_flag)
-        self.loop_try_depths.append(len(self.try_scopes))
-        terminated = False
+        self.loop_scopes.append(scope)
         # Snapshot unbound_check_names — the loop body may not execute
         # at all (empty range / false initial condition), so any
         # discards inside the body must be reverted on exit.  Inside
@@ -1192,22 +1190,38 @@ class LoopLoweringMixin(_MixinBase):
         try:
             self.control_flow_depth += 1
             try:
-                terminated = self._visit_block(body)
+                if not self.is_async() and self._emit_taq_ingest_loop_body(body):
+                    # The fused data path falls through; its header skip uses
+                    # this same latch, including any counted-loop increment.
+                    scope.body_terminated = False
+                else:
+                    scope.body_terminated = self._visit_block(body)
             finally:
                 self.control_flow_depth -= 1
         finally:
             self.unbound_check_names = unbound_snapshot
-            self.loop_break_flags.pop()
-            self.loop_try_depths.pop()
+            self.loop_scopes.pop()
             if not self.is_async():
                 self.loop_layout_guards.pop()
-        return terminated
+        if scope.continue_used:
+            self.emit(
+                MoltOp(
+                    kind="LABEL", args=[scope.continue_label], result=MoltValue("none")
+                )
+            )
+        return scope
+
+    def _emit_loop_exit(self, scope: LoopScope) -> None:
+        if scope.break_used:
+            self.emit(
+                MoltOp(kind="LABEL", args=[scope.break_label], result=MoltValue("none"))
+            )
 
     def _emit_loop_unwind(self) -> list[int]:
-        if not self.loop_try_depths:
+        if not self.loop_scopes:
             return []
         max_scopes = len(self.try_scopes)
-        loop_depth = self.loop_try_depths[-1]
+        loop_depth = self.loop_scopes[-1].try_depth
         if loop_depth >= max_scopes:
             return []
         return self._emit_control_flow_scope_unwind(

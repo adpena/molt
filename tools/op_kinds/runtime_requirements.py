@@ -20,6 +20,11 @@ def runtime_callable_attribute_requirement_masks(data: dict) -> dict[str, int]:
         attr = row["qualified"].rsplit(".", 1)[1]
         attributes[attr] = attributes.get(attr, 0) | bits
         protected |= bits
-    for attr in data.get("simpleir_runtime_protected_attribute_gateways", []):
+    gateways = set(data.get("simpleir_runtime_protected_attribute_gateways", []))
+    gateways.update(
+        qualified.rsplit(".", 1)[1]
+        for qualified in data.get("simpleir_runtime_protected_gateway_callables", [])
+    )
+    for attr in gateways:
         attributes[attr] = attributes.get(attr, 0) | protected
     return attributes

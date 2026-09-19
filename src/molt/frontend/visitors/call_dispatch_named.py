@@ -1478,21 +1478,11 @@ class CallNamedDispatchMixin(_MixinBase):
                     else:
                         class_ref = self._emit_global_get(class_id)
                 else:
-                    static_class_ref = self._current_module_static_class_ref(class_id)
-                    if static_class_ref is not None:
-                        class_ref = static_class_ref
+                    local_class = self._load_local_value(class_id)
+                    if local_class is not None:
+                        class_ref = local_class
                     else:
-                        loop_static_class_ref = self._emit_loop_static_class_ref(
-                            class_id
-                        )
-                        if loop_static_class_ref is not None:
-                            class_ref = loop_static_class_ref
-                        else:
-                            local_class = self._load_local_value(class_id)
-                            if local_class is not None:
-                                class_ref = local_class
-                            else:
-                                class_ref = self._emit_global_get(class_id)
+                        class_ref = self._emit_global_get(class_id)
                 if self._class_is_exception_subclass(class_id, class_info):
                     # Exception __init__ is a mutable Python descriptor too.
                     # Runtime class construction owns allocation and binding.

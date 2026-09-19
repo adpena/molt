@@ -241,21 +241,6 @@ class FunctionLifecycleMixin(_MixinBase):
             stack.extend(ast.iter_child_nodes(current))
         return False
 
-    @staticmethod
-    def _block_needs_context_unwind(body: list[ast.stmt]) -> bool:
-        stack: list[ast.AST] = list(body)
-        while stack:
-            current = stack.pop()
-            if isinstance(current, (ast.With, ast.AsyncWith)):
-                return True
-            if isinstance(
-                current,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            stack.extend(ast.iter_child_nodes(current))
-        return False
-
     def _has_typing_overload_decorator(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -408,34 +393,32 @@ class FunctionLifecycleMixin(_MixinBase):
     def _inherit_free_var_import_resolution(
         self, free_vars: list[str], enclosing_state: dict[str, Any]
     ) -> None:
-        """Project lexical import provenance onto captured cells only.
+        """Project captured imports as possibilities, never activation identity.
 
-        Function entry resets import maps to module globals. A closure needs the
-        enclosing binding's acquisition provenance instead, including an exact
-        absence after that binding was shadowed or rebound. Clearing each free
-        name before copying prevents an unrelated same-named module global from
-        leaking through the cell boundary.
+        Canonical binding flow widens free cells at every deferred activation:
+        a nonlocal writer or cell_contents assignment can replace them before
+        this call or between calls. Retain conservative capability provenance,
+        but only an acquisition executed in this activation may restore exact
+        import identity. Clear module-global defaults across the cell boundary.
         """
-        enclosing_modules = enclosing_state["imported_modules"]
+        if not free_vars:
+            return
         enclosing_provenance = enclosing_state["imported_module_provenance"]
-        enclosing_names = enclosing_state["imported_names"]
-        enclosing_attrs = enclosing_state["imported_attr_names"]
+        possible_modules = self._join_imported_module_provenance(
+            {
+                name: enclosing_provenance[name]
+                for name in free_vars
+                if name in enclosing_provenance
+            },
+            {},
+        )
         for name in free_vars:
-            self.imported_modules.pop(name, None)
-            self.imported_module_provenance.pop(name, None)
+            self._set_imported_module_binding(
+                name, None, provenance=possible_modules.get(name)
+            )
             self.imported_names.pop(name, None)
             self.imported_attr_names.pop(name, None)
-            self.local_imported_modules.discard(name)
             self.local_imported_names.discard(name)
-            if name in enclosing_modules:
-                self.imported_modules[name] = enclosing_modules[name]
-                self.local_imported_modules.add(name)
-            elif name in enclosing_names:
-                self.imported_names[name] = enclosing_names[name]
-                self.imported_attr_names[name] = enclosing_attrs.get(name, name)
-                self.local_imported_names.add(name)
-            if name in enclosing_provenance:
-                self.imported_module_provenance[name] = enclosing_provenance[name]
 
     def _init_return_slot(self) -> None:
         if self.return_label is not None:

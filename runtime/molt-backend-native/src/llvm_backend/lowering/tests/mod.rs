@@ -138,7 +138,6 @@ fn make_dummy_lowering<'ctx, 'func>(
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
         state_resume_blocks: HashMap::new(),
-        try_stack_baselines: Vec::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::LlvmReprFacts::default(),

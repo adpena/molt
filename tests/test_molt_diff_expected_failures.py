@@ -136,7 +136,8 @@ def test_run_cpython_uses_script_directory_as_import_authority(
 
     _configure_fixture_cpython_runner(module, monkeypatch, cwd=cwd, tmp_path=tmp_path)
 
-    stdout, stderr, returncode = module.run_cpython(requested_path, sys.executable)
+    result = module.run_cpython(requested_path, sys.executable)
+    stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
 
     assert returncode == 0, stderr
     assert stderr == ""
@@ -183,7 +184,8 @@ def test_run_cpython_keeps_main_namespace_through_atexit_closures(
     )
     _configure_fixture_cpython_runner(module, monkeypatch, cwd=cwd, tmp_path=tmp_path)
 
-    stdout, stderr, returncode = module.run_cpython(str(script), sys.executable)
+    result = module.run_cpython(str(script), sys.executable)
+    stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
 
     assert returncode == 0, stderr
     assert stderr == ""
@@ -250,9 +252,9 @@ def test_deterministic_compiler_panic_does_not_trigger_backend_retry(
         "async_work_poll.rs:152: zero-payload exception edge"
     )
 
-    def fail_once(*args: object, **kwargs: object) -> tuple[None, str, int]:
+    def fail_once(*args: object, **kwargs: object):
         calls.append({"args": args, "kwargs": kwargs})
-        return None, stderr, 1
+        return module.compat_backends.BackendResult(None, stderr, 1, build_failed=True)
 
     monkeypatch.setattr(module, "run_molt", fail_once)
 
@@ -262,7 +264,9 @@ def test_deterministic_compiler_panic_does_not_trigger_backend_retry(
         capabilities="",
         environment={"MOLT_CAPABILITY_TIER": "none"},
     )
-    assert module._run_native_backend("case.py", context) == (None, stderr, 1)
+    assert module._run_native_backend(
+        "case.py", context
+    ) == module.compat_backends.BackendResult(None, stderr, 1, build_failed=True)
     assert len(calls) == 1
     assert calls[0]["kwargs"]["execution_context"] is context
     assert not module._is_backend_daemon_build_error(stderr)
@@ -291,9 +295,11 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
     else:
         monkeypatch.setenv("MOLT_DIFF_RETRY_ISOLATED", retry_isolated)
     calls: list[dict[str, object]] = []
-    failure = (None, stderr, 124)
+    failure = module.compat_backends.BackendResult(
+        None, stderr, 124, build_failed=True, timed_out=True
+    )
 
-    def timed_out(*args: object, **kwargs: object) -> tuple[None, str, int]:
+    def timed_out(*args: object, **kwargs: object):
         calls.append(kwargs)
         return failure
 
@@ -821,7 +827,7 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     client, error = module._batch_compile_server_client({}, request_timeout=0.1)
     assert client is None
     assert error is not None
-    assert "ping timeout" in error
+    assert "ping timeout" in str(error)
     assert ("close", True) in events
 
     client_retry, retry_error = module._batch_compile_server_client(
@@ -830,7 +836,7 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     )
     assert client_retry is None
     assert retry_error is not None
-    assert "ping timeout" in retry_error
+    assert "ping timeout" in str(retry_error)
 
     client_cooldown, cooldown_error = module._batch_compile_server_client(
         {},
@@ -838,7 +844,7 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     )
     assert client_cooldown is None
     assert cooldown_error is not None
-    assert "temporarily disabled" in cooldown_error
+    assert "temporarily disabled" in str(cooldown_error)
 
 
 def test_run_batch_compile_build_success_resets_failure_budget(
@@ -872,7 +878,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
     )
 
-    rc, stdout, stderr, error = module._run_batch_compile_build(
+    result = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack"},
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -885,15 +891,12 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         strict_mode=False,
     )
 
-    assert error is None
-    assert rc == 0
-    assert stdout == "ok"
-    assert stderr == ""
+    assert result == module.compat_backends.BackendResult("ok", "", 0)
     assert resets["count"] == 1
     assert "stdlib_profile" not in seen_params[0]
     assert seen_params[0]["python_version"] == "3.14"
 
-    rc, stdout, stderr, error = module._run_batch_compile_build(
+    result = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack", "MOLT_DIFF_STDLIB_PROFILE": "full"},
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -906,10 +909,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         strict_mode=False,
     )
 
-    assert error is None
-    assert rc == 0
-    assert stdout == "ok"
-    assert stderr == ""
+    assert result == module.compat_backends.BackendResult("ok", "", 0)
     assert resets["count"] == 2
     assert seen_params[1]["stdlib_profile"] == "full"
     assert seen_params[1]["python_version"] == "3.14"
@@ -938,7 +938,7 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         assert request_timeout == 12.0
         attempts["count"] += 1
         if attempts["count"] == 1:
-            return None, "transient startup failure"
+            return None, RuntimeError("transient startup failure")
         return _FakeClient(), None
 
     def _fake_reset_disabled() -> None:
@@ -949,7 +949,7 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         module, "_batch_compile_server_reset_disabled", _fake_reset_disabled
     )
 
-    rc, stdout, stderr, error = module._run_batch_compile_build(
+    result = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack"},
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -962,23 +962,24 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         strict_mode=True,
     )
 
-    assert error is None
-    assert rc == 0
-    assert stdout == "ok"
-    assert stderr == ""
+    assert result == module.compat_backends.BackendResult("ok", "", 0)
     assert attempts["count"] == 2
     assert resets["count"] == 2
 
 
-def test_run_batch_compile_build_error_path_force_closes_server(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("strict_mode", (False, True))
+def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
+    monkeypatch, tmp_path: Path, strict_mode: bool
 ) -> None:
     module = _load_diff_module()
     shutdown_calls: list[bool] = []
     disabled_reasons: list[str] = []
+    requests = 0
 
     class _FailingClient:
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+            nonlocal requests
+            requests += 1
             assert op == "build"
             raise TimeoutError("build timed out")
 
@@ -998,7 +999,7 @@ def test_run_batch_compile_build_error_path_force_closes_server(
         module, "_batch_compile_server_mark_disabled", _fake_mark_disabled
     )
 
-    rc, stdout, stderr, error = module._run_batch_compile_build(
+    result = module._run_batch_compile_build(
         env={"MOLT_CODEC": "msgpack"},
         file_path="tests/differential/basic/arith.py",
         output_root=tmp_path,
@@ -1008,15 +1009,77 @@ def test_run_batch_compile_build_error_path_force_closes_server(
         no_cache=False,
         rebuild=False,
         request_timeout=8.0,
-        strict_mode=False,
+        strict_mode=strict_mode,
     )
 
-    assert rc == 0
-    assert stdout == ""
-    assert stderr == ""
-    assert error == "build timed out"
+    assert result.timed_out and result.build_failed
+    assert result.returncode == 124
+    assert result.stdout is None
+    assert "build timed out" in result.stderr
+    assert "timeout after 8.0s" in result.stderr
+    assert requests == 1
     assert shutdown_calls == [True]
     assert disabled_reasons == ["build timed out"]
+
+
+def test_run_molt_does_not_fallback_after_batch_deadline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    deadline = module.compat_backends.BackendResult.from_deadline(
+        timeout=9.0,
+        stdout="partial compiler stdout",
+        stderr="batch request deadline",
+        build_failed=True,
+    )
+    subprocess_calls = []
+    metric_statuses = []
+
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: tmp_path / "diff-root")
+    monkeypatch.setattr(
+        module, "_diff_cargo_target_root", lambda: tmp_path / "target-root"
+    )
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
+    monkeypatch.setattr(
+        module, "_diff_batch_compile_server_request_timeout", lambda timeout: 9.0
+    )
+    monkeypatch.setattr(module, "_run_batch_compile_build", lambda **kwargs: deadline)
+    monkeypatch.setattr(
+        module,
+        "_run_with_optional_time",
+        lambda *args, **kwargs: subprocess_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        module,
+        "_record_rss_metrics",
+        lambda *args, **kwargs: metric_statuses.append(kwargs["status"]),
+    )
+
+    context = module.compat_backends.BackendExecutionContext(
+        target_python=module.TargetPythonVersion(3, 14, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={"MOLT_CAPABILITY_TIER": "none"},
+    )
+    result = module.run_molt_build_only(
+        "tests/differential/basic/arith.py",
+        "dev",
+        execution_context=context,
+    )
+
+    assert result == deadline
+    assert subprocess_calls == []
+    assert metric_statuses == ["build_timeout"]
 
 
 def test_run_molt_build_only_uses_build_profile_flag(
@@ -1064,11 +1127,12 @@ def test_run_molt_build_only_uses_build_profile_flag(
         capabilities="fs,env,time,random",
         environment={"MOLT_CAPABILITY_TIER": "none"},
     )
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
         execution_context=context,
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     assert seen_cmds == [
@@ -1135,11 +1199,12 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
-    stdout, stderr, rc = module.run_molt(
+    result = module.run_molt(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
         extra_env={"MOLT_DIAGNOSTICS_FILE": str(explicit_diagnostics)},
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     assert seen_envs
@@ -1185,10 +1250,11 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     cmd = seen_cmds[0]
@@ -1237,10 +1303,11 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
     )
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/stringprep_semantics.py",
         "dev",
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     cmd = seen_cmds[0]
@@ -1279,10 +1346,11 @@ def test_run_molt_build_only_rejects_conflicting_metadata_stdlib_profile(
         lambda *args, **kwargs: metric_statuses.append(kwargs["status"]),
     )
 
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/stringprep_semantics.py",
         "dev",
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert stdout is None
     assert rc == 2
@@ -1331,10 +1399,11 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     assert seen_envs[0]["MOLT_CACHE"] == str(diff_cache)
@@ -1384,10 +1453,11 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
-    stdout, stderr, rc = module.run_molt_build_only(
+    result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
         "dev",
     )
+    stdout, stderr, rc = result.stdout, result.stderr, result.returncode
 
     assert (stdout, stderr, rc) == ("", "", 0)
     assert seen_envs[0]["MOLT_CACHE"] == str(explicit_cache)
@@ -1539,7 +1609,7 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
             f"{sys.version_info.major}.{sys.version_info.minor}"
         )
         seen_cache_roots.append(os.environ.get("MOLT_CACHE"))
-        return "", "", 0
+        return module.compat_backends.BackendResult("", "", 0)
 
     monkeypatch.setattr(module, "run_molt_build_only", fake_run_molt_build_only)
 

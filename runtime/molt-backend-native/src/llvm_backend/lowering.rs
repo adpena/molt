@@ -430,10 +430,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// Built during lowering as branches are emitted, used by
     /// `patch_incomplete_phis` to detect missing phi predecessors.
     llvm_pred_map: HashMap<BasicBlock<'ctx>, Vec<BasicBlock<'ctx>>>,
-    /// Structured exception-region stack baselines for preserved TryStart/TryEnd.
-    /// Stored in entry-block allocas so later TryEnd sites do not violate LLVM
-    /// dominance when the region spans multiple blocks.
-    try_stack_baselines: Vec<inkwell::values::PointerValue<'ctx>>,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: usize,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
@@ -530,7 +526,6 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         state_resume_blocks: HashMap::new(),
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
-        try_stack_baselines: Vec::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,

@@ -7,7 +7,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 mod builder_ops;
 mod call_emit;
@@ -120,7 +120,6 @@ pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
     pub(super) ctx: &'a CompileFuncContext<'ctx>,
     pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
     pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) frame: &'a WasmFunctionFrame,
     pub(super) func_index: u32,
     pub(super) reloc_enabled: bool,

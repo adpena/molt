@@ -28,8 +28,11 @@
 //! Safety conditions:
 //! 1. The op must be pure (no side effects).
 //! 2. All operands must be defined outside the loop (or be other invariants).
-//! 3. The op must dominate all loop exits (guaranteed by hoisting to preheader).
-//! 4. Exception-handling regions are conservatively excluded.
+//! 3. Loop bodies come from CFG dominance and natural-loop analysis, and each
+//!    hoist requires a unique external preheader, not textual loop boundaries.
+//! 4. Exception-bearing functions remain eligible: shared effects and operand
+//!    proofs must establish that the moved operation is side-effect-free and
+//!    cannot throw, including when the loop executes zero times.
 //! 5. The op's result must not appear as a branch argument (phi value).
 //!    Such uses cross block boundaries via terminators; excluding them is
 //!    sufficient to ensure the only escapes from a loop go through phi

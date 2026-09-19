@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
-use crate::tir::effect_proof::EffectProof;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -60,15 +59,6 @@ fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> Ti
         attrs: AttrDict::new(),
         source_span: None,
     }
-}
-
-fn make_effect_proven_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> TirOp {
-    let mut op = make_module_get_attr(module, attr_name, out);
-    op.attrs.insert(
-        "effect_proof".into(),
-        AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
-    );
-    op
 }
 
 fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirOp {
@@ -360,21 +350,7 @@ fn check_after_call_kept() {
 }
 
 #[test]
-fn check_after_effect_proven_static_module_class_read_is_dropped() {
-    let mut func = make_func_with_block(vec![
-        make_check_exception(),
-        make_effect_proven_module_get_attr(ValueId(0), ValueId(1), ValueId(2)),
-        make_check_exception(),
-    ]);
-
-    let stats = run(&mut func);
-
-    assert_eq!(stats.ops_removed, 1);
-    assert_eq!(func.blocks[&BlockId(0)].ops.len(), 2);
-}
-
-#[test]
-fn check_after_unproven_module_get_attr_is_kept() {
+fn check_after_module_get_attr_is_kept() {
     let mut func = make_func_with_block(vec![
         make_check_exception(),
         make_module_get_attr(ValueId(0), ValueId(1), ValueId(2)),

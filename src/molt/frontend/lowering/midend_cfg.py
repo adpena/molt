@@ -378,7 +378,6 @@ class MidendCFGMixin(_MixinBase):
         if_to_else = control.if_to_else
         if_to_end = control.if_to_end
         loop_start_to_end = control.loop_start_to_end
-        try_start_to_end = control.try_start_to_end
 
         structural_prunes = 0
 
@@ -433,18 +432,6 @@ class MidendCFGMixin(_MixinBase):
                     out.append(ops[loop_end])
                     i = loop_end + 1
                     continue
-                if op.kind == "TRY_START" and i in try_start_to_end:
-                    try_end = try_start_to_end[i]
-                    body = rewrite_range(i + 1, try_end)
-                    if not body:
-                        structural_prunes += 1
-                        i = try_end + 1
-                        continue
-                    out.append(op)
-                    out.extend(body)
-                    out.append(ops[try_end])
-                    i = try_end + 1
-                    continue
                 out.append(op)
                 i += 1
             return out
@@ -453,46 +440,7 @@ class MidendCFGMixin(_MixinBase):
             rewritten = rewrite_range(0, len(ops))
         return rewritten, structural_prunes
 
-    def _compute_postdominators_for_cfg(self, cfg: CFGGraph) -> dict[int, set[int]]:
-        block_count = len(cfg.blocks)
-        if block_count == 0:
-            return {}
-        reachable = set(cfg.reachable)
-        postdom: dict[int, set[int]] = {}
-        for block_id in range(block_count):
-            if block_id in reachable:
-                postdom[block_id] = set(reachable)
-            else:
-                postdom[block_id] = {block_id}
-
-        exits = [
-            block_id
-            for block_id in reachable
-            if not any(succ in reachable for succ in cfg.successors.get(block_id, []))
-        ]
-        if not exits and reachable:
-            exits = [max(reachable)]
-        for exit_block in exits:
-            postdom[exit_block] = {exit_block}
-
-        changed = True
-        while changed:
-            changed = False
-            for block_id in reversed(range(block_count)):
-                if block_id not in reachable or block_id in exits:
-                    continue
-                succs = [s for s in cfg.successors.get(block_id, []) if s in reachable]
-                if not succs:
-                    new_set = {block_id}
-                else:
-                    new_set = set.intersection(*(postdom[s] for s in succs))
-                    new_set.add(block_id)
-                if new_set != postdom[block_id]:
-                    postdom[block_id] = new_set
-                    changed = True
-        return postdom
-
-    def _rewrite_loop_try_edge_threading(
+    def _rewrite_loop_edge_threading(
         self,
         ops: list[MoltOp],
         *,
@@ -500,13 +448,9 @@ class MidendCFGMixin(_MixinBase):
         control: ControlMaps,
         executable_edges: set[tuple[int, int]],
         loop_break_choice_by_index: dict[int, bool],
-        try_exception_possible_by_start: dict[int, bool],
-        try_normal_possible_by_start: dict[int, bool],
-        guard_fail_indices: set[int],
-    ) -> tuple[list[MoltOp], int, int, int, int, int, int]:
+    ) -> tuple[list[MoltOp], int, int, int]:
         single_exec_succ_by_block: dict[int, int] = {}
         executable_blocks: set[int] = {0} if cfg.blocks else set()
-        postdominators = self._compute_postdominators_for_cfg(cfg)
         for block in cfg.blocks:
             succs = cfg.successors.get(block.id, [])
             chosen = [succ for succ in succs if (block.id, succ) in executable_edges]
@@ -517,6 +461,12 @@ class MidendCFGMixin(_MixinBase):
                 single_exec_succ_by_block[block.id] = chosen[0]
 
         label_alias: dict[str, str] = {}
+        region_labels = {
+            str(region_id)
+            for op in ops
+            if op.kind in {"TRY_START", "TRY_END"}
+            if (region_id := try_region_id(op)) is not None
+        }
 
         def collect_label_aliases() -> None:
             def alias_target_from_body(body_ops: list[MoltOp]) -> str | None:
@@ -546,7 +496,7 @@ class MidendCFGMixin(_MixinBase):
                 if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
                     continue
                 head_key = self._control_label_key(head.args[0])
-                if head_key is None:
+                if head_key is None or head_key in region_labels:
                     continue
                 body_ops = [
                     ops[idx]
@@ -580,119 +530,6 @@ class MidendCFGMixin(_MixinBase):
 
         collect_label_aliases()
 
-        try_remove_starts = {
-            start
-            for start, can_raise in try_exception_possible_by_start.items()
-            if not can_raise
-        }
-        for start in control.try_start_to_end:
-            block_id = cfg.index_to_block.get(start)
-            if block_id is None:
-                continue
-            chosen = single_exec_succ_by_block.get(block_id)
-            succs = cfg.successors.get(block_id, [])
-            if chosen is not None and succs and chosen == succs[0]:
-                try_remove_starts.add(start)
-        try_remove_ends = {
-            control.try_start_to_end[start]
-            for start in try_remove_starts
-            if start in control.try_start_to_end
-        }
-
-        try_unreachable_body_indices: set[int] = set()
-        threaded_check_exception_jumps: dict[int, Any] = {}
-        check_exception_elisions: set[int] = set()
-        check_try_owner: dict[int, int] = {}
-        for start, end in control.try_start_to_end.items():
-            for idx in range(start + 1, end):
-                if idx >= len(ops) or ops[idx].kind != "CHECK_EXCEPTION":
-                    continue
-                owner = check_try_owner.get(idx)
-                if owner is None or start > owner:
-                    check_try_owner[idx] = start
-        for idx, start in check_try_owner.items():
-            if not try_exception_possible_by_start.get(start, True):
-                check_exception_elisions.add(idx)
-
-        for start, end in control.try_start_to_end.items():
-            if try_normal_possible_by_start.get(start, True):
-                continue
-            stop_idx: int | None = None
-            for idx in range(start + 1, end):
-                if idx in guard_fail_indices:
-                    stop_idx = idx
-                    break
-                if ops[idx].kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
-                    stop_idx = idx
-                    break
-            if stop_idx is None:
-                continue
-            start_block = cfg.index_to_block.get(start)
-            stop_block = cfg.index_to_block.get(stop_idx)
-            end_block = cfg.index_to_block.get(end)
-            if start_block is None or stop_block is None or end_block is None:
-                continue
-            if stop_block not in cfg.dominators.get(end_block, {end_block}):
-                continue
-            stop_postdominates_start = stop_block in postdominators.get(
-                start_block, {start_block}
-            )
-
-            threaded_check_idx: int | None = None
-            for check_idx in range(stop_idx + 1, end):
-                check_op = ops[check_idx]
-                if check_op.kind != "CHECK_EXCEPTION" or not check_op.args:
-                    continue
-                if any(
-                    ops[mid].kind not in {"LINE", "LABEL", "STATE_LABEL"}
-                    for mid in range(stop_idx + 1, check_idx)
-                ):
-                    continue
-                check_block = cfg.index_to_block.get(check_idx)
-                if check_block is None:
-                    continue
-                if stop_block not in cfg.dominators.get(check_block, {check_block}):
-                    continue
-                target_label = str(check_op.args[0])
-                target_block = cfg.label_to_block.get(target_label)
-                if target_block is None:
-                    continue
-                if target_block not in cfg.successors.get(check_block, []):
-                    continue
-                threaded_check_idx = check_idx
-                target_key = self._control_label_key(check_op.args[0])
-                if target_key is None:
-                    threaded_check_exception_jumps[check_idx] = check_op.args[0]
-                else:
-                    resolved_key = resolve_label_alias(target_key)
-                    threaded_check_exception_jumps[check_idx] = (
-                        self._coerce_control_label_like(check_op.args[0], resolved_key)
-                    )
-                break
-
-            if threaded_check_idx is not None:
-                for idx in range(stop_idx + 1, threaded_check_idx):
-                    try_unreachable_body_indices.add(idx)
-                for idx in range(threaded_check_idx + 1, end):
-                    try_unreachable_body_indices.add(idx)
-            else:
-                if not stop_postdominates_start:
-                    continue
-                for idx in range(stop_idx + 1, end):
-                    try_unreachable_body_indices.add(idx)
-            # Only remove try markers for exceptional-only lanes when we can
-            # prove no in-region CHECK_EXCEPTION dispatch depends on marker
-            # structure before the guaranteed trap point.
-            has_pretrap_check_exception = any(
-                ops[idx].kind == "CHECK_EXCEPTION"
-                for idx in range(start + 1, stop_idx + 1)
-            )
-            if not has_pretrap_check_exception and (
-                stop_postdominates_start or threaded_check_idx is not None
-            ):
-                try_remove_starts.add(start)
-                try_remove_ends.add(end)
-
         loop_remove_markers: set[int] = set()
         for loop_start, loop_end in control.loop_start_to_end.items():
             end_block = cfg.index_to_block.get(loop_end)
@@ -722,11 +559,8 @@ class MidendCFGMixin(_MixinBase):
 
         out: list[MoltOp] = []
         loop_rewrites = 0
-        try_marker_prunes = 0
         loop_marker_prunes = 0
-        try_body_prunes = 0
         check_exception_threads = 0
-        check_exception_elisions_count = 0
         block_jump_label_arg: dict[int, Any] = {}
         for block_id, label in cfg.block_entry_label.items():
             label_key = self._control_label_key(label)
@@ -740,21 +574,6 @@ class MidendCFGMixin(_MixinBase):
 
         for idx, op in enumerate(ops):
             if op.kind == "CHECK_EXCEPTION":
-                target = threaded_check_exception_jumps.get(idx)
-                if target is not None:
-                    out.append(
-                        MoltOp(
-                            kind="JUMP",
-                            args=[target],
-                            result=MoltValue("none"),
-                            metadata=op.metadata,
-                        )
-                    )
-                    check_exception_threads += 1
-                    continue
-                if idx in check_exception_elisions:
-                    check_exception_elisions_count += 1
-                    continue
                 if op.args:
                     original_key = self._control_label_key(op.args[0])
                     if original_key is not None:
@@ -775,9 +594,6 @@ class MidendCFGMixin(_MixinBase):
                             )
                             check_exception_threads += 1
                             continue
-            if idx in try_unreachable_body_indices:
-                try_body_prunes += 1
-                continue
             if idx in loop_remove_markers and op.kind in {"LOOP_START", "LOOP_END"}:
                 loop_marker_prunes += 1
                 continue
@@ -885,23 +701,9 @@ class MidendCFGMixin(_MixinBase):
                 if break_taken is False:
                     loop_rewrites += 1
                     continue
-            if idx in try_remove_starts and op.kind == "TRY_START":
-                try_marker_prunes += 1
-                continue
-            if idx in try_remove_ends and op.kind == "TRY_END":
-                try_marker_prunes += 1
-                continue
             out.append(op)
 
-        return (
-            out,
-            loop_rewrites,
-            try_marker_prunes,
-            loop_marker_prunes,
-            try_body_prunes,
-            check_exception_threads,
-            check_exception_elisions_count,
-        )
+        return out, loop_rewrites, loop_marker_prunes, check_exception_threads
 
     def _range_overlaps_executable_blocks(
         self,
@@ -935,7 +737,6 @@ class MidendCFGMixin(_MixinBase):
         region_maps = [
             control.if_to_end,
             control.loop_start_to_end,
-            control.try_start_to_end,
         ]
         for mapping in region_maps:
             for start, end in mapping.items():
@@ -1035,15 +836,12 @@ class MidendCFGMixin(_MixinBase):
         close_for_open = {
             "IF": "END_IF",
             "LOOP_START": "LOOP_END",
-            "TRY_START": "TRY_END",
         }
         open_for_close = {close: open_ for open_, close in close_for_open.items()}
-        # Stack entries are (kind, aux). For "IF", `aux` is the bool `seen_else`.
-        # For "TRY_START", `aux` carries the region id (handler label) so that the
-        # DIVERGENT `TRY_END`s a `with`/`try` legitimately emits — one on the
-        # protected-body exit path and one on the exception-handler path, sharing a
-        # `try_region_id` — pair to the SAME open frame instead of being treated as
-        # a single bracket. For "LOOP_START", `aux` is unused (None).
+        # Only IF/LOOP are textual brackets. Exception regions are labeled
+        # path-local custody transitions: several alternative TRY_END markers
+        # may occur inside still-live IF/LOOP bodies. Preserve all of them for
+        # the shared CFG exception authority, without synthesizing other closes.
         control_stack: list[tuple[str, Any]] = []
         rewritten: list[MoltOp] = []
         rewrites = 0
@@ -1074,57 +872,12 @@ class MidendCFGMixin(_MixinBase):
 
         for idx, op in enumerate(ops):
             kind = op.kind
-            if kind in {"IF", "LOOP_START", "TRY_START"}:
+            if kind in {"IF", "LOOP_START"}:
                 if kind == "IF":
                     aux: Any = False  # seen_else
-                elif kind == "TRY_START":
-                    aux = try_region_id(op)  # handler-label region id
                 else:
                     aux = None
                 control_stack.append((kind, aux))
-                rewritten.append(op)
-                continue
-
-            if kind == "TRY_END":
-                # `TRY_END` is a DIVERGENT-PATH close, not a strict bracket: a
-                # `with`/`try` emits ONE `TRY_START` but a `TRY_END` on the normal
-                # protected-body exit AND on the exception-handler entry (after
-                # `LABEL try_exc`). When the body cannot fall through (returns /
-                # raises) only the handler-path `TRY_END` is emitted, so a region
-                # has ONE or TWO textual closes. Pairing by region id makes this
-                # exact: the FIRST `TRY_END` for a region closes its frame; any
-                # LATER `TRY_END` with the same id is a redundant divergent close
-                # and is elided WITHOUT disturbing other open frames.
-                #
-                # This is what fixes the P45 `for`-in-`with` miscompile: the inner
-                # `with`'s second (handler) `TRY_END` arrives while the enclosing
-                # `LOOP_START` is still open. The generic close logic below would
-                # synth-close that `LOOP_START` to reach the outer `TRY_START`,
-                # then elide the loop's real `LOOP_CONTINUE`/`LOOP_END` — orphaning
-                # the back-edge so the loop runs once. Region-id pairing leaves the
-                # loop untouched.
-                region_id = try_region_id(op)
-                frame_idx = None
-                for i in range(len(control_stack) - 1, -1, -1):
-                    open_kind, open_aux = control_stack[i]
-                    if open_kind == "TRY_START" and (
-                        region_id is None or open_aux == region_id
-                    ):
-                        frame_idx = i
-                        break
-                if frame_idx is None:
-                    # No open try frame for this region: a redundant divergent
-                    # close (its frame was already closed on the body path) or a
-                    # stray close. Elide it; never tear down other open frames.
-                    rewrites += 1
-                    continue
-                # Close this try frame. Any frames ABOVE it are genuinely dangling
-                # (their own close never appeared inside the try body) — repair
-                # them with synthetic closes, mirroring the END_IF/LOOP_END path.
-                while len(control_stack) - 1 > frame_idx:
-                    dangling_kind, _ = control_stack.pop()
-                    append_synthetic_close(dangling_kind)
-                control_stack.pop()
                 rewritten.append(op)
                 continue
 
@@ -1230,7 +983,11 @@ class MidendCFGMixin(_MixinBase):
             labels[label_key] = idx
 
         for idx, op in enumerate(rewritten):
-            if op.kind not in {"JUMP", "CHECK_EXCEPTION"}:
+            if op.kind in {"TRY_START", "TRY_END"} and not op.args:
+                # Anonymous IR regions have no named target. All source-level
+                # scopes carry explicit labels, including every path-local end.
+                continue
+            if op.kind not in {"JUMP", "CHECK_EXCEPTION", "TRY_START", "TRY_END"}:
                 continue
             if not op.args:
                 fail(f"{op.kind} at op index {idx} is missing target label")
@@ -1256,6 +1013,12 @@ class MidendCFGMixin(_MixinBase):
             local_ops: list[MoltOp], local_cfg: CFGGraph
         ) -> dict[str, str]:
             alias_label: dict[str, str] = {}
+            region_labels = {
+                str(region_id)
+                for op in local_ops
+                if op.kind in {"TRY_START", "TRY_END"}
+                if (region_id := try_region_id(op)) is not None
+            }
 
             def extract_alias_target(body_ops: list[MoltOp]) -> str | None:
                 if (
@@ -1284,7 +1047,7 @@ class MidendCFGMixin(_MixinBase):
                 if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
                     continue
                 label_key = self._control_label_key(head.args[0])
-                if label_key is None:
+                if label_key is None or label_key in region_labels:
                     continue
 
                 body_ops = [
@@ -1431,10 +1194,12 @@ class MidendCFGMixin(_MixinBase):
 
             referenced_labels: set[str] = set()
             for op in no_noop_jumps:
-                if op.kind == "JUMP" and op.args:
+                if op.kind in {"JUMP", "CHECK_EXCEPTION"} and op.args:
                     referenced_labels.add(str(op.args[0]))
-                elif op.kind == "CHECK_EXCEPTION" and op.args:
-                    referenced_labels.add(str(op.args[0]))
+                elif op.kind in {"TRY_START", "TRY_END"}:
+                    region = try_region_id(op)
+                    if region is not None:
+                        referenced_labels.add(str(region))
 
             label_prunes = 0
             cleaned: list[MoltOp] = []

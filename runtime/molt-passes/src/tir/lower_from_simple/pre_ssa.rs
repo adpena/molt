@@ -44,7 +44,7 @@ fn is_pre_ssa_rewritten_kind(kind: &str) -> bool {
     simpleir_kind_is_pre_ssa_rewritten(kind)
 }
 
-pub(super) fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {
+pub fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {
     use crate::ir::OpIR;
 
     // Quick scan: any loop-index op consumed by this pre-SSA rewrite?

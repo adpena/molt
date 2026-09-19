@@ -154,8 +154,7 @@ impl<'a> SsaContext<'a> {
             attrs.insert("bytes".into(), AttrValue::Bytes(v.clone()));
         }
         // Preserve additional SimpleIR metadata fields that the native backend
-        // reads on specific op kinds (task kind/closure size, container_type,
-        // ic_index, var).
+        // reads on specific op kinds (task kind/closure size, container_type, var).
         // Without these, passthrough ops lose critical information.
         if let Some(ref v) = op.task_kind {
             attrs.insert("task_kind".into(), AttrValue::Str(v.clone()));
@@ -165,12 +164,6 @@ impl<'a> SsaContext<'a> {
         }
         if let Some(ref v) = op.container_type {
             attrs.insert("container_type".into(), AttrValue::Str(v.clone()));
-        }
-        if let Some(v) = op.ic_index {
-            attrs.insert("ic_index".into(), AttrValue::Int(v));
-        }
-        if let Some(ref v) = op.effect_proof {
-            attrs.insert("effect_proof".into(), AttrValue::Str(v.clone()));
         }
         if let Some(ref v) = op.native_callable_export {
             attrs.insert("native_callable_export".into(), AttrValue::Str(v.clone()));

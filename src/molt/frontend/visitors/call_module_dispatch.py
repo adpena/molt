@@ -495,51 +495,6 @@ class CallModuleDispatchMixin(_MixinBase):
             return None
         return self._emit_intrinsic_function(runtime_name)
 
-    def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None:
-        for refs, eager_refs in zip(
-            reversed(self.loop_static_class_refs),
-            reversed(self.loop_static_class_eager_refs),
-            strict=True,
-        ):
-            slot = refs.get(class_name)
-            if slot is None:
-                continue
-            cached = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_VAR",
-                    args=[],
-                    result=cached,
-                    metadata={"var": slot.name},
-                )
-            )
-            if class_name in eager_refs:
-                return cached
-            missing = MoltValue(self.next_var(), type_hint="missing")
-            self.emit(MoltOp(kind="MISSING", args=[], result=missing))
-            is_missing = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="IS", args=[cached, missing], result=is_missing))
-            result = MoltValue(self.next_var(), type_hint="type")
-            placeholder = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=placeholder))
-            self.emit(MoltOp(kind="COPY", args=[placeholder], result=result))
-            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
-            resolved = self._emit_global_get(class_name)
-            self.emit(
-                MoltOp(
-                    kind="STORE_VAR",
-                    args=[resolved],
-                    result=MoltValue("none"),
-                    metadata={"var": slot.name},
-                )
-            )
-            self.emit(MoltOp(kind="COPY", args=[resolved], result=result))
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="COPY", args=[cached], result=result))
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            return result
-        return None
-
     def _local_name_shadows_import_binding(self, name: str) -> bool:
         if self.current_func_name == "molt_main":
             return False

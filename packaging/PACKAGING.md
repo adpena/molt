@@ -4,6 +4,23 @@ Molt has one release pipeline: `.github/workflows/release.yml`. A release is an
 existing exact `v<project.version>` tag. The workflow does not publish from a
 branch, a dirty tree, or an untagged manual checkout.
 
+Artifact reproducibility and the native installation smoke test are necessary,
+not sufficient, for semantic release acceptance. The
+[initial-release contract](../ROADMAP.md#first-release-milestone) requires
+current-revision end-to-end evidence for the declared verified subset on native
+and WASM, including Python API, C-API/ABI and ecosystem consumers across every
+advertised version/OS/architecture/backend/profile cell. Missing, skipped or
+diagnostic-only cells do not count as passes. The packaging workflow below does
+not currently establish that complete acceptance matrix by itself.
+
+The semantic evidence authority is `tools/release_exit_gate.py`, which verifies
+the source-addressed E1-E4 bundle. Publication does not yet consume that bundle;
+closing this gap requires verification against the exact tagged source and
+preservation of its complete evidence closure. The current verified-subset
+coordinates and scientific witness also do not establish complete public/C-API
+coverage, browser execution, or determinism across every advertised profile.
+These remain release blockers, not implicit passes from packaging success.
+
 ## Structural pipeline
 
 1. `config/release_supply_chain.toml` emits the complete target matrix and owns

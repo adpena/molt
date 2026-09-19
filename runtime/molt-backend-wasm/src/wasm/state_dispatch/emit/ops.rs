@@ -13,7 +13,7 @@ use crate::wasm::state_dispatch::stateful_ops::{
 };
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::emit_branch_truthiness_i32;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use wasm_encoder::{BlockType, Function, Instruction};
 
 #[derive(Default)]
@@ -33,7 +33,6 @@ pub(super) fn emit_dispatch_op(
     op: &OpIR,
     idx: usize,
     depth: u32,
-    exception_regions: &BTreeSet<usize>,
     scratch: &mut DispatchOpScratch,
 ) -> bool {
     let func_ir = op_emitter.func_ir;
@@ -185,16 +184,7 @@ pub(super) fn emit_dispatch_op(
             false
         }
         kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
-            emit_dispatch_check_exception(
-                func,
-                op_emitter,
-                plan,
-                locals,
-                op,
-                idx,
-                depth,
-                exception_regions,
-            );
+            emit_dispatch_check_exception(func, op_emitter, plan, locals, op, idx, depth);
             true
         }
         kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)

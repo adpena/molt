@@ -17,6 +17,86 @@ fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
 }
 
 #[test]
+fn shared_graph_admission_precedes_target_representation_planning() {
+    let labelled = |kind: &str, value: i64| OpIR {
+        kind: kind.into(),
+        value: Some(value),
+        ..OpIR::default()
+    };
+    let cases = [
+        (vec![labelled("jump", 19)], "invalid-jump-target"),
+        (
+            vec![OpIR {
+                kind: "jump".into(),
+                s_value: Some("alias".into()),
+                ..OpIR::default()
+            }],
+            "malformed-label-reference",
+        ),
+        (
+            vec![OpIR {
+                kind: "label".into(),
+                s_value: Some("alias".into()),
+                ..OpIR::default()
+            }],
+            "malformed-label-definition",
+        ),
+        (
+            vec![labelled("label", 19), labelled("label", 19)],
+            "duplicate-label-definition",
+        ),
+        (
+            vec![
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".into(),
+                    ..OpIR::default()
+                },
+            ],
+            "unbalanced-control-flow",
+        ),
+        (
+            vec![OpIR {
+                kind: "loop_break_if_exception".into(),
+                ..OpIR::default()
+            }],
+            "break-outside-loop",
+        ),
+    ];
+    for target in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::wasm_release_fast(),
+        TargetInfo::llvm_release_fast(),
+        TargetInfo::luau_release_fast(),
+        TargetInfo::rust_release_fast(),
+        TargetInfo::mlir_release_fast(),
+    ] {
+        for (ops, expected) in &cases {
+            let mut planned = false;
+            let error = validate_target_contract_with_representation_plan(
+                &function_ir(ops.clone()),
+                &target,
+                |_, _| {
+                    planned = true;
+                    Ok(())
+                },
+            )
+            .expect_err("malformed graph must not reach representation planning");
+            assert!(!planned, "{}: {error}", target.target.as_str());
+            assert!(
+                error.contains(*expected),
+                "{}: {error}",
+                target.target.as_str()
+            );
+            assert!(error.contains("function `f` op#"), "{error}");
+        }
+    }
+}
+
+#[test]
 fn lexical_cells_require_real_storage_and_capture_transport() {
     let requirement = SimpleIrRuntimeRequirements::LEXICAL_CELLS;
     let denied = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(requirement));
@@ -32,7 +112,12 @@ fn lexical_cells_require_real_storage_and_capture_transport() {
         "molt_cell_new",
         "molt_cell_get",
         "molt_cell_set",
-        "molt_cell_eq", "molt_cell_ne", "molt_cell_lt", "molt_cell_le", "molt_cell_gt", "molt_cell_ge",
+        "molt_cell_eq",
+        "molt_cell_ne",
+        "molt_cell_lt",
+        "molt_cell_le",
+        "molt_cell_gt",
+        "molt_cell_ge",
         "molt_types_cell_new",
         "molt_types_cell_contents_get",
         "molt_types_cell_contents_set",

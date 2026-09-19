@@ -175,6 +175,7 @@ impl LuauBackend {
             || func_body.contains("molt_frame_")
             || func_body.contains("molt_coroutine_execution_wrap(")
             || func_body.contains("molt_exception_attach_traceback(")
+            || func_body.contains("molt_exception_")
             || func_body.contains("molt_module_get_global(")
             || func_body.contains("molt_module_get_name(")
             || func_body.contains("molt_globals_builtin(")

@@ -59,12 +59,7 @@ fn emit_try_end(context: &mut ControlOpContext<'_>, func: &mut Function) {
 
 fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
     let async_work_poll = op.is_async_work_poll();
-    if !async_work_poll
-        && (context.native_eh_enabled
-            || context
-                .exception_handler_region_indices
-                .contains(&context.op_idx))
-    {
+    if !async_work_poll && context.native_eh_enabled {
         return;
     }
 
@@ -102,7 +97,7 @@ mod tests {
     use crate::wasm::WasmFrameLocals;
     use crate::wasm_import_tracking::TrackedImportIds;
     use crate::wasm_values::ConstantCache;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use wasm_encoder::{
         CodeSection, EntityType, FunctionSection, ImportSection, Module, TypeSection,
     };
@@ -121,7 +116,6 @@ mod tests {
         let locals = WasmFrameLocals::default();
         let const_cache = ConstantCache::default();
         let scalar_plan = ScalarRepresentationPlan::default();
-        let exception_regions = BTreeSet::new();
         let mut control_stack = vec![ControlKind::Block];
         let mut try_stack = Vec::new();
         let mut label_stack = vec![41];
@@ -140,7 +134,6 @@ mod tests {
             const_cache: &const_cache,
             scalar_plan: &scalar_plan,
             frame: &frame,
-            exception_handler_region_indices: &exception_regions,
             control_stack: &mut control_stack,
             try_stack: &mut try_stack,
             label_stack: &mut label_stack,

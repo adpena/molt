@@ -4,7 +4,6 @@ pub mod cfg;
 pub mod cfg_liveness;
 pub mod clone_support;
 pub mod dominators;
-pub mod effect_proof;
 pub mod function;
 pub mod numeric_facts;
 pub mod op_kinds_generated;

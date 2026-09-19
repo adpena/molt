@@ -67,7 +67,6 @@ class MidendPolicyMixin(_MixinBase):
             "cfg_region_prunes": 0,
             "label_prunes": 0,
             "jump_noop_elisions": 0,
-            "licm_hoists": 0,
             "guard_hoist_attempts": 0,
             "guard_hoist_accepted": 0,
             "guard_hoist_rejected": 0,
@@ -107,9 +106,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_readheap_rejected": 0,
                 "gvn_attempted": 0,
                 "gvn_accepted": 0,
-                "licm_attempted": 0,
-                "licm_accepted": 0,
-                "licm_rejected": 0,
                 "dce_attempted": 0,
                 "dce_accepted": 0,
                 "dce_pure_op_attempted": 0,
@@ -467,7 +463,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_licm": False,
                 "enable_guard_hoist": False,
                 "budget_base_ms": 60.0,
             },
@@ -477,7 +472,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 8,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_licm": False,
                 "enable_guard_hoist": False,
                 "budget_base_ms": 35.0,
             },
@@ -487,7 +481,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 4,
                 "enable_deep_edge_thread": False,
                 "enable_cse": False,
-                "enable_licm": False,
                 "enable_guard_hoist": False,
                 "budget_base_ms": 20.0,
             },
@@ -497,7 +490,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 48,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_licm": True,
                 "enable_guard_hoist": True,
                 "budget_base_ms": 180.0,
             },
@@ -507,7 +499,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 32,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_licm": True,
                 "enable_guard_hoist": True,
                 "budget_base_ms": 110.0,
             },
@@ -517,7 +508,6 @@ class MidendPolicyMixin(_MixinBase):
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": False,
                 "enable_cse": True,
-                "enable_licm": False,
                 "enable_guard_hoist": False,
                 "budget_base_ms": 70.0,
             },
@@ -598,7 +588,6 @@ class MidendPolicyMixin(_MixinBase):
             cse_iter_cap=int(selected["cse_iter_cap"]),
             enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),
             enable_cse=bool(selected["enable_cse"]),
-            enable_licm=bool(selected["enable_licm"]),
             enable_guard_hoist=bool(selected["enable_guard_hoist"]),
             budget_ms=float(budget_ms),
             work_budget=float(work_budget),
@@ -691,7 +680,7 @@ class MidendPolicyMixin(_MixinBase):
             outcome["per_func_budget_ms"] = round(budget_ms, 3)
         if os.getenv("MOLT_MIDEND_STATS") is not None:
             level_desc = {
-                1: "skip LICM + guard hoist",
+                1: "skip guard hoist",
                 2: "skip SCCP multi-pass",
                 3: "skip all optimisation",
             }.get(degrade_level, f"unknown({degrade_level})")
@@ -728,7 +717,6 @@ class MidendPolicyMixin(_MixinBase):
             "cfg_region_prunes",
             "label_prunes",
             "jump_noop_elisions",
-            "licm_hoists",
             "guard_hoist_attempts",
             "guard_hoist_accepted",
             "guard_hoist_rejected",
@@ -760,8 +748,6 @@ class MidendPolicyMixin(_MixinBase):
                 f"cse_readheap={stats.get('cse_readheap_accepted', 0)}/{stats.get('cse_readheap_attempted', 0)}"
                 f"(rej={stats.get('cse_readheap_rejected', 0)}),"
                 f"gvn={stats.get('gvn_accepted', 0)}/{stats.get('gvn_attempted', 0)},"
-                f"licm={stats.get('licm_accepted', 0)}/{stats.get('licm_attempted', 0)}"
-                f"(rej={stats.get('licm_rejected', 0)}),"
                 f"dce={stats.get('dce_accepted', 0)}/{stats.get('dce_attempted', 0)},"
                 f"dce_pure={stats.get('dce_pure_op_accepted', 0)}/{stats.get('dce_pure_op_attempted', 0)}"
                 f"(rej={stats.get('dce_pure_op_rejected', 0)})"
@@ -779,7 +765,6 @@ class MidendPolicyMixin(_MixinBase):
                 ("cse_readheap_rejected", "cse_readheap"),
                 ("dce_pure_op_rejected", "dce_pure_op"),
                 ("guard_hoist_rejected", "guard_hoist"),
-                ("licm_rejected", "licm"),
             ]
             for func_name, stats in self.midend_stats_by_function.items():
                 for key, family in tracked:
@@ -793,7 +778,6 @@ class MidendPolicyMixin(_MixinBase):
                                 "cse_readheap_rejected": "cse_readheap_attempted",
                                 "dce_pure_op_rejected": "dce_pure_op_attempted",
                                 "guard_hoist_rejected": "guard_hoist_attempted",
-                                "licm_rejected": "licm_attempted",
                             }[key],
                             0,
                         )

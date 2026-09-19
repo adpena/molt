@@ -191,7 +191,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_canonicalize_block_with_state")
     assert hasattr(SimpleTIRGenerator, "_compute_sccp")
     assert hasattr(SimpleTIRGenerator, "_ensure_structural_cfg_validity")
-    assert hasattr(SimpleTIRGenerator, "_hoist_loop_invariant_pure_ops")
     assert hasattr(SimpleTIRGenerator, "_canonicalize_control_aware_ops")
     # serialization
     assert hasattr(SimpleTIRGenerator, "map_ops_to_json")

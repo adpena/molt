@@ -21,7 +21,7 @@ end
 
 local function molt_frame_new_context(): any
 	molt_frame_context_allocations += 1
-	return {depth=0, codes={}, lines={}, lastis={}, cols={}, end_cols={}, globals={}, builtins={}, locals={}, invocations={}}
+	return {depth=0, codes={}, lines={}, lastis={}, cols={}, end_cols={}, globals={}, builtins={}, locals={}, invocations={}, exceptions={handlers={}, baseline=0, pending=nil, inherited=nil}}
 end
 
 local function molt_frame_owned_context(owner: any): any
@@ -226,6 +226,143 @@ local function molt_frame_finalize(context: any, owner: any, baseline_depth: num
 	return exception, true
 end
 
+-- Project the explicit runtime exception protocol onto the same coroutine-owned
+-- context as Python frames. Pending propagation and dynamically handled state
+-- are independent: clearing a pending exception never clears an outer handler.
+local function molt_exception_stack_depth(): number
+	return #molt_frame_context().exceptions.handlers
+end
+
+local function molt_exception_stack_enter(): number
+	local state = molt_frame_context().exceptions
+	local previous = state.baseline
+	state.baseline = #state.handlers
+	return previous
+end
+
+local function molt_exception_stack_exit(previous: any): nil
+	molt_frame_context().exceptions.baseline = if type(previous) == "number" and previous >= 0 then previous else 0
+	return nil
+end
+
+local function molt_exception_stack_set_depth(depth: any): nil
+	local state = molt_frame_context().exceptions
+	local target = if type(depth) == "number" and depth >= 0 then depth else 0
+	while #state.handlers > target do state.handlers[#state.handlers] = nil end
+	while #state.handlers < target do state.handlers[#state.handlers + 1] = {} end
+	return nil
+end
+
+local function molt_exception_stack_clear(): nil
+	return molt_exception_stack_set_depth(molt_frame_context().exceptions.baseline)
+end
+
+local function molt_exception_push(): nil
+	local handlers = molt_frame_context().exceptions.handlers
+	handlers[#handlers + 1] = {}
+	return nil
+end
+
+local function molt_exception_pop(): nil
+	local state = molt_frame_context().exceptions
+	if #state.handlers > state.baseline then state.handlers[#state.handlers] = nil end
+	return nil
+end
+
+local function molt_exception_context_set(exception: any): nil
+	local handlers = molt_frame_context().exceptions.handlers
+	if #handlers > 0 then handlers[#handlers].exception = exception end
+	return nil
+end
+
+local function molt_exception_active(): any
+	local state = molt_frame_context().exceptions
+	for index = #state.handlers, 1, -1 do
+		if state.handlers[index].exception ~= nil then return state.handlers[index].exception end
+	end
+	return state.inherited
+end
+
+local function molt_exception_pending(): boolean
+	return molt_frame_context().exceptions.pending ~= nil
+end
+
+local function molt_exception_last_pending(): any
+	return molt_frame_context().exceptions.pending
+end
+
+local function molt_exception_clear(): nil
+	molt_frame_context().exceptions.pending = nil
+	return nil
+end
+
+local function molt_exception_last(): any
+	local state = molt_frame_context().exceptions
+	local active = molt_exception_active()
+	if state.pending == nil then return active end
+	local exception = state.pending
+	if #state.handlers > 0 then
+		exception = active or exception
+		molt_exception_context_set(exception)
+		state.pending = nil
+	end
+	return exception
+end
+
+local function molt_exception_current(): any
+	return molt_exception_active() or molt_exception_last()
+end
+
+local function molt_exception_set_last(exception: any): nil
+	local context = molt_frame_context()
+	if exception == nil then context.exceptions.pending = nil; return nil end
+	local active = molt_exception_active()
+	exception = molt_exception_attach_traceback(context, exception)
+	if active ~= nil and active ~= exception and rawget(exception, "__context__") == nil then
+		rawset(exception, "__context__", active)
+	end
+	context.exceptions.pending = exception
+	return nil
+end
+
+local function molt_exception_set_value(exception: any, value: any): nil
+	if type(exception) ~= "table" or exception.__type ~= "StopIteration" then
+		return molt_exception_set_last({__type="TypeError", __msg="exception value field requires StopIteration layout"})
+	end
+	exception.value = value
+	return nil
+end
+
+local function molt_exception_set_cause(exception: any, cause: any): nil
+	exception.__cause__ = cause
+	exception.__suppress_context__ = true
+	return nil
+end
+
+local function molt_exception_reraise(): nil
+	return molt_exception_set_last(molt_exception_active() or {__type="RuntimeError", __msg="No active exception to reraise"})
+end
+
+local function molt_exception_propagate(): nil
+	local pending = molt_exception_last_pending()
+	if pending ~= nil then error(pending, 0) end
+	return nil
+end
+
+local function molt_exception_capture(context: any, owner: any, frame_depth: number, exception_depth: number, baseline: number, error_value: any): nil
+	local exception, restored = molt_frame_finalize(context, owner, frame_depth, error_value, true)
+	-- A poisoned execution context was forgotten by finalization. Never publish
+	-- into a replacement context and continue as though its custody survived.
+	if not restored then error(exception, 0) end
+	-- A host throw can bypass a callee's explicit cleanup. Restore only the
+	-- caller-owned baseline captured at the operation boundary, then publish.
+	-- Capture dynamic context before discarding the failed callee's handlers.
+	molt_exception_set_last(exception)
+	molt_exception_stack_set_depth(exception_depth)
+	molt_exception_stack_exit(baseline)
+	return nil
+end
+
 -- Own the execution boundary inside the new coroutine. The resume closure only
 -- transports yields and rethrows the exact stored exception after the
 -- coroutine has attached locations and restored its own context.
@@ -237,10 +374,12 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 	local context_restore_attempted = false
 	local finalized = false
 	local pending_error: any = nil
+	local resume_handled_exception: any = nil
 	local thread: any = coroutine.create(function(...)
 		local context, owner = molt_frame_context()
 		execution_context = context
 		execution_owner = owner
+		context.exceptions.inherited = resume_handled_exception
 		baseline_depth = context.depth
 		local function on_error(error_value: any): any
 			context_restore_attempted = true
@@ -285,7 +424,11 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 		if finalized or thread == nil then
 			error({__type="RuntimeError", __msg="cannot resume finalized coroutine"}, 0)
 		end
+		resume_handled_exception = molt_exception_active()
+		if execution_context ~= nil then execution_context.exceptions.inherited = resume_handled_exception end
 		local results = table.pack(coroutine.resume(thread, ...))
+		resume_handled_exception = nil
+		if execution_context ~= nil then execution_context.exceptions.inherited = nil end
 		if not results[1] then
 			local resume_error = pending_error or results[2]
 			pending_error = nil

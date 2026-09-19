@@ -165,11 +165,86 @@ fn latch_check_site(
     }
 }
 
+fn dump_lexical_custody_failure(func: &TirFunction, position: ExceptionOpPosition) {
+    if std::env::var_os("MOLT_DUMP_IR").is_none() && std::env::var_os("TIR_DUMP").is_none() {
+        return;
+    }
+    eprintln!(
+        "[EXCEPTION-CUSTODY] function={} boundary={position:?}",
+        func.name
+    );
+    if let Some(block) = func.blocks.get(&position.block) {
+        let start = position.op_index.saturating_sub(6);
+        for (index, op) in block.ops.iter().enumerate().skip(start).take(12) {
+            eprintln!("[EXCEPTION-CUSTODY] boundary-op {index}: {op:?}");
+        }
+        eprintln!("[EXCEPTION-CUSTODY] boundary-term {:?}", block.terminator);
+    }
+    let mut blocks: Vec<_> = func.blocks.values().collect();
+    blocks.sort_by_key(|block| block.id);
+    let mut predecessor_count = 0;
+    let mut suspend_count = 0;
+    for block in &blocks {
+        if matches!(block.terminator, Terminator::StateDispatch { .. }) {
+            eprintln!(
+                "[EXCEPTION-CUSTODY] dispatch {:?}: {:?}",
+                block.id, block.terminator
+            );
+        }
+        let mut predecessor = false;
+        block
+            .terminator
+            .for_each_edge(|target, _| predecessor |= target == position.block);
+        if predecessor && predecessor_count < 8 {
+            predecessor_count += 1;
+            eprintln!(
+                "[EXCEPTION-CUSTODY] predecessor {:?}: {:?}",
+                block.id, block.terminator
+            );
+            for (index, op) in block.ops.iter().enumerate().rev().take(8).rev() {
+                eprintln!("[EXCEPTION-CUSTODY] predecessor-op {index}: {op:?}");
+            }
+        }
+        for (index, op) in block.ops.iter().enumerate() {
+            if !matches!(
+                op.opcode,
+                OpCode::StateTransition
+                    | OpCode::StateYield
+                    | OpCode::ChanSendYield
+                    | OpCode::ChanRecvYield
+            ) || suspend_count >= 16
+            {
+                continue;
+            }
+            suspend_count += 1;
+            eprintln!("[EXCEPTION-CUSTODY] suspend {:?}/{index}: {op:?}", block.id);
+            if let Some(pending) = op.operands.last() {
+                for definition_block in &blocks {
+                    if let Some(arg) = definition_block.args.iter().find(|arg| arg.id == *pending) {
+                        eprintln!(
+                            "[EXCEPTION-CUSTODY] pending-arg {:?}: {arg:?}",
+                            definition_block.id
+                        );
+                    }
+                    for definition in &definition_block.ops {
+                        if definition.results.contains(pending) {
+                            eprintln!(
+                                "[EXCEPTION-CUSTODY] pending-def {:?}: {definition:?}",
+                                definition_block.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Resolve a reachable insertion boundary. The outer `Option` is reachability;
 /// the inner `Option` is depth zero versus a labeled lexical handler.
 fn reachable_lexical_handler(
     facts: &ExceptionRegionFacts,
-    function_name: &str,
+    func: &TirFunction,
     position: ExceptionOpPosition,
 ) -> Option<Option<i64>> {
     match facts.lexical_handler_before(position) {
@@ -178,8 +253,10 @@ fn reachable_lexical_handler(
         Ok(ExceptionBoundaryHandler::Labeled(label)) => Some(Some(label)),
         Ok(ExceptionBoundaryHandler::Anonymous { destination, .. }) => Some(Some(destination)),
         Err(error) => {
+            dump_lexical_custody_failure(func, position);
             panic!(
-                "async-work poll boundary in function {function_name:?} has invalid lexical custody: {error:?}"
+                "async-work poll boundary in function {:?} has invalid lexical custody: {error:?}",
+                func.name,
             )
         }
     }
@@ -235,7 +312,7 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
                         block: block_id,
                         op_index: index + 1,
                     };
-                    let target = reachable_lexical_handler(&region_facts, &func.name, position)?;
+                    let target = reachable_lexical_handler(&region_facts, func, position)?;
                     Some((block_id, index, target))
                 })
                 .collect::<Vec<_>>()
@@ -247,7 +324,7 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
             block: latch,
             op_index: func.blocks[&latch].ops.len(),
         };
-        let Some(target) = reachable_lexical_handler(&region_facts, &func.name, position) else {
+        let Some(target) = reachable_lexical_handler(&region_facts, func, position) else {
             continue;
         };
         let entry = latch_sites_by_block

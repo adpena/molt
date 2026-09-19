@@ -3,81 +3,12 @@ use super::*;
 impl LuauBackend {
     pub(super) fn emit_control_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
-            "label" => {
-                if let Some(id) = op.value {
-                    self.emit_line(&format!("::label_{id}::"));
-                } else if let Some(ref s) = op.s_value {
-                    let label = sanitize_string_label(s);
-                    self.emit_line(&format!("::{label}::"));
-                }
-            }
-            "jump" | "goto" => {
-                if let Some(id) = op.value {
-                    self.emit_line(&format!("goto label_{id}"));
-                } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_string_label(target);
-                    self.emit_line(&format!("goto {target}"));
-                }
-            }
-            "br_if" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(cond_raw) = args.first() {
-                    let cond = self.guard_truthiness(cond_raw);
-                    if let Some(id) = op.value {
-                        self.emit_line(&format!("if {cond} then goto label_{id} end"));
-                    } else if let Some(ref target) = op.s_value {
-                        let target = sanitize_string_label(target);
-                        self.emit_line(&format!("if {cond} then goto {target} end"));
-                    } else {
-                        let cond_ident = sanitize_ident(cond_raw);
-                        self.emit_line(&format!(
-                            "error(\"[unsupported op: br_if {cond_ident} missing target label]\")"
-                        ));
-                    }
-                }
-            }
-            "branch" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let cond_raw = args.first().map(|s| s.as_str()).or(op.var.as_deref());
-                let cond = if let Some(raw) = cond_raw {
-                    self.guard_truthiness(raw)
-                } else {
-                    "true".to_string()
-                };
-                if let Some(id) = op.value {
-                    self.emit_line(&format!("if {cond} then goto label_{id} end"));
-                } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_string_label(target);
-                    self.emit_line(&format!("if {cond} then goto {target} end"));
-                } else {
-                    self.emit_line(&format!(
-                        "error(\"[unsupported op: branch {cond} missing target label]\")"
-                    ));
-                }
-            }
-            "branch_false" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                let cond_raw = args.first().map(|s| s.as_str()).or(op.var.as_deref());
-                let cond = if let Some(raw) = cond_raw {
-                    self.guard_truthiness(raw)
-                } else {
-                    "false".to_string()
-                };
-                let not_cond = if cond.starts_with("molt_bool(") {
-                    format!("not ({cond})")
-                } else {
-                    format!("not {cond}")
-                };
-                if let Some(id) = op.value {
-                    self.emit_line(&format!("if {not_cond} then goto label_{id} end"));
-                } else if let Some(ref target) = op.s_value {
-                    let target = sanitize_string_label(target);
-                    self.emit_line(&format!("if {not_cond} then goto {target} end"));
-                } else {
-                    self.emit_line(&format!(
-                        "error(\"[unsupported op: branch_false {cond} missing target label]\")"
-                    ));
-                }
+            "label" => {}
+            "jump" | "goto" | "br_if" | "branch" | "branch_false" => {
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "labelled control flow must use the canonical logical-flow emitter",
+                );
             }
             "if" => {
                 let args = op.args.as_deref().unwrap_or(&[]);

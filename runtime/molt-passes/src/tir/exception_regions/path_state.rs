@@ -1,8 +1,8 @@
 //! Exception-region path-state traversal engine.
 //!
 //! The CFG walk that computes, for each op position, the set of exception
-//! path-states reachable there — the exception-stack frames, handler owners,
-//! normal closures, and pending-transfer flag — plus the `state_resume_stacks`
+//! path-states reachable there — chronological region custody and the
+//! pending-transfer flag — plus the `state_resume_stacks`
 //! generator-resume fixpoint and the reachable `exception_pop` release search.
 //! Consumed by [`super`]'s `compute_exception_region_facts`. See the
 //! module-level docs on [`super`].
@@ -111,37 +111,74 @@ fn op_exception_successors_with_state(
 
 type ConstIntValues = BTreeMap<ValueId, i64>;
 
-pub(super) type ExceptionStack = Vec<ExceptionRegionToken>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum ExceptionRegionPhase {
+    Active,
+    Handler,
+    NormalClosure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct ExceptionRegionCustody {
+    pub(super) token: ExceptionRegionToken,
+    pub(super) phase: ExceptionRegionPhase,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct ExceptionPathState {
-    pub(super) frames: ExceptionStack,
-    pub(super) owners: ExceptionStack,
-    pub(super) normal_closures: ExceptionStack,
+    // Phase changes never reorder custody: a nested active/closed region must
+    // pop before its enclosing handler, just like a nested handler does.
+    pub(super) regions: Vec<ExceptionRegionCustody>,
     pub(super) pending_must_transfer: bool,
 }
 
 impl ExceptionPathState {
+    fn contains_region(&self, token: ExceptionRegionToken) -> bool {
+        self.regions.iter().any(|region| region.token == token)
+    }
+
+    fn lexical_handler(&self) -> Option<ExceptionRegionToken> {
+        self.regions
+            .iter()
+            .rev()
+            .find(|region| region.phase == ExceptionRegionPhase::Active)
+            .map(|region| region.token)
+    }
+
+    pub(super) fn handler_owner(&self) -> Option<ExceptionRegionToken> {
+        self.regions
+            .iter()
+            .rev()
+            .find(|region| region.phase == ExceptionRegionPhase::Handler)
+            .map(|region| region.token)
+    }
+
+    pub(super) fn has_observer_custody(&self) -> bool {
+        self.regions
+            .iter()
+            .any(|region| region.phase != ExceptionRegionPhase::Active)
+    }
+
     fn enter_handler(
         &self,
         label: i64,
         anonymous_destinations: &AnonymousHandlerDestinations,
     ) -> Option<Self> {
         let mut next = self.clone();
-        let index = next.frames.iter().rposition(|token| match token {
-            ExceptionRegionToken::Labeled(candidate) => *candidate == label,
-            ExceptionRegionToken::Anonymous(owner) => anonymous_destinations
-                .get(owner)
-                .is_some_and(|destinations| {
-                    destinations.len() == 1 && destinations.contains(&label)
-                }),
+        let index = next.regions.iter().rposition(|region| {
+            region.phase == ExceptionRegionPhase::Active
+                && match &region.token {
+                    ExceptionRegionToken::Labeled(candidate) => *candidate == label,
+                    ExceptionRegionToken::Anonymous(owner) => anonymous_destinations
+                        .get(owner)
+                        .is_some_and(|destinations| {
+                            destinations.len() == 1 && destinations.contains(&label)
+                        }),
+                }
         })?;
-        let owner = next.frames[index];
-        next.frames.truncate(index);
-        if !next.owners.contains(&owner) {
-            next.owners.push(owner);
-        }
-        next.normal_closures.retain(|token| *token != owner);
+        // Transfer unwinds every younger region, regardless of its phase.
+        next.regions.truncate(index + 1);
+        next.regions[index].phase = ExceptionRegionPhase::Handler;
         next.pending_must_transfer = false;
         Some(next)
     }
@@ -152,8 +189,11 @@ impl ExceptionPathState {
             let token = label_value(op)
                 .map(ExceptionRegionToken::Labeled)
                 .unwrap_or(ExceptionRegionToken::Anonymous(position));
-            if !next.frames.contains(&token) {
-                next.frames.push(token);
+            if !next.contains_region(token) {
+                next.regions.push(ExceptionRegionCustody {
+                    token,
+                    phase: ExceptionRegionPhase::Active,
+                });
             }
             return next;
         }
@@ -161,38 +201,42 @@ impl ExceptionPathState {
             let token = label_value(op)
                 .map(ExceptionRegionToken::Labeled)
                 .or_else(|| {
-                    next.frames
+                    next.regions
                         .iter()
                         .rev()
-                        .find(|token| matches!(token, ExceptionRegionToken::Anonymous(_)))
-                        .copied()
+                        .find(|region| matches!(region.token, ExceptionRegionToken::Anonymous(_)))
+                        .map(|region| region.token)
                 });
-            if let Some(token) = token {
-                if let Some(index) = next.frames.iter().rposition(|frame| *frame == token) {
-                    next.frames.truncate(index);
-                }
-                if next.owners.last().copied() != Some(token)
-                    && !next.normal_closures.contains(&token)
-                {
-                    next.normal_closures.push(token);
+            if let Some(token) = token
+                && let Some(index) = next
+                    .regions
+                    .iter()
+                    .rposition(|region| region.token == token)
+                && next.regions[index].phase == ExceptionRegionPhase::Active
+            {
+                // Closing lexical scopes does not pop runtime custody.
+                // Keep their chronological order until exception_pop. An end
+                // marker for an entered handler or an already-popped region
+                // must not manufacture another runtime owner.
+                for region in &mut next.regions[index..] {
+                    if region.phase == ExceptionRegionPhase::Active {
+                        region.phase = ExceptionRegionPhase::NormalClosure;
+                    }
                 }
             }
             return next;
         }
         if is_exception_pop(op) {
             // `exception_pop` is the runtime unwind paired with the
-            // frontend's `exception_push`.  On an exceptional path the
-            // matching lexical frame has already moved into `owners`; on a
-            // normal finally path `TryEnd` has moved it into
-            // `normal_closures`.  Non-local normal control flow (continue,
+            // frontend's `exception_push`, in chronological LIFO order on
+            // active, exceptional and normal cleanup paths alike.
+            // Non-local normal control flow (continue,
             // break, and return) cannot execute the lexically following
             // `TryEnd`, so its explicit pop must close the active frame here.
             // Keeping that frame alive leaks handler custody around a loop and
             // makes later, statically depth-zero boundaries appear reachable
             // under every handler visited by previous iterations.
-            if next.owners.pop().is_none() && next.normal_closures.pop().is_none() {
-                next.frames.pop();
-            }
+            next.regions.pop();
             return next;
         }
         if op.opcode == OpCode::Raise {
@@ -207,11 +251,7 @@ impl ExceptionPathState {
 }
 
 fn current_pop_owner(state: &ExceptionPathState) -> Option<ExceptionRegionToken> {
-    state
-        .owners
-        .last()
-        .copied()
-        .or_else(|| state.normal_closures.last().copied())
+    state.regions.last().map(|region| region.token)
 }
 
 pub(super) fn match_ref_release_owner(
@@ -219,14 +259,23 @@ pub(super) fn match_ref_release_owner(
     state: &ExceptionPathState,
     owning_tokens: &BTreeSet<ExceptionRegionToken>,
 ) -> Option<ExceptionRegionToken> {
-    if let Some(owner) = state.owners.last().copied() {
-        return Some(owner);
-    }
-    if !matches!(source_kind, "exception_last" | "exception_last_pending") {
-        return None;
-    }
-    let owner = state.normal_closures.last().copied()?;
-    owning_tokens.contains(&owner).then_some(owner)
+    // Observing an enclosing handled exception does not transfer its ownership
+    // to a younger active region. Conversely, a joined finally observer belongs
+    // to the younger closed region when another path entered that handler.
+    state
+        .regions
+        .iter()
+        .rev()
+        .find_map(|region| match region.phase {
+            ExceptionRegionPhase::Handler => Some(region.token),
+            ExceptionRegionPhase::NormalClosure
+                if matches!(source_kind, "exception_last" | "exception_last_pending")
+                    && owning_tokens.contains(&region.token) =>
+            {
+                Some(region.token)
+            }
+            _ => None,
+        })
 }
 
 pub(super) type StateResumeStacks = BTreeMap<i64, BTreeSet<ExceptionPathState>>;
@@ -452,7 +501,7 @@ pub(super) fn reachable_region_pops(
     let mut queue = VecDeque::new();
     for state in producer_states
         .iter()
-        .filter(|state| current_pop_owner(state) == Some(owner))
+        .filter(|state| state.contains_region(owner))
     {
         queue.push_back((
             producer.block,
@@ -464,6 +513,11 @@ pub(super) fn reachable_region_pops(
     let mut visited = BTreeSet::new();
     let mut candidates: BTreeMap<ExceptionOpPosition, BTreeSet<BlockId>> = BTreeMap::new();
     while let Some((block, op_index, state, entry_pred)) = queue.pop_front() {
+        // An unwind ends this dynamic owner's lifetime. Do not follow a later
+        // loop iteration that happens to reuse the same static region token.
+        if !state.contains_region(owner) {
+            continue;
+        }
         if !visited.insert((block, op_index, state.clone(), entry_pred)) {
             continue;
         }
@@ -591,7 +645,7 @@ pub(super) fn lexical_handlers_before(
         handlers
             .entry(ExceptionOpPosition { block, op_index })
             .or_default()
-            .insert(state.frames.last().copied());
+            .insert(state.lexical_handler());
         if op_index >= tir_block.ops.len() {
             for (succ, succ_state) in terminator_successors_with_state(
                 &tir_block.terminator,

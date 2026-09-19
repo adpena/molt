@@ -24,9 +24,7 @@ else:
 
 
 class ModuleGlobalsMixin(_MixinBase):
-    def _get_or_emit_module_cache(
-        self, module_name: str, *, effect_proof: str | None = None
-    ) -> MoltValue:
+    def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
         """Return a MoltValue for *module_name* from MODULE_CACHE_GET.
 
         Emits a fresh CONST_STR + MODULE_CACHE_GET pair on every call.  Earlier
@@ -43,13 +41,11 @@ class ModuleGlobalsMixin(_MixinBase):
         module_name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_name_val))
         module_val = MoltValue(self.next_var(), type_hint="module")
-        metadata = {"effect_proof": effect_proof} if effect_proof else None
         self.emit(
             MoltOp(
                 kind="MODULE_CACHE_GET",
                 args=[module_name_val],
                 result=module_val,
-                metadata=metadata,
             )
         )
         return module_val
@@ -96,17 +92,26 @@ class ModuleGlobalsMixin(_MixinBase):
         attr_name = self.imported_attr_names.get(
             name, self.global_imported_attr_names.get(name, name)
         )
-        metadata = (
-            self._runtime_qualified_callable_metadata(module_name, attr_name)
-            if not self._local_name_shadows_import_binding(name)
-            else None
+        # The active function namespace may differ from the lexical module.
+        # Keep live LOAD_GLOBAL and its builtin fallback; possible provenance
+        # constrains target admission but never certifies a concrete callable.
+        requirement_bits = self._runtime_qualified_callable_requirement_bits(
+            "builtins", name
         )
+        if not self._local_name_shadows_import_binding(name):
+            requirement_bits |= self._runtime_qualified_callable_requirement_bits(
+                module_name, attr_name
+            )
         self.emit(
             MoltOp(
                 kind="MODULE_GET_GLOBAL",
                 args=[module_val, name_val],
                 result=res,
-                metadata=metadata,
+                metadata=(
+                    {"runtime_requirement_bits": requirement_bits}
+                    if requirement_bits
+                    else None
+                ),
             )
         )
         return res

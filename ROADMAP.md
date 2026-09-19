@@ -5,6 +5,30 @@ This file is forward-looking only. It is refreshed from live code, executable
 tests, and generated evidence; the implementation remains the authority when a
 roadmap claim drifts.
 
+## First Release Milestone
+
+The first product milestone is an initial release, before a stable `v1.0`
+contract. The exact version and tag follow the existing
+[packaging authority](packaging/PACKAGING.md), not a separate roadmap version.
+Consolidate and land the owned compiler work on `origin/main`
+first, preserving unique WIP and retiring replaced authorities. Close known
+correctness failures in the advertised subset before promoting release artifacts.
+
+Use the existing [packaging acceptance contract](packaging/PACKAGING.md) and
+[support indexes](docs/spec/areas/compat/README.md) as the release authorities:
+publish replayable receipts for the exact native/WASM, Python-version,
+OS/architecture, backend and profile cells claimed by the release. Installation,
+standalone execution, deterministic semantics, and measured performance must be
+proved for that scope; unverified ecosystem packages or matrix cells remain
+explicitly unclaimed. This milestone does not require solving the entire
+long-term roadmap or imply that release acceptance has passed.
+
+Before publication, review and execute the complete advertised subset end to
+end, including its public API, C-API/ABI, ownership and error paths on both native
+and WASM. Differential and adversarial tests must cover deterministic observable
+behavior against the supported CPython versions. An archive, unit-test shard,
+symbol count, or a pass on one target is not a substitute for those receipts.
+
 ## Strategic Target
 
 - Reach full CPython `>=3.12` parity for the supported Molt subset.
