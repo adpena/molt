@@ -31,14 +31,13 @@ def test_explicit_super_uses_ordinary_call_dispatch(expression, target):
     generator = SimpleTIRGenerator(target_python=target)
     result = generator.visit(ast.parse(expression, mode="eval").body)
     assert result is not None
-    assert any(
-        op.kind in {"CALL_BIND", "CALL_INDIRECT"} for op in generator.current_ops
-    )
+    call = assert_explicit_super_arguments(generator.current_ops, expression)
+    assert call.result == result
     assert not runtime_calls(generator.current_ops, "molt_super_from_frame")
     compiled, _ = compile_source(f"def probe(): return {expression}\n", target)
-    assert any(
-        builtin_calls(function["ops"]) for function in compiled.funcs_map.values()
-    )
+    ops = super_consumer_ops(compiled)
+    assert_explicit_super_arguments(ops, expression)
+    assert not runtime_calls(ops, "molt_super_from_frame")
 
 
 @dataclass(frozen=True)
@@ -57,32 +56,111 @@ def runtime_calls(ops: list[MoltOp], symbol: str) -> list[int]:
     ]
 
 
+def names_callable(producers: dict[str, MoltOp], value: MoltValue, name: str) -> bool:
+    """Match the actual callable operand, never an unrelated nearby name load."""
+    callee = producers.get(value.name)
+    if callee is None:
+        return False
+    if callee.kind == "MODULE_GET_GLOBAL":
+        name_op = producers[callee.args[1].name]
+        return name_op.kind == "CONST_STR" and name_op.args == [name]
+    if callee.kind == "BUILTIN_TYPE" and name in BUILTIN_TYPE_TAGS:
+        tag = producers[callee.args[0].name]
+        return tag.kind == "CONST" and tag.args == [BUILTIN_TYPE_TAGS[name]]
+    return False
+
+
 def builtin_calls(ops: list[MoltOp], name: str = "super") -> list[int]:
-    """Find direct and ordinary builtin consumers in these unshadowed fixtures."""
-    producers = {op.result.name: op for op in ops}
+    """Resolve retained callable operands or the admitted frame-super primitive."""
+    producers: dict[str, MoltOp] = {}
     calls = []
     for index, op in enumerate(ops):
         if (
             name == "super"
             and op.kind == "CALL"
-            and op.args[0] == "molt_super_from_frame"
+            and op.args == ["molt_super_from_frame"]
         ):
             calls.append(index)
-            continue
-        if op.kind not in {"CALL_BIND", "CALL_INDIRECT"}:
-            continue
-        callee = producers.get(op.args[0].name)
-        if callee is None:
-            continue
-        if callee.kind == "MODULE_GET_GLOBAL":
-            name_op = producers[callee.args[1].name]
-            if name_op.kind == "CONST_STR" and name_op.args == [name]:
+        elif op.kind in {"CALL_FUNC", "CALL_BIND", "CALL_INDIRECT"}:
+            assert op.args and isinstance(op.args[0], MoltValue)
+            if names_callable(producers, op.args[0], name):
                 calls.append(index)
-        elif callee.kind == "BUILTIN_TYPE":
-            tag = producers[callee.args[0].name]
-            if tag.kind == "CONST" and tag.args == [BUILTIN_TYPE_TAGS.get(name)]:
-                calls.append(index)
+        producers[op.result.name] = op
     return calls
+
+
+def assert_explicit_super_arguments(ops: list[MoltOp], expression: str) -> MoltOp:
+    (index,) = builtin_calls(ops)
+    call = ops[index]
+    producers = {op.result.name: op for op in ops[:index]}
+    assert names_callable(producers, call.args[0], "super")
+
+    def assert_pair(values):
+        assert len(values) == 2
+        assert names_callable(producers, values[0], "int")
+        assert producers[values[1].name].kind == "CONST"
+        assert producers[values[1].name].args == [1]
+
+    if expression == "super(int, 1)":
+        assert call.kind == "CALL_FUNC"
+        assert_pair(call.args[1:])
+        return call
+
+    assert call.kind in {"CALL_BIND", "CALL_INDIRECT"}
+    assert len(call.args) == 2
+    builder = call.args[1]
+    assert producers[builder.name].kind == "CALLARGS_NEW"
+    steps = [
+        op
+        for op in ops[:index]
+        if op.kind.startswith("CALLARGS_") and op.args and op.args[0] == builder
+    ]
+    if expression == "super(*(int, 1))":
+        (expand,) = steps
+        assert expand.kind == "CALLARGS_EXPAND_STAR"
+        materialized = producers[expand.args[1].name]
+        assert materialized.kind == "CALL_FUNC"
+        assert len(materialized.args) == 2
+        assert names_callable(producers, materialized.args[0], "tuple")
+        pair = producers[materialized.args[1].name]
+        assert pair.kind == "TUPLE_NEW"
+        assert_pair(pair.args)
+    elif expression == "super(type=int, object=1)":
+        assert len(steps) == 2
+        assert all(op.kind == "CALLARGS_PUSH_KW" for op in steps)
+        assert [producers[op.args[1].name].args for op in steps] == [
+            ["type"],
+            ["object"],
+        ]
+        assert_pair([op.args[2] for op in steps])
+    else:
+        assert expression == "super(**{})"
+        (expand,) = steps
+        assert expand.kind == "CALLARGS_EXPAND_KWSTAR"
+        mapping = producers[expand.args[1].name]
+        assert mapping.kind == "DICT_NEW" and mapping.args == []
+    return call
+
+
+@pytest.mark.parametrize("kind", ["CALL_FUNC", "CALL_BIND", "CALL_INDIRECT"])
+def test_builtin_consumer_requires_the_actual_preceding_callee_definition(kind):
+    key = MoltValue("key", type_hint="str")
+    named = MoltValue("named")
+    unrelated = MoltValue("unrelated")
+    builder = MoltValue("builder", type_hint="callargs")
+    prefix = [
+        MoltOp(kind="CONST_STR", args=["super"], result=key),
+        MoltOp(kind="CALLARGS_NEW", args=[], result=builder),
+    ]
+    lookup = MoltOp(
+        kind="MODULE_GET_GLOBAL", args=[MoltValue("module"), key], result=named
+    )
+    tail = [] if kind == "CALL_FUNC" else [builder]
+    wrong_call = MoltOp(kind=kind, args=[unrelated, *tail], result=MoltValue("wrong"))
+    call = MoltOp(kind=kind, args=[named, *tail], result=MoltValue("result"))
+    assert builtin_calls([*prefix, lookup, wrong_call]) == []
+    assert builtin_calls([*prefix, call, lookup]) == []
+    assert builtin_calls([*prefix, lookup, call]) == [len(prefix) + 1]
 
 
 def publications(ops: list[MoltOp]) -> list[FramePublication]:
@@ -252,11 +330,24 @@ def test_frame_observing_generator_reductions_retain_real_frame(reducer):
     assert any("genexpr_" in fn["name"] for fn in ir["functions"])
 
 
-def test_arithmetic_generator_reduction_remains_fusible():
-    _, ir = compile_source(
+def test_deferred_arithmetic_reduction_retains_live_callable_and_generator():
+    generator, ir = compile_source(
         "def total(values): return sum(item * item for item in values)\n"
     )
-    assert not any("genexpr_" in fn["name"] for fn in ir["functions"])
+    assert any("genexpr_" in fn["name"] for fn in ir["functions"])
+    ((ops, index),) = [
+        (function["ops"], index)
+        for function in generator.funcs_map.values()
+        for index in builtin_calls(function["ops"], "sum")
+    ]
+    call = ops[index]
+    assert call.kind == "CALL_FUNC" and len(call.args) == 2
+    producers = {op.result.name: op for op in ops[:index]}
+    argument = producers[call.args[1].name]
+    assert argument.kind == "CALL_FUNC"
+    constructor = producers[argument.args[0].name]
+    assert constructor.kind in {"FUNC_NEW", "FUNC_NEW_CLOSURE"}
+    assert "genexpr_" in constructor.args[0]
 
 
 @pytest.mark.parametrize(
@@ -371,17 +462,39 @@ def test_captured_argument_publishes_the_real_mutable_cell_and_class_cell():
     assert all(frame.kind == 2 for frame in frames)
     cell = frames[0].argument
     cell_producer = next(op for op in ops if op.result == cell)
-    assert cell_producer.kind == "LIST_NEW"
-    assert any(op.kind == "TUPLE_NEW" and cell in op.args for op in ops)
-    assert any(op.kind == "STORE_INDEX" and op.args[0] == cell for op in ops)
+    assert cell.type_hint == "cell"
+    assert cell_producer.kind == "CALL"
+    assert cell_producer.args[0] == "molt_cell_new"
+    assert len(cell_producer.args) == 2
+    (constructor,) = [
+        op for op in ops if op.kind == "FUNC_NEW_CLOSURE" and "lambda" in op.args[0]
+    ]
+    captures = next(op for op in ops if op.result == constructor.args[2])
+    assert captures.kind == "TUPLE_NEW" and captures.args == [cell]
+    lambda_ops = generator.funcs_map[constructor.args[0]]["ops"]
+    (read,) = runtime_calls(lambda_ops, "molt_cell_get")
+    loaded_cell = next(op for op in lambda_ops if op.result == lambda_ops[read].args[1])
+    assert loaded_cell.kind == "INDEX"
+    assert loaded_cell.args[0].name == "__molt_closure__"
+    slot = next(op for op in lambda_ops if op.result == loaded_cell.args[1])
+    assert slot.kind == "CONST" and slot.args == [0]
+    writes = [
+        ops[index]
+        for index in runtime_calls(ops, "molt_cell_set")
+        if ops[index].args[1] == cell
+    ]
+    assert writes
+    assert any(
+        storage_owner(ops, write.args[2])[-1] == "replacement" for write in writes
+    )
     assert all(frame.argument == cell for frame in frames)
-    # __class__ travels as the closure tuple's cell, not INDEX(cell, 0)'s
+    # __class__ travels as the closure tuple's cell, not molt_cell_get(cell)'s
     # current class object. Subsequent cell replacement must remain visible.
     class_cell = frames[0].class_cell
     producer = next(op for op in ops if op.result == class_cell)
-    assert class_cell.type_hint == "list"
+    assert class_cell.type_hint == "cell"
     assert producer.kind == "INDEX"
-    assert isinstance(producer.args[0], MoltValue)
+    assert producer.args[0].name == "__molt_closure__"
     assert not any(op.result == producer.args[0] and op.kind == "INDEX" for op in ops)
 
 
@@ -495,7 +608,9 @@ def test_every_resume_entry_republishes_live_task_storage_before_continuing(
         # The send invalidates the next global callee's static identity. Its
         # discarded receive result must not erase the actual dynamic call.
         (receive,) = builtin_calls(ops, "molt_chan_recv")
-        assert ops[receive].kind == "CALL_INDIRECT"
+        assert ops[receive].kind == "CALL_FUNC"
+        assert len(ops[receive].args) == 2
+        assert storage_owner(ops, ops[receive].args[1])[0] == "task"
         assert frame_before(ops, receive).kind == 1
 
 

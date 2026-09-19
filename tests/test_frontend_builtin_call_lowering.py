@@ -2194,9 +2194,9 @@ def test_imported_known_vararg_function_call_uses_live_published_value() -> None
     assert imported_typevar_loads, (
         "calls must observe the live published module binding"
     )
-    call = _positional_call(main_ops, imported_typevar_loads, 1)
-    assert const_str[call["args"][1]] == "T"
-    assert call["args"][0] != "TypeVar"
+    supplied = _bound_positional_args(main_ops, imported_typevar_loads)
+    assert len(supplied) == 1
+    assert const_str[supplied[0]] == "T"
 
 
 @pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
@@ -3579,61 +3579,69 @@ def test_importlib_import_module_dynamic_calls_live_attribute() -> None:
     assert call["args"][1] in _local_reads(func_ops, "name")
 
 
-def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> None:
-    ir = compile_to_tir("def f(data):\n    return sum(v for v in data if v % 2 == 0)\n")
-    func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+def _admitted_sum_reduction(
+    expression: str, *parameters: str
+) -> tuple[SimpleTIRGenerator, MoltValue]:
+    """Exercise reducer lowering only after exact builtin-call admission."""
+    gen = SimpleTIRGenerator()
+    gen.start_function(
+        "admitted_sum", params=list(parameters), param_types=["Any"] * len(parameters)
     )
+    for parameter in parameters:
+        gen.locals[parameter] = MoltValue(parameter, type_hint="Any")
+    node = ast.parse(expression, mode="eval").body
+    assert isinstance(node, ast.Call)
+    return gen, gen._emit_sum_call("sum", node, needs_bind=False)
 
-    assert any(op.get("kind") == "loop_start" for op in func_ops)
-    assert any(op.get("kind") == "add" for op in func_ops)
-    assert all(op.get("kind") != "alloc_task" for op in func_ops)
-    assert not any(op.get("task_kind") == "generator" for op in func_ops)
+
+def test_admitted_sum_generator_expr_lowers_as_full_consumption_reducer() -> None:
+    gen, result = _admitted_sum_reduction("sum(v for v in data if v % 2 == 0)", "data")
+    ops = gen.current_ops
+
+    assert result.type_hint == "Any"
+    assert any(op.kind == "LOOP_START" for op in ops)
+    assert any(op.kind == "ADD" for op in ops)
     assert not any(
-        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_sum_builtin"
-        for op in func_ops
+        op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
+        or op.metadata.get("task_kind") == "generator"
+        for op in ops
     )
+
+
+def test_admitted_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
+    gen, _ = _admitted_sum_reduction("sum([v * 2 for v in data if v > 3])", "data")
+    ops = gen.current_ops
+
+    assert any(op.kind == "LOOP_START" for op in ops)
+    assert any(op.kind == "MUL" for op in ops)
+    assert any(op.kind == "ADD" for op in ops)
     assert not any(
-        op.get("kind") == "call_func"
-        and any(
-            isinstance(arg, str) and arg.startswith("v") for arg in op.get("args") or []
-        )
-        for op in func_ops
+        op.kind
+        in {
+            "ALLOC_TASK",
+            "FUNC_NEW",
+            "LIST_NEW",
+            "BUILTIN_FUNC",
+            "CALL_FUNC",
+            "CALL_BIND",
+        }
+        or op.metadata.get("task_kind") == "generator"
+        for op in ops
     )
 
 
-def test_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
-    ir = compile_to_tir(
-        "def f(data):\n    return sum([v * 2 for v in data if v > 3])\n"
-    )
-    func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
-    )
+def test_admitted_sum_generator_expr_tuple_target_lowers_inline() -> None:
+    gen, _ = _admitted_sum_reduction("sum(a * b for a, b in pairs if a > 2)", "pairs")
+    ops = gen.current_ops
 
-    assert any(op.get("kind") == "loop_start" for op in func_ops)
-    assert any(op.get("kind") == "mul" for op in func_ops)
-    assert any(op.get("kind") == "add" for op in func_ops)
-    assert all(op.get("kind") != "alloc_task" for op in func_ops)
-    assert not any(op.get("task_kind") == "generator" for op in func_ops)
+    assert any(op.kind == "UNPACK_SEQUENCE" for op in ops)
+    assert any(op.kind == "MUL" for op in ops)
+    assert any(op.kind == "ADD" for op in ops)
     assert not any(
-        op.get("kind") == "builtin_func" and op.get("s_value") == "molt_sum_builtin"
-        for op in func_ops
+        op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
+        or op.metadata.get("task_kind") == "generator"
+        for op in ops
     )
-
-
-def test_sum_generator_expr_tuple_target_lowers_inline() -> None:
-    ir = compile_to_tir(
-        "def f(pairs):\n    return sum(a * b for a, b in pairs if a > 2)\n"
-    )
-    func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
-    )
-
-    assert any(op.get("kind") == "unpack_sequence" for op in func_ops)
-    assert any(op.get("kind") == "mul" for op in func_ops)
-    assert any(op.get("kind") == "add" for op in func_ops)
-    assert all(op.get("kind") != "alloc_task" for op in func_ops)
-    assert not any(op.get("task_kind") == "generator" for op in func_ops)
 
 
 def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame() -> (
@@ -3698,25 +3706,23 @@ def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame()
     )
 
 
-def test_sum_generator_expr_target_shadow_does_not_leak() -> None:
-    ir = compile_to_tir(
-        "def f(data):\n"
-        "    v = 10\n"
-        "    total = sum(v for v in data)\n"
-        "    return v + total\n"
-    )
-    func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
-    )
+def test_admitted_sum_generator_expr_target_shadow_does_not_leak() -> None:
+    gen = SimpleTIRGenerator()
+    gen.start_function("admitted_sum_shadow", params=["data"], param_types=["Any"])
+    gen.locals["data"] = MoltValue("data", type_hint="Any")
+    outer = MoltValue("outer_v", type_hint="int")
+    gen.locals["v"] = outer
+    node = ast.parse("sum(v for v in data)", mode="eval").body
+    assert isinstance(node, ast.Call)
 
-    assert all(op.get("kind") != "alloc_task" for op in func_ops)
-    assert not any(op.get("task_kind") == "generator" for op in func_ops)
-    store_vars = [
-        op.get("var")
-        for op in func_ops
-        if op.get("kind") == "store_var" and isinstance(op.get("var"), str)
-    ]
-    assert "v" in store_vars
+    gen._emit_sum_call("sum", node, needs_bind=False)
+
+    assert gen.locals["v"] is outer
+    assert not any(
+        op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
+        or op.metadata.get("task_kind") == "generator"
+        for op in gen.current_ops
+    )
 
 
 @pytest.mark.parametrize("name", ["any", "all"])
@@ -3765,9 +3771,9 @@ def test_admitted_any_all_generator_expr_use_scalar_result_slots(name: str) -> N
     )
 
 
-@pytest.mark.parametrize("name", ["any", "all"])
+@pytest.mark.parametrize("name", ["sum", "any", "all"])
 @pytest.mark.parametrize("binding", ["deferred_global", "parameter", "rebound_global"])
-def test_any_all_generator_expr_preserve_unproven_callable_and_generator(
+def test_reducer_generator_expr_preserves_unproven_callable_and_generator(
     name: str, binding: str
 ) -> None:
     from molt.compiler_analysis.python_binding_flow import (
@@ -3807,14 +3813,15 @@ def test_any_all_generator_expr_preserve_unproven_callable_and_generator(
     assert ops.index(iterator) < ops.index(generator_call) < ops.index(call)
     if binding != "parameter":
         # Capture the callable before eager outer-iterator acquisition, which
-        # can invoke Python and replace the module's any/all binding.
+        # can invoke Python and replace the module's reducer binding.
         assert ops.index(producers[call["args"][0]]) < ops.index(iterator)
+    result_prefix = "__molt_sum_acc_" if name == "sum" else f"__molt_{name}_result_"
     assert not any(
         op.get("kind") in {"alloc_task", "loop_start"}
-        or op.get("var", "").startswith(f"__molt_{name}_result_")
+        or op.get("var", "").startswith(result_prefix)
         or (
             op.get("kind") == "builtin_func"
-            and op.get("s_value") in {"molt_any_builtin", "molt_all_builtin"}
+            and op.get("s_value") == f"molt_{name}_builtin"
         )
         for op in ops
     )
