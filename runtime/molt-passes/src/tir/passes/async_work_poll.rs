@@ -827,12 +827,12 @@ mod tests {
                 },
                 OpIR {
                     kind: "const_none".into(),
-                    out: Some("none".into()),
+                    out: Some("none_value".into()),
                     ..Default::default()
                 },
                 OpIR {
                     kind: "is".into(),
-                    args: Some(vec!["cleanup_pending".into(), "none".into()]),
+                    args: Some(vec!["cleanup_pending".into(), "none_value".into()]),
                     out: Some("cleanup_succeeded".into()),
                     ..Default::default()
                 },

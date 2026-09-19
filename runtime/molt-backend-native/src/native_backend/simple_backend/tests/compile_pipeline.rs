@@ -683,12 +683,12 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                     },
                     OpIR {
                         kind: "const_none".into(),
-                        out: Some("none".into()),
+                        out: Some("none_value".into()),
                         ..OpIR::default()
                     },
                     OpIR {
                         kind: "is".into(),
-                        args: Some(vec!["owned_task".into(), "none".into()]),
+                        args: Some(vec!["owned_task".into(), "none_value".into()]),
                         out: Some("task_is_none".into()),
                         ..OpIR::default()
                     },
