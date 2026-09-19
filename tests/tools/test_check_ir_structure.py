@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import tools.check_ir_structure as check_ir_structure
+import tools.verify_ir_suite as verify_ir_suite
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.module_publication import inspect_source_module_publication
 from tools.check_ir_structure import Diagnostic, verify_frontend_tir, verify_tir
@@ -32,7 +33,11 @@ def _function_diagnostics(
     functions = [{"name": name, "params": params, "ops": body}]
     for sibling in sorted((function_names or set()) - {name}):
         functions.append({"name": sibling, "params": [], "ops": [{"kind": "ret_void"}]})
-    return verify_tir({"functions": functions}).errors
+    verification = verify_tir({"functions": functions})
+    assert all(
+        diagnostic.kind != "invalid-format" for diagnostic in verification.errors
+    ), verification.errors
+    return verification.errors
 
 
 def _definition_diagnostics(
@@ -286,17 +291,111 @@ def test_frontend_unpack_transport_uses_generated_field_roles() -> None:
         "def pair_sum(pair):\n    left, right = pair\n    return left + right\n"
     )
 
-    diagnostics = []
-    saw_unpack = False
-    for function in ir["functions"]:
-        ops = function["ops"]
-        saw_unpack |= any(op.get("kind") == "unpack_sequence" for op in ops)
-        diagnostics.extend(
-            _definition_diagnostics(function["name"], function.get("params", []), ops)
+    assert any(
+        op.get("kind") == "unpack_sequence"
+        for function in ir["functions"]
+        for op in function["ops"]
+    )
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors
+
+
+def test_definition_oracle_cannot_hide_malformed_executable_transport() -> None:
+    with pytest.raises(AssertionError, match="invalid-format"):
+        _definition_diagnostics(
+            "malformed", [], [{"kind": "const", "out": "value", "metadata": {}}]
         )
 
-    assert saw_unpack
-    assert diagnostics == []
+
+def test_source_runner_projects_envelope_and_preserves_request_custody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ir = _frontend_publication_ir()
+    before = deepcopy(ir)
+    observed: dict[str, Any] = {}
+
+    def strict_verifier(tir, *, request_id, timeout_seconds):
+        observed.update(tir=tir, request_id=request_id, timeout_seconds=timeout_seconds)
+        return check_ir_structure.VerificationResult(
+            verifier_pid=123,
+            verifier_cpu_seconds=0.25,
+            verifier_lifetime_peak_rss_bytes=4096,
+        )
+
+    monkeypatch.setattr(check_ir_structure, "verify_tir", strict_verifier)
+    compiled = {
+        "source": "unit.py",
+        "status": "compiled",
+        "tir": ir,
+        "duration_seconds": 1.5,
+        "compiler_worker_cpu_seconds": 0.75,
+    }
+    result = verify_ir_suite._finalize_compiled_result(
+        compiled, 41, per_case_timeout=4.0
+    )
+
+    assert result is compiled
+    assert result["status"] == "pass"
+    assert result["verifier_request_id"] == observed["request_id"] == 41
+    assert observed["timeout_seconds"] == 2.5
+    assert result["verifier_pid"] == 123
+    assert result["verifier_cpu_seconds"] == 0.25
+    assert result["worker_cpu_seconds"] == 1.0
+    assert result["verifier_lifetime_peak_rss_bytes"] == 4096
+    assert "tir" not in result
+    assert ir == before
+    function = observed["tir"]["functions"][0]
+    assert "source_module_publication" not in function
+    assert all("source_module_publication_boundary" not in op for op in function["ops"])
+
+
+def test_source_runner_reports_malformed_envelope_without_rust_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ir = _frontend_publication_ir()
+    ir["functions"][0]["ops"][1]["source_module_publication_boundary"] = False
+    before = deepcopy(ir)
+
+    def unexpected_dispatch(*args, **kwargs):
+        pytest.fail("malformed frontend envelope reached executable verification")
+
+    monkeypatch.setattr(check_ir_structure, "verify_tir", unexpected_dispatch)
+    result = verify_ir_suite._finalize_compiled_result(
+        {"status": "compiled", "tir": ir, "duration_seconds": 0.0},
+        42,
+        per_case_timeout=4.0,
+    )
+
+    assert result["status"] == "fail"
+    assert result["returncode"] == 1
+    assert result["verifier_request_id"] == 42
+    assert result["verifier_pid"] is None
+    assert "invalid-format" in result["detail"]
+    assert "boundary marker must be true" in result["detail"]
+    assert ir == before
+
+
+def test_source_runner_real_frontend_to_strict_verifier(tmp_path) -> None:
+    source = tmp_path / "unpack.py"
+    source.write_text(
+        "def pair_sum(pair):\n    left, right = pair\n    return left + right\n",
+        encoding="utf-8",
+    )
+    compiled = verify_ir_suite._verify_source_worker(str(source))
+    assert compiled["status"] == "compiled", compiled
+    ir = compiled["tir"]
+    before = deepcopy(ir)
+    assert any("source_module_publication" in function for function in ir["functions"])
+
+    result = verify_ir_suite._finalize_compiled_result(
+        compiled, 43, per_case_timeout=60.0
+    )
+
+    assert result["status"] == "pass", result
+    assert result["compile"]["status"] == "pass"
+    assert result["verifier_request_id"] == 43
+    assert result["verifier_pid"] is not None
+    assert ir == before
 
 
 def test_branch_local_definition_does_not_dominate_join_use() -> None:
