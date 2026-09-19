@@ -719,6 +719,47 @@ mod tests {
         labeled_op(OpCode::CheckException, label)
     }
 
+    fn call() -> TirOp {
+        let mut call = op(OpCode::Call);
+        call.attrs
+            .insert("callee".into(), AttrValue::Str("work".into()));
+        call
+    }
+
+    // Destinations are explicit fixture data, never inferred from references.
+    fn add_handler(func: &mut TirFunction, label: i64, ops: Vec<TirOp>) {
+        assert!(
+            !func
+                .label_id_map
+                .values()
+                .any(|existing| *existing == label)
+        );
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, label);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops,
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+
+    fn assert_valid(func: &TirFunction) {
+        crate::tir::verify::verify_function(func).unwrap_or_else(|errors| {
+            panic!("invalid async-work fixture {}: {errors:?}", func.name)
+        });
+    }
+
+    fn run_verified(func: &mut TirFunction) -> PassStats {
+        assert_valid(func);
+        let stats = run(func, &mut AnalysisManager::new());
+        assert_valid(func);
+        stats
+    }
+
     fn exception_pop() -> TirOp {
         let mut op = op(OpCode::Copy);
         op.attrs.insert(
@@ -859,7 +900,9 @@ mod tests {
         let mut ir = deferred_finally_payload_ir();
 
         let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
+        assert_valid(&preview);
         let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        assert_valid(&preview);
         assert_eq!(materialized.markers_changed, 1);
         assert_eq!(
             materialized.transfers_inserted, 0,
@@ -922,6 +965,7 @@ mod tests {
             &ir,
             &crate::tir::target_info::TargetInfo::native_release_fast(),
         );
+        assert_valid(&tir);
         let observer = tir
             .blocks
             .values()
@@ -1002,6 +1046,7 @@ mod tests {
             &ir,
             &crate::tir::target_info::TargetInfo::native_release_fast(),
         );
+        assert_valid(&tir);
         let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
         let call_index = round_trip
             .iter()
@@ -1069,7 +1114,9 @@ mod tests {
         };
 
         let mut preview = crate::tir::lower_from_simple::lower_to_tir(&ir);
+        assert_valid(&preview);
         let materialized = materialize_before_ssa(&mut ir, &mut preview);
+        assert_valid(&preview);
         assert_eq!(materialized.markers_changed, 0);
         assert_eq!(materialized.transfers_inserted, 1);
         let inserted = ir
@@ -1095,19 +1142,17 @@ mod tests {
             .find_map(|(block, label)| (*label == 40).then_some(BlockId(*block)))
             .expect("payload handler");
         assert_eq!(lowered.blocks[&handler].args.len(), 1);
-        run(&mut lowered, &mut AnalysisManager::new());
-        crate::tir::verify::verify_function(&lowered)
-            .expect("payload-bearing latch poll must remain valid SSA");
+        run_verified(&mut lowered);
     }
 
     #[test]
     fn generated_call_returns_and_loop_backedges_share_one_poll_marker() {
         let mut func = TirFunction::new("polls".into(), vec![], TirType::None);
         let header = func.entry_block;
-        let latch = BlockId(1);
-        func.next_block = 2;
+        let latch = func.fresh_block();
+        add_handler(&mut func, 70, vec![]);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
-        func.blocks.get_mut(&header).unwrap().ops = vec![op(OpCode::Call), check(70)];
+        func.blocks.get_mut(&header).unwrap().ops = vec![call(), check(70)];
         func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
             target: latch,
             args: vec![],
@@ -1124,7 +1169,7 @@ mod tests {
                 },
             },
         );
-        let stats = run(&mut func, &mut AnalysisManager::new());
+        let stats = run_verified(&mut func);
         assert_eq!(stats.attrs_changed, 2);
         for block in func.blocks.values() {
             for check in block
@@ -1174,7 +1219,7 @@ mod tests {
         start.operands.push(ValueId(0));
         let mut original_check = check(70);
         original_check.operands.push(ValueId(0));
-        let mut call = op(OpCode::Call);
+        let mut call = call();
         call.operands.push(ValueId(0));
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             start,
@@ -1191,15 +1236,13 @@ mod tests {
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
-        let stats = run(&mut func, &mut AnalysisManager::new());
+        let stats = run_verified(&mut func);
         assert_eq!(stats.ops_added, 0, "must reuse the SSA-authored edge");
         assert_eq!(stats.attrs_changed, 1);
         assert_eq!(func.blocks[&entry].ops.len(), 4);
         let poll = &func.blocks[&entry].ops[2];
         assert!(poll.is_async_work_poll());
         assert_eq!(poll.operands, [ValueId(0)]);
-        crate::tir::verify::verify_function(&func)
-            .expect("payload-preserving poll must remain well formed");
         let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
         let poll_index = simple
             .iter()
@@ -1218,11 +1261,10 @@ mod tests {
     fn poll_lookup_never_crosses_a_second_call() {
         let mut func = TirFunction::new("two_call_barrier".into(), vec![], TirType::None);
         let entry = func.entry_block;
-        let mut first = op(OpCode::Call);
-        first.operands.push(ValueId(0));
-        let mut second = op(OpCode::Call);
-        second.operands.push(ValueId(0));
-        func.blocks.get_mut(&entry).unwrap().ops = vec![first, second, check(70)];
+        add_handler(&mut func, 70, vec![]);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![call(), call(), check(70)];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        assert_valid(&func);
         let value_types = func.value_types.clone();
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
@@ -1258,7 +1300,8 @@ mod tests {
         let mut func = TirFunction::new("split_call_boundary".into(), vec![], TirType::None);
         let entry = func.entry_block;
         let observer = func.fresh_block();
-        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Call)];
+        add_handler(&mut func, 70, vec![]);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![call()];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
             target: observer,
             args: vec![],
@@ -1272,6 +1315,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![] },
             },
         );
+        assert_valid(&func);
         let value_types = func.value_types.clone();
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
@@ -1292,7 +1336,8 @@ mod tests {
             .get_mut(&observer)
             .unwrap()
             .ops
-            .insert(0, op(OpCode::Call));
+            .insert(0, call());
+        assert_valid(&func);
         assert_eq!(
             post_call_observation(
                 &func,
@@ -1321,6 +1366,7 @@ mod tests {
             },
         );
         func.blocks.get_mut(&observer).unwrap().ops.remove(0);
+        assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
             post_call_observation(
@@ -1342,12 +1388,14 @@ mod tests {
         let mut func =
             TirFunction::new("latch_suffix".into(), vec![TirType::DynBox], TirType::None);
         let latch = func.entry_block;
+        add_handler(&mut func, 70, vec![]);
         let mut transport = op(OpCode::Copy);
         transport
             .attrs
             .insert("_original_kind".into(), AttrValue::Str("store_var".into()));
         let source = ValueId(0);
         let copied = func.fresh_value();
+        func.value_types.insert(copied, TirType::DynBox);
         transport.operands = vec![source];
         transport.results = vec![copied];
         func.blocks.get_mut(&latch).unwrap().ops = vec![check(70), transport];
@@ -1355,6 +1403,7 @@ mod tests {
             target: latch,
             args: vec![source],
         };
+        assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         let value_types = func.value_types.clone();
         let const_ints = const_int_values(&func);
@@ -1370,11 +1419,8 @@ mod tests {
             Some((latch, 0))
         );
 
-        func.blocks
-            .get_mut(&latch)
-            .unwrap()
-            .ops
-            .push(op(OpCode::Call));
+        func.blocks.get_mut(&latch).unwrap().ops.push(call());
+        assert_valid(&func);
         assert_eq!(
             latch_check_site(
                 &func,
@@ -1420,16 +1466,18 @@ mod tests {
     fn nested_try_call_uses_inner_lexical_handler_not_a_later_outer_check() {
         let mut func = TirFunction::new("nested_try".into(), vec![], TirType::None);
         let entry = func.entry_block;
+        add_handler(&mut func, 10, vec![]);
+        add_handler(&mut func, 20, vec![]);
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             labeled_op(OpCode::TryStart, 10),
             labeled_op(OpCode::TryStart, 20),
-            op(OpCode::Call),
+            call(),
             check(20),
             check(10),
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         let checks: Vec<_> = func.blocks[&entry]
             .ops
             .iter()
@@ -1444,28 +1492,18 @@ mod tests {
     fn same_block_try_transition_routes_each_call_from_its_exact_boundary() {
         let mut func = TirFunction::new("try_transition".into(), vec![], TirType::None);
         let entry = func.entry_block;
-        let exit = func.fresh_block();
-        func.label_id_map.insert(exit.0, 31);
+        add_handler(&mut func, 30, vec![]);
+        add_handler(&mut func, 31, vec![]);
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             labeled_op(OpCode::TryStart, 30),
-            op(OpCode::Call),
+            call(),
             check(30),
             labeled_op(OpCode::TryEnd, 30),
-            op(OpCode::Call),
+            call(),
             check(31),
         ];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
-        func.blocks.insert(
-            exit,
-            TirBlock {
-                id: exit,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         let polls: Vec<_> = func.blocks[&entry]
             .ops
             .iter()
@@ -1481,25 +1519,11 @@ mod tests {
     fn anonymous_try_call_uses_its_recovered_handler_destination() {
         let mut func = TirFunction::new("anonymous_try_call".into(), vec![], TirType::None);
         let entry = func.entry_block;
-        let handler = func.fresh_block();
-        func.label_id_map.insert(handler.0, 73);
-        func.blocks.get_mut(&entry).unwrap().ops = vec![
-            op(OpCode::TryStart),
-            op(OpCode::Call),
-            check(73),
-            op(OpCode::TryEnd),
-        ];
-        func.blocks.insert(
-            handler,
-            TirBlock {
-                id: handler,
-                args: vec![],
-                ops: vec![op(OpCode::TryEnd)],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-
-        run(&mut func, &mut AnalysisManager::new());
+        add_handler(&mut func, 73, vec![op(OpCode::TryEnd)]);
+        func.blocks.get_mut(&entry).unwrap().ops =
+            vec![op(OpCode::TryStart), call(), check(73), op(OpCode::TryEnd)];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        run_verified(&mut func);
         let poll = func.blocks[&entry]
             .ops
             .iter()
@@ -1520,8 +1544,7 @@ mod tests {
         let mut func = TirFunction::new("anonymous_try_loop".into(), vec![], TirType::None);
         let header = func.entry_block;
         let latch = func.fresh_block();
-        let handler = func.fresh_block();
-        func.label_id_map.insert(handler.0, 74);
+        add_handler(&mut func, 74, vec![op(OpCode::TryEnd)]);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         func.blocks.get_mut(&header).unwrap().ops = vec![op(OpCode::TryStart), check(74)];
         func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
@@ -1540,17 +1563,7 @@ mod tests {
                 },
             },
         );
-        func.blocks.insert(
-            handler,
-            TirBlock {
-                id: handler,
-                args: vec![],
-                ops: vec![op(OpCode::TryEnd)],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         assert_eq!(
             func.blocks[&latch].ops.last().and_then(check_label),
             Some(74)
@@ -1562,37 +1575,24 @@ mod tests {
     fn nested_anonymous_try_calls_keep_inner_and_outer_destinations() {
         let mut func = TirFunction::new("nested_anonymous_try".into(), vec![], TirType::None);
         let entry = func.entry_block;
-        let outer_handler = func.fresh_block();
-        let inner_handler = func.fresh_block();
-        func.label_id_map.insert(outer_handler.0, 80);
-        func.label_id_map.insert(inner_handler.0, 81);
+        add_handler(&mut func, 80, vec![labeled_op(OpCode::TryEnd, 80)]);
+        add_handler(&mut func, 81, vec![labeled_op(OpCode::TryEnd, 81)]);
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             op(OpCode::TryStart),
             check(80),
-            op(OpCode::Call),
+            call(),
             check(80),
             op(OpCode::TryStart),
             check(81),
-            op(OpCode::Call),
+            call(),
             check(81),
             op(OpCode::TryEnd),
-            op(OpCode::Call),
+            call(),
             check(80),
             op(OpCode::TryEnd),
         ];
-        for (handler, label) in [(outer_handler, 80), (inner_handler, 81)] {
-            func.blocks.insert(
-                handler,
-                TirBlock {
-                    id: handler,
-                    args: vec![],
-                    ops: vec![labeled_op(OpCode::TryEnd, label)],
-                    terminator: Terminator::Return { values: vec![] },
-                },
-            );
-        }
-
-        run(&mut func, &mut AnalysisManager::new());
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        run_verified(&mut func);
         let polls: Vec<_> = func.blocks[&entry]
             .ops
             .iter()
@@ -1607,6 +1607,7 @@ mod tests {
         let mut func = TirFunction::new("try_loop".into(), vec![], TirType::None);
         let header = func.entry_block;
         let latch = func.fresh_block();
+        add_handler(&mut func, 40, vec![]);
         func.blocks.get_mut(&header).unwrap().ops = vec![labeled_op(OpCode::TryStart, 40)];
         func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
             target: latch,
@@ -1625,7 +1626,7 @@ mod tests {
             },
         );
 
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         assert_eq!(func.blocks[&latch].ops.len(), 1);
         assert_eq!(check_label(&func.blocks[&latch].ops[0]), Some(40));
     }
@@ -1634,10 +1635,15 @@ mod tests {
     fn one_latch_for_nested_loop_headers_gets_one_poll() {
         use crate::tir::values::ValueId;
 
-        let mut func = TirFunction::new("multi_header_latch".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "multi_header_latch".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
         let outer = func.entry_block;
         let inner = func.fresh_block();
         let latch = func.fresh_block();
+        add_handler(&mut func, 50, vec![]);
         func.blocks.get_mut(&outer).unwrap().ops = vec![labeled_op(OpCode::TryStart, 50)];
         func.blocks.get_mut(&outer).unwrap().terminator = Terminator::Branch {
             target: inner,
@@ -1666,12 +1672,12 @@ mod tests {
                     then_block: inner,
                     then_args: vec![],
                     else_block: outer,
-                    else_args: vec![],
+                    else_args: vec![ValueId(0)],
                 },
             },
         );
 
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         let polls = func.blocks[&latch]
             .ops
             .iter()
@@ -1687,11 +1693,18 @@ mod tests {
     fn nonlocal_inner_unwinds_preserve_one_outer_handler_at_loop_join() {
         use crate::tir::values::ValueId;
 
-        let mut func = TirFunction::new("nonlocal_inner_unwinds".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "nonlocal_inner_unwinds".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
         let entry = func.entry_block;
         let header = func.fresh_block();
         let first_try = func.fresh_block();
         let second_try = func.fresh_block();
+        for label in [22, 23, 28] {
+            add_handler(&mut func, label, vec![]);
+        }
         let cond = ValueId(0);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         func.blocks.get_mut(&entry).unwrap().ops = vec![labeled_op(OpCode::TryStart, 22)];
@@ -1704,7 +1717,7 @@ mod tests {
             TirBlock {
                 id: header,
                 args: vec![],
-                ops: vec![op(OpCode::Call), check(22)],
+                ops: vec![call(), check(22)],
                 terminator: Terminator::CondBranch {
                     cond,
                     then_block: first_try,
@@ -1733,6 +1746,7 @@ mod tests {
             );
         }
 
+        assert_valid(&func);
         let facts = crate::tir::exception_regions::compute_exception_region_facts(&func);
         assert_eq!(
             facts.lexical_handler_before(ExceptionOpPosition {
@@ -1742,7 +1756,7 @@ mod tests {
             Ok(ExceptionBoundaryHandler::Labeled(22)),
             "normal continue/break/return unwinds must not leak an inner try frame into the loop join"
         );
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         let poll = func.blocks[&header]
             .ops
             .iter()
@@ -1755,27 +1769,16 @@ mod tests {
     fn depth_zero_exit_lowers_as_value_return_for_non_none_function() {
         let mut func = TirFunction::new("value_function".into(), vec![], TirType::I64);
         let entry = func.entry_block;
-        let exit = func.fresh_block();
-        func.label_id_map.insert(exit.0, 1);
+        add_handler(&mut func, 1, vec![]);
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
         let mut constant = labeled_op(OpCode::ConstInt, 7);
         constant.results.push(value);
-        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Call), check(1), constant];
+        func.blocks.get_mut(&entry).unwrap().ops = vec![call(), check(1), constant];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
             values: vec![value],
         };
-        func.blocks.insert(
-            exit,
-            TirBlock {
-                id: exit,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-
-        run(&mut func, &mut AnalysisManager::new());
+        run_verified(&mut func);
         let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
         assert!(simple.iter().any(|op| op.kind == "async_work_poll"));
         assert!(simple.iter().any(|op| op.kind == "label"));
@@ -1800,12 +1803,12 @@ mod tests {
             TirBlock {
                 id: dead,
                 args: vec![],
-                ops: vec![op(OpCode::Call)],
+                ops: vec![call()],
                 terminator: Terminator::Return { values: vec![] },
             },
         );
 
-        let stats = run(&mut func, &mut AnalysisManager::new());
+        let stats = run_verified(&mut func);
         assert_eq!(stats.total_changes(), 0);
         assert_eq!(func.blocks[&dead].ops.len(), 1);
         assert!(!func.has_exception_handling);
@@ -1815,22 +1818,11 @@ mod tests {
     fn unreachable_in_block_post_call_boundary_is_not_a_poll_site() {
         let mut func = TirFunction::new("dead_post_transfer_call".into(), vec![], TirType::None);
         let entry = func.entry_block;
-        let handler = func.fresh_block();
-        func.label_id_map.insert(handler.0, 91);
-        func.blocks.get_mut(&entry).unwrap().ops =
-            vec![op(OpCode::Raise), check(91), op(OpCode::Call)];
+        add_handler(&mut func, 91, vec![]);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Raise), check(91), call()];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
-        func.blocks.insert(
-            handler,
-            TirBlock {
-                id: handler,
-                args: vec![],
-                ops: vec![],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
 
-        let stats = run(&mut func, &mut AnalysisManager::new());
+        let stats = run_verified(&mut func);
         assert_eq!(stats.total_changes(), 0);
         assert_eq!(func.blocks[&entry].ops.len(), 3);
         assert!(
@@ -1874,7 +1866,7 @@ mod tests {
             },
         );
 
-        let stats = run(&mut func, &mut AnalysisManager::new());
+        let stats = run_verified(&mut func);
         assert_eq!(stats.total_changes(), 0);
         assert!(func.blocks[&latch].ops.is_empty());
         assert!(!func.has_exception_handling);
