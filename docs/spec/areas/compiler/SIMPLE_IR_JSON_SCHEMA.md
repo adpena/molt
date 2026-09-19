@@ -86,6 +86,18 @@ of the mangled linkage symbol, inserts native callable publication at that
 boundary, then strips both fields before executable SimpleIR is emitted. A
 symbol collision is not permission to merge different Python modules.
 
+`molt.frontend.module_publication` owns this assembly envelope, its validation,
+and its consumption. The metadata and exactly one marker with value `true`
+must occur together; orphan, false, duplicate, or misplaced markers are errors.
+CLI assembly validates every function before registering code IDs or inserting
+publication operations, including functions without matching native exports.
+
+The verifier phase is explicit. `tools.check_ir_structure.verify_tir` accepts
+only executable SimpleIR and retains strict Rust decoding.
+`verify_frontend_tir` validates and projects a copy of frontend assembly IR
+through the shared envelope authority before invoking the same Rust verifier.
+It does not mutate cached frontend input or relax executable transport rules.
+
 ---
 
 ## OpIR

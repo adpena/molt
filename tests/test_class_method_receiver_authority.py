@@ -6,7 +6,7 @@ import pytest
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.visitors.class_method_compilation import ClassMethodCompilationMixin
-from tools.check_ir_structure import verify_tir
+from tools.check_ir_structure import verify_frontend_tir
 
 
 @pytest.mark.parametrize(
@@ -58,7 +58,8 @@ def test_every_method_execution_kind_consumes_receiver_authority(
             f"    @{decorator}\n    {definition}\n"
         )
     )
-    assert verify_tir(generator.to_json()).ok
+    verification = verify_frontend_tir(generator.to_json())
+    assert verification.ok, verification.errors
     assert observed
     assert all(hint is None for _, hint in observed)
     if decorator == "alias":

@@ -25,8 +25,8 @@ from molt.frontend._types import (
     FuncInfo,
     MoltOp,
     MoltValue,
-    SourceModulePublication,
 )
+from molt.frontend.module_publication import SourceModulePublication
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol

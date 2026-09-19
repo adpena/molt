@@ -361,7 +361,7 @@ outputs = [
   "src/molt/frontend/_protocol.py",
   "src/molt/frontend/_protocol_attrs.py",
 ]
-source = "src/molt/frontend (SimpleTIRGenerator class surface, live introspection) + tools/generator_io.py"
+source = "src/molt/frontend (assembled SimpleTIRGenerator surface) + tools/python_source_index.py (invocation-scoped source AST) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_protocol.py --check"
 idempotent = true

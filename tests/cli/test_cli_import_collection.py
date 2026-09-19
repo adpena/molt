@@ -8904,6 +8904,62 @@ def test_native_callable_publication_rejects_invalid_source_metadata(
         )
 
 
+@pytest.mark.parametrize(
+    ("malformation", "message"),
+    [
+        ("metadata", "missing canonical source-module publication metadata"),
+        ("orphan", "has an unowned publication boundary"),
+        ("false-marker", "publication boundary marker must be true"),
+        ("missing-marker", "must retain exactly one native publication boundary"),
+        ("multiple-markers", "must retain exactly one native publication boundary"),
+        ("wrong-kind", "publication boundary lost its frame-locals anchor"),
+    ],
+)
+@pytest.mark.parametrize("named", [False, True])
+def test_source_publication_envelope_is_preflighted_without_native_specs(
+    named: bool,
+    malformation: str,
+    message: str,
+) -> None:
+    source_init = _source_init_for_native_callable_publication()
+    if not named:
+        del source_init["name"]
+    boundary = source_init["ops"][4]
+    if malformation == "metadata":
+        del source_init["source_module_publication"]["failure_label"]
+    elif malformation == "orphan":
+        del source_init["source_module_publication"]
+    elif malformation == "false-marker":
+        boundary["source_module_publication_boundary"] = False
+    elif malformation == "missing-marker":
+        del boundary["source_module_publication_boundary"]
+    elif malformation == "multiple-markers":
+        source_init["ops"].insert(
+            5,
+            {
+                "kind": "frame_locals_set",
+                "args": ["v1"],
+                "source_module_publication_boundary": True,
+            },
+        )
+    else:
+        boundary["kind"] = "const"
+    functions = [source_init]
+    before = json.loads(json.dumps(functions))
+    registered: list[str] = []
+
+    with pytest.raises(ValueError, match=message):
+        BACKEND_IR._append_static_native_module_init_functions(
+            functions,
+            specs=(),
+            register_global_code_id=lambda symbol: registered.append(symbol) or 1,
+            registry_lane=True,
+        )
+
+    assert functions == before
+    assert registered == []
+
+
 @pytest.mark.parametrize("authority", ["extension", "alias"])
 @pytest.mark.parametrize("registry_lane", [False, True])
 def test_native_extension_init_collision_with_source_init_fails_closed(
