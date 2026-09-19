@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -163,6 +164,140 @@ def test_pending_index_does_not_scan_historical_receipts(tmp_path, monkeypatch):
     monkeypatch.setattr(scratch, "_owner", read_owner)
     result = scratch.reclaim_terminal_scratch(recent.generation.parent)
     assert result["retained_count"] == 1 and not result["errors"]
+
+
+def test_pending_publication_exposes_only_committed_locked_generations(
+    tmp_path, monkeypatch
+):
+    from molt import file_publication
+
+    prior, _ = _lease(tmp_path)
+    _finish(prior, success=False)
+    active, _ = _lease(tmp_path, 2)
+    root = active.generation.parent
+    publish = file_publication.durable_publish_exclusive
+    checkpoints = []
+    discovered = []
+
+    def publish_private(staged, destination):
+        if destination == active.generation / "pending.json":
+            assert staged.parent == active.generation
+            result = scratch.reclaim_terminal_scratch(root)
+            assert result["errors"] == []
+            assert result["retained_count"] == 1
+            assert result["protected_count"] == 0
+            checkpoints.append("private-stage")
+        publish(staged, destination)
+
+    def publish_index(staged, destination):
+        assert staged == active.generation / "pending.json"
+        assert destination == scratch._index_path(active.generation)
+        publish(staged, destination)
+        discovered.extend(destination.parent.iterdir())
+        result = scratch.reclaim_terminal_scratch(root)
+        assert result["errors"] == []
+        assert result["retained_count"] == 1
+        assert result["protected_count"] == 1
+        checkpoints.append("published-with-owner-lock")
+
+    monkeypatch.setattr(file_publication, "durable_publish_exclusive", publish_private)
+    monkeypatch.setattr(scratch, "durable_publish_exclusive", publish_index)
+    result = _finish(active)
+    assert result["retention"]["errors"] == []
+    assert checkpoints == ["private-stage", "published-with-owner-lock"]
+    iterdir = Path.iterdir
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda path: iter(discovered) if path == root / "pending" else iterdir(path),
+    )
+    result = scratch.reclaim_terminal_scratch(root)
+    assert result["errors"] == []
+    assert result["protected_count"] == 0
+    assert result["retained_count"] == 1
+
+
+@pytest.mark.parametrize("terminal_reclaimed", [False, True])
+def test_pending_snapshot_removal_requires_locked_terminal_authority(
+    tmp_path, monkeypatch, terminal_reclaimed
+):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    pending = scratch._index_path(lease.generation).parent
+    iterdir = Path.iterdir
+
+    def snapshot_then_remove(path):
+        entries = tuple(iterdir(path))
+        if path == pending:
+            with scratch._locked(lease.generation):
+                if terminal_reclaimed:
+                    scratch._reclaim_locked(
+                        lease.generation, scratch._owner(lease.generation)
+                    )
+                else:
+                    scratch._drop_index(lease.generation)
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", snapshot_then_remove)
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert result["retained_count"] == 0
+    assert bool(result["errors"]) is not terminal_reclaimed
+    if not terminal_reclaimed:
+        assert "scratch pending index is unavailable" in result["errors"][0]
+        assert (lease.generation / "payload").is_dir()
+
+
+def test_retention_budget_revalidates_candidate_after_discovery(tmp_path, monkeypatch):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    locked = scratch._locked
+    visits = 0
+
+    @contextmanager
+    def reclaim_before_budget(generation):
+        nonlocal visits
+        with locked(generation):
+            visits += 1
+            if visits == 2:
+                scratch._reclaim_locked(generation, scratch._owner(generation))
+            yield
+
+    monkeypatch.setattr(scratch, "_locked", reclaim_before_budget)
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert visits == 2
+    assert result["errors"] == []
+    assert result["retained_count"] == result["retained_bytes"] == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["unexpected.tmp", ".molt-write-" + "0" * 16 + "-" + "1" * 32 + ".tmp", "bad.json"],
+)
+def test_unowned_pending_entries_remain_fail_closed(tmp_path, name):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    invalid = scratch._index_path(lease.generation).parent / name
+    invalid.write_text("{}")
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert result["errors"] == [f"{invalid}: invalid scratch pending entry"]
+    assert invalid.read_text() == "{}"
+    assert (lease.generation / "payload").is_dir()
+
+
+@pytest.mark.parametrize("leaf", ["owner", "index", "terminal"])
+def test_corrupt_retained_authority_is_not_excused_as_discovery_race(tmp_path, leaf):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    path = (
+        scratch._index_path(lease.generation)
+        if leaf == "index"
+        else lease.generation / (leaf + ".json")
+    )
+    write_exact(path, {"schema": "malformed"})
+    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert result["errors"]
+    assert result["retained_count"] == 0
+    assert (lease.generation / "payload").is_dir()
 
 
 def test_retirement_write_failure_has_pending_discovery_and_preserves_source(

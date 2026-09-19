@@ -301,11 +301,7 @@ def run_guarded_test_process(
         result.stderr = None
     if stdout == subprocess.DEVNULL:
         result.stdout = None
-    if (
-        resolved_timeout is not None
-        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        and "memory_guard: timeout after" in (result.stderr or "")
-    ):
+    if resolved_timeout is not None and bool(getattr(result, "timed_out", False)):
         error = subprocess.TimeoutExpired(
             command,
             resolved_timeout,
@@ -313,14 +309,17 @@ def run_guarded_test_process(
             stderr=result.stderr,
         )
         error.add_note(_timeout_receipt(result))
+        setattr(error, "guarded_result", result)
         raise error
     if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(
+        error = subprocess.CalledProcessError(
             result.returncode,
             command,
             output=result.stdout,
             stderr=result.stderr,
         )
+        setattr(error, "guarded_result", result)
+        raise error
     return result
 
 

@@ -39,8 +39,13 @@ def test_profile_hotspots_summarizes_slowest_events(tmp_path: Path) -> None:
         {
             "event": "guarded_command_profile",
             "prefix": "MOLT_TEST_SUITE",
-            "status": "pass",
-            "returncode": 0,
+            "status": "signal_exit",
+            "returncode": 125,
+            "child_returncode": 0,
+            "infrastructure_failure": {
+                "phase": "temporary_artifact_custody",
+                "details": ["scratch receipt retention failed"],
+            },
             "elapsed_s": 12.25,
             "recorded_at": "2026-05-24T00:00:02Z",
             "command": ["cargo", "build", "--workspace"],
@@ -59,8 +64,14 @@ def test_profile_hotspots_summarizes_slowest_events(tmp_path: Path) -> None:
     assert summary["total_elapsed_s"] == 16.75
     assert summary["slowest_events"][0]["elapsed_s"] == 12.25
     assert summary["slowest_events"][0]["short_command"] == "cargo build --workspace"
+    assert summary["slowest_events"][0]["returncode"] == 125
+    assert summary["slowest_events"][0]["child_returncode"] == 0
+    assert summary["slowest_events"][0]["infrastructure_failure"] == {
+        "phase": "temporary_artifact_custody",
+        "details": ["scratch receipt retention failed"],
+    }
     assert summary["slowest_commands"][0]["count"] == 1
-    assert summary["status_counts"] == {"pass": 2}
+    assert summary["status_counts"] == {"pass": 1, "infrastructure_error": 1}
     assert "cargo build --workspace" in module.format_summary(summary)
 
 

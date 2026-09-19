@@ -46,7 +46,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
+
+if TYPE_CHECKING:
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
@@ -91,6 +94,19 @@ class BackendResult:
     build_failed: bool = False
     detail: str = ""
     timed_out: bool = False
+    child_returncode: int | None = None
+    infrastructure_failure: GuardInfrastructureFailure | None = None
+
+    @classmethod
+    def from_process(cls, proc: subprocess.CompletedProcess[str]) -> BackendResult:
+        return cls(
+            proc.stdout,
+            proc.stderr,
+            proc.returncode,
+            timed_out=bool(getattr(proc, "timed_out", False)),
+            child_returncode=getattr(proc, "child_returncode", None),
+            infrastructure_failure=getattr(proc, "infrastructure_failure", None),
+        )
 
     @staticmethod
     def _text(value: str | bytes | None) -> str:
@@ -239,7 +255,10 @@ def _apply_fault_injection(backend: str, result: BackendResult) -> BackendResult
     exercising both the per-backend-vs-CPython and cross-backend checks. Inert
     unless MOLT_COMPAT_FAULT_INJECT names this backend.
     """
-    if backend.lower() not in _fault_injection_targets():
+    if (
+        result.infrastructure_failure is not None
+        or backend.lower() not in _fault_injection_targets()
+    ):
         return result
     if result.stdout is None:
         # Even a build failure becomes a visible, distinct divergence so the
@@ -338,16 +357,17 @@ def _guarded_run(
         )
     except subprocess.TimeoutExpired as exc:
         return BackendResult.from_timeout(exc)
-    timed_out = bool(getattr(proc, "timed_out", False))
-    if timed_out:
+    result = BackendResult.from_process(proc)
+    if result.timed_out:
         # A guard may terminate a timed-out child with SIGKILL/137. Preserve its
         # explicit deadline instead of letting the OOM heuristic reinterpret it.
-        return BackendResult.from_deadline(
+        deadline = BackendResult.from_deadline(
             timeout=timeout,
             stdout=proc.stdout,
             stderr=proc.stderr,
         )
-    return BackendResult(proc.stdout, proc.stderr, proc.returncode)
+        return replace(result, returncode=deadline.returncode, stderr=deadline.stderr)
+    return result
 
 
 def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:

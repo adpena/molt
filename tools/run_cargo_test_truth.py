@@ -22,8 +22,10 @@ else:
 
 ROOT = bind_repository_imports(__file__)
 
+from molt.exact_json import loads_exact  # noqa: E402
 from tools import check_suite_honesty  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.memory_guard_core.process_custody import GuardInfrastructureFailure  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 EVIDENCE_ROOT = ROOT / "proof-receipts" / "evidence"
@@ -184,7 +186,7 @@ def load_binary_receipts(
     receipts = []
     invocation_ids: set[str] = set()
     for path in sorted(receipt_dir.glob("*.json")):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = loads_exact(path.read_text(encoding="utf-8"))
         if payload.get("schema") != "molt.cargo-test-binary.v1":
             raise RuntimeError(f"invalid Cargo test binary receipt schema: {path}")
         invocation_id = payload.get("invocation_id")
@@ -483,6 +485,37 @@ def _namespaced_test_identity(metadata: dict[str, str], identity: str) -> str:
     )
 
 
+def _receipt_infrastructure_problem(receipt: dict) -> str | None:
+    diagnosis = receipt.get("diagnosis")
+    reported = receipt.get("status") == "infrastructure_error"
+    payloads: list[object] = []
+    if isinstance(diagnosis, dict):
+        reported = reported or diagnosis.get("kind") == "infrastructure-error"
+        if diagnosis.get("infrastructure_failure") is not None:
+            payloads.append(diagnosis["infrastructure_failure"])
+    executions = receipt.get("executions")
+    if isinstance(executions, list):
+        payloads.extend(
+            execution["infrastructure_failure"]
+            for execution in executions
+            if isinstance(execution, dict)
+            and execution.get("infrastructure_failure") is not None
+        )
+    details: list[str] = []
+    for payload in payloads:
+        try:
+            failure = GuardInfrastructureFailure.from_payload(payload)
+        except ValueError as exc:
+            return f"malformed infrastructure outcome: {exc}"
+        if failure is not None:
+            details.extend(failure.details)
+    if details:
+        return "infrastructure failure: " + "; ".join(dict.fromkeys(details))
+    if reported:
+        return "infrastructure outcome lacks a typed failure"
+    return None
+
+
 def receipt_test_rows(
     receipts: list[dict],
     expected: dict[str, dict[str, str]],
@@ -500,6 +533,13 @@ def receipt_test_rows(
         )
         metadata = expected.get(executable)
         if metadata is None:
+            continue
+        infrastructure = _receipt_infrastructure_problem(receipt)
+        if infrastructure is not None:
+            problems.append(
+                "Cargo test binary is not semantic or known-red evidence; "
+                f"{infrastructure}; executable={metadata['executable']!r}"
+            )
             continue
         namespaced_context = {
             **context,

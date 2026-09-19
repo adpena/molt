@@ -91,11 +91,17 @@ class PhaseResult:
     guard_orphaned_process_groups: list[int] = field(default_factory=list)
     guard_exit_signal: dict[str, Any] | None = None
     guard_cargo_incremental_quarantine: dict[str, Any] | None = None
+    child_returncode: int | None = None
+    infrastructure_failure: dict[str, Any] | None = None
     molt_failure: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out
+        return (
+            self.returncode == 0
+            and not self.timed_out
+            and self.infrastructure_failure is None
+        )
 
 
 @dataclass

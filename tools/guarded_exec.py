@@ -170,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         metrics = {
             "schema": "molt.guarded-command-metrics.v1",
             "returncode": int(result.returncode),
+            "child_returncode": getattr(result, "child_returncode", None),
+            "infrastructure_failure": harness_memory_guard.memory_guard.infrastructure_failure_payload(
+                getattr(result, "infrastructure_failure", None)
+            ),
+            "temporary_artifacts": getattr(result, "temporary_artifacts", None),
             "duration_seconds": getattr(result, "elapsed_s", None),
             "peak_process_rss_bytes": (
                 int(peak.rss_kb) * 1024

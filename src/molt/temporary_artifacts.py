@@ -22,6 +22,7 @@ from molt.file_deletion import delete_path
 from molt.file_locks import _FileLockHandle, _try_acquire_file_lock, _release_file_lock
 from molt.file_publication import (
     durable_namespace_publish_directory_exclusive,
+    durable_publish_exclusive,
     is_link_like,
     resolve_owned_path,
 )
@@ -241,6 +242,21 @@ def _drop_index(generation: Path) -> None:
     _index_path(generation).unlink(missing_ok=True)
 
 
+def _publish_index(generation: Path, terminal_digest: str) -> None:
+    # The shared discovery namespace contains committed entries only. Atomic
+    # JSON's private write stages belong behind this generation's held lock,
+    # never beside entries that another guard may be enumerating.
+    staged = resolve_owned_path(generation / "pending.json")
+    write_exact(
+        staged,
+        {"schema": SCHEMA, "terminal_digest": terminal_digest},
+        exclusive=True,
+    )
+    destination = _index_path(generation)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    durable_publish_exclusive(staged, _index_path(generation))
+
+
 def _recover_transition_locked(
     generation: Path, owner: dict[str, object]
 ) -> dict[str, object]:
@@ -335,11 +351,7 @@ def finish_guard_scratch(
         # The pending-work index is a projection, not deletion authority.
         # Successful-run receipts never enter the next run's discovery walk.
         # Index first: interruption must not leave a retired payload undiscoverable.
-        write_exact(
-            _index_path(generation),
-            {"schema": SCHEMA, "terminal_digest": owner["terminal_digest"]},
-            exclusive=True,
-        )
+        _publish_index(generation, owner["terminal_digest"])
         write_exact(generation / "owner.json", owner)
         try:
             # Both resolved absolute paths are bound to this allocation and
@@ -422,13 +434,24 @@ def reclaim_terminal_scratch(
             continue
         try:
             generation = _generation(root, entry.stem)
-            index = read_exact(
-                resolve_owned_path(entry),
-                max_bytes=_MAX_RECEIPT_BYTES,
-                label="scratch pending index",
-            )
             with _locked(generation):
                 owner = _owner(generation)
+                # A directory snapshot is discovery, not a lease on an index.
+                # Its owner may have completed reclamation since enumeration.
+                # Accept that transition only from the locked, verified terminal
+                # authority; a missing retained owner's index is still an error.
+                if owner["state"] == "reclaimed":
+                    _reclaim_locked(generation, owner)
+                    continue
+                if owner["state"] == "blocked":
+                    errors.append(f"{generation}: {owner.get('error')}")
+                    _drop_index(generation)
+                    continue
+                index = read_exact(
+                    resolve_owned_path(entry),
+                    max_bytes=_MAX_RECEIPT_BYTES,
+                    label="scratch pending index",
+                )
                 if (
                     not isinstance(index, dict)
                     or index.get("schema") != SCHEMA
@@ -467,19 +490,29 @@ def reclaim_terminal_scratch(
     kept_count = 0
     reclaimed: list[str] = []
     for _, size, generation, digest, success in sorted(candidates, reverse=True):
-        if (
-            not success
-            and kept_count < retention.count
-            and kept_bytes + size <= retention.bytes
-        ):
-            kept_count += 1
-            kept_bytes += size
-            continue
         try:
             with _locked(generation):
                 owner = _owner(generation)
                 if owner.get("terminal_digest") != digest:
                     raise ValueError("scratch terminal generation changed")
+                if owner["state"] == "reclaimed":
+                    _reclaim_locked(generation, owner)
+                    continue
+                if (
+                    owner["state"] == "retained"
+                    and not success
+                    and kept_count < retention.count
+                    and kept_bytes + size <= retention.bytes
+                ):
+                    _terminal(generation, owner)
+                    if (
+                        _identity(_target(generation, owner))
+                        != owner["target_identity"]
+                    ):
+                        raise ValueError("retained scratch payload identity changed")
+                    kept_count += 1
+                    kept_bytes += size
+                    continue
                 result = _reclaim_locked(generation, owner)
                 if result["state"] == "reclaimed":
                     reclaimed.append(str(generation))

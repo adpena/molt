@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -57,7 +59,46 @@ def test_safe_run_status_uses_guard_summary_before_legacy_exit_codes() -> None:
     )
     assert safe_run._status(0, {"timed_out": True, "violation": None}) == "timeout"
     assert safe_run._status(0, {"timed_out": False, "violation": {}}) == "oom"
-    assert safe_run._status(safe_run.EXIT_OOM, {"peak": {}}) == "oom"
+    assert safe_run._status(safe_run.EXIT_OOM, {"peak": {}}) == "failed"
+    assert safe_run._status(safe_run.EXIT_TIMEOUT, {}) == "failed"
+
+
+def test_safe_run_preserves_guard_infrastructure_outcome(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    safe_run = _load_safe_run()
+    summary_path = tmp_path / "summary.json"
+    infrastructure_failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["scratch receipt retention failed"],
+    }
+    summary_path.write_text(
+        json.dumps(
+            {
+                "returncode": safe_run.EXIT_SPAWN,
+                "child_returncode": 0,
+                "infrastructure_failure": infrastructure_failure,
+                "elapsed_s": 0.25,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(safe_run, "_summary_path", lambda _label: summary_path)
+    monkeypatch.setattr(
+        safe_run.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 125),
+    )
+
+    returncode = safe_run.main(["--json", "--", "successful-child"])
+
+    receipt = json.loads(capsys.readouterr().err.removeprefix("SAFE_RUN "))
+    assert returncode == safe_run.EXIT_SPAWN
+    assert receipt["status"] == "infrastructure_error"
+    assert receipt["exit"] == safe_run.EXIT_SPAWN
+    assert receipt["child_returncode"] == 0
+    assert receipt["infrastructure_failure"] == infrastructure_failure
+    assert receipt["infrastructure_failure_decode_error"] is None
 
 
 def test_direct_run_tools_have_no_parallel_kill_authority() -> None:

@@ -10,6 +10,7 @@ from typing import Any
 
 from bench_friends_context import REPO_ROOT
 from bench_friends_phase import _bounded_failure_text
+from bench_friends_runner import _suite_metrics
 from bench_friends_types import (
     MAX_FAILURE_DETAIL_RECORDS,
     BenchInterrupted,
@@ -220,9 +221,37 @@ def _runner_to_dict(result: RunnerResult) -> dict[str, Any]:
     }
 
 
+def _normalized_infrastructure_failure(
+    value: object,
+) -> dict[str, object] | None:
+    failure = harness_memory_guard.memory_guard.GuardInfrastructureFailure.from_payload(
+        value
+    )
+    return None if failure is None else failure.json_payload()
+
+
+def _normalized_molt_failure(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("invalid serialized Molt failure")
+    failure = dict(value)
+    infrastructure_failure = _normalized_infrastructure_failure(
+        failure.get("infrastructure_failure")
+    )
+    failure["infrastructure_failure"] = infrastructure_failure
+    if infrastructure_failure is not None:
+        failure["status"] = "infrastructure_error"
+        failure["signal"] = None
+    return failure
+
+
 def _phase_from_dict(payload: dict[str, Any] | None) -> PhaseResult | None:
     if payload is None:
         return None
+    infrastructure_failure = _normalized_infrastructure_failure(
+        payload.get("infrastructure_failure")
+    )
     return PhaseResult(
         cmd=list(payload.get("cmd") or []),
         returncode=int(payload.get("returncode", 0)),
@@ -232,7 +261,11 @@ def _phase_from_dict(payload: dict[str, Any] | None) -> PhaseResult | None:
         stderr_path=str(payload.get("stderr_path", "")),
         stdout_json=payload.get("stdout_json"),
         stdout_json_error=payload.get("stdout_json_error"),
-        guard_status=payload.get("guard_status"),
+        guard_status=(
+            "infrastructure_error"
+            if infrastructure_failure is not None
+            else payload.get("guard_status")
+        ),
         guard_violation=payload.get("guard_violation"),
         guard_limit_at_violation=payload.get("guard_limit_at_violation"),
         guard_orphaned_process_groups=list(
@@ -242,6 +275,9 @@ def _phase_from_dict(payload: dict[str, Any] | None) -> PhaseResult | None:
         guard_cargo_incremental_quarantine=payload.get(
             "guard_cargo_incremental_quarantine"
         ),
+        child_returncode=payload.get("child_returncode"),
+        infrastructure_failure=infrastructure_failure,
+        molt_failure=_normalized_molt_failure(payload.get("molt_failure")),
     )
 
 
@@ -261,29 +297,61 @@ def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
         "guard_orphaned_process_groups": phase.guard_orphaned_process_groups,
         "guard_exit_signal": phase.guard_exit_signal,
         "guard_cargo_incremental_quarantine": phase.guard_cargo_incremental_quarantine,
+        "child_returncode": phase.child_returncode,
+        "infrastructure_failure": phase.infrastructure_failure,
         "molt_failure": phase.molt_failure,
     }
 
 
 def _runner_from_dict(payload: dict[str, Any]) -> RunnerResult:
+    build = _phase_from_dict(payload.get("build"))
+    runs = [
+        phase
+        for item in payload.get("runs", [])
+        if (phase := _phase_from_dict(item)) is not None
+    ]
+    molt_failure = _normalized_molt_failure(payload.get("molt_failure"))
+    infrastructure_error = (
+        (build is not None and build.infrastructure_failure is not None)
+        or any(phase.infrastructure_failure is not None for phase in runs)
+        or (
+            molt_failure is not None
+            and molt_failure.get("infrastructure_failure") is not None
+        )
+    )
     return RunnerResult(
         name=str(payload["name"]),
         role=str(payload["role"]),
-        status=str(payload["status"]),
+        status=(
+            "infrastructure_error" if infrastructure_error else str(payload["status"])
+        ),
         reason=payload.get("reason"),
-        build=_phase_from_dict(payload.get("build")),
-        runs=[
-            phase
-            for item in payload.get("runs", [])
-            if (phase := _phase_from_dict(item)) is not None
-        ],
-        run_samples_s=[float(value) for value in payload.get("run_samples_s", [])],
-        run_median_s=payload.get("run_median_s"),
-        run_mean_s=payload.get("run_mean_s"),
-        run_stdev_s=payload.get("run_stdev_s"),
-        structured_outputs=list(payload.get("structured_outputs") or []),
-        structured_samples_s=dict(payload.get("structured_samples_s") or {}),
-        structured_median_s=dict(payload.get("structured_median_s") or {}),
+        build=build,
+        runs=runs,
+        run_samples_s=(
+            []
+            if infrastructure_error
+            else [float(value) for value in payload.get("run_samples_s", [])]
+        ),
+        run_median_s=None if infrastructure_error else payload.get("run_median_s"),
+        run_mean_s=None if infrastructure_error else payload.get("run_mean_s"),
+        run_stdev_s=None if infrastructure_error else payload.get("run_stdev_s"),
+        structured_outputs=(
+            []
+            if infrastructure_error
+            else list(payload.get("structured_outputs") or [])
+        ),
+        structured_samples_s=(
+            {}
+            if infrastructure_error
+            else dict(payload.get("structured_samples_s") or {})
+        ),
+        structured_median_s=(
+            {}
+            if infrastructure_error
+            else dict(payload.get("structured_median_s") or {})
+        ),
+        molt_failure=molt_failure,
     )
 
 
@@ -341,6 +409,13 @@ def _suite_to_dict(suite: SuiteResult) -> dict[str, Any]:
 
 
 def _suite_from_dict(payload: dict[str, Any]) -> SuiteResult:
+    runners = {
+        str(name): _runner_from_dict(result)
+        for name, result in dict(payload.get("runners") or {}).items()
+    }
+    infrastructure_error = any(
+        runner.status == "infrastructure_error" for runner in runners.values()
+    )
     return SuiteResult(
         id=str(payload["id"]),
         friend=str(payload["friend"]),
@@ -352,15 +427,14 @@ def _suite_from_dict(payload: dict[str, Any]) -> SuiteResult:
         resolved_ref=payload.get("resolved_ref"),
         requested_ref=payload.get("requested_ref"),
         source_custody=_source_custody_from_dict(payload["source_custody"]),
-        status=str(payload["status"]),
+        status=(
+            "infrastructure_error" if infrastructure_error else str(payload["status"])
+        ),
         reason=payload.get("reason"),
         adapter_notes=payload.get("adapter_notes"),
         tags=list(payload.get("tags") or []),
-        runners={
-            str(name): _runner_from_dict(result)
-            for name, result in dict(payload.get("runners") or {}).items()
-        },
-        metrics=dict(payload.get("metrics") or {}),
+        runners=runners,
+        metrics=_suite_metrics(runners),
     )
 
 
@@ -530,6 +604,8 @@ def _molt_failure_detail_records(
                     "status": failure.get("status"),
                     "detail": failure.get("detail"),
                     "returncode": failure.get("returncode"),
+                    "child_returncode": failure.get("child_returncode"),
+                    "infrastructure_failure": failure.get("infrastructure_failure"),
                     "timed_out": failure.get("timed_out"),
                     "elapsed_s": failure.get("elapsed_s"),
                     "message": _bounded_failure_text(failure.get("message")),

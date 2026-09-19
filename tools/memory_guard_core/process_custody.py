@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 if TYPE_CHECKING:
     from tools.win_job import WindowsJobCleanup
@@ -88,6 +88,39 @@ class GuardSamplingTelemetry:
 
 
 @dataclass(frozen=True, slots=True)
+class GuardInfrastructureFailure:
+    phase: Literal["temporary_artifact_custody"]
+    details: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.phase != "temporary_artifact_custody"
+            or type(self.details) is not tuple
+            or not self.details
+            or any(
+                type(detail) is not str or not detail.strip() for detail in self.details
+            )
+        ):
+            raise ValueError("invalid guard infrastructure failure")
+
+    @classmethod
+    def from_payload(cls, value: object) -> Self | None:
+        if value is None:
+            return None
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"phase", "details"}
+            or value["phase"] != "temporary_artifact_custody"
+            or type(value["details"]) is not list
+        ):
+            raise ValueError("invalid guard infrastructure failure payload")
+        return cls(phase=value["phase"], details=tuple(value["details"]))
+
+    def json_payload(self) -> dict[str, object]:
+        return {"phase": self.phase, "details": list(self.details)}
+
+
+@dataclass(frozen=True, slots=True)
 class GuardResult:
     returncode: int
     violation: RssViolation | None
@@ -107,6 +140,8 @@ class GuardResult:
     peak_job_commit_bytes: int | None = None
     windows_job_cleanup: WindowsJobCleanup | None = None
     temporary_artifacts: Mapping[str, object] | None = None
+    child_returncode: int | None = None
+    infrastructure_failure: GuardInfrastructureFailure | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage

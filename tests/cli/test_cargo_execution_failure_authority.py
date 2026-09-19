@@ -193,6 +193,64 @@ def test_empty_or_untyped_attempts_fall_back_to_one_typed_terminal_record() -> N
     assert attempts[0]["stderr"] == "error: terminal cargo failure"
 
 
+@pytest.mark.parametrize("child_returncode", [0, 7])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_guard_infrastructure_is_not_wrapper_retry_or_cargo_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    child_returncode: int,
+    json_output: bool,
+) -> None:
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    failure = GuardInfrastructureFailure(
+        "temporary_artifact_custody", ("receipt unavailable",)
+    )
+    command = ["cargo", "rustc"]
+    terminal = _completed(
+        command,
+        125 if child_returncode == 0 else child_returncode,
+        stderr="sccache: error: cache unavailable\nsignal: 9, SIGKILL",
+    )
+    terminal.child_returncode = child_returncode
+    terminal.infrastructure_failure = failure
+    calls = []
+
+    def run(_cmd, **kwargs):
+        calls.append(kwargs)
+        return terminal
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    monkeypatch.setattr(
+        CARGO,
+        "_attest_sccache_stats",
+        lambda *_args: pytest.fail(
+            "infrastructure failure must not launch cache probes"
+        ),
+    )
+    result = CARGO._run_cargo_with_sccache_retry(
+        command,
+        cwd=Path.cwd(),
+        env=_cargo_env(tmp_path / "cargo-target", RUSTC_WRAPPER="sccache"),
+        timeout=1,
+        json_output=json_output,
+        label="Runtime build",
+    )
+    assert len(calls) == 1
+    assert result.retry_reason is None
+    assert result.child_returncode == child_returncode
+    assert result.infrastructure_failure is failure
+    for candidate in (terminal, result):
+        evidence = CARGO.cargo_execution_evidence(candidate)
+        assert evidence["child_returncode"] == child_returncode
+        assert evidence["infrastructure_failure"] == failure.json_payload()
+        assert evidence["signal"] is None
+        [attempt] = evidence["attempts"]
+        assert attempt["failure_kind"] == "infrastructure_error"
+        assert attempt["child_returncode"] == child_returncode
+        assert attempt["infrastructure_failure"] == failure.json_payload()
+
+
 @pytest.mark.parametrize(
     ("stderr", "reason"),
     [
