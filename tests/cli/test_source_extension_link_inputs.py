@@ -6,7 +6,8 @@ import subprocess
 
 import pytest
 
-from molt.cli import source_extension_link_inputs as inputs
+from molt import source_extension_link_inputs as link_inputs_contract
+from molt.cli import source_extension_link_inputs as link_inputs_resolver
 from molt.cli import wasm_link_inputs
 from tools.proof_queue_pkg import execution_environment, toolchain_capture
 
@@ -21,18 +22,20 @@ def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
         return archive
 
     monkeypatch.setattr(wasm_link_inputs, "wasm_compiler_builtins_archive", discover)
-    captured = inputs.resolve_source_extension_link_inputs(
+    captured = link_inputs_resolver.resolve_source_extension_link_inputs(
         "wasm32-wasip1", environment=selected
     )
     payload = captured.metadata()
-    bound = {inputs.SOURCE_EXTENSION_LINK_INPUTS_ENV: json.dumps(payload)}
+    bound = {link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV: json.dumps(payload)}
     monkeypatch.setattr(
         wasm_link_inputs,
         "wasm_compiler_builtins_archive",
         lambda *a, **kw: pytest.fail("bound input rediscovered"),
     )
     assert (
-        inputs.resolve_source_extension_link_inputs("wasm32-wasip1", environment=bound)
+        link_inputs_resolver.resolve_source_extension_link_inputs(
+            "wasm32-wasip1", environment=bound
+        )
         == captured
     )
     frozen = toolchain_capture.frozen_files(
@@ -46,7 +49,9 @@ def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
     ) == [tmp_path]
     archive.write_bytes(b"!<arch>\nmutated!")
     with pytest.raises(ValueError, match="content changed"):
-        inputs.resolve_source_extension_link_inputs("wasm32-wasip1", environment=bound)
+        link_inputs_resolver.resolve_source_extension_link_inputs(
+            "wasm32-wasip1", environment=bound
+        )
 
 
 @pytest.mark.parametrize(
@@ -60,7 +65,7 @@ def test_non_wasi_does_not_discover_rust_archive(target, monkeypatch):
         lambda *a, **kw: pytest.fail("unexpected Rust input"),
     )
     assert (
-        inputs.resolve_source_extension_link_inputs(
+        link_inputs_resolver.resolve_source_extension_link_inputs(
             target, environment={}
         ).compiler_builtins
         is None
@@ -77,13 +82,14 @@ def test_malformed_bound_input_fails_without_discovery(raw, monkeypatch):
         lambda *a, **kw: pytest.fail("invalid binding fell back"),
     )
     with pytest.raises(ValueError):
-        inputs.resolve_source_extension_link_inputs(
-            "wasm32-wasip1", environment={inputs.SOURCE_EXTENSION_LINK_INPUTS_ENV: raw}
+        link_inputs_resolver.resolve_source_extension_link_inputs(
+            "wasm32-wasip1",
+            environment={link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV: raw},
         )
 
 
 def test_bound_environment_is_published_only_by_owner():
-    name = inputs.SOURCE_EXTENSION_LINK_INPUTS_ENV
+    name = link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV
     assert execution_environment.environment_override_policy_error({name: "{}"})
     filtered, contract = execution_environment._deterministic_execution_environment(
         {name: "{}"}, override_names=[]

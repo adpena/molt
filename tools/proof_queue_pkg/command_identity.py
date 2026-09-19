@@ -12,9 +12,8 @@ import stat
 import subprocess
 from typing import Any, BinaryIO, Mapping, Sequence, cast
 
-from molt.dx import _reject_onedrive
-from molt.cli.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from molt import file_publication
+from molt.dx import _reject_onedrive
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
@@ -25,6 +24,7 @@ from molt.python_environment_identity import (
     validate_python_capture,
     validate_python_environment_location,
 )
+from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture

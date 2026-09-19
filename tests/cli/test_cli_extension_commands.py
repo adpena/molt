@@ -19,6 +19,7 @@ from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extension_target as cli_source_extension_target
 from molt.cli import source_extension_link_inputs as cli_source_extension_link_inputs
 from molt.cli import source_extensions as cli_source_extensions
+from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from molt.cli.extension_manifest import (
     _CURRENT_MOLT_C_API_VERSION,
     _default_molt_c_api_version,
@@ -3213,7 +3214,7 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
             "nm": ("/tools/llvm-nm",),
         },
         wasi_sysroot=None,
-        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+        link_inputs=SourceExtensionLinkInputs(
             target_plan.target_triple, None, None, None
         ),
         detail="host LLVM family",
@@ -3308,7 +3309,7 @@ def test_native_target_metadata_commands_drive_real_extension_build(
             "nm": ("/tools/llvm-nm",),
         },
         wasi_sysroot=None,
-        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+        link_inputs=SourceExtensionLinkInputs(
             target_plan.target_triple, None, None, None
         ),
         detail="host LLVM family",
@@ -3549,7 +3550,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
             "strip": ("/tools/llvm-strip",),
         },
         wasi_sysroot=None,
-        link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+        link_inputs=SourceExtensionLinkInputs(
             target_plan.target_triple, None, None, None
         ),
         detail="freestanding LLVM family",
@@ -4387,7 +4388,7 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
                 "nm": ("/usr/bin/llvm-nm",),
             },
             wasi_sysroot=None,
-            link_inputs=cli_source_extension_link_inputs.SourceExtensionLinkInputs(
+            link_inputs=SourceExtensionLinkInputs(
                 target_plan.target_triple, None, None, None
             ),
             detail="fixture cross compiler family",
