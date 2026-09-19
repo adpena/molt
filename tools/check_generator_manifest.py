@@ -52,7 +52,6 @@ Wired into ``tools/ci_gate.py`` (tier 1) and the repository-policy family in
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import subprocess
 import sys
@@ -64,6 +63,16 @@ ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 MANIFEST_REL = "tools/generator_manifest.toml"
 PROOF_PLAN_REL = "tools/proof_plan.toml"
 
+if str(ROOT_DEFAULT) not in sys.path:
+    sys.path.insert(0, str(ROOT_DEFAULT))
+
+from tools.import_file import (  # noqa: E402
+    bind_repository_imports,
+    load_module_from_path,
+)
+
+bind_repository_imports(__file__)
+
 
 # ---------------------------------------------------------------------------
 # Shared Rust-scanning primitives — imported from structural_audit.py so there
@@ -71,19 +80,12 @@ PROOF_PLAN_REL = "tools/proof_plan.toml"
 # ---------------------------------------------------------------------------
 
 
-def _load_structural_audit(root: Path):
-    """Import tools/structural_audit.py as a module (it is a script, not a
-    package member). Registered in sys.modules so its @dataclass resolves."""
-    tool = root / "tools" / "structural_audit.py"
-    spec = importlib.util.spec_from_file_location(
-        "molt_structural_audit_for_manifest", tool
+def _load_structural_audit():
+    """Load the canonical repository scanner implementation."""
+    return load_module_from_path(
+        "tools.structural_audit",
+        ROOT_DEFAULT / "tools" / "structural_audit.py",
     )
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
-        raise RuntimeError(f"cannot load {tool}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +375,9 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
         else {}
     )
     plan_commands = [
-        dict(command) for command in plan_data.get("command", []) if isinstance(command, dict)
+        dict(command)
+        for command in plan_data.get("command", [])
+        if isinstance(command, dict)
     ]
     gated_commands: dict[str, dict] = {}
 
@@ -920,7 +924,7 @@ def _baseline_payload(counts: dict[str, int], sites: dict[str, list[str]]) -> di
 def run_all(
     root: Path, *, with_idempotence: bool = False
 ) -> tuple[list[Violation], dict]:
-    sa = _load_structural_audit(root)
+    sa = _load_structural_audit()
     manifest = load_manifest(root)
     hard: list[Violation] = []
     hard.extend(detect_orphans(root, manifest, sa))
@@ -982,7 +986,7 @@ def run_all(
 
 def collect_backlog_sites(root: Path) -> tuple[dict[str, int], dict[str, list[str]]]:
     """Return (per-domain counts, per-domain site locations) for baseline writing."""
-    sa = _load_structural_audit(root)
+    sa = _load_structural_audit()
     manifest = load_manifest(root)
     ratcheted = audit_closed_domains(root, manifest, sa)
     counts = _closed_domain_counts(ratcheted)

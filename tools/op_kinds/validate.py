@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
 
 from .paths import TABLE
 from .schema import (
+    _BOXED_ALLOCATION_LAYOUT_RULES,
     _ALIAS_MEMORY_REGION_SETS,
     _ALIAS_SLOT_OBSERVATION_SETS,
     _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
@@ -687,6 +688,13 @@ def load_table(table_path: Path = TABLE) -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_opcode_rule_rows(
+        data,
+        "boxed_allocation_layout_rules",
+        seen_opcodes,
+        _BOXED_ALLOCATION_LAYOUT_RULES,
+        "boxed allocation layout rule",
+    )
     _validate_gvn_always_numberable_facts(data, opcodes_by_name)
     _validate_gvn_value_keyed_constant_facts(data, opcodes_by_name)
     _validate_gvn_numberable_attr_key_facts(data, opcodes_by_name)

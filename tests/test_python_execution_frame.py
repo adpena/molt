@@ -560,31 +560,7 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
         assert frame_before(ops, consumer).kind == 1
 
 
-@pytest.mark.parametrize(
-    ("prefix", "body", "required_boundaries"),
-    [
-        ("", "yield receiver\nreturn super()", {"STATE_LABEL"}),
-        ("async ", "await values\nreturn super()", {"STATE_LABEL", "STATE_TRANSITION"}),
-        (
-            "async ",
-            "molt_chan_send(values, receiver)\nmolt_chan_recv(values)\nreturn super()",
-            {"STATE_LABEL", "CHAN_SEND_YIELD"},
-        ),
-        (
-            "async ",
-            "molt_chan_recv(values)\nreturn super()",
-            {"STATE_LABEL", "CHAN_RECV_YIELD"},
-        ),
-    ],
-)
-def test_every_resume_entry_republishes_live_task_storage_before_continuing(
-    prefix, body, required_boundaries
-):
-    source = f"class Subject:\n    {prefix}def method(receiver, values):\n" + "".join(
-        f"        {line}\n" for line in body.splitlines()
-    )
-    generator, _ = compile_source(source)
-    ops = super_consumer_ops(generator)
+def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[str]):
     frames = publications(ops)
     entry_owner = storage_owner(ops, frames[0].argument)
     assert entry_owner[0] == "task"
@@ -604,14 +580,176 @@ def test_every_resume_entry_republishes_live_task_storage_before_continuing(
             for item in ops[index + 1 : frame.index]
         )
     assert observed == required_boundaries
-    if "molt_chan_send" in body:
-        # The send invalidates the next global callee's static identity. Its
-        # discarded receive result must not erase the actual dynamic call.
-        (receive,) = builtin_calls(ops, "molt_chan_recv")
-        assert ops[receive].kind == "CALL_FUNC"
-        assert len(ops[receive].args) == 2
-        assert storage_owner(ops, ops[receive].args[1])[0] == "task"
-        assert frame_before(ops, receive).kind == 1
+
+
+@pytest.mark.parametrize(
+    ("prefix", "body", "required_boundaries"),
+    [
+        ("", "yield receiver\nreturn super()", {"STATE_LABEL"}),
+        ("async ", "await values\nreturn super()", {"STATE_LABEL", "STATE_TRANSITION"}),
+    ],
+)
+def test_every_source_resume_entry_republishes_live_task_storage_before_continuing(
+    prefix, body, required_boundaries
+):
+    source = f"class Subject:\n    {prefix}def method(receiver, values):\n" + "".join(
+        f"        {line}\n" for line in body.splitlines()
+    )
+    generator, _ = compile_source(source)
+    assert_resume_frame_ownership(super_consumer_ops(generator), required_boundaries)
+
+
+@pytest.mark.parametrize(
+    ("expression", "kind", "source_arguments"),
+    [
+        ("molt_chan_send(values, receiver)", "CHAN_SEND_YIELD", ("values", "receiver")),
+        ("molt_chan_recv(values)", "CHAN_RECV_YIELD", ("values",)),
+    ],
+)
+def test_admitted_channel_resume_republishes_before_releasing_payload(
+    expression, kind, source_arguments
+):
+    from molt.frontend._types import GEN_CONTROL_SIZE
+    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+
+    generator = SimpleTIRGenerator()
+    plan = stateful_function_frame_plan(
+        kind=FunctionKind.ASYNC,
+        poll_symbol="admitted_channel_body",
+        param_count=2,
+        has_closure=True,
+        gen_control_size=GEN_CONTROL_SIZE,
+    )
+    generator.start_function(
+        plan.poll_symbol,
+        params=["self"],
+        compiler_params={"self"},
+        python_first_arg="receiver",
+        stateful_frame_plan=plan,
+    )
+    generator.async_context = True
+    generator.async_locals_base = plan.async_locals_base
+    generator.async_closure_offset = plan.async_closure_offset
+    generator.free_vars = {"__class__": 0}
+    source_slots = {
+        name: generator._async_local_offset(name) for name in ("receiver", "values")
+    }
+    generator.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
+    generator._publish_python_frame_context()
+
+    # Enter the canonical lowering stage after callable admission, as a unit
+    # fixture. No source binding fact or dispatch guard is replaced or mocked.
+    result = generator._try_emit_named_call(
+        ast.parse(expression, mode="eval").body, needs_bind=False
+    )
+    generator._emit_runtime_call("molt_super_from_frame", [])
+    ops = generator.current_ops
+    ((control_index, control),) = [
+        (index, op) for index, op in enumerate(ops) if op.kind == kind
+    ]
+    assert control.result == result
+    assert len(control.args) == len(source_arguments) + 2
+    assert_resume_frame_ownership(ops, {"STATE_LABEL", kind})
+    for value, source_name in zip(
+        control.args[: len(source_arguments)], source_arguments, strict=True
+    ):
+        payload_owner = storage_owner(ops, value)
+        assert payload_owner[0] == "task"
+        (initializer,) = [
+            op
+            for op in ops[:control_index]
+            if op.kind == "STORE_CLOSURE" and tuple(op.args[:2]) == payload_owner[1:]
+        ]
+        assert storage_owner(ops, initializer.args[2]) == (
+            "task",
+            "self",
+            source_slots[source_name],
+        )
+        ((clear_index, clear),) = [
+            (index, op)
+            for index, op in enumerate(ops)
+            if index > control_index
+            and op.kind == "STORE_CLOSURE"
+            and tuple(op.args[:2]) == payload_owner[1:]
+        ]
+        cleared_value = next(
+            op for op in ops[:clear_index] if op.result == clear.args[2]
+        )
+        assert cleared_value.kind == "CONST_NONE"
+        assert control_index < frame_before(ops, clear_index).index < clear_index
+    (consumer,) = runtime_calls(ops, "molt_super_from_frame")
+    assert storage_owner(ops, frame_before(ops, consumer).argument) == (
+        "task",
+        "self",
+        source_slots["receiver"],
+    )
+    for frame in publications(ops):
+        cell = next(op for op in ops[: frame.index] if op.result == frame.class_cell)
+        assert cell.kind == "INDEX" and cell.result.type_hint == "cell"
+        closure = next(op for op in ops[: frame.index] if op.result == cell.args[0])
+        assert closure.kind == "LOAD_CLOSURE"
+        assert closure.args == ["self", plan.async_closure_offset]
+        slot = next(op for op in ops[: frame.index] if op.result == cell.args[1])
+        assert slot.kind == "CONST" and slot.args == [0]
+
+
+@pytest.mark.parametrize("send_first", [False, True])
+def test_unadmitted_channel_names_retain_live_calls_without_suspension(send_first):
+    body = "molt_chan_recv(values)\nreturn super()"
+    if send_first:
+        body = "molt_chan_send(values, receiver)\n" + body
+    source = "class Subject:\n    async def method(receiver, values):\n" + "".join(
+        f"        {line}\n" for line in body.splitlines()
+    )
+    generator, ir = compile_source(source)
+    ((function_name, function),) = [
+        (name, function)
+        for name, function in generator.funcs_map.items()
+        if builtin_calls(function["ops"], "molt_chan_recv")
+    ]
+    ops = function["ops"]
+    serialized_ops = next(
+        function["ops"]
+        for function in ir["functions"]
+        if function["name"] == function_name
+    )
+    plan = function["stateful_frame_plan"]
+    expected_arguments = [
+        ("molt_chan_recv", ("values",)),
+    ]
+    if send_first:
+        expected_arguments.insert(0, ("molt_chan_send", ("values", "receiver")))
+    source_slots = {
+        "receiver": plan.async_locals_base,
+        "values": plan.async_locals_base + 8,
+    }
+    calls = []
+    for name, arguments in expected_arguments:
+        (index,) = builtin_calls(ops, name)
+        calls.append(index)
+        call = ops[index]
+        assert call.kind == "CALL_FUNC" and len(call.args) == len(arguments) + 1
+        callee = next(op for op in ops[:index] if op.result == call.args[0])
+        assert callee.kind == "MODULE_GET_GLOBAL"
+        assert any(
+            op["kind"] == "call_func"
+            and op["args"] == [value.name for value in call.args]
+            and op.get("out") == call.result.name
+            for op in serialized_ops
+        )
+        for value, source_name in zip(call.args[1:], arguments, strict=True):
+            assert storage_owner(ops, value) == (
+                "task",
+                "self",
+                source_slots[source_name],
+            )
+        assert frame_before(ops, index).kind == 1
+    assert calls == sorted(calls)
+    assert not any(
+        op.kind
+        in {"STATE_LABEL", "STATE_TRANSITION", "CHAN_SEND_YIELD", "CHAN_RECV_YIELD"}
+        for op in ops
+    )
 
 
 def annotation_evaluator_tree(kind, *, in_class):

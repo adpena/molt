@@ -656,18 +656,24 @@ fn python_range_len_uses_canonical_numeric_fact() {
 
 #[test]
 fn malformed_producers_never_seed_rewrite_or_fold_downstream_control() {
-    for opcode in [
-        OpCode::ConstInt,
-        OpCode::ConstFloat,
-        OpCode::ConstBool,
-        OpCode::ConstStr,
-        OpCode::ConstNone,
-        OpCode::Add,
-        OpCode::Neg,
-        OpCode::Not,
-        OpCode::BuildTuple,
-        OpCode::CallBuiltin,
-        OpCode::CallMethod,
+    for (opcode, attrs) in [
+        (OpCode::ConstInt, make_const_int(20, 7).attrs),
+        (OpCode::ConstFloat, make_const_float(20, 1.0).attrs),
+        (OpCode::ConstBool, make_const_bool(20, true).attrs),
+        (OpCode::ConstStr, make_const_str(20, "value").attrs),
+        (OpCode::ConstNone, AttrDict::new()),
+        (OpCode::Add, AttrDict::new()),
+        (OpCode::Neg, AttrDict::new()),
+        (OpCode::Not, AttrDict::new()),
+        (OpCode::BuildTuple, AttrDict::new()),
+        (
+            OpCode::CallBuiltin,
+            make_call_builtin(20, "len", vec![]).attrs,
+        ),
+        (
+            OpCode::CallMethod,
+            make_call_method(20, "upper", vec![]).attrs,
+        ),
     ] {
         for operand_count in 0..=4 {
             for result_count in 0..=3 {
@@ -675,14 +681,7 @@ fn malformed_producers_never_seed_rewrite_or_fold_downstream_control() {
                 producer.opcode = opcode;
                 producer.operands = vec![ValueId(0); operand_count];
                 producer.results = (20..20 + result_count).map(ValueId).collect();
-                producer.attrs = match opcode {
-                    OpCode::ConstBool => make_const_bool(20, true).attrs,
-                    OpCode::ConstFloat => make_const_float(20, 1.0).attrs,
-                    OpCode::ConstStr => make_const_str(20, "value").attrs,
-                    OpCode::CallBuiltin => make_call_builtin(20, "len", vec![]).attrs,
-                    OpCode::CallMethod => make_call_method(20, "upper", vec![]).attrs,
-                    _ => producer.attrs,
-                };
+                producer.attrs = attrs.clone();
                 if admits_constant_result(&producer) {
                     continue;
                 }

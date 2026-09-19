@@ -13,6 +13,9 @@ use crate::tir::dominators::{
     is_exception_transfer_edge,
 };
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    BoxedAllocationLayoutRule, opcode_boxed_allocation_layout_rule_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult, MemRegion};
 use crate::tir::passes::value_range::ValueRange;
@@ -72,11 +75,12 @@ impl FixedLayoutAllocation {
 /// missing singleton. Both are release-neutral, but only the latter is empty.
 pub fn boxed_allocation_layout(op: &TirOp) -> Option<FixedLayoutAllocation> {
     let word = std::mem::size_of::<u64>() as i64;
-    let (operand_count, reserved_tail_bytes, initial_value) = match op.opcode {
-        OpCode::Alloc => (0, 0, OldSlotValue::BoxedNeutral),
-        OpCode::ObjectNewBound => (1, word, OldSlotValue::FreshEmpty),
-        _ => return None,
-    };
+    let (operand_count, reserved_tail_bytes, initial_value) =
+        match opcode_boxed_allocation_layout_rule_table(op.opcode) {
+            BoxedAllocationLayoutRule::RawZeroed => (0, 0, OldSlotValue::BoxedNeutral),
+            BoxedAllocationLayoutRule::ClassMissing => (1, word, OldSlotValue::FreshEmpty),
+            BoxedAllocationLayoutRule::None => return None,
+        };
     let Some(AttrValue::Int(payload_bytes)) = op.attrs.get("value") else {
         return None;
     };

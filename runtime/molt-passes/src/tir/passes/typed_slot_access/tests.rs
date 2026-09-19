@@ -73,6 +73,29 @@ fn allocation_shape_and_payload_are_required() {
 }
 
 #[test]
+fn fixed_layout_admission_covers_the_entire_opcode_and_operand_domain() {
+    use crate::tir::op_kinds_generated::ALL_OPCODES;
+
+    for &opcode in ALL_OPCODES {
+        for operand_count in 0..=3 {
+            for result_count in 0..=2 {
+                let mut op = allocation(opcode, 24);
+                op.operands = vec![ValueId(0); operand_count];
+                op.results = (1..=result_count).map(ValueId).collect();
+                let expected = result_count == 1
+                    && ((opcode == OpCode::Alloc && operand_count == 0)
+                        || (opcode == OpCode::ObjectNewBound && operand_count == 1));
+                assert_eq!(
+                    boxed_allocation_layout(&op).is_some(),
+                    expected,
+                    "{opcode:?}/{operand_count}/{result_count}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn initialization_and_replacement_modes_preserve_incoming_heap_ownership() {
     for old_value in [OldSlotValue::FreshEmpty, OldSlotValue::BoxedNeutral] {
         for incoming_boxed_neutral in [false, true] {

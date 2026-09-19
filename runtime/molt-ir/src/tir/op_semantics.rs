@@ -328,28 +328,19 @@ mod tests {
                 for depth_left in 0..=2 {
                     for depth_right in 0..=2 {
                         let operands = [boxed(left, depth_left), boxed(right, depth_right)];
-                        for opcode in [
-                            OpCode::Add,
-                            OpCode::Sub,
-                            OpCode::Mul,
-                            OpCode::InplaceAdd,
-                            OpCode::InplaceSub,
-                            OpCode::InplaceMul,
-                            OpCode::Div,
-                            OpCode::FloorDiv,
-                            OpCode::Mod,
-                            OpCode::Pow,
+                        for (opcode, expected_result, value_dependent) in [
+                            (OpCode::Add, Some(result.clone()), false),
+                            (OpCode::Sub, Some(result.clone()), false),
+                            (OpCode::Mul, Some(result.clone()), false),
+                            (OpCode::InplaceAdd, Some(result.clone()), false),
+                            (OpCode::InplaceSub, Some(result.clone()), false),
+                            (OpCode::InplaceMul, Some(result.clone()), false),
+                            (OpCode::Div, Some(TirType::F64), true),
+                            (OpCode::FloorDiv, Some(result.clone()), true),
+                            (OpCode::Mod, Some(result.clone()), true),
+                            (OpCode::Pow, None, true),
                         ] {
                             let facts = op_instance_facts(opcode, &operands).unwrap();
-                            let value_dependent = matches!(
-                                opcode,
-                                OpCode::Div | OpCode::FloorDiv | OpCode::Mod | OpCode::Pow
-                            );
-                            let expected_result = match opcode {
-                                OpCode::Div => Some(TirType::F64),
-                                OpCode::Pow => None,
-                                _ => Some(result.clone()),
-                            };
                             assert_eq!(
                                 facts.result_type, expected_result,
                                 "{opcode:?} {operands:?}"

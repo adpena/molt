@@ -5,7 +5,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -131,22 +130,13 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 }
             }
         }
-        match &block.terminator {
-            Terminator::Return { values } => {
-                for value in values {
-                    if let Some(state) = escapes.get_mut(value) {
-                        *state = EscapeState::GlobalEscape;
-                    }
-                }
+        // Returned values escape; a tracked heap condition can dispatch Python.
+        // Edge arguments remain governed by value_flows, not this direct-use rule.
+        block.terminator.for_each_direct_value(|value| {
+            if let Some(state) = escapes.get_mut(&value) {
+                *state = EscapeState::GlobalEscape;
             }
-            Terminator::CondBranch { cond, .. } | Terminator::Switch { value: cond, .. } => {
-                // A tracked heap object is not an exact machine condition.
-                if let Some(state) = escapes.get_mut(cond) {
-                    *state = EscapeState::GlobalEscape;
-                }
-            }
-            _ => {}
-        }
+        });
     }
     retained.extend(flows.iter().map(|flow| (flow.target, flow.source)));
     // Escape is an object obligation, not a use-site property: if any alias
