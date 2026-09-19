@@ -48,6 +48,13 @@ Unknown kinds are silently skipped for forward compatibility.
 | `functions` | `FunctionIR[]`    | yes      | Ordered list of function definitions |
 | `profile`   | `PgoProfileIR?`   | no       | Optional PGO profile data            |
 
+The first function is the program entry root for shared dead-function elimination.
+Additional runtime/linker roots come from the existing module registry and
+runtime-entrypoint policy. Reordering functions can change entry identity;
+producers must preserve the intended root.
+Shared profile-guided ordering keeps that first function fixed and stably orders
+only the remaining functions; hotness cannot replace semantic entry identity.
+
 ### PgoProfileIR
 
 | Field           | Type       | Required | Description                     |

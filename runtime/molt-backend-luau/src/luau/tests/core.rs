@@ -846,6 +846,7 @@ fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
     assert!(!source.contains("molt_call_checked(func, indirect_builder)"));
     assert!(source.contains("molt_call_checked = function"));
     assert!(source.contains("local function molt_callargs_expand_kwstar"));
+    assert!(!source.contains("local function molt_function_init_metadata_packed"));
     assert!(!source.contains("local function molt_equal"));
     assert!(!source.contains("molt_function_params"));
     assert!(source.contains(
@@ -858,10 +859,51 @@ fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
 }
 
 #[test]
+fn function_value_runtime_helper_selects_its_complete_helper_group() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            ops: vec![
+                OpIR {
+                    kind: "const_str".to_string(),
+                    s_value: Some("A".to_string()),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("molt_ord".to_string()),
+                    args: Some(vec!["value".to_string()]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("function-value helper dependencies must pass checked Luau admission");
+    assert!(source.contains("local result = molt_call_checked(molt_ord, value)"));
+    assert!(source.contains("local function molt_ord(ch: any): number"));
+    assert!(source.contains("local function molt_str_codepoint_len(s: string): number"));
+}
+
+#[test]
 fn callable_and_frame_runtime_fragments_pass_shared_source_validation() {
     for (name, source) in [
         ("frames", frame_runtime::FRAME_RUNTIME),
         ("callable frames", frame_runtime::CALLABLE_FRAME_RUNTIME),
+        (
+            "callable metadata",
+            frame_runtime::CALLABLE_METADATA_RUNTIME,
+        ),
         ("call arguments", dict_runtime::CALLARGS_RUNTIME),
     ] {
         validate_luau_source(source)
@@ -1354,6 +1396,17 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
             ..OpIR::default()
         },
         OpIR {
+            kind: "call".to_string(),
+            s_value: Some("molt_function_set_defaults".to_string()),
+            args: Some(vec![
+                "function_value".to_string(),
+                "defaults".to_string(),
+                "kwdefaults".to_string(),
+            ]),
+            out: Some("defaults_set".to_string()),
+            ..OpIR::default()
+        },
+        OpIR {
             kind: "ret_void".to_string(),
             ..OpIR::default()
         },
@@ -1388,6 +1441,9 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         ),
         "packed metadata call must remain reachable:\n{source}"
     );
+    assert!(source.contains(
+        "molt_call_checked(molt_function_set_defaults, function_value, defaults, kwdefaults)"
+    ));
     assert!(source.contains("local code = {__molt_code=true"));
     assert!(source.contains("molt_code_slots[3] = molt_frame_bind_code(3, code, globals)"));
     assert!(source.contains("local function_value = molt_frame_function_new(target)"));
@@ -2465,13 +2521,18 @@ run_authority_oracle()
     let runtime_bytes = dict_runtime::DICT_CORE_RUNTIME.len()
         + dict_runtime::CALLARGS_RUNTIME.len()
         + dict_runtime::EQUALITY_REPR_RUNTIME.len();
+    let callable_metadata_bytes = frame_runtime::CALLABLE_METADATA_RUNTIME.len();
     let prelude_bytes = include_str!("../../luau_json_prelude.luau").len();
     assert!(
         runtime_bytes < 43_000,
         "Luau container/call runtime grew to {runtime_bytes} bytes"
     );
+    assert!(
+        callable_metadata_bytes < 5_000,
+        "Luau callable metadata runtime grew to {callable_metadata_bytes} bytes"
+    );
     eprintln!(
-        "luau-source-size runtime_bytes={runtime_bytes} prelude_bytes={prelude_bytes} oracle_bytes={}",
+        "luau-source-size runtime_bytes={runtime_bytes} callable_metadata_bytes={callable_metadata_bytes} prelude_bytes={prelude_bytes} oracle_bytes={}",
         source.len()
     );
     let output = execute_lune_oracle("ordered_dict", &source);

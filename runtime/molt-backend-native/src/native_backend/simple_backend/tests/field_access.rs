@@ -2,25 +2,8 @@
 use super::*;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{Function, Inst, InstructionData, Opcode, ValueDef};
+use cranelift_codegen::ir::{Function, InstructionData, Opcode};
 use std::collections::HashSet;
-
-fn definition(func: &Function, value: Value) -> Option<Inst> {
-    match func.dfg.value_def(func.dfg.resolve_aliases(value)) {
-        ValueDef::Result(inst, _) => Some(inst),
-        ValueDef::Param(_, _) | ValueDef::Union(_, _) => None,
-    }
-}
-
-fn constant(func: &Function, value: Value) -> Option<i64> {
-    match func.dfg.insts[definition(func, value)?] {
-        InstructionData::UnaryImm {
-            opcode: Opcode::Iconst,
-            imm,
-        } => Some(imm.bits()),
-        _ => None,
-    }
-}
 
 fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
     let inst = definition(func, value)?;
@@ -33,28 +16,6 @@ fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
     if constant(func, *left) == Some(mask) {
         Some(*right)
     } else if constant(func, *right) == Some(mask) {
-        Some(*left)
-    } else {
-        None
-    }
-}
-
-fn comparison_operand(
-    func: &Function,
-    condition: Value,
-    code: IntCC,
-    immediate: i64,
-) -> Option<Value> {
-    let inst = definition(func, condition)?;
-    if func.dfg.insts[inst].cond_code() != Some(code) {
-        return None;
-    }
-    let [left, right] = func.dfg.inst_args(inst) else {
-        return None;
-    };
-    if constant(func, *left) == Some(immediate) {
-        Some(*right)
-    } else if constant(func, *right) == Some(immediate) {
         Some(*left)
     } else {
         None

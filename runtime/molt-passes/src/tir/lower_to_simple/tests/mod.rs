@@ -38,6 +38,7 @@ pub(super) fn add_function() -> TirFunction {
 
 mod basic_roundtrip;
 mod bool_ops;
+mod entry_transport;
 mod loop_guards;
 mod naming_metadata;
 mod object_calls;

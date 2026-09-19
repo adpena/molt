@@ -86,6 +86,15 @@ coroutine capabilities; unsupported domains remain explicit admission failures.
 The current Rust target policy also gates unstructured control and truthiness;
 internal executable-emission tests do not confer checked-target support.
 
+Shared TIR-to-SimpleIR lowering owns block-argument transport for every target.
+Function invocation seeds entry join slots once, before the entry label; a
+backedge to entry reloads its supplied arguments without rerunning that prologue.
+Explicit and structured branches use the same edge stores and block-entry loads,
+including inlined arms and loop headers. Invocation is an external predecessor,
+so structural inlining cannot consume the entry block. Missing edge operands or
+labels fail at this shared boundary instead of borrowing a lexical value or
+emitting a backend-specific fallthrough.
+
 Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow
 and SSA construction. Source-ordered SimpleIR motion cannot prove dominance of
 resumption edges into a loop and must not run before that analysis. Native,

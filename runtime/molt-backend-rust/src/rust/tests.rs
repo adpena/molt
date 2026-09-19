@@ -1159,6 +1159,58 @@ fn compile_checked_rejects_unrepresented_literal_values() {
 }
 
 #[test]
+fn local_copy_sources_follow_canonical_field_roles() {
+    for kind in ["load_local", "load_var", "copy_var"] {
+        for args in [None, Some(vec![])] {
+            let mut backend = RustBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args,
+                var: Some("source".to_string()),
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.unsupported_ops.is_empty());
+            assert!(
+                backend
+                    .output
+                    .contains("result: MoltValue = source.clone();")
+            );
+        }
+    }
+    for kind in ["load_var", "copy_var"] {
+        for metadata in [None, Some("unread_metadata".to_string())] {
+            let mut backend = RustBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args: Some(vec!["source".to_string()]),
+                var: metadata,
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.unsupported_ops.is_empty());
+            assert!(
+                backend
+                    .output
+                    .contains("result: MoltValue = source.clone();")
+            );
+            assert!(!backend.output.contains("unread_metadata"));
+        }
+        for args in [None, Some(vec!["first".to_string(), "second".to_string()])] {
+            let mut backend = RustBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args,
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.output.is_empty());
+            assert!(backend.unsupported_ops[0].contains("exactly one source operand"));
+        }
+    }
+}
+
+#[test]
 fn compile_store_var_and_load_var_use_named_local_storage() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
