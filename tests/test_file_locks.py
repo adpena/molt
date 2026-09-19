@@ -174,8 +174,10 @@ def test_file_lock_and_proof_cache_imports_do_not_load_cli_or_frontend():
             "-c",
             "import sys; from molt import file_locks; "
             "from tools.proof_queue_pkg import cargo_cache_custody; "
-            "assert not any(name == 'molt.cli' or name.startswith('molt.frontend') "
-            "for name in sys.modules), sorted(sys.modules)",
+            "leaked = sorted(name for name in sys.modules "
+            "if name == 'molt.cli' or name.startswith('molt.frontend')); "
+            "assert not leaked, "
+            "f'proof-cache import loaded {len(leaked)} CLI/frontend modules: {leaked[:12]}'",
         ],
         check=False,
         capture_output=True,

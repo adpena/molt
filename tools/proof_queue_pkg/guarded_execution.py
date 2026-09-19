@@ -416,6 +416,10 @@ def execute_guarded_request(request_path: Path) -> int:
                     admission._REPO_ROOT
                     / "src"
                     / "molt"
+                    / "source_extension_link_inputs.py",
+                    admission._REPO_ROOT
+                    / "src"
+                    / "molt"
                     / "cli"
                     / "source_extension_link_inputs.py",
                     admission._REPO_ROOT

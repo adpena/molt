@@ -12,7 +12,6 @@ from molt.cli.source_extension_compiler_inputs import (
     validate_source_extension_compiler_command,
 )
 from molt.cli.source_extension_language import SourceExtensionLanguage
-from molt.cli.source_extension_link_inputs import validate_source_extension_link_inputs
 from molt.cli.source_extension_set_validation_target import (
     _source_extension_tool_role_contract,
 )
@@ -24,6 +23,7 @@ from molt.cli.source_extension_target import (
 from molt.cli.source_extension_toolchain import _resolve_source_extension_toolchain
 from molt.dx import _reject_onedrive
 from molt.exact_json import canonical_json_sha256
+from molt.source_extension_link_inputs import validate_source_extension_link_inputs
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,

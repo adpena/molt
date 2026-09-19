@@ -86,6 +86,7 @@
     "tools/proof_queue_pkg/python_child_custody.py",
     "tools/proof_queue_pkg/python_custody_bootstrap.py",
     "tools/proof_queue_pkg/target_derived_toolchains.py",
+    "src/molt/source_extension_link_inputs.py",
     "src/molt/cli/source_extension_invocation.py",
     "src/molt/cli/source_extension_compiler_inputs.py",
     "src/molt/cli/source_extension_link_inputs.py",
@@ -173,7 +174,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b6de812cc01be195b81a43a2e0068023e67da147607691f13342dbea0c4bc806",
+  "authority_sha256": "9b292995ad45519bde6550d9cba74b5847ce972f845421b47e7e73104ff249e2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -573,6 +574,7 @@
         "tests/test_python_native_dependency_custody.py",
         "tests/test_python_native_locations.py",
         "tests/test_python_runtime_identity.py",
+        "src/molt/source_extension_link_inputs.py",
         "src/molt/cli/source_extension_*.py",
         "src/molt/cli/source_extensions.py",
         "src/molt/cli/entrypoint_dispatch.py",
@@ -4835,6 +4837,7 @@
           "src/molt/cli/native_link_command.py",
           "src/molt/cli/native_link_plan.py",
           "src/molt/cli/python_module_names.py",
+          "src/molt/source_extension_link_inputs.py",
           "src/molt/cli/source_extension_*.py",
           "src/molt/cli/source_extensions.py",
           "tools/native_link_benchmark.py",
