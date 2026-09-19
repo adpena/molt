@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the IR structure verifier across a suite of Python source files.
 
-Compiler workers emit TIR JSON while the supervisor owns one long-lived Rust
-verifier process for structural validation.
+Compiler workers emit frontend assembly IR. The supervisor validates and projects
+its envelope before structural validation by one long-lived strict Rust verifier.
 
 Usage:
     python tools/verify_ir_suite.py [--dir DIR] [--glob PATTERN] [--fail-fast] [--quiet]
@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.artifact_publish import atomic_write_json  # noqa: E402
-from tools.check_ir_structure import verify_tir  # noqa: E402
+from tools.check_ir_structure import verify_frontend_tir  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 from tools.resource_pressure import plan_resource_pressure  # noqa: E402
 from tools.rust_ir_verifier import (  # noqa: E402
@@ -236,7 +236,7 @@ def _finalize_compiled_result(
         )
         return result
     try:
-        verification = verify_tir(
+        verification = verify_frontend_tir(
             tir,
             request_id=request_id,
             timeout_seconds=remaining_seconds,

@@ -76,13 +76,50 @@ class C:
     captured: value
 """
     )
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors
     functions = {function["name"]: function for function in ir["functions"]}
     annotate_name = next(name for name in functions if "__annotate__" in name)
     annotate_ops = functions[annotate_name]["ops"]
     main_ops = functions["molt_main"]["ops"]
 
-    assert any(op.get("kind") == "call_indirect" for op in annotate_ops)
-    assert any(op.get("s_value") == "marker" for op in annotate_ops)
+    child_defs = {op["out"]: op for op in annotate_ops if "out" in op}
+    (namespace_lookup,) = [
+        op
+        for op in annotate_ops
+        if op.get("s_value") == "molt_namespace_get"
+        and child_defs[op["args"][1]].get("s_value") == "marker"
+    ]
+    (global_lookup,) = [
+        op
+        for op in annotate_ops
+        if op["kind"] == "module_get_global"
+        and child_defs[op["args"][1]].get("s_value") == "marker"
+    ]
+
+    def identity_source(value):
+        while child_defs[value]["kind"] in {"identity_alias", "binding_alias"}:
+            value = child_defs[value]["args"][0]
+        return value
+
+    (callee,) = [
+        op
+        for op in annotate_ops
+        if op["kind"] == "phi"
+        and [identity_source(value) for value in op["args"]]
+        == [global_lookup["out"], namespace_lookup["out"]]
+    ]
+    (marker_call,) = [
+        op
+        for op in annotate_ops
+        if op["kind"] == "call_func" and op["args"] == [callee["out"]]
+    ]
+    assert any(
+        op["kind"] == "store_index"
+        and child_defs[op["args"][1]].get("s_value") == "observed"
+        and op["args"][2] == marker_call["out"]
+        for op in annotate_ops
+    )
     assert not any(op.get("s_value") == "marker" for op in main_ops)
 
     class_def = next(op for op in main_ops if op.get("kind") == "class_def")
@@ -107,25 +144,38 @@ class C:
         if op.get("kind") == "func_new_closure" and op.get("s_value") == annotate_name
     )
     captures = definitions[constructor["args"][0]]["args"]
-    execution_maps = [
-        name for name in captures if definitions[name]["kind"] == "dict_new"
-    ]
-    assert len(execution_maps) == 1
-    execution_map = execution_maps[0]
+    assert any(
+        class_arg_values.get(value) == "__annotate__"
+        and class_def["args"][index + 1] == constructor["out"]
+        for index, value in enumerate(class_def["args"][:-1])
+    )
+    reads = [op for op in annotate_ops if op.get("kind") == "dict_get"]
+    assert len(reads) == 2
+    assert len({read["args"][0] for read in reads}) == 1
+    loaded_map = child_defs[reads[0]["args"][0]]
+    assert loaded_map["kind"] == "call" and loaded_map["s_value"] == "molt_cell_get"
+    (loaded_cell_name,) = loaded_map["args"]
+    capture = child_defs[loaded_cell_name]
+    assert capture["kind"] == "index" and capture["args"][0] == "__molt_closure__"
+    capture_slot = child_defs[capture["args"][1]]["value"]
+    execution_cell = definitions[captures[capture_slot]]
+    assert execution_cell["kind"] == "call"
+    assert execution_cell["s_value"] == "molt_cell_new"
+    (execution_map,) = execution_cell["args"]
+    assert definitions[execution_map]["kind"] == "dict_new"
     marks = [
         op
         for op in main_ops
         if op.get("kind") == "store_index" and op["args"][0] == execution_map
     ]
     assert len(marks) == 2
-    child_defs = {op["out"]: op for op in annotate_ops if "out" in op}
-    reads = [op for op in annotate_ops if op.get("kind") == "dict_get"]
-    assert len(reads) == 2
-    for read in reads:
-        capture = child_defs[read["args"][0]]
-        assert capture["kind"] == "index"
-        assert capture["args"][0] == "__molt_closure__"
-        assert child_defs[capture["args"][1]]["value"] == captures.index(execution_map)
+    assert (
+        {definitions[mark["args"][1]]["value"] for mark in marks}
+        == {child_defs[read["args"][1]]["value"] for read in reads}
+        == {0, 1}
+    )
+    assert all(definitions[mark["args"][2]].get("value") is True for mark in marks)
+    assert not any(execution_map == value for value in captures)
 
 
 def test_python_314_module_annotation_execution_state_is_globally_resolvable() -> None:

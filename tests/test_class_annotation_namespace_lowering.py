@@ -122,24 +122,78 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
         and "__annotate__" in op.get("s_value", "")
     )
     captures = definitions[constructor["args"][0]]["args"]
-    execution_maps = [
-        name for name in captures if definitions[name]["kind"] == "dict_new"
-    ]
-    assert len(execution_maps) == 1
-    execution_map = execution_maps[0]
+    evaluator = next(
+        fn for fn in ir["functions"] if fn["name"] == constructor["s_value"]
+    )
+    evaluator_ops = evaluator["ops"]
+    evaluator_defs = {op["out"]: op for op in evaluator_ops if "out" in op}
+    reads = [op for op in evaluator_ops if op["kind"] == "dict_get"]
+    assert len(reads) == 2
+    assert len({read["args"][0] for read in reads}) == 1
+    loaded_map = evaluator_defs[reads[0]["args"][0]]
+    assert loaded_map["kind"] == "call"
+    assert loaded_map["s_value"] == "molt_cell_get"
+    (loaded_cell_name,) = loaded_map["args"]
+
+    def enclosing_cell(cell_name):
+        extraction = evaluator_defs[cell_name]
+        assert extraction["kind"] == "index"
+        assert extraction["args"][0] == "__molt_closure__"
+        slot = evaluator_defs[extraction["args"][1]]
+        assert slot["kind"] == "const"
+        return captures[slot["value"]]
+
+    execution_cell = definitions[enclosing_cell(loaded_cell_name)]
+    assert execution_cell["kind"] == "call"
+    assert execution_cell["s_value"] == "molt_cell_new"
+    (execution_map,) = execution_cell["args"]
+    assert definitions[execution_map]["kind"] == "dict_new"
     assert outer.index(definitions[execution_map]) < next(
         index for index, op in enumerate(outer) if op.get("kind") == "if"
     )
+    marks = [
+        op
+        for op in outer
+        if op.get("kind") == "store_index" and op["args"][0] == execution_map
+    ]
+    assert len(marks) == 2
     assert (
-        len(
-            [
-                op
-                for op in outer
-                if op.get("kind") == "store_index" and op["args"][0] == execution_map
-            ]
-        )
-        == 2
+        {definitions[mark["args"][1]]["value"] for mark in marks}
+        == {evaluator_defs[read["args"][1]]["value"] for read in reads}
+        == {0, 1}
     )
+    assert all(definitions[mark["args"][2]].get("value") is True for mark in marks)
+
+    # Both conditional lambda bodies receive the same enclosing value cell;
+    # neither captures a snapshot nor a cell manufactured in a sibling branch.
+    lambdas = [
+        op
+        for op in evaluator_ops
+        if op["kind"] == "func_new_closure" and "lambda" in op["s_value"]
+    ]
+    assert len(lambdas) == 2
+    lexical_cells = []
+    for lambda_constructor in lambdas:
+        closure = evaluator_defs[lambda_constructor["args"][0]]
+        assert closure["kind"] == "tuple_new"
+        (cell_name,) = closure["args"]
+        lexical_cells.append(enclosing_cell(cell_name))
+    assert lexical_cells[0] == lexical_cells[1]
+    value_cell = definitions[lexical_cells[0]]
+    assert value_cell["kind"] == "call" and value_cell["s_value"] == "molt_cell_new"
+
+    def initial_value(value):
+        while definitions[value]["kind"] in {"binding_alias", "identity_alias"}:
+            value = definitions[value]["args"][0]
+        return definitions[value]
+
+    cell_values = [*value_cell["args"]]
+    cell_values.extend(
+        op["args"][1]
+        for op in outer
+        if op.get("s_value") == "molt_cell_set" and op["args"][0] == lexical_cells[0]
+    )
+    assert any(initial_value(value).get("s_value") == "outer" for value in cell_values)
     assert not any(
         str(op.get("s_value", "")).startswith("__molt_annotations_exec_")
         for op in outer

@@ -97,6 +97,9 @@ only executable SimpleIR and retains strict Rust decoding.
 `verify_frontend_tir` validates and projects a copy of frontend assembly IR
 through the shared envelope authority before invoking the same Rust verifier.
 It does not mutate cached frontend input or relax executable transport rules.
+Source-corpus verification (`tools/verify_ir_suite.py`, including nightly and
+portability runs) uses that same explicit frontend adapter. Diagnostic filters
+must not turn invalid transport into a successful structural check.
 
 ---
 
