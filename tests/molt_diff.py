@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -61,6 +61,7 @@ from tools.compat import comparison as compat_comparison  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
+_FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
@@ -517,8 +518,10 @@ def _record_diff_result(record: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
-    except OSError:
-        pass
+    except OSError as exc:
+        raise RuntimeError(
+            f"differential result receipt write failed at {path}: {exc}"
+        ) from exc
 
 
 def _diff_tmp_root() -> Path:
@@ -1590,15 +1593,6 @@ def _diff_build_profile() -> str:
     if raw in {"dev", "release"}:
         return raw
     return "dev"
-
-
-def _diff_stdlib_profile(env: dict[str, str]) -> tuple[str | None, str | None]:
-    raw = env.get("MOLT_DIFF_STDLIB_PROFILE", "").strip().lower()
-    if not raw:
-        return None, None
-    if raw not in {"micro", "full"}:
-        return None, "MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'"
-    return raw, None
 
 
 def _diff_prune_every() -> int:
@@ -2679,12 +2673,12 @@ def _batch_compile_server_client(
     env: dict[str, str],
     *,
     request_timeout: float,
-) -> tuple[_BatchCompileServerClient | None, str | None]:
+) -> tuple[_BatchCompileServerClient | None, Exception | None]:
     global _BATCH_COMPILE_SERVER_CLIENT
     global _BATCH_COMPILE_SERVER_CLIENT_PID
     disabled_message = _batch_compile_server_disabled_message()
     if disabled_message is not None:
-        return None, disabled_message
+        return None, RuntimeError(disabled_message)
     pid = os.getpid()
     if _BATCH_COMPILE_SERVER_CLIENT_PID != pid:
         _shutdown_batch_compile_server(force=True)
@@ -2704,7 +2698,7 @@ def _batch_compile_server_client(
             with contextlib.suppress(Exception):
                 client.close(force=True)
         _batch_compile_server_mark_disabled(str(exc))
-        return None, str(exc)
+        return None, exc
     _batch_compile_server_reset_disabled()
     _BATCH_COMPILE_SERVER_CLIENT = client
     _BATCH_COMPILE_SERVER_CLIENT_PID = pid
@@ -2725,11 +2719,12 @@ def _run_batch_compile_build(
     request_timeout: float,
     strict_mode: bool,
     extra_params: dict[str, object] | None = None,
-) -> tuple[int, str, str, str | None]:
+) -> compat_backends.BackendResult:
     diff_caps = _diff_capabilities(env)
-    stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
-    if stdlib_profile_error is not None:
-        return 2, "", stdlib_profile_error, None
+    try:
+        stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
+    except ValueError as exc:
+        return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
     params: dict[str, object] = {
         "file_path": file_path,
         "profile": build_profile,
@@ -2751,7 +2746,7 @@ def _run_batch_compile_build(
     if extra_params:
         params.update(extra_params)
     attempts = 2 if strict_mode else 1
-    last_error = "batch compile server request failed"
+    last_error: Exception = RuntimeError("batch compile server request failed")
     for attempt in range(attempts):
         if strict_mode and attempt > 0:
             _batch_compile_server_reset_disabled()
@@ -2760,11 +2755,17 @@ def _run_batch_compile_build(
             request_timeout=request_timeout,
         )
         if client is None:
-            if start_error:
+            if start_error is not None:
                 last_error = start_error
+            if isinstance(last_error, TimeoutError):
+                return compat_backends.BackendResult.from_deadline(
+                    timeout=request_timeout,
+                    stderr=str(last_error),
+                    build_failed=True,
+                )
             if strict_mode and attempt + 1 < attempts:
                 continue
-            return 0, "", "", last_error
+            raise last_error
         try:
             response = client.request(
                 "build",
@@ -2772,12 +2773,18 @@ def _run_batch_compile_build(
                 timeout=request_timeout,
             )
         except Exception as exc:
-            last_error = str(exc)
-            _batch_compile_server_mark_disabled(last_error)
+            last_error = exc
+            _batch_compile_server_mark_disabled(str(last_error))
             _shutdown_batch_compile_server(force=True)
+            if isinstance(exc, TimeoutError):
+                return compat_backends.BackendResult.from_deadline(
+                    timeout=request_timeout,
+                    stderr=str(exc),
+                    build_failed=True,
+                )
             if strict_mode and attempt + 1 < attempts:
                 continue
-            return 0, "", "", last_error
+            raise last_error
         stdout = response.get("stdout")
         stderr = response.get("stderr")
         error = response.get("error")
@@ -2792,11 +2799,17 @@ def _run_batch_compile_build(
             else:
                 err_text = error
         _batch_compile_server_reset_disabled()
-        return returncode, out_text, err_text, None
-    return 0, "", "", last_error
+        result = compat_backends.BackendResult(out_text, err_text, returncode)
+        if returncode != 0:
+            return result.as_build_failure(
+                detail="batch compile failed",
+                fallback="batch compile failed",
+            )
+        return result
+    raise last_error
 
 
-def run_cpython(file_path, python_exe=sys.executable):
+def run_cpython(file_path, python_exe=sys.executable) -> compat_backends.BackendResult:
     python_command = _resolve_python_command(python_exe)
     _apply_memory_limit()
     env = os.environ.copy()
@@ -2980,9 +2993,11 @@ _molt_diff_execute_script()
             env=env,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        return "", f"Timeout after {timeout}s", 124
-    return result.stdout, result.stderr, result.returncode
+    except subprocess.TimeoutExpired as exc:
+        return compat_backends.BackendResult.from_timeout(exc)
+    return compat_backends.BackendResult(
+        result.stdout, result.stderr, result.returncode
+    )
 
 
 def run_molt(
@@ -2994,7 +3009,7 @@ def run_molt(
     rebuild: bool = False,
     extra_env: dict[str, str] | None = None,
     execution_context: compat_backends.BackendExecutionContext | None = None,
-):
+) -> compat_backends.BackendResult:
     return _run_molt(
         file_path,
         build_only=False,
@@ -3016,7 +3031,7 @@ def run_molt_build_only(
     rebuild: bool = False,
     extra_env: dict[str, str] | None = None,
     execution_context: compat_backends.BackendExecutionContext | None = None,
-) -> tuple[str, str, int]:
+) -> compat_backends.BackendResult:
     return _run_molt(
         file_path,
         build_only=True,
@@ -3039,7 +3054,7 @@ def _run_molt(
     rebuild: bool,
     extra_env: dict[str, str] | None,
     execution_context: compat_backends.BackendExecutionContext | None,
-) -> tuple[str | None, str, int]:
+) -> compat_backends.BackendResult:
     _apply_memory_limit()
     output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
     tmp_root = output_root / "tmp"
@@ -3115,7 +3130,9 @@ def _run_molt(
                 run_rc=None,
                 status="build_invalid_stdlib_profile",
             )
-            return None, metadata_error, 2
+            return compat_backends.BackendResult(
+                None, metadata_error, 2, build_failed=True
+            )
     if extra_env:
         env.update(extra_env)
     if daemon_enabled is None:
@@ -3126,8 +3143,14 @@ def _run_molt(
     if _diff_force_rebuild():
         rebuild = True
     env.setdefault("MOLT_SYS_EXECUTABLE", sys.executable)
-    stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
-    if stdlib_profile_error is not None:
+    try:
+        stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
+        if (
+            execution_context is not None
+            and stdlib_profile != execution_context.stdlib_profile
+        ):
+            raise ValueError("backend execution context stdlib profile drifted")
+    except ValueError as exc:
         _record_rss_metrics(
             file_path,
             build_metrics=None,
@@ -3136,7 +3159,7 @@ def _run_molt(
             run_rc=None,
             status="build_invalid_stdlib_profile",
         )
-        return None, stdlib_profile_error, 2
+        return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
     ver = sys.version_info
     env.setdefault(
         "MOLT_SYS_VERSION_INFO",
@@ -3157,45 +3180,56 @@ def _run_molt(
             build_timeout
         )
         if batch_requested:
-            (
-                build_rc,
-                build_stdout,
-                build_stderr,
-                batch_error,
-            ) = _run_batch_compile_build(
-                env=env,
-                file_path=file_path,
-                output_root=output_root,
-                output_binary=output_binary,
-                build_profile=build_profile,
-                target_python=(
-                    execution_context.target_python
-                    if execution_context is not None
-                    else None
-                ),
-                no_cache=no_cache,
-                rebuild=rebuild,
-                request_timeout=batch_request_timeout,
-                strict_mode=batch_strict,
-            )
-            if batch_error is None:
-                build_via_batch_server = True
-            elif batch_strict:
-                message = f"Batch compile server strict mode failed: {batch_error}"
-                _record_rss_metrics(
-                    file_path,
-                    build_metrics=None,
-                    run_metrics=None,
-                    build_rc=127,
-                    run_rc=None,
-                    status="build_batch_server_error",
+            try:
+                batch_result = _run_batch_compile_build(
+                    env=env,
+                    file_path=file_path,
+                    output_root=output_root,
+                    output_binary=output_binary,
+                    build_profile=build_profile,
+                    target_python=(
+                        execution_context.target_python
+                        if execution_context is not None
+                        else None
+                    ),
+                    no_cache=no_cache,
+                    rebuild=rebuild,
+                    request_timeout=batch_request_timeout,
+                    strict_mode=batch_strict,
                 )
-                return None, message, 127
-            else:
+            except Exception as exc:
+                if batch_strict:
+                    message = f"Batch compile server strict mode failed: {exc}"
+                    _record_rss_metrics(
+                        file_path,
+                        build_metrics=None,
+                        run_metrics=None,
+                        build_rc=127,
+                        run_rc=None,
+                        status="build_batch_server_error",
+                    )
+                    return compat_backends.BackendResult(
+                        None, message, 127, build_failed=True
+                    )
                 print(
                     "[WARN] Batch compile server unavailable; falling back to subprocess build: "
-                    f"{batch_error}"
+                    f"{exc}"
                 )
+            else:
+                if batch_result.timed_out:
+                    _record_rss_metrics(
+                        file_path,
+                        build_metrics=None,
+                        run_metrics=None,
+                        build_rc=batch_result.returncode,
+                        run_rc=None,
+                        status="build_timeout",
+                    )
+                    return batch_result
+                build_via_batch_server = True
+                build_rc = batch_result.returncode
+                build_stdout = batch_result.stdout or ""
+                build_stderr = batch_result.stderr
 
         build_cmd = [
             _resolve_molt_cli_python(),
@@ -3239,7 +3273,7 @@ def _run_molt(
                     timeout=build_timeout,
                     time_path=build_time_path,
                 )
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 build_metrics = (
                     _parse_time_metrics(build_time_path)
                     if build_time_path is not None
@@ -3253,7 +3287,9 @@ def _run_molt(
                     run_rc=None,
                     status="build_timeout",
                 )
-                return None, f"Timeout after {build_timeout}s", 124
+                return compat_backends.BackendResult.from_timeout(
+                    exc, build_failed=True
+                )
             if build_time_path is not None:
                 build_metrics = _parse_time_metrics(build_time_path)
             build_rc = build_res.returncode
@@ -3270,7 +3306,7 @@ def _run_molt(
                 run_rc=None,
                 status="build_rss_exceeded",
             )
-            return None, message, 125
+            return compat_backends.BackendResult(None, message, 125, build_failed=True)
         if build_rc != 0:
             _record_rss_metrics(
                 file_path,
@@ -3280,7 +3316,9 @@ def _run_molt(
                 run_rc=None,
                 status="build_failed",
             )
-            return None, build_stderr or build_stdout, build_rc
+            return compat_backends.BackendResult(
+                None, build_stderr or build_stdout, build_rc, build_failed=True
+            )
 
         preflight_err = _dyld_preflight_error(output_binary)
         if preflight_err is not None:
@@ -3292,7 +3330,9 @@ def _run_molt(
                 run_rc=None,
                 status="build_dyld_preflight_failed",
             )
-            return None, preflight_err, 126
+            return compat_backends.BackendResult(
+                None, preflight_err, 126, build_failed=True
+            )
 
         if build_only:
             _record_rss_metrics(
@@ -3303,7 +3343,7 @@ def _run_molt(
                 run_rc=None,
                 status="build_only_ok",
             )
-            return "", "", 0
+            return compat_backends.BackendResult("", "", 0)
 
         # Run
         try:
@@ -3313,7 +3353,7 @@ def _run_molt(
                 timeout=timeout,
                 time_path=run_time_path,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             run_metrics = (
                 _parse_time_metrics(run_time_path)
                 if run_time_path is not None
@@ -3327,7 +3367,7 @@ def _run_molt(
                 run_rc=124,
                 status="run_timeout",
             )
-            return "", f"Timeout after {timeout}s", 124
+            return compat_backends.BackendResult.from_timeout(exc)
         if run_time_path is not None:
             run_metrics = _parse_time_metrics(run_time_path)
         exceeded, detail = _rss_exceeded(run_metrics, rss_limit_kb)
@@ -3341,7 +3381,7 @@ def _run_molt(
                 run_rc=125,
                 status="run_rss_exceeded",
             )
-            return "", message, 125
+            return compat_backends.BackendResult("", message, 125)
         run_status = "ok" if run_res.returncode == 0 else "run_failed"
         _record_rss_metrics(
             file_path,
@@ -3351,7 +3391,9 @@ def _run_molt(
             run_rc=run_res.returncode,
             status=run_status,
         )
-        return run_res.stdout, run_res.stderr, run_res.returncode
+        return compat_backends.BackendResult(
+            run_res.stdout, run_res.stderr, run_res.returncode
+        )
     finally:
         if not _diff_keep_artifacts():
             shutil.rmtree(output_root, ignore_errors=True)
@@ -3385,6 +3427,8 @@ def _is_oom_error(stderr: str) -> bool:
 
 
 def _should_retry_oom(code: int | None, stderr: str) -> bool:
+    if code == 124:
+        return False
     return _is_oom_returncode(code) or _is_oom_error(stderr)
 
 
@@ -3698,32 +3742,6 @@ def _print_rss_top(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _BackendOutcome:
-    """One backend's outcome for a test: (stdout, stderr, return code)."""
-
-    stdout: str | None
-    stderr: str
-    returncode: int
-
-
-# Distinct sentinels the per-backend runner returns for the two early-exit
-# conditions that are not a normal outcome: an OOM (retry-or-abort, mirrors the
-# historical native behavior) and an unavailable toolchain (LOUD uncalibrated).
-class _Sentinel:
-    __slots__ = ("name",)
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<{self.name}>"
-
-
-_OOM_SENTINEL = _Sentinel("oom")
-_UNCALIBRATED_SENTINEL = _Sentinel("uncalibrated")
-
-
 def _is_compile_error(err: str) -> bool:
     return any(tag in err for tag in ("SyntaxError", "IndentationError", "TabError"))
 
@@ -3746,23 +3764,25 @@ def _compat_backend_registry() -> dict[str, compat_backends.BackendAdapter]:
 def _run_native_backend(
     file_path: str,
     context: compat_backends.BackendExecutionContext,
-) -> tuple[str | None, str, int]:
+) -> compat_backends.BackendResult:
     """Run the NATIVE backend with the full dyld/daemon/OOM retry pipeline.
 
     This is the native adapter's implementation and is kept native-specific because the
     daemon custody, dyld-quarantine, and isolated-retry machinery are all
-    native-shaped. Returns RAW (un-normalized) (stdout, stderr, rc); the caller
-    normalizes once for every backend. A timeout is not evidence of damaged cache
+    native-shaped. Returns the complete typed result; an intentional guest exit
+    code must never substitute for a resource-failure fact. A timeout is not evidence of damaged cache
     state: preserve its original result instead of allocating a colder target
     and hiding the critical-path failure behind another full build.
     """
-    molt_out, molt_err, molt_ret = run_molt(
+    outcome = run_molt(
         file_path,
         context.build_profile,
         execution_context=context,
     )
+    if outcome.timed_out:
+        return outcome
     saw_dyld_retry = False
-    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(molt_err):
+    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(outcome.stderr):
         _mark_dyld_guard(file_path)
         saw_dyld_retry = True
         print(
@@ -3770,35 +3790,37 @@ def _run_native_backend(
             f"{file_path} encountered dyld unknown imports format; "
             "retrying with backend daemon disabled (cache preserved)."
         )
-        retry_out, retry_err, retry_ret = run_molt(
+        outcome = run_molt(
             file_path,
             context.build_profile,
             daemon_enabled=False,
             no_cache=False,
             execution_context=context,
         )
-        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err):
+        if not outcome.timed_out and _is_dyld_unknown_imports(outcome.stderr):
             print(
                 "[RETRY] "
                 f"{file_path} persistent dyld failure; retrying with "
                 "daemon disabled and --no-cache on shared target."
             )
-            retry_out, retry_err, retry_ret = run_molt(
+            outcome = run_molt(
                 file_path,
                 context.build_profile,
                 daemon_enabled=False,
                 no_cache=True,
                 execution_context=context,
             )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err) and _diff_force_rebuild_on_dyld():
+        if (
+            not outcome.timed_out
+            and _is_dyld_unknown_imports(outcome.stderr)
+            and _diff_force_rebuild_on_dyld()
+        ):
             print(
                 "[RETRY] "
                 f"{file_path} persistent dyld failure; retrying with "
                 "daemon disabled, --no-cache, and --rebuild."
             )
-            retry_out, retry_err, retry_ret = run_molt(
+            outcome = run_molt(
                 file_path,
                 context.build_profile,
                 daemon_enabled=False,
@@ -3806,8 +3828,11 @@ def _run_native_backend(
                 rebuild=True,
                 execution_context=context,
             )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if _is_dyld_unknown_imports(molt_err) and _diff_retry_isolated_default():
+        if (
+            not outcome.timed_out
+            and _is_dyld_unknown_imports(outcome.stderr)
+            and _diff_retry_isolated_default()
+        ):
             use_local_retry = _diff_dyld_local_fallback()
             print(
                 "[RETRY] "
@@ -3816,7 +3841,7 @@ def _run_native_backend(
                 "target/build-state, daemon off, and --rebuild."
             )
             with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
-                retry_out, retry_err, retry_ret = run_molt(
+                outcome = run_molt(
                     file_path,
                     context.build_profile,
                     daemon_enabled=False,
@@ -3825,7 +3850,6 @@ def _run_native_backend(
                     extra_env=isolated_env,
                     execution_context=context,
                 )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
     if saw_dyld_retry and _diff_disable_daemon_on_dyld():
         os.environ["MOLT_BACKEND_DAEMON"] = "0"
         os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
@@ -3849,23 +3873,27 @@ def _run_native_backend(
                 "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for "
                 "remaining tests in this run (shared target retained)."
             )
-    if molt_out is None and _is_backend_daemon_build_error(molt_err):
+    if (
+        not outcome.timed_out
+        and outcome.stdout is None
+        and _is_backend_daemon_build_error(outcome.stderr)
+    ):
         print(
             "[RETRY] "
             f"{file_path} backend daemon/cache build failure; retrying with "
             "daemon disabled (cache preserved)."
         )
-        retry_out, retry_err, retry_ret = run_molt(
+        outcome = run_molt(
             file_path,
             context.build_profile,
             daemon_enabled=False,
             no_cache=False,
             execution_context=context,
         )
-        molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
         if (
-            molt_out is None
-            and _is_backend_daemon_build_error(molt_err)
+            not outcome.timed_out
+            and outcome.stdout is None
+            and _is_backend_daemon_build_error(outcome.stderr)
             and _diff_retry_isolated_default()
         ):
             print(
@@ -3874,7 +3902,7 @@ def _run_native_backend(
                 "isolated target/build-state and --no-cache."
             )
             with _isolated_retry_env() as isolated_env:
-                retry_out, retry_err, retry_ret = run_molt(
+                outcome = run_molt(
                     file_path,
                     context.build_profile,
                     daemon_enabled=False,
@@ -3882,14 +3910,13 @@ def _run_native_backend(
                     extra_env=isolated_env,
                     execution_context=context,
                 )
-            molt_out, molt_err, molt_ret = retry_out, retry_err, retry_ret
-        if molt_out is None and _is_backend_daemon_build_error(molt_err):
+        if outcome.stdout is None and _is_backend_daemon_build_error(outcome.stderr):
             os.environ["MOLT_BACKEND_DAEMON"] = "0"
             print(
                 "[WARN] Persistent backend daemon/cache failure detected; "
                 "forcing MOLT_BACKEND_DAEMON=0 for remaining tests in this run."
             )
-    return molt_out, molt_err, molt_ret
+    return outcome
 
 
 def _run_backend_for_diff(
@@ -3897,30 +3924,15 @@ def _run_backend_for_diff(
     backend: str,
     file_path: str,
     context: compat_backends.BackendExecutionContext,
-) -> "_BackendOutcome | _Sentinel":
-    """Produce one backend's normalized outcome, or a sentinel.
-
-    Returns `_OOM_SENTINEL` (caller aborts the whole test as OOM, mirroring the
-    historical native behavior) or `_UNCALIBRATED_SENTINEL` (toolchain absent —
-    LOUD skip of this backend only). Otherwise a normalized `_BackendOutcome`.
-    """
+) -> compat_backends.BackendResult | compat_backends.BackendAvailability:
+    """Keep the adapter's complete outcome, including resource failure facts."""
     if backend == "native":
-        raw_out, raw_err, raw_ret = _run_native_backend(file_path, context)
+        result = _run_native_backend(file_path, context)
         # Pass the native outcome through the SAME fault-injection seam the other
         # backends use, so the synthetic-divergence proof works uniformly on
         # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
         # this backend). Native keeps its rich retry pipeline above; only the
         # final outcome is routed through the seam, symmetric with the adapters.
-        result = compat_backends._apply_fault_injection(
-            backend,
-            compat_backends.BackendResult(
-                stdout=raw_out,
-                stderr=raw_err,
-                returncode=raw_ret,
-                build_failed=raw_out is None,
-            ),
-        )
-        raw_out, raw_err, raw_ret = result.stdout, result.stderr, result.returncode
     else:
         registry = _compat_backend_registry()
         adapter = registry.get(backend)
@@ -3929,24 +3941,17 @@ def _run_backend_for_diff(
         avail = adapter.availability()
         if not avail.available:
             print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
-            return _UNCALIBRATED_SENTINEL
+            return avail
         result = adapter.build_and_run(
             file_path,
             context=context,
         )
-        # The fault-injection seam applies at exactly ONE layer (here), uniformly
-        # for every backend, so adapters stay pure build+run.
-        result = compat_backends._apply_fault_injection(backend, result)
-        raw_out, raw_err, raw_ret = result.stdout, result.stderr, result.returncode
-
-    if _should_retry_oom(raw_ret, raw_err):
-        return _OOM_SENTINEL
-
-    return _BackendOutcome(stdout=raw_out, stderr=raw_err, returncode=raw_ret)
+    # Apply the fault-injection seam once, preserving all execution metadata.
+    return compat_backends._apply_fault_injection(backend, result)
 
 
 def _cross_backend_divergence(
-    per_backend: dict[str, "_BackendOutcome"],
+    per_backend: dict[str, compat_backends.BackendResult],
     *,
     stdout_mode: str,
     stderr_mode: str,
@@ -3962,7 +3967,7 @@ def _cross_backend_divergence(
     ran = {
         name: outcome
         for name, outcome in per_backend.items()
-        if outcome.stdout is not None
+        if outcome.stdout is not None and not outcome.timed_out
     }
     if len(ran) < 2:
         return None
@@ -4006,7 +4011,7 @@ def _emit_backend_fail(
     cp_out: str,
     cp_err: str,
     cp_ret: int,
-    outcome: "_BackendOutcome",
+    outcome: compat_backends.BackendResult,
     detail: str,
 ) -> None:
     if outcome.stdout is None:
@@ -4026,7 +4031,8 @@ def _record_backend_result(
     backend: str,
     raw_status: str,
     expect_molt_fail: bool,
-    outcome: "_BackendOutcome",
+    outcome: compat_backends.BackendResult | compat_backends.BackendAvailability,
+    context: compat_backends.BackendExecutionContext,
 ) -> None:
     """Append a per-backend honesty row so the (test x backend) matrix is fed.
 
@@ -4037,18 +4043,35 @@ def _record_backend_result(
     """
     backend_rows = record.setdefault("backend_rows", [])
     assert isinstance(backend_rows, list)
+    if isinstance(outcome, compat_backends.BackendResult):
+        facts = {
+            "returncode": outcome.returncode,
+            "build_failed": outcome.build_failed,
+            "timed_out": outcome.timed_out,
+            "detail": outcome.detail,
+        }
+        stdout, stderr = outcome.stdout or "", outcome.stderr
+    else:
+        facts = {
+            "returncode": None,
+            "build_failed": False,
+            "timed_out": False,
+            "detail": outcome.reason,
+        }
+        stdout, stderr = "", outcome.reason
     backend_rows.append(
         {
             "record_type": "backend",
             "file": test_policy.normalize_repo_relative(file_path),
             "backend": backend,
+            "compiler_target_python": context.target_python.short,
+            "build_profile": context.build_profile,
+            "stdlib_profile": context.stdlib_profile,
             "raw_status": raw_status,
             "expect_molt_fail": expect_molt_fail,
-            "returncode": outcome.returncode,
-            "stdout_sha256": hashlib.sha256(
-                (outcome.stdout or "").encode("utf-8")
-            ).hexdigest(),
-            "stderr_sha256": hashlib.sha256(outcome.stderr.encode("utf-8")).hexdigest(),
+            **facts,
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
         }
     )
 
@@ -4143,7 +4166,12 @@ def diff_test(
         stderr_mode = meta.stderr_mode
 
         print(f"Testing {file_path} against {_python_command_display(python_exe)}...")
-        cp_out, cp_err, cp_ret = run_cpython(file_path, python_exe)
+        cpython = run_cpython(file_path, python_exe)
+        cp_out, cp_err, cp_ret = (
+            cpython.stdout or "",
+            cpython.stderr,
+            cpython.returncode,
+        )
         record["cpython_returncode"] = cp_ret
 
         def _finalize_status(raw_status: str) -> str:
@@ -4163,8 +4191,16 @@ def diff_test(
                 print(f"[XPASS] {file_path} ({reason_text})")
             return resolved_status
 
+        if cpython.timed_out:
+            print(f"[FAIL] {file_path} (cpython timed out)")
+            print(cp_err)
+            record["raw_status"] = "fail"
+            record["resolved_status"] = "fail"
+            record["reason_tag"] = "timeout"
+            return "fail"
         if _should_retry_oom(cp_ret, cp_err):
             print(f"[OOM] {file_path} (cpython)")
+            print(cp_err)
             record["raw_status"] = "oom"
             record["resolved_status"] = "oom"
             return "oom"
@@ -4190,36 +4226,11 @@ def diff_test(
         # that lives in the backend adapter. `native` keeps the full dyld/daemon/
         # OOM retry pipeline (it is native-shaped); other backends use their
         # adapter's guarded build+run.
-        per_backend: dict[str, _BackendOutcome] = {}
-        for backend in eligible_targets:
-            outcome = _run_backend_for_diff(
-                backend=backend,
-                file_path=file_path,
-                context=execution_context,
-            )
-            if outcome is _OOM_SENTINEL:
-                print(f"[OOM] {file_path} ({backend})")
-                record["raw_status"] = "oom"
-                record["resolved_status"] = "oom"
-                return "oom"
-            if outcome is _UNCALIBRATED_SENTINEL:
-                # Toolchain for this backend is unavailable: a LOUD uncalibrated
-                # cell, never a silent skip and never a false pass. It does not
-                # block the other backends' verdicts.
-                continue
-            per_backend[backend] = outcome
-
-        if not per_backend:
-            # Every requested backend was uncalibrated (no toolchain). Surface a
-            # measured, non-green outcome rather than a silent pass.
-            print(f"[UNCALIBRATED] {file_path} (no requested backend available)")
-            record["raw_status"] = "uncalibrated"
-            record["resolved_status"] = "uncalibrated"
-            return "uncalibrated"
-
         # --- Per-backend verdict vs CPython (the single comparison law) -------
-        def _verdict(outcome: "_BackendOutcome") -> tuple[bool, str]:
+        def _verdict(outcome: compat_backends.BackendResult) -> tuple[bool, str]:
             """(ok, detail) for one backend vs CPython under the one law."""
+            if outcome.timed_out:
+                return False, "backend timed out"
             if outcome.stdout is None:
                 # Build failure. Mirror the historical parity case: a CPython
                 # compile error that Molt also rejects at build time is a PASS.
@@ -4241,10 +4252,49 @@ def diff_test(
             return verdict.equal, verdict.detail
 
         any_cpython_fail = False
-        backend_status: dict[str, str] = {}
-        for backend, outcome in per_backend.items():
+        any_timeout = False
+        any_unavailable = False
+        per_backend: dict[str, compat_backends.BackendResult] = {}
+        for backend in eligible_targets:
+            outcome = _run_backend_for_diff(
+                backend=backend,
+                file_path=file_path,
+                context=execution_context,
+            )
+            if isinstance(outcome, compat_backends.BackendAvailability):
+                any_unavailable = True
+                _record_backend_result(
+                    record,
+                    file_path,
+                    backend,
+                    "uncalibrated",
+                    expect_molt_fail,
+                    outcome,
+                    execution_context,
+                )
+                continue
+            # Record and diagnose each completed backend immediately. A later
+            # resource failure must never discard already observed results.
+            if not outcome.timed_out and _should_retry_oom(
+                outcome.returncode, outcome.stderr
+            ):
+                _record_backend_result(
+                    record,
+                    file_path,
+                    backend,
+                    "oom",
+                    expect_molt_fail,
+                    outcome,
+                    execution_context,
+                )
+                print(f"[OOM] {file_path} ({backend}) rc={outcome.returncode}")
+                print(outcome.stderr)
+                record["raw_status"] = "oom"
+                record["resolved_status"] = "oom"
+                return "oom"
+            per_backend[backend] = outcome
+            any_timeout |= outcome.timed_out
             ok, detail = _verdict(outcome)
-            backend_status[backend] = "pass" if ok else "fail"
             if ok:
                 _emit_backend_pass(file_path, backend, single=len(targets) == 1)
             else:
@@ -4261,7 +4311,20 @@ def diff_test(
                 "pass" if ok else "fail",
                 expect_molt_fail,
                 outcome,
+                execution_context,
             )
+
+        # Infrastructure failures are not expected language divergences. Resolve
+        # them before any semantic/xfail overlay, including cross-backend checks.
+        if any_timeout:
+            record["raw_status"] = "fail"
+            record["resolved_status"] = "fail"
+            record["reason_tag"] = "timeout"
+            return "fail"
+        if any_unavailable:
+            record["raw_status"] = "uncalibrated"
+            record["resolved_status"] = "uncalibrated"
+            return "uncalibrated"
 
         # --- Cross-backend divergence sub-oracle (doc 66 FACT 2) --------------
         # When >=2 backends produced output, they must agree with EACH OTHER
@@ -4286,6 +4349,66 @@ def diff_test(
         return _impl()
     finally:
         _record_diff_result(record)
+
+
+def _parallel_diff_results(
+    executor: concurrent.futures.Executor,
+    test_files: Sequence[Path],
+    python_exe: PythonCommand,
+    build_profile: str,
+    targets: tuple[str, ...],
+    target_python: TargetPythonVersion,
+    *,
+    jobs: int,
+    fail_fast: bool,
+) -> Iterator[dict[str, object]]:
+    """Bound admission, stop replenishing on failure, and retain running results."""
+    remaining = iter(test_files)
+    pending: dict[concurrent.futures.Future, str] = {}
+    stopped = False
+    errors: list[Exception] = []
+    while True:
+        stopped |= _memory_guard_trip_message() is not None
+        while not stopped and len(pending) < jobs:
+            file_path = next(remaining, None)
+            if file_path is None:
+                break
+            future = executor.submit(
+                _diff_worker,
+                str(file_path),
+                python_exe,
+                build_profile,
+                targets,
+                target_python,
+            )
+            pending[future] = str(file_path)
+        if not pending:
+            break
+        done, _ = concurrent.futures.wait(
+            pending, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+        for future in sorted(done, key=pending.__getitem__):
+            path = pending.pop(future)
+            if future.cancelled():
+                continue
+            try:
+                result = future.result()
+            except Exception as exc:
+                exc.add_note(f"differential worker: {path}")
+                errors.append(exc)
+                stopped = True
+                continue
+            stopped |= fail_fast and result["status"] in _FAILURE_STATUSES
+            yield result
+        stopped |= _memory_guard_trip_message() is not None
+        if stopped:
+            # Cancellation never kills running children: their complete results
+            # are drained above and persist through the normal receipt/log path.
+            for future in list(pending):
+                if future.cancel():
+                    del pending[future]
+    if errors:
+        raise ExceptionGroup("differential workers failed", errors)
 
 
 def run_diff(
@@ -4345,170 +4468,101 @@ def run_diff(
     )
     sentinel_env_key = harness_memory_guard.repo_sentinel_active_env_key("MOLT_DIFF")
     sentinel_env_previous = os.environ.get(sentinel_env_key)
-    if suite_sentinel is not None:
-        os.environ[sentinel_env_key] = "1"
-        atexit.register(lambda: suite_sentinel.__exit__(None, None, None))
-    if _should_preemptive_dyld_quarantine() and _diff_disable_daemon_on_dyld():
-        remaining = _consume_dyld_guard_run()
-        remaining_suffix = (
-            f" remaining_guard_runs={remaining}." if remaining is not None else "."
-        )
-        os.environ["MOLT_BACKEND_DAEMON"] = "0"
-        os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
-        if _diff_force_rebuild_on_dyld():
-            os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
-        if _diff_quarantine_on_dyld():
-            use_local_quarantine = _diff_dyld_local_fallback()
-            target_dir, state_dir, activated = _activate_dyld_quarantine_target(
-                use_local=use_local_quarantine
+    sentinel_closed = False
+
+    def close_suite_sentinel() -> None:
+        nonlocal sentinel_closed
+        if sentinel_closed:
+            return
+        sentinel_closed = True
+        try:
+            if suite_sentinel is not None:
+                suite_sentinel.__exit__(None, None, None)
+        finally:
+            atexit.unregister(close_suite_sentinel)
+            if sentinel_env_previous is None:
+                os.environ.pop(sentinel_env_key, None)
+            else:
+                os.environ[sentinel_env_key] = sentinel_env_previous
+
+    try:
+        if suite_sentinel is not None:
+            os.environ[sentinel_env_key] = "1"
+            atexit.register(close_suite_sentinel)
+        if _should_preemptive_dyld_quarantine() and _diff_disable_daemon_on_dyld():
+            remaining = _consume_dyld_guard_run()
+            remaining_suffix = (
+                f" remaining_guard_runs={remaining}." if remaining is not None else "."
             )
-            if activated:
+            os.environ["MOLT_BACKEND_DAEMON"] = "0"
+            os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
+            if _diff_force_rebuild_on_dyld():
+                os.environ["MOLT_DIFF_FORCE_REBUILD"] = "1"
+            if _diff_quarantine_on_dyld():
+                use_local_quarantine = _diff_dyld_local_fallback()
+                target_dir, state_dir, activated = _activate_dyld_quarantine_target(
+                    use_local=use_local_quarantine
+                )
+                if activated:
+                    print(
+                        "[WARN] Active dyld guard marker detected; forcing "
+                        "MOLT_BACKEND_DAEMON=0 and quarantining this run to "
+                        f"{'local ' if use_local_quarantine else ''}"
+                        f"target={target_dir} state={state_dir} with rebuild forced"
+                        f"{remaining_suffix}"
+                    )
+            else:
                 print(
                     "[WARN] Active dyld guard marker detected; forcing "
-                    "MOLT_BACKEND_DAEMON=0 and quarantining this run to "
-                    f"{'local ' if use_local_quarantine else ''}"
-                    f"target={target_dir} state={state_dir} with rebuild forced"
-                    f"{remaining_suffix}"
+                    "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for this run "
+                    f"(shared target retained){remaining_suffix}"
                 )
-        else:
-            print(
-                "[WARN] Active dyld guard marker detected; forcing "
-                "MOLT_BACKEND_DAEMON=0, --no-cache, and --rebuild for this run "
-                f"(shared target retained){remaining_suffix}"
-            )
-    os.environ.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
-    test_files = _order_test_files(test_files, jobs)
-    if warm_cache:
-        shared_cache = os.environ.get("MOLT_CACHE")
-        if not shared_cache:
-            shared_cache = str(_diff_cache_root())
-            os.environ["MOLT_CACHE"] = shared_cache
-        for file_path in test_files:
-            context = _backend_execution_context(
-                str(file_path),
-                python_exe,
-                build_profile,
-                compiler_target_python,
-            )
-            _out, err, rc = run_molt_build_only(
-                str(file_path),
-                build_profile,
-                execution_context=context,
-            )
-            if rc != 0:
-                print(f"[WARM-CACHE FAIL] {file_path}: {err.strip()}")
-    if jobs <= 1:
-        with _open_log_file(log_file) as log_handle:
-            with _open_log_file(log_aggregate) as aggregate_handle:
-                for file_path in test_files:
-                    _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
-                    payload = _diff_run_single(
-                        str(file_path),
-                        python_exe,
-                        build_profile,
-                        targets,
-                        compiler_target_python,
+        os.environ.setdefault("CARGO_TARGET_DIR", str(_diff_cargo_target_root()))
+        test_files = _order_test_files(test_files, jobs)
+        if warm_cache:
+            shared_cache = os.environ.get("MOLT_CACHE")
+            if not shared_cache:
+                shared_cache = str(_diff_cache_root())
+                os.environ["MOLT_CACHE"] = shared_cache
+            for file_path in test_files:
+                context = _backend_execution_context(
+                    str(file_path),
+                    python_exe,
+                    build_profile,
+                    compiler_target_python,
+                )
+                build_result = run_molt_build_only(
+                    str(file_path),
+                    build_profile,
+                    execution_context=context,
+                )
+                if build_result.returncode != 0:
+                    print(
+                        f"[WARM-CACHE FAIL] {file_path}: {build_result.stderr.strip()}"
                     )
-                    path = payload["path"]
-                    status = payload["status"]
-                    assert isinstance(path, str) and isinstance(status, str)
-                    duration_by_path[path] = float(payload["duration_s"])
-                    results.append((path, status))
-                    if log_handle is not None:
-                        _emit_line(
-                            f"[{status.upper()}] {path}",
-                            log_handle,
-                            echo=False,
-                        )
-                    if aggregate_handle is not None and (
-                        status != "pass" or _diff_log_passes()
-                    ):
-                        _append_aggregate_log(
-                            aggregate_handle,
-                            path,
-                            status,
-                            payload["stdout"],
-                            payload["stderr"],
-                        )
-                    if fail_fast and status == "fail":
-                        break
-                    if _memory_guard_trip_message() is not None:
-                        break
-    else:
-        if log_dir is not None:
-            try:
-                log_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                print(f"Warning: failed to create log dir {log_dir}: {exc}")
-                log_dir = None
-        requested_live = live
-        if not live:
-            live = True
-        outputs: dict[str, dict[str, object]] = {}
-        keep_full_payloads = (not requested_live) and log_dir is None
-        keep_retry_payloads = retry_oom
-        prune_every = _diff_prune_every()
-        completed = 0
-        with _open_log_file(log_file) as log_handle:
-            with _open_log_file(log_aggregate) as aggregate_handle:
-                executor_kwargs: dict[str, int] = {"max_workers": jobs}
-                max_tasks_per_child = _diff_max_tasks_per_child()
-                if max_tasks_per_child is not None:
-                    executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
-                executor_params = {
-                    "initializer": _install_worker_orphan_guard,
-                }
-                try:
-                    executor_ctx = concurrent.futures.ProcessPoolExecutor(
-                        **executor_kwargs, **executor_params
-                    )
-                except TypeError:
-                    executor_kwargs.pop("max_tasks_per_child", None)
-                    executor_ctx = concurrent.futures.ProcessPoolExecutor(
-                        **executor_kwargs, **executor_params
-                    )
-                with executor_ctx as executor:
-                    futures = {
-                        executor.submit(
-                            _diff_worker,
+        if jobs <= 1:
+            with _open_log_file(log_file) as log_handle:
+                with _open_log_file(log_aggregate) as aggregate_handle:
+                    for file_path in test_files:
+                        _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
+                        payload = _diff_run_single(
                             str(file_path),
                             python_exe,
                             build_profile,
                             targets,
                             compiler_target_python,
-                        ): str(file_path)
-                        for file_path in test_files
-                    }
-                    for future in concurrent.futures.as_completed(futures):
-                        result = future.result()
-                        path = result["path"]
-                        status = result["status"]
-                        assert isinstance(path, str) and isinstance(status, str)
-                        duration_by_path[path] = float(result["duration_s"])
-                        completed += 1
-                        if keep_full_payloads or (
-                            keep_retry_payloads and status == "oom"
-                        ):
-                            outputs[path] = result
-                        results.append((path, status))
-                        log_path = None
-                        if log_dir is not None:
-                            persist_log = status != "pass" or _diff_log_passes()
-                            candidate_log_path = _log_path_for_test(log_dir, path)
-                            if persist_log:
-                                log_path = _write_test_log(
-                                    log_dir, path, result["stdout"], result["stderr"]
-                                )
-                            else:
-                                with contextlib.suppress(OSError):
-                                    candidate_log_path.unlink()
-                        _emit_line(
-                            f"[{status.upper()}] {path}",
-                            log_handle,
-                            echo=live,
                         )
-                        if status == "fail" and log_path is not None:
-                            _emit_line(f"  log: {log_path}", log_handle, echo=live)
+                        path = payload["path"]
+                        status = payload["status"]
+                        assert isinstance(path, str) and isinstance(status, str)
+                        duration_by_path[path] = float(payload["duration_s"])
+                        results.append((path, status))
+                        if log_handle is not None:
+                            _emit_line(
+                                f"[{status.upper()}] {path}",
+                                log_handle,
+                                echo=False,
+                            )
                         if aggregate_handle is not None and (
                             status != "pass" or _diff_log_passes()
                         ):
@@ -4516,197 +4570,273 @@ def run_diff(
                                 aggregate_handle,
                                 path,
                                 status,
-                                result["stdout"],
-                                result["stderr"],
+                                payload["stdout"],
+                                payload["stderr"],
                             )
-                        if fail_fast and status == "fail":
-                            for pending in futures:
-                                if pending is not future:
-                                    pending.cancel()
+                        if fail_fast and status in _FAILURE_STATUSES:
                             break
                         if _memory_guard_trip_message() is not None:
-                            for pending in futures:
-                                if pending is not future:
-                                    pending.cancel()
                             break
-                        if prune_every > 0 and completed % prune_every == 0:
-                            _prune_orphan_diff_workers()
-                            _prune_orphan_build_helpers()
-                            _prune_backend_daemons()
-        if not live and log_dir is None:
-            for file_path in test_files:
-                payload = outputs.get(str(file_path))
-                if payload is None:
-                    continue
-                if payload["stdout"]:
-                    print(payload["stdout"], end="")
-                if payload["stderr"]:
-                    print(payload["stderr"], end="", file=sys.stderr)
-    _prune_orphan_diff_workers()
-    _prune_orphan_build_helpers()
-    _prune_backend_daemons()
-    if suite_sentinel is not None:
-        suite_sentinel.__exit__(None, None, None)
-    if sentinel_env_previous is None:
-        os.environ.pop(sentinel_env_key, None)
-    else:
-        os.environ[sentinel_env_key] = sentinel_env_previous
-    guard_trip_message = _memory_guard_trip_message()
-    status_by_path = {path: status for path, status in results}
-    if jobs > 1 and retry_oom and guard_trip_message is None:
-        oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
-        if oom_paths:
-            _emit_line(
-                f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
-                None,
-                echo=True,
-            )
-        for path in oom_paths:
-            retry_payload = _diff_run_single(
-                path,
-                python_exe,
-                build_profile,
-                targets,
-                compiler_target_python,
-            )
-            retry_status = retry_payload["status"]
-            assert isinstance(retry_status, str)
-            status_by_path[path] = retry_status
-            duration_by_path[path] = float(retry_payload["duration_s"])
-            outputs[path] = retry_payload
-    discovered = len(status_by_path)
-    failed_files = [
-        path for path, status in status_by_path.items() if status in {"fail", "oom"}
-    ]
-    skipped_files = [
-        path for path, status in status_by_path.items() if status == "skip"
-    ]
-    failed = len(failed_files)
-    passed = len([None for status in status_by_path.values() if status == "pass"])
-    skipped = len(skipped_files)
-    oom = len([None for status in status_by_path.values() if status == "oom"])
-    if guard_trip_message is not None:
-        failed_files.append("<memory_guard>")
-        failed += 1
-        oom += 1
-    total = passed + failed
-    try:
-        limit = int(os.environ.get("MOLT_DIFF_RSS_TOP", "5"))
-    except ValueError:
-        limit = 5
-    rss_top_run = [
-        {
-            "file": entry.get("file"),
-            "status": _rss_display_status(entry, status_by_path),
-            "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
-            if isinstance(entry.get("run"), dict)
-            else None,
-            "build_max_rss_kb": (entry.get("build") or {}).get("max_rss")
-            if isinstance(entry.get("build"), dict)
-            else None,
-        }
-        for entry in _top_rss_entries(
-            run_id, limit if _diff_measure_rss() else 0, phase="run"
-        )
-    ]
-    rss_top_build = [
-        {
-            "file": entry.get("file"),
-            "status": _rss_display_status(entry, status_by_path),
-            "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
-            if isinstance(entry.get("run"), dict)
-            else None,
-            "build_max_rss_kb": (entry.get("build") or {}).get("max_rss")
-            if isinstance(entry.get("build"), dict)
-            else None,
-        }
-        for entry in _top_rss_entries(
-            run_id, limit if _diff_measure_rss() else 0, phase="build"
-        )
-    ]
-    summary = {
-        "discovered": discovered,
-        "total": total,
-        "passed": passed,
-        "failed": failed,
-        "oom": oom,
-        "skipped": skipped,
-        "failed_files": failed_files,
-        "skipped_files": skipped_files,
-        "item_results": [
-            {
-                "path": test_policy.normalize_repo_relative(path),
-                "status": status,
-                "duration_s": duration_by_path[path],
-            }
-            for path, status in sorted(status_by_path.items())
-            if path in duration_by_path
-        ],
-        "python_exe": _python_command_display(python_exe),
-        "jobs": jobs,
-        "run_id": run_id,
-        "config": {
-            "measure_rss": _diff_measure_rss(),
-            "mem_limit_bytes": _memory_limit_bytes(),
-            "mem_per_job_gb": _memory_guard_scheduler_per_job_gb(guard_config),
-            "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
-            "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
-            "build_profile": build_profile,
-            "compiler_target_python": compiler_target_python.short,
-            "stdlib_profile": _diff_stdlib_profile(os.environ)[0] or "",
-            "warm_cache": warm_cache,
-            "retry_oom": retry_oom,
-            "batch_compile_server": _diff_batch_compile_server_enabled(),
-            "batch_compile_server_strict": _diff_batch_compile_server_strict(),
-            "memory_guard": {
-                "enabled": True,
-                **_config_payload(guard_config),
-                "sample_interval": _diff_memory_guard_sample_interval_sec(),
-                "write_samples": _diff_memory_guard_write_samples(),
-                "stream_mode": _diff_memory_guard_stream_mode(),
-                "event_max_bytes": _memory_guard_jsonl_max_bytes(
-                    _diff_memory_guard_events_jsonl()
-                ),
-                "sample_max_bytes": _memory_guard_jsonl_max_bytes(
-                    _diff_memory_guard_global_samples_jsonl()
-                ),
-                "tripped": guard_trip_message is not None,
-                "trip_message": guard_trip_message,
-                "trip_file": str(_diff_memory_guard_trip_file()),
-            },
-        },
-        "rss": {
-            **_aggregate_rss_metrics(run_id),
-            "top": rss_top_run,
-            "top_run": rss_top_run,
-            "top_build": rss_top_build,
-        },
-    }
-    if failures_output is None:
-        env_path = os.environ.get("MOLT_DIFF_FAILURES", "").strip()
-        if env_path:
-            failures_output = Path(env_path).expanduser()
         else:
-            failures_output = _diff_root() / "failures.txt"
-    if failures_output is not None:
+            if log_dir is not None:
+                try:
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    print(f"Warning: failed to create log dir {log_dir}: {exc}")
+                    log_dir = None
+            requested_live = live
+            if not live:
+                live = True
+            outputs: dict[str, dict[str, object]] = {}
+            keep_full_payloads = (not requested_live) and log_dir is None
+            keep_retry_payloads = retry_oom
+            prune_every = _diff_prune_every()
+            completed = 0
+            with _open_log_file(log_file) as log_handle:
+                with _open_log_file(log_aggregate) as aggregate_handle:
+                    executor_kwargs: dict[str, int] = {"max_workers": jobs}
+                    max_tasks_per_child = _diff_max_tasks_per_child()
+                    if max_tasks_per_child is not None:
+                        executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
+                    executor_params = {
+                        "initializer": _install_worker_orphan_guard,
+                    }
+                    try:
+                        executor_ctx = concurrent.futures.ProcessPoolExecutor(
+                            **executor_kwargs, **executor_params
+                        )
+                    except TypeError:
+                        executor_kwargs.pop("max_tasks_per_child", None)
+                        executor_ctx = concurrent.futures.ProcessPoolExecutor(
+                            **executor_kwargs, **executor_params
+                        )
+                    with executor_ctx as executor:
+                        for result in _parallel_diff_results(
+                            executor,
+                            test_files,
+                            python_exe,
+                            build_profile,
+                            targets,
+                            compiler_target_python,
+                            jobs=jobs,
+                            fail_fast=fail_fast,
+                        ):
+                            path = result["path"]
+                            status = result["status"]
+                            assert isinstance(path, str) and isinstance(status, str)
+                            duration_by_path[path] = float(result["duration_s"])
+                            completed += 1
+                            if keep_full_payloads or (
+                                keep_retry_payloads and status == "oom"
+                            ):
+                                outputs[path] = result
+                            results.append((path, status))
+                            log_path = None
+                            if log_dir is not None:
+                                persist_log = status != "pass" or _diff_log_passes()
+                                candidate_log_path = _log_path_for_test(log_dir, path)
+                                if persist_log:
+                                    log_path = _write_test_log(
+                                        log_dir,
+                                        path,
+                                        result["stdout"],
+                                        result["stderr"],
+                                    )
+                                else:
+                                    with contextlib.suppress(OSError):
+                                        candidate_log_path.unlink()
+                            _emit_line(
+                                f"[{status.upper()}] {path}",
+                                log_handle,
+                                echo=live,
+                            )
+                            if status == "fail" and log_path is not None:
+                                _emit_line(f"  log: {log_path}", log_handle, echo=live)
+                            if aggregate_handle is not None and (
+                                status != "pass" or _diff_log_passes()
+                            ):
+                                _append_aggregate_log(
+                                    aggregate_handle,
+                                    path,
+                                    status,
+                                    result["stdout"],
+                                    result["stderr"],
+                                )
+                            if prune_every > 0 and completed % prune_every == 0:
+                                _prune_orphan_diff_workers()
+                                _prune_orphan_build_helpers()
+                                _prune_backend_daemons()
+            if not live and log_dir is None:
+                for file_path in test_files:
+                    payload = outputs.get(str(file_path))
+                    if payload is None:
+                        continue
+                    if payload["stdout"]:
+                        print(payload["stdout"], end="")
+                    if payload["stderr"]:
+                        print(payload["stderr"], end="", file=sys.stderr)
+        _prune_orphan_diff_workers()
+        _prune_orphan_build_helpers()
+        _prune_backend_daemons()
+        guard_trip_message = _memory_guard_trip_message()
+        status_by_path = {path: status for path, status in results}
+        if jobs > 1 and retry_oom and not fail_fast and guard_trip_message is None:
+            oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
+            if oom_paths:
+                _emit_line(
+                    f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
+                    None,
+                    echo=True,
+                )
+            for path in oom_paths:
+                retry_payload = _diff_run_single(
+                    path,
+                    python_exe,
+                    build_profile,
+                    targets,
+                    compiler_target_python,
+                )
+                retry_status = retry_payload["status"]
+                assert isinstance(retry_status, str)
+                status_by_path[path] = retry_status
+                duration_by_path[path] = float(retry_payload["duration_s"])
+                outputs[path] = retry_payload
+        discovered = len(status_by_path)
+        failed_files = [
+            path
+            for path, status in status_by_path.items()
+            if status in _FAILURE_STATUSES
+        ]
+        skipped_files = [
+            path for path, status in status_by_path.items() if status == "skip"
+        ]
+        failed = len(failed_files)
+        passed = len([None for status in status_by_path.values() if status == "pass"])
+        skipped = len(skipped_files)
+        oom = len([None for status in status_by_path.values() if status == "oom"])
+        if guard_trip_message is not None:
+            failed_files.append("<memory_guard>")
+            failed += 1
+            oom += 1
+        total = passed + failed
         try:
-            failures_output.parent.mkdir(parents=True, exist_ok=True)
-            payload = ("\n".join(failed_files) + "\n") if failed_files else ""
-            failures_output.write_text(payload)
-        except OSError:
-            pass
-    summary_output = os.environ.get("MOLT_DIFF_SUMMARY", "").strip()
-    if summary_output:
-        _emit_json(summary, summary_output, stdout=False)
-    else:
-        summary_path = _diff_root() / "summary.json"
-        _emit_json(summary, str(summary_path), stdout=False)
-    _print_rss_top(
-        run_id,
-        limit if _diff_measure_rss() else 0,
-        status_by_path=status_by_path,
-    )
-    return summary
+            limit = int(os.environ.get("MOLT_DIFF_RSS_TOP", "5"))
+        except ValueError:
+            limit = 5
+        rss_top_run = [
+            {
+                "file": entry.get("file"),
+                "status": _rss_display_status(entry, status_by_path),
+                "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
+                if isinstance(entry.get("run"), dict)
+                else None,
+                "build_max_rss_kb": (entry.get("build") or {}).get("max_rss")
+                if isinstance(entry.get("build"), dict)
+                else None,
+            }
+            for entry in _top_rss_entries(
+                run_id, limit if _diff_measure_rss() else 0, phase="run"
+            )
+        ]
+        rss_top_build = [
+            {
+                "file": entry.get("file"),
+                "status": _rss_display_status(entry, status_by_path),
+                "run_max_rss_kb": (entry.get("run") or {}).get("max_rss")
+                if isinstance(entry.get("run"), dict)
+                else None,
+                "build_max_rss_kb": (entry.get("build") or {}).get("max_rss")
+                if isinstance(entry.get("build"), dict)
+                else None,
+            }
+            for entry in _top_rss_entries(
+                run_id, limit if _diff_measure_rss() else 0, phase="build"
+            )
+        ]
+        summary = {
+            "discovered": discovered,
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "oom": oom,
+            "skipped": skipped,
+            "failed_files": failed_files,
+            "skipped_files": skipped_files,
+            "item_results": [
+                {
+                    "path": test_policy.normalize_repo_relative(path),
+                    "status": status,
+                    "duration_s": duration_by_path[path],
+                }
+                for path, status in sorted(status_by_path.items())
+                if path in duration_by_path
+            ],
+            "python_exe": _python_command_display(python_exe),
+            "jobs": jobs,
+            "run_id": run_id,
+            "config": {
+                "measure_rss": _diff_measure_rss(),
+                "mem_limit_bytes": _memory_limit_bytes(),
+                "mem_per_job_gb": _memory_guard_scheduler_per_job_gb(guard_config),
+                "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
+                "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
+                "build_profile": build_profile,
+                "compiler_target_python": compiler_target_python.short,
+                "stdlib_profile": compat_backends.stdlib_profile_from_environment(
+                    os.environ
+                )
+                or "",
+                "warm_cache": warm_cache,
+                "retry_oom": retry_oom,
+                "batch_compile_server": _diff_batch_compile_server_enabled(),
+                "batch_compile_server_strict": _diff_batch_compile_server_strict(),
+                "memory_guard": {
+                    "enabled": True,
+                    **_config_payload(guard_config),
+                    "sample_interval": _diff_memory_guard_sample_interval_sec(),
+                    "write_samples": _diff_memory_guard_write_samples(),
+                    "stream_mode": _diff_memory_guard_stream_mode(),
+                    "event_max_bytes": _memory_guard_jsonl_max_bytes(
+                        _diff_memory_guard_events_jsonl()
+                    ),
+                    "sample_max_bytes": _memory_guard_jsonl_max_bytes(
+                        _diff_memory_guard_global_samples_jsonl()
+                    ),
+                    "tripped": guard_trip_message is not None,
+                    "trip_message": guard_trip_message,
+                    "trip_file": str(_diff_memory_guard_trip_file()),
+                },
+            },
+            "rss": {
+                **_aggregate_rss_metrics(run_id),
+                "top": rss_top_run,
+                "top_run": rss_top_run,
+                "top_build": rss_top_build,
+            },
+        }
+        if failures_output is None:
+            env_path = os.environ.get("MOLT_DIFF_FAILURES", "").strip()
+            if env_path:
+                failures_output = Path(env_path).expanduser()
+            else:
+                failures_output = _diff_root() / "failures.txt"
+        failures_output.parent.mkdir(parents=True, exist_ok=True)
+        payload = ("\n".join(failed_files) + "\n") if failed_files else ""
+        failures_output.write_text(payload, encoding="utf-8")
+        summary_output = os.environ.get("MOLT_DIFF_SUMMARY", "").strip()
+        if summary_output:
+            _emit_json(summary, summary_output, stdout=False)
+        else:
+            summary_path = _diff_root() / "summary.json"
+            _emit_json(summary, str(summary_path), stdout=False)
+        _print_rss_top(
+            run_id,
+            limit if _diff_measure_rss() else 0,
+            status_by_path=status_by_path,
+        )
+        return summary
+    finally:
+        close_suite_sentinel()
 
 
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
@@ -4811,7 +4941,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fail-fast",
         action="store_true",
-        help="Stop after the first failing test.",
+        help="Stop admitting tests after a failure, OOM, or unavailable target; "
+        "record already-running results without retrying OOM tests.",
     )
     parser.add_argument(
         "--failures-output",

@@ -3,26 +3,37 @@ use super::*;
 impl LuauBackend {
     pub(super) fn emit_exception_op(&mut self, op: &OpIR) -> bool {
         match op.kind.as_str() {
+            "try_start" | "try_end" => {}
             "exception_push"
             | "exception_pop"
             | "exception_stack_clear"
             | "exception_stack_enter"
             | "exception_stack_exit"
-            | "exception_set_last"
-            | "exception_set_value"
-            | "exception_set_cause"
+            | "exception_stack_depth"
+            | "exception_stack_set_depth"
             | "exception_context_set"
-            | "exception_stack_set_depth" => {
-                // Exception bookkeeping has no separate Luau runtime state.
-            }
-            "exception_clear" => {
-                let explicit_pcall = op.value.and_then(|n| u32::try_from(n).ok());
-                if let Some(n) = explicit_pcall.or_else(|| {
-                    (!self.inside_pcall_body)
-                        .then(|| self.try_depth_counter.last().copied())
-                        .flatten()
-                }) {
-                    self.emit_line(&format!("__err_{n} = nil"));
+            | "exception_clear"
+            | "exception_set_last"
+            | "exception_last"
+            | "exception_last_pending"
+            | "exception_active"
+            | "exception_current"
+            | "exception_pending"
+            | "exception_set_value"
+            | "exception_set_cause" => {
+                let args = op
+                    .args
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|arg| sanitize_ident(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call = format!("molt_{}({args})", op.kind);
+                if let Some(out) = op.out.as_deref().filter(|out| *out != "none") {
+                    self.emit_line(&format!("local {} = {call}", sanitize_ident(out)));
+                } else {
+                    self.emit_line(&call);
                 }
             }
             "drop_inserted"
@@ -65,35 +76,24 @@ impl LuauBackend {
             }
             "raise" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let context = self.frame_context_expr();
                 if let Some(val) = args.first() {
-                    self.emit_line(&format!(
-                        "error(molt_exception_attach_traceback({context}, {}), 0)",
-                        sanitize_ident(val)
-                    ));
+                    self.emit_line(&format!("molt_exception_set_last({})", sanitize_ident(val)));
                 } else {
-                    self.emit_line(&format!(
-                        "error(molt_exception_attach_traceback({context}, \"raised\"), 0)"
-                    ));
+                    self.emit_line("molt_exception_reraise()");
                 }
             }
             "check_exception" => {
-                // Luau exceptions unwind through error()/pcall instead of flag checks.
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "exception observer must use the canonical logical-flow emitter",
+                );
             }
-            "loop_break_if_exception" => {}
-            "exception_last" | "exception_last_pending" | "exception_finally_pending_observer" => {
+            "loop_break_if_exception" => {
+                self.emit_line("if molt_exception_pending() then break end");
+            }
+            "exception_finally_pending_observer" => {
                 let out = self.out_var(op);
-                if let Some(n) = op.value.and_then(|n| u32::try_from(n).ok()) {
-                    self.emit_line(&format!("local {out} = __err_{n}"));
-                } else if !self.inside_pcall_body {
-                    if let Some(&n) = self.try_depth_counter.last() {
-                        self.emit_line(&format!("local {out} = __err_{n}"));
-                    } else {
-                        self.emit_line(&format!("local {out} = nil -- [exception_last]"));
-                    }
-                } else {
-                    self.emit_line(&format!("local {out} = nil -- [exception_last]"));
-                }
+                self.emit_line(&format!("local {out} = molt_exception_last_pending()"));
             }
             "exception_match_builtin" => {
                 let out = self.out_var(op);
@@ -139,10 +139,6 @@ impl LuauBackend {
                 } else {
                     self.emit_unsupported_op(op);
                 }
-            }
-            "exception_stack_depth" => {
-                let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = 0"));
             }
             "exceptiongroup_match" | "exceptiongroup_combine" => {
                 self.emit_unsupported_op(op);

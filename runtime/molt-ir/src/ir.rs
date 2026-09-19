@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::ir_schema;
 use crate::json_boundary::{
-    expect_object, optional_bool, optional_bytes, optional_f64, optional_i64, optional_string,
+    expect_object, optional_bool, optional_bytes, optional_i64, optional_string,
     optional_string_list, required_field, required_string, required_string_list,
 };
 use crate::tir::cfg::CFG;
@@ -17,6 +17,8 @@ use crate::tir::simple_def_use::{
 };
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+mod float_transport;
 
 #[derive(Debug, Default, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -321,7 +323,7 @@ pub fn write_function_ir_contract(
     const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v1\0";
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
-    // serde_json rejects those valid Python float constants. Named struct
+    // JSON cannot represent their complete bit patterns. Named struct
     // encoding retains automatic whole-FunctionIR field coverage.
     writer
         .write_all(FUNCTION_IR_CONTRACT_VERSION)
@@ -335,11 +337,12 @@ fn bool_is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, serde::Serialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
+    #[serde(default, with = "float_transport")]
     pub f_value: Option<f64>,
     pub s_value: Option<String>,
     pub bytes: Option<Vec<u8>>,
@@ -408,9 +411,6 @@ pub struct OpIR {
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
     pub type_hint: Option<String>,
-    /// Inline-cache site index for attribute access acceleration.
-    /// Assigned by the frontend for `get_attr_generic_ptr` ops.
-    pub ic_index: Option<i64>,
     /// Stable source operation index for backend inline-cache site identity.
     /// This is assigned by the SimpleIR -> TIR lift and transported back
     /// through TIR -> SimpleIR so backends do not reconstruct IC identity from
@@ -429,12 +429,6 @@ pub struct OpIR {
     /// operation is in-range.  Codegen can skip the runtime bounds check
     /// and emit a straight-line element access.
     pub bce_safe: Option<bool>,
-    /// Named proof that a normally observable effect/exception edge has
-    /// already been discharged by an earlier semantic analysis.
-    ///
-    /// This is not a representation hint: consumers must validate the proof
-    /// name against the op kind before weakening effect semantics.
-    pub effect_proof: Option<String>,
     /// The concrete user-class name whose fixed instance layout authored the
     /// `value` byte-offset of a typed-slot field op (`store` / `load` /
     /// `guarded_field_get` / `guarded_field_set`).
@@ -447,8 +441,7 @@ pub struct OpIR {
     /// `TypedField` memory region that disjoint-aliases other classes' fields,
     /// container elements, and module-dict slots (S5-1.5).
     ///
-    /// Wire name is `"class"` (the frontend JSON / msgpack key); the manual
-    /// `from_json_value` parser and the serde derive (rmp/cbor path) agree on it.
+    /// Wire name is `"class"` for both JSON and MessagePack transport.
     #[serde(rename = "class")]
     pub class_name: Option<String>,
 }
@@ -576,6 +569,8 @@ impl FunctionIR {
 /// another `FunctionIR`. Dynamic callable, method, FFI, and string-bearing
 /// operations are deliberately excluded even when they participate in the
 /// broader call graph.
+/// A guarded call's target is a speculative code candidate: retaining its
+/// declaration does not turn the supplied Python arguments into a raw ABI call.
 #[inline]
 pub fn extern_direct_call_target(op: &OpIR) -> Option<&str> {
     matches!(op.kind.as_str(), "call" | "call_internal" | "call_guarded")
@@ -625,17 +620,22 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
                 ));
             }
 
-            let encoded_arg_count = op.args.as_ref().map_or(0, Vec::len);
-            let explicit_arg_count = if op.kind == "call_guarded" {
-                encoded_arg_count.checked_sub(1).ok_or_else(|| {
-                    format!(
+            let explicit_arg_count = op.args.as_ref().map_or(0, Vec::len);
+            if op.kind == "call_guarded" {
+                if explicit_arg_count == 0 {
+                    return Err(format!(
                         "extern call ABI mismatch: guarded caller `{}` has no callable operand for declaration `{target}`",
                         caller.name
-                    )
-                })?
-            } else {
-                encoded_arg_count
-            };
+                    ));
+                }
+                // Guarded operands are a live callable plus only the Python
+                // arguments actually supplied. Defaults, surplus-argument
+                // errors, and closure extraction belong to callable binding.
+                // Backends enter the speculative raw call only after proving
+                // its exact shape; an arity mismatch takes the binding path.
+                // Externalization must not change that invocation contract.
+                continue;
+            }
             let caller_arity = explicit_arg_count + usize::from(signature.has_closure);
             if caller_arity != signature.arity {
                 return Err(format!(
@@ -997,54 +997,9 @@ impl OpIR {
     }
 
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
-        let obj = expect_object(value, ctx)?;
-        // Extract ic_index from nested "metadata" object if present.
-        let ic_index = obj
-            .get("metadata")
-            .and_then(|m| m.as_object())
-            .and_then(|m| m.get("ic_index"))
-            .and_then(|v| v.as_i64());
-        Ok(Self {
-            kind: required_string(obj, "kind", ctx)?,
-            value: optional_i64(obj, "value", ctx)?,
-            f_value: optional_f64(obj, "f_value", ctx)?,
-            s_value: optional_string(obj, "s_value", ctx)?,
-            bytes: optional_bytes(obj, "bytes", ctx)?,
-            var: optional_string(obj, "var", ctx)?,
-            args: optional_string_list(obj, "args", ctx)?,
-            out: optional_string(obj, "out", ctx)?,
-            fast_int: optional_bool(obj, "fast_int", ctx)?,
-            fast_float: optional_bool(obj, "fast_float", ctx)?,
-            stack_eligible: optional_bool(obj, "stack_eligible", ctx)?,
-            task_kind: optional_string(obj, "task_kind", ctx)?,
-            task_closure_size: optional_i64(obj, "task_closure_size", ctx)?,
-            container_type: optional_string(obj, "container_type", ctx)?,
-            native_callable_export: optional_string(obj, "native_callable_export", ctx)?,
-            native_callable_binding: optional_string(obj, "native_callable_binding", ctx)?,
-            native_callable_symbol: optional_string(obj, "native_callable_symbol", ctx)?,
-            native_callable_abi: optional_string(obj, "native_callable_abi", ctx)?,
-            builtin_name: optional_string(obj, "builtin_name", ctx)?,
-            runtime_symbol: optional_string(obj, "runtime_symbol", ctx)?,
-            runtime_requirement_bits: optional_i64(obj, "runtime_requirement_bits", ctx)?
-                .unwrap_or(0)
-                .try_into()
-                .map_err(|_| format!("{ctx}.runtime_requirement_bits is out of range"))?,
-            passes_execution_context: optional_bool(obj, "passes_execution_context", ctx)?
-                .unwrap_or(false),
-            async_work_poll: optional_bool(obj, "async_work_poll", ctx)?.unwrap_or(false),
-            type_hint: optional_string(obj, "type_hint", ctx)?,
-            ic_index,
-            source_op_idx: optional_i64(obj, "source_op_idx", ctx)?,
-            col_offset: optional_i64(obj, "col_offset", ctx)?,
-            end_col_offset: optional_i64(obj, "end_col_offset", ctx)?,
-            source_line: optional_i64(obj, "source_line", ctx)?,
-            bce_safe: optional_bool(obj, "bce_safe", ctx)?,
-            arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
-            defines_del: optional_bool(obj, "defines_del", ctx)?,
-            bound_local: optional_bool(obj, "bound_local", ctx)?,
-            effect_proof: optional_string(obj, "effect_proof", ctx)?,
-            class_name: optional_string(obj, "class", ctx)?,
-        })
+        // Borrow the JSON input; the same typed field authority decodes binary
+        // transport without a lossy JSON intermediate or a mirrored wire struct.
+        Self::deserialize(value).map_err(|error| format!("{ctx}: {error}"))
     }
 }
 
@@ -1318,7 +1273,7 @@ mod json_parse_tests {
     }
 
     #[test]
-    fn function_ir_contract_encoding_is_total_bit_exact_and_deterministic() {
+    fn function_ir_contract_transport_is_total_bit_exact_and_deterministic() {
         let function_with_float = |value: f64| FunctionIR {
             name: "float_contract".to_string(),
             params: vec!["x".to_string()],
@@ -1338,10 +1293,17 @@ mod json_parse_tests {
         let cases = [
             f64::from_bits(0x7ff8_0000_0000_0001),
             f64::from_bits(0xfff8_0000_0000_0042),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            f64::from_bits(0xfff0_0000_0000_0042),
             f64::INFINITY,
             f64::NEG_INFINITY,
             -0.0,
             0.0,
+            f64::from_bits(1),
+            f64::from_bits(0x8000_0000_0000_0001),
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            0.9999999999999999,
         ];
         let encoded = cases
             .into_iter()
@@ -1349,6 +1311,24 @@ mod json_parse_tests {
                 let function = function_with_float(value);
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
+                let payload = first
+                    .strip_prefix(b"molt-function-ir-contract-v1\0")
+                    .expect("versioned contract");
+                let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
+                assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
+                assert_eq!(contract_bytes(&decoded), first);
+
+                let ir = SimpleIR {
+                    functions: vec![function],
+                    profile: None,
+                };
+                let wire = rmp_serde::to_vec_named(&ir).expect("encode backend input");
+                let document: super::BackendIrDocument =
+                    rmp_serde::from_read(wire.as_slice()).expect("real binary document boundary");
+                assert_eq!(
+                    document.ir.functions[0].ops[0].f_value.unwrap().to_bits(),
+                    value.to_bits()
+                );
                 first
             })
             .collect::<Vec<_>>();
@@ -1400,6 +1380,88 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn op_ir_serde_json_roundtrip_uses_canonical_field_parser() {
+        let op = OpIR {
+            kind: "transport_probe".to_string(),
+            value: Some(7),
+            f_value: Some(1.25),
+            s_value: Some("symbol".to_string()),
+            bytes: Some(vec![0, 127, 255]),
+            var: Some("source".to_string()),
+            args: Some(vec!["left".to_string(), "right".to_string()]),
+            out: Some("result".to_string()),
+            fast_int: Some(true),
+            fast_float: Some(false),
+            stack_eligible: Some(true),
+            arena_eligible: Some(false),
+            defines_del: Some(true),
+            bound_local: Some(false),
+            task_kind: Some("coroutine".to_string()),
+            task_closure_size: Some(48),
+            container_type: Some("list".to_string()),
+            native_callable_export: Some("export".to_string()),
+            native_callable_binding: Some("binding".to_string()),
+            native_callable_symbol: Some("symbol".to_string()),
+            native_callable_abi: Some("molt".to_string()),
+            builtin_name: Some("len".to_string()),
+            runtime_symbol: Some("molt_len".to_string()),
+            runtime_requirement_bits: 3,
+            passes_execution_context: true,
+            async_work_poll: true,
+            type_hint: Some("int".to_string()),
+            source_op_idx: Some(12),
+            col_offset: Some(13),
+            end_col_offset: Some(14),
+            source_line: Some(15),
+            bce_safe: Some(true),
+            class_name: Some("Point".to_string()),
+        };
+
+        let encoded = serde_json::to_value(&op).expect("serialize OpIR transport");
+        let decoded: OpIR =
+            serde_json::from_value(encoded).expect("canonical parser accepts every OpIR field");
+        assert_eq!(decoded, op);
+        let encoded = rmp_serde::to_vec_named(&op).expect("serialize typed binary transport");
+        let decoded: OpIR = rmp_serde::from_slice(&encoded).expect("decode every binary field");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn op_ir_rejects_unknown_fields_in_json_and_binary_documents() {
+        for (kind, field, value) in [
+            ("get_attr_generic_ptr", "ic_index", serde_json::json!(7)),
+            (
+                "module_cache_get",
+                "effect_proof",
+                serde_json::json!("static_module_class_binding"),
+            ),
+            (
+                "get_attr_generic_ptr",
+                "metadata",
+                serde_json::json!({"ic_index": 7}),
+            ),
+            ("get_attr_generic_ptr", "ic_indxe", serde_json::json!(7)),
+        ] {
+            let mut op = serde_json::json!({"kind": kind});
+            op[field] = value;
+            let expected = format!("unknown field `{field}`");
+            let direct = serde_json::from_value::<OpIR>(op.clone()).unwrap_err();
+            assert!(direct.to_string().contains(&expected));
+            let document = serde_json::json!({"functions": [{
+                "name": "wire", "params": [], "ops": [op]
+            }]});
+            let manual = super::BackendIrDocument::from_json_value(&document).unwrap_err();
+            assert!(manual.contains(&expected), "{manual}");
+            let typed =
+                serde_json::from_value::<super::BackendIrDocument>(document.clone()).unwrap_err();
+            assert!(typed.to_string().contains(&expected));
+            let binary = rmp_serde::to_vec_named(&document).unwrap();
+            let binary = rmp_serde::from_slice::<super::BackendIrDocument>(&binary).unwrap_err();
+            assert!(binary.to_string().contains(&expected));
+        }
     }
 
     #[test]
@@ -1684,6 +1746,134 @@ mod json_parse_tests {
         let error = serde_json::from_slice::<SimpleIR>(&encoded)
             .expect_err("a body-owning Local function still requires lifecycle ownership");
         assert!(error.to_string().contains("exactly one trace_enter_slot"));
+    }
+
+    fn extern_call_contract_ir(kind: &str, has_closure: bool, supplied: usize) -> SimpleIR {
+        let mut params: Vec<String> = (0..3).map(|index| format!("param{index}")).collect();
+        if has_closure {
+            params.insert(0, crate::MOLT_CLOSURE_PARAM_NAME.to_string());
+        }
+        let declaration = FunctionIR {
+            name: "defaulted_function".to_string(),
+            params,
+            ops: vec![OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["param0".to_string()]),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        }
+        .extern_declaration()
+        .expect("canonical external signature");
+        let mut args: Vec<String> = (0..supplied).map(|index| format!("arg{index}")).collect();
+        if kind == "call_guarded" {
+            args.insert(0, "callable".to_string());
+        }
+        SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "caller".to_string(),
+                    params: args.clone(),
+                    ops: vec![
+                        OpIR {
+                            kind: kind.to_string(),
+                            args: Some(args),
+                            s_value: Some(declaration.name.clone()),
+                            out: Some("result".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["result".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    ..FunctionIR::default()
+                },
+                declaration,
+            ],
+            profile: None,
+        }
+    }
+
+    #[test]
+    fn guarded_extern_calls_preserve_supplied_python_arguments_across_transport() {
+        for has_closure in [false, true] {
+            for supplied in [0, 1, 2, 3, 4, 5] {
+                let ir = extern_call_contract_ir("call_guarded", has_closure, supplied);
+                let call = &ir.functions[0].ops[0];
+                assert_eq!(
+                    super::extern_direct_call_target(call),
+                    Some("defaulted_function"),
+                    "batch partitioning must retain guarded candidate declarations"
+                );
+                super::validate_extern_call_abis(&ir)
+                    .expect("guarded argument binding is independent of raw declaration arity");
+                let encoded = serde_json::to_vec(&ir).expect("serialize guarded extern call");
+                let decoded: SimpleIR = serde_json::from_slice(&encoded)
+                    .expect("extern transport must admit guarded defaults and argument errors");
+                assert_eq!(decoded.functions[0].ops[0].args, call.args);
+                assert_eq!(
+                    decoded.functions[1].extern_signature().unwrap().arity,
+                    3 + usize::from(has_closure),
+                    "binding must not rewrite the callee's raw ABI"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_extern_calls_still_require_exact_abi_including_closure() {
+        for kind in ["call", "call_internal"] {
+            for has_closure in [false, true] {
+                for supplied in [0, 1, 2, 3, 4, 5] {
+                    let ir = extern_call_contract_ir(kind, has_closure, supplied);
+                    let result = super::validate_extern_call_abis(&ir);
+                    let encoded = serde_json::to_vec(&ir).expect("serialize raw extern call");
+                    let transported = serde_json::from_slice::<SimpleIR>(&encoded);
+                    if supplied == 3 {
+                        result.expect("exact raw ABI remains valid");
+                        transported.expect("exact raw ABI survives transport");
+                    } else {
+                        assert!(result.unwrap_err().contains("supplies"));
+                        assert!(transported.unwrap_err().to_string().contains("supplies"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn guarded_extern_calls_still_require_a_callable_operand() {
+        for args in [None, Some(Vec::new())] {
+            let mut ir = extern_call_contract_ir("call_guarded", false, 0);
+            ir.functions[0].ops[0].args = args;
+            let error = super::validate_extern_call_abis(&ir)
+                .expect_err("a guarded target hint cannot substitute for a live callable");
+            assert!(error.contains("has no callable operand"));
+        }
+    }
+
+    #[test]
+    fn guarded_extern_binding_does_not_relax_execution_context_contracts() {
+        let mut ir = extern_call_contract_ir("call_guarded", false, 1);
+        ir.functions[1].execution_context = super::ExecutionContextPolicy::Inherited;
+        let error = super::validate_extern_call_abis(&ir)
+            .expect_err("a guarded call cannot bind an inherited execution context");
+        assert!(error.contains("does not thread the inherited execution context"));
+        let encoded = serde_json::to_vec(&ir).unwrap();
+        assert!(
+            serde_json::from_slice::<SimpleIR>(&encoded)
+                .unwrap_err()
+                .to_string()
+                .contains("requires direct threaded call metadata")
+        );
+
+        ir.functions[1].execution_context = super::ExecutionContextPolicy::None;
+        ir.functions[0].ops[0].passes_execution_context = true;
+        let error = super::validate_extern_call_abis(&ir)
+            .expect_err("guarded binding cannot inject a context into a non-inherited target");
+        assert!(error.contains("threads an execution context to non-inherited declaration"));
     }
 
     #[test]
@@ -2128,7 +2318,7 @@ mod json_parse_tests {
             let error = SimpleIR::from_json_str(&source)
                 .expect_err("signed or oversized requirement storage must fail at parsing");
             assert!(
-                error.contains("runtime_requirement_bits is out of range"),
+                error.contains("invalid value") && error.contains("expected u32"),
                 "{error}"
             );
         }
@@ -2174,71 +2364,6 @@ mod json_parse_tests {
                 "{error}"
             );
         }
-    }
-
-    #[test]
-    fn simple_ir_from_json_str_accepts_static_module_class_binding_effect_proof() {
-        let ir = SimpleIR::from_json_str(
-            r#"{
-                "functions": [
-                    {
-                        "name": "__main__",
-                        "params": [],
-                        "ops": [
-                            {"kind": "const_str", "s_value": "__main__", "out": "v0"},
-                            {
-                                "kind": "module_cache_get",
-                                "args": ["v0"],
-                                "out": "v1",
-                                "effect_proof": "static_module_class_binding"
-                            },
-                            {"kind": "const_str", "s_value": "Point", "out": "v2"},
-                            {
-                                "kind": "module_get_attr",
-                                "args": ["v1", "v2"],
-                                "out": "v3",
-                                "effect_proof": "static_module_class_binding"
-                            }
-                        ]
-                    }
-                ]
-            }"#,
-        )
-        .expect("static module/class binding proof should validate on module reads");
-
-        assert_eq!(
-            ir.functions[0].ops[1].effect_proof.as_deref(),
-            Some("static_module_class_binding")
-        );
-        assert_eq!(
-            ir.functions[0].ops[3].effect_proof.as_deref(),
-            Some("static_module_class_binding")
-        );
-    }
-
-    #[test]
-    fn simple_ir_from_json_str_rejects_effect_proof_on_non_module_read() {
-        let err = SimpleIR::from_json_str(
-            r#"{
-                "functions": [
-                    {
-                        "name": "__main__",
-                        "params": [],
-                        "ops": [
-                            {
-                                "kind": "const_str",
-                                "s_value": "Point",
-                                "out": "v0",
-                                "effect_proof": "static_module_class_binding"
-                            }
-                        ]
-                    }
-                ]
-            }"#,
-        )
-        .expect_err("effect proof should be rejected on non-module reads");
-
-        assert!(err.contains("cannot carry effect_proof `static_module_class_binding`"));
     }
 
     #[test]

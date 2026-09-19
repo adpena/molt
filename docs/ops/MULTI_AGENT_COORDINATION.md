@@ -161,6 +161,13 @@ paths, deletions, evidence, unresolved findings, and a working-content identity
 at handoff. Recheck that identity before applying the reviewed changes; if it
 changed, reconcile the new delta rather than overwrite it or repeat stale proof.
 
+Before design, implementation or deletion, record the worker's proactive search
+of the canonical implementation, relevant history/handoffs and preserved donor
+work. Identify the authority reused and any overlapping implementation; do not
+infer absence from a task summary or one checkout. External reviewers follow the
+same retrieval discipline and remain read-only unless assigned disjoint write
+ownership. Model choice never changes custody or the active worker/proof caps.
+
 Compare both working trees against their common base. Preserve unique changes
 and reconcile semantic conflicts before advancing a baseline or pruning a tree.
 Regenerate projections from the merged authority. Only the integrator stages,
@@ -235,6 +242,22 @@ the smallest falsifying command, and preserve the artifact.
 
 Differential and conformance lanes are shared resources.
 
+`BackendExecutionContext` owns each test's target Python, build profile,
+stdlib profile and capability/environment policy across native, WASM, LLVM and
+Luau. CLI, metadata and environment selectors are resolved before dispatch;
+native subprocess/batch and cross-backend argv consume the same stdlib-profile
+parser. Per-backend result rows retain the selected profiles. Requested JSONL
+receipt writes fail loudly; an unwritable evidence sink is not a passing run.
+
+`BackendResult` preserves build/run timeout facts through every adapter. A guard
+deadline takes precedence over its termination code; timeout and unavailable
+targets cannot become expected semantic failures. Per-backend rows survive a
+later backend failure, retaining return code, phase, timeout and diagnostic hash;
+the aggregate log retains the diagnostic text. `--fail-fast` stops new test
+admission on failure, OOM or an unavailable target and disables OOM retries.
+Parallel execution admits at most `--jobs` tests, cancels only work that has not
+started, and drains already-running results before closing the run.
+
 - Keep one supervising broad diff/regrtest/conformance run per shared
   `CARGO_TARGET_DIR`.
 - Let `tests/molt_diff.py` own its run lock at
@@ -247,10 +270,10 @@ Differential and conformance lanes are shared resources.
   - docs/spec/matrix updates based on already captured evidence.
 - If the diff lock would make an agent wait without adding signal, record the
   wait in the task log and move to non-colliding work.
-- Resolve canonical roots through the DX authority before heavy maintainer,
-  agent, benchmark, differential, conformance, or CI-style lanes. On Windows
-  checkouts on `C:`, use a healthy non-`C:` root unless an explicit emergency
-  override is set. Public users may compile in place, use Molt/Cargo defaults,
+- Resolve canonical roots through the DX authority and the current root policy
+  in `docs/agent/ORCHESTRATION.md` before heavy maintainer, agent, benchmark,
+  differential, conformance, or CI-style lanes. Do not infer another drive as a
+  canonical capacity fallback. Public users may compile in place, use Molt/Cargo defaults,
   or choose outputs with explicit flags/environment variables.
 
   ```bash

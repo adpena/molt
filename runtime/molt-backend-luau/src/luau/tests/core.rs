@@ -320,36 +320,44 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
 }
 
 #[test]
-fn control_flow_labels_share_the_injective_symbol_authority() {
-    let mut backend = LuauBackend::new();
-    for label in ["a-b", "a.b"] {
-        assert!(backend.emit_control_op(&OpIR {
-            kind: "label".to_string(),
-            s_value: Some(label.to_string()),
-            ..OpIR::default()
-        }));
-        assert!(backend.emit_control_op(&OpIR {
-            kind: "jump".to_string(),
-            s_value: Some(label.to_string()),
-            ..OpIR::default()
-        }));
+fn noncanonical_string_labels_cannot_bypass_logical_label_validation() {
+    for label in ["a-b", "a.b", "label_1"] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "string_label".into(),
+                ops: vec![
+                    OpIR {
+                        kind: "jump".into(),
+                        s_value: Some(label.into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".into(),
+                        s_value: Some(label.into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("string aliases cannot create a second label namespace");
+        assert!(
+            error.contains("malformed-label-reference") && error.contains("integer value"),
+            "{error}"
+        );
+        assert!(
+            backend.output.is_empty(),
+            "graph rejection must precede source emission"
+        );
     }
-    assert!(backend.emit_control_op(&OpIR {
-        kind: "label".to_string(),
-        value: Some(1),
-        ..OpIR::default()
-    }));
-    assert!(backend.emit_control_op(&OpIR {
-        kind: "label".to_string(),
-        s_value: Some("label_1".to_string()),
-        ..OpIR::default()
-    }));
-    assert!(backend.output.contains("::_m_label_612d62::"));
-    assert!(backend.output.contains("goto _m_label_612d62"));
-    assert!(backend.output.contains("::_m_label_612e62::"));
-    assert!(backend.output.contains("goto _m_label_612e62"));
-    assert!(backend.output.contains("::label_1::"));
-    assert!(backend.output.contains("::_m_label_6c6162656c5f31::"));
 }
 
 #[test]
@@ -1806,7 +1814,9 @@ assert(weak_mode == "kv", "frame_registry_is_not_non_owning_kv")
 print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
 "#
     );
-    assert!(frame_runtime::FRAME_RUNTIME.len() < 11_500);
+    // The shared context also owns explicit exception state; keep its complete
+    // runtime bounded without excluding that protocol from the size budget.
+    assert!(frame_runtime::FRAME_RUNTIME.len() < 19_000);
     assert!(!frame_runtime::FRAME_RUNTIME.contains("owner = key"));
     assert!(!frame_runtime::FRAME_RUNTIME.contains("context.owner"));
     assert!(frame_runtime::FRAME_RUNTIME.contains("{__mode = \"kv\"}"));
@@ -2937,6 +2947,7 @@ fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
                 },
                 OpIR {
                     kind: "pcall_wrap_end".to_string(),
+                    value: Some(1),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -3379,11 +3390,9 @@ fn test_control_flow() {
     };
     let mut backend = LuauBackend::new();
     let output = backend.compile(&ir);
-    // The dead goto/label stripping pass removes:
-    //   - label_0 (orphaned: no goto targets it)
-    //   - goto label_1 + label_1 (dead: goto jumps to immediately next label)
-    // This is correct — the optimiser eliminates redundant control flow.
-    // Verify they are NOT emitted as comments (the old Bug 4 regression).
+    // Numeric labels are transported by the shared logical graph, never
+    // emitted as unsupported Luau gotos or deleted by source heuristics.
+    assert!(output.contains("__molt_block"));
     assert!(
         !output.contains("-- ::label_0::"),
         "labels must not be comments"
@@ -3394,7 +3403,7 @@ fn test_control_flow() {
 }
 
 #[test]
-fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
+fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
     let ops = vec![
         OpIR {
             kind: "iter".to_string(),
@@ -3404,6 +3413,11 @@ fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
         },
         OpIR {
             kind: "loop_start".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "exception_context_set".to_string(),
+            args: Some(vec!["handled".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -3420,7 +3434,11 @@ fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
         },
         OpIR {
             kind: "loop_break_if_true".to_string(),
-            args: Some(vec!["v_other_cond".to_string()]),
+            args: Some(vec!["v_exhausted".to_string()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_break_if_exception".to_string(),
             ..OpIR::default()
         },
         OpIR {
@@ -3440,14 +3458,34 @@ fn test_lower_iter_to_for_requires_exhaustion_break_condition() {
         },
     ];
 
-    let lowered = lower_iter_to_for(&ops);
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "iterator_cleanup".into(),
+            params: vec![
+                "v_src".into(),
+                "v_idx0".into(),
+                "v_idx1".into(),
+                "v_sink".into(),
+                "handled".into(),
+            ],
+            ops,
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    let source = LuauBackend::new().compile(&ir);
+    assert!(source.contains("molt_iterator_new(v_src)"), "{source}");
     assert!(
-        lowered.iter().any(|op| op.kind == "iter"),
-        "iter op should be preserved when break guard is unrelated"
+        source.contains("molt_exception_context_set(handled)"),
+        "{source}"
     );
     assert!(
-        !lowered.iter().any(|op| op.kind == "for_iter"),
-        "unsafe iterator rewrite should not fire"
+        source.contains("if molt_exception_pending() then break end"),
+        "{source}"
+    );
+    assert!(
+        source.contains("molt_exception_capture(__molt_pcall_frame_context_"),
+        "{source}"
     );
 }
 
@@ -3645,7 +3683,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
 }
 
 #[test]
-fn test_compile_checked_accepts_label_goto_comments() {
+fn test_compile_checked_rejects_undefined_label_targets() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "flow_test".to_string(),
@@ -3671,15 +3709,17 @@ fn test_compile_checked_accepts_label_goto_comments() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    // Labels and gotos emit as real Luau control flow, then the dead
-    // goto/label stripping pass removes unreachable ones.  The key
-    // correctness property is that they are NOT emitted as comments.
-    let source = backend.compile(&ir);
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("undefined labels must fail before source emission");
     assert!(
-        !source.contains("-- ::label_0::"),
-        "labels must not be comments"
+        error.contains("invalid-jump-target") && error.contains("undefined label 1"),
+        "{error}"
     );
-    assert!(!source.contains("-- goto"), "gotos must not be comments");
+    assert!(
+        backend.output.is_empty(),
+        "graph rejection must precede source emission"
+    );
 }
 
 #[test]
@@ -3978,7 +4018,7 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
 }
 
 #[test]
-fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
+fn test_compile_checked_lowers_loop_exception_break_as_pending_observer() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "loop_exception_break_test".to_string(),
@@ -4021,11 +4061,17 @@ fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
+    let source = backend
+        .compile_checked(&ir)
+        .expect("structured loop observer must be admitted");
 
     assert!(
         source.contains("loop_exception_break_test"),
         "compiled loop exception-break function should be emitted, got:\n{source}"
+    );
+    assert!(
+        source.contains("if molt_exception_pending() then break end"),
+        "{source}"
     );
     assert!(
         !source.contains("[loop_break_if_exception]")
@@ -4272,8 +4318,22 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(source.contains("\tlocal v0 = 0\n"));
+    let source = backend
+        .compile_checked(&ir)
+        .expect("stack depth must lower to the coroutine-owned exception state");
+    let function = source
+        .split("local function exception_depth_test()")
+        .nth(1)
+        .expect("fixture function must be emitted");
+    assert!(
+        function.contains("molt_exception_stack_depth()"),
+        "{function}"
+    );
+    assert!(
+        function.contains("molt_exception_stack_set_depth("),
+        "{function}"
+    );
+    assert!(!function.contains("local v0 = 0"), "{function}");
     assert!(!source.contains("[exception_stack_depth]"));
 }
 

@@ -49,7 +49,9 @@ def test_all_class_evaluators_reload_explicit_namespace_capture(header, body):
             if strings.get(op["args"][1]) != "injected":
                 continue
             namespace = definitions[op["args"][0]]
-            assert namespace["kind"] == "index"
+            assert namespace["kind"] == "call"
+            assert namespace["s_value"] == "molt_cell_get"
+            assert len(namespace["args"]) == 1
             cell = definitions[namespace["args"][0]]
             assert cell["kind"] == "index"
             assert cell["args"][0] == "__molt_closure__"
@@ -289,6 +291,7 @@ def test_dead_annotation_still_sets_up_class_mapping():
         for op in main
     )
 
+
 @pytest.mark.parametrize("header", ["class Subject:", "class Subject(metaclass=type):"])
 def test_class_constructor_owns_cell_fill_and_descriptor_callbacks(header):
     ir = _compile(
@@ -306,8 +309,16 @@ def test_class_constructor_owns_cell_fill_and_descriptor_callbacks(header):
                 if strings.get(value) == "__classcell__":
                     cells.add(args[index + 1])
     assert cells, "every construction path must publish the original method cell"
+    definitions = {op["out"]: op for op in main if "out" in op}
+    assert all(
+        definitions[cell]["kind"] == "call"
+        and definitions[cell]["s_value"] == "molt_cell_new"
+        for cell in cells
+    )
     assert not any(
-        op["kind"] == "store_index" and op["args"][0] in cells for op in main
+        (op["kind"] == "store_index" or op.get("s_value") == "molt_cell_set")
+        and op["args"][0] in cells
+        for op in main
     ), "only the runtime constructor may fill method cells"
     assert not any(
         op["kind"] == "class_apply_set_name"
@@ -338,16 +349,21 @@ def test_class_namespace_cell_dominates_conditional_evaluator_creation(target, b
     # must never reference a cell allocated only in a taken branch/iteration.
     ir = _compile(source, target)
     outer = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____outer")
-    strings = {op["out"]: op.get("s_value") for op in outer if op["kind"] == "const_str"}
+    strings = {
+        op["out"]: op.get("s_value") for op in outer if op["kind"] == "const_str"
+    }
     publications = [
-        op for op in outer
+        op
+        for op in outer
         if op["kind"] == "store_index"
         and strings.get(op["args"][1]) == "__classdictcell__"
     ]
     assert len(publications) == 1
     definitions = {op["out"]: op for op in outer if "out" in op}
     cell = definitions[publications[0]["args"][2]]
-    assert cell["kind"] == "list_new"
+    assert cell["kind"] == "call"
+    assert cell["s_value"] == "molt_cell_new"
+    assert cell["args"] == [publications[0]["args"][0]]
 
 
 def test_deferred_method_annotation_namespace_dominates_both_definition_branches():
@@ -366,7 +382,10 @@ def test_deferred_method_annotation_namespace_dominates_both_definition_branches
     ("source", "target"),
     [
         ("class C:\n    def method(value: injected): pass\n", (3, 12)),
-        ("from __future__ import annotations\nclass C:\n    value: injected\n", (3, 14)),
+        (
+            "from __future__ import annotations\nclass C:\n    value: injected\n",
+            (3, 14),
+        ),
         ("class C:\n    type Alias = lambda: value\n", (3, 13)),
     ],
 )

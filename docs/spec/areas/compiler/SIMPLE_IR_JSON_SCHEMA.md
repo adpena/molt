@@ -2,7 +2,7 @@
 
 Formal schema for the SimpleIR interchange format between the Python frontend
 (`src/molt/frontend/__init__.py`) and the Rust backend
-(`runtime/molt-backend/src/ir.rs`).
+(`runtime/molt-ir/src/ir.rs`).
 
 > Scope note: this document describes the current transport format only. The
 > canonical IR architecture and representation contract live in
@@ -83,8 +83,22 @@ symbol collision is not permission to merge different Python modules.
 
 ## OpIR
 
-All fields except `kind` are optional. The Rust struct uses `#[serde(default)]`
-so absent fields deserialize to `None`/default.
+All fields except `kind` are optional; absent fields deserialize to `None` or
+their declared default. The typed Rust `OpIR` owns field decoding for JSON,
+NDJSON and MessagePack. Unknown operation fields are rejected, including the
+retired `effect_proof`, `ic_index` and nested `metadata` carriers. Frontend-only
+annotations must be consumed before backend transport, not silently ignored there.
+
+JSON float immediates use the non-finite tokens below; JSON output never replaces
+a non-finite constant with null. Binary float immediates retain all IEEE-754
+bits, including signed zero, infinities and NaN payloads. JSON's `"NaN"` token
+does not encode a payload.
+
+Attribute-cache sites use the stable function/source-operation identity already
+transported through TIR. There is no process-global frontend allocator, reset,
+wrapping slot number or raw-offset cache authority. Runtime attribute lookup
+retains the requested name and follows the canonical Python lookup protocol;
+site collisions must not substitute an attribute or an instance's value.
 
 | Field             | Type       | Default | Description                                                    |
 |-------------------|------------|---------|----------------------------------------------------------------|
@@ -106,7 +120,6 @@ so absent fields deserialize to `None`/default.
 | `task_closure_size` | `int?` | `null` | Nonnegative payload byte size paired with callable task kind; constructor fact, never a mutable Python attribute |
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |
 | `type_hint`       | `string?`  | `null`  | Type annotation from source                                    |
-| `ic_index`        | `i64?`     | `null`  | Inline cache site index for `get_attr_generic_ptr`. Transmitted inside a nested `metadata` object in JSON: `{"metadata": {"ic_index": N}}` |
 | `native_callable_export` | `string?` | `null` | Qualified native callable export name on `invoke_ffi`, e.g. `scipy.ndimage.distance_transform_edt` |
 | `native_callable_binding` | `string?` | `null` | Native binding mode on `invoke_ffi`; public callable wrappers and internal bootstrap calls use `direct_symbol` |
 | `native_callable_symbol` | `string?` | `null` | Required direct native symbol when `native_callable_binding` is `direct_symbol` |
@@ -353,8 +366,8 @@ user call site that invokes that wrapper as a normal Python callable.
 
 | kind                        | Fields used           | Description                          |
 |-----------------------------|-----------------------|--------------------------------------|
-| `try_start`                 | --                    | Enter try block                      |
-| `try_end`                   | --                    | Exit try block                       |
+| `try_start`                 | `value` (optional handler label) | Enter path-local region custody |
+| `try_end`                   | `value` (optional handler label) | Close path-local region custody |
 | `raise`                     | `args` [exc], `out`   | Raise exception                      |
 | `exception_push`            | `out`                 | Push exception handler               |
 | `exception_pop`             | `out`                 | Pop handler                         |
@@ -376,12 +389,19 @@ user call site that invokes that wrapper as a normal Python callable.
 | `exceptiongroup_match`      | `args` [eg, filter], `out` | Match ExceptionGroup            |
 | `exceptiongroup_combine`    | `args` [eg], `out`    | Combine ExceptionGroup               |
 
-**Example:**
+Try markers are region metadata, not executable frame pushes/pops or lexical
+brackets. Alternative exits can close one region more than once in source
+order, including from inside a still-open branch or loop. Explicit
+`exception_push`/`exception_pop` own runtime frame operations and
+`check_exception` owns pending-error transfer. A named region references a
+defined handler label; omitted labels describe anonymous IR regions.
+
+**Example (region metadata and pending transfer):**
 ```json
-{"kind": "try_start"}
+{"kind": "try_start", "value": 5}
 {"kind": "raise", "args": ["v10"], "out": "v11"}
 {"kind": "check_exception", "value": 5}
-{"kind": "try_end"}
+{"kind": "try_end", "value": 5}
 ```
 
 ### Attribute Access
@@ -394,7 +414,7 @@ requires the shared compiler's exact-site pristine-slot proof, never a wire hint
 |--------------------------|------------------------------------------------|------------------------------------|
 | `load`                   | `args` [obj], `value` (offset), `out`          | Load field at known offset         |
 | `store`                  | `args` [obj, val], `value` (offset)            | Store field at known offset        |
-| `get_attr_generic_ptr`   | `args` [obj], `s_value` (attr), `out`, `metadata.ic_index` | Generic attr get (ptr-based) |
+| `get_attr_generic_ptr`   | `args` [obj], `s_value` (attr), `out` | Generic attr get; cache site identity uses transported `source_op_idx`, never a frontend global counter |
 | `get_attr_generic_obj`   | `args` [obj], `s_value` (attr), `out`          | Generic attr get (obj-based)       |
 | `get_attr_name`          | `args`, `out`                                  | Get attr by runtime name value     |
 | `get_attr_name_default`  | `args`, `out`                                  | Get attr with default              |

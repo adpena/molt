@@ -1,6 +1,5 @@
 use crate::OpIR;
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
-use crate::tir::effect_proof::{EffectProof, simple_ir_effect_proof};
 use crate::tir::op_kinds_generated::{
     SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
     simpleir_kind_may_carry_async_work_poll_marker,
@@ -365,23 +364,6 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if op.async_work_poll && !simpleir_kind_may_carry_async_work_poll_marker(op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry async_work_poll", op.kind));
-    }
-    if let Some(effect_proof) = op.effect_proof.as_deref() {
-        validate_clean_symbol(effect_proof, &format!("op `{}` effect_proof", op.kind))?;
-        let Some(proof) = EffectProof::from_name(effect_proof) else {
-            return Err(format!(
-                "op `{}` cannot carry effect_proof `{effect_proof}`",
-                op.kind
-            ));
-        };
-        if effect_proof != proof.name()
-            || simple_ir_effect_proof(&op.kind, Some(effect_proof)) != Some(proof)
-        {
-            return Err(format!(
-                "op `{}` cannot carry effect_proof `{effect_proof}`",
-                op.kind
-            ));
-        }
     }
     validate_native_callable_fields(op)?;
     Ok(())

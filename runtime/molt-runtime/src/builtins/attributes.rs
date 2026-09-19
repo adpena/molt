@@ -47,8 +47,8 @@ pub use mutation::{
 };
 pub(crate) use scalar_attrs::{is_numeric_scalar_attr_receiver, resolve_scalar_attr};
 use state::{
-    ATTR_LOOKUP_TRACE_LINES, AttrICEntry, AttrLookupTraceGuard, attr_ic_result_cache,
-    attr_site_name_cache, attributes_state, trace_attr_lookup_enabled,
+    ATTR_LOOKUP_TRACE_LINES, AttrLookupTraceGuard, attr_site_name_cache, attributes_state,
+    trace_attr_lookup_enabled,
 };
 pub(crate) use state::{
     AttributesRuntimeState, attributes_clear_runtime_state, debug_bound_method_enabled,
@@ -83,15 +83,6 @@ fn ic_site_from_bits(site_bits: u64) -> Option<u64> {
         return None;
     }
     Some(site_bits)
-}
-
-#[inline]
-unsafe fn attr_ic_class_bits(obj_ptr: *mut u8, type_id: u32) -> u64 {
-    if type_id == TYPE_ID_TYPE {
-        MoltObject::from_ptr(obj_ptr).bits()
-    } else {
-        unsafe { object_class_bits(obj_ptr) }
-    }
 }
 
 unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8]) -> Option<u64> {
@@ -1825,108 +1816,10 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
             };
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
 
-            // --- Result-level IC fast path ---
-            // Only attempt for object types whose attribute lookups flow
-            // through the class MRO (TYPE_ID_OBJECT, TYPE_ID_DATACLASS, TYPE_ID_TYPE).
-            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                let type_id = object_type_id(obj_ptr);
-                if crate::object::heap_kind_has_class_shape(type_id)
-                    || type_id == TYPE_ID_DATACLASS
-                    || type_id == TYPE_ID_TYPE
-                {
-                    let class_bits = attr_ic_class_bits(obj_ptr, type_id);
-                    let current_version = global_type_version();
-                    let cache = attr_ic_result_cache(_py)
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if let Some(entry) = cache.get(&site_id)
-                        && entry.type_version == current_version
-                        && entry.obj_type_id == type_id
-                        && entry.class_bits == class_bits
-                        && entry.result_bits != 0
-                    {
-                        // Validate the cached name still matches the requested attr.
-                        if let Some(name_ptr) = obj_from_bits(entry.name_bits).as_ptr()
-                            && object_type_id(name_ptr) == TYPE_ID_STRING
-                        {
-                            let cached_name = std::slice::from_raw_parts(
-                                string_bytes(name_ptr),
-                                string_len(name_ptr),
-                            );
-                            if cached_name == slice {
-                                profile_hit_unchecked(&ATTR_IC_RESULT_HIT_COUNT);
-                                let result = entry.result_bits;
-                                drop(cache);
-                                inc_ref_bits(_py, result);
-                                return result;
-                            }
-                        }
-                    }
-                    drop(cache);
-                }
-            }
-
-            // --- Slow path: resolve name, do full lookup, populate cache ---
             let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
                 return MoltObject::none().bits();
             };
             let out = molt_get_attr_name(obj_bits, name_bits);
-
-            // Try to populate the result IC for cacheable types.
-            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                let type_id = object_type_id(obj_ptr);
-                if (crate::object::heap_kind_has_class_shape(type_id)
-                    || type_id == TYPE_ID_DATACLASS
-                    || type_id == TYPE_ID_TYPE)
-                    && out != 0
-                    && !obj_from_bits(out).is_none()
-                    && !exception_pending(_py)
-                {
-                    // Only cache class-level (MRO) results - not instance attributes.
-                    // Check whether this result came from the class MRO by doing a
-                    // class-only lookup and comparing the result.
-                    let class_bits = if type_id == TYPE_ID_TYPE {
-                        MoltObject::from_ptr(obj_ptr).bits()
-                    } else {
-                        object_class_bits(obj_ptr)
-                    };
-                    if class_bits != 0
-                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                        && object_type_id(class_ptr) == TYPE_ID_TYPE
-                        && let Some(mro_bits) = class_attr_lookup_raw_mro(_py, class_ptr, name_bits)
-                    {
-                        // SAFETY: Only cache results where descriptor binding
-                        // did NOT produce an instance-specific value. If the
-                        // raw MRO result equals the final result, no descriptor
-                        // binding occurred (the value is a plain class variable,
-                        // not a function/property/classmethod). Caching
-                        // descriptor-bound results (bound methods, property
-                        // getter results) would serve the wrong instance.
-                        let cacheable = out == mro_bits || (!obj_from_bits(mro_bits).is_ptr());
-
-                        if cacheable {
-                            profile_hit_unchecked(&ATTR_IC_RESULT_MISS_COUNT);
-                            let current_version = global_type_version();
-                            let entry = AttrICEntry {
-                                name_bits,
-                                result_bits: out,
-                                type_version: current_version,
-                                obj_type_id: type_id,
-                                class_bits,
-                            };
-                            entry.retain_owned_refs(_py);
-                            let mut cache = attr_ic_result_cache(_py)
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            if let Some(old) = cache.insert(site_id, entry) {
-                                drop(cache);
-                                old.release_owned_refs(_py);
-                            }
-                        }
-                    }
-                }
-            }
-
             dec_ref_bits(_py, name_bits);
             out
         })
@@ -2213,13 +2106,15 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttrICEntry, attributes_clear_runtime_state};
+    use super::{attr_name_bits_for_site, attributes_clear_runtime_state};
     use crate::{
-        MoltObject, PyToken, alloc_dict_with_pairs, alloc_string, dec_ref_bits,
-        header_from_obj_ptr, runtime_state,
+        MoltObject, PyToken, alloc_dict_with_pairs, alloc_string, dec_ref_bits, inc_ref_bits,
+        obj_from_bits, runtime_state,
     };
     use num_bigint::BigInt;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static CUSTOM_GETATTRIBUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 
     extern "C" fn visibility_probe() -> u64 {
         MoltObject::none().bits()
@@ -2233,7 +2128,61 @@ mod tests {
 
     fn refcount(bits: u64) -> u32 {
         let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
-        unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    fn runtime_function_bits(
+        _py: &PyToken<'_>,
+        name: &'static str,
+        target: *const (),
+        arity: u64,
+    ) -> u64 {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(name, target),
+            arity,
+        );
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn test_class_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
+        let builtins = crate::builtin_classes(_py);
+        let name_bits = string_bits(_py, name);
+        let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
+        assert!(!obj_from_bits(namespace_bits).is_none());
+        for &(attr_name, value_bits) in attrs {
+            let attr_bits = string_bits(_py, attr_name);
+            assert_eq!(
+                crate::c_api::molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+                0
+            );
+            dec_ref_bits(_py, attr_bits);
+        }
+        let class_bits = crate::builtins::types::molt_type_new(
+            builtins.type_obj,
+            name_bits,
+            MoltObject::none().bits(),
+            namespace_bits,
+            MoltObject::none().bits(),
+        );
+        assert!(!obj_from_bits(class_bits).is_none());
+        assert!(!crate::exception_pending(_py));
+        dec_ref_bits(_py, namespace_bits);
+        dec_ref_bits(_py, name_bits);
+        class_bits
+    }
+
+    unsafe fn test_instance_bits(_py: &PyToken<'_>, class_bits: u64) -> u64 {
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("test class");
+        let instance_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        assert!(!obj_from_bits(instance_bits).is_none());
+        instance_bits
+    }
+
+    extern "C" fn changing_getattribute(_self_bits: u64, _name_bits: u64) -> u64 {
+        let call = CUSTOM_GETATTRIBUTE_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+        MoltObject::from_int(call as i64).bits()
     }
 
     #[test]
@@ -2245,7 +2194,7 @@ mod tests {
             let class_ptr = MoltObject::from_bits(class_bits).as_ptr().unwrap();
             let invalid_name = MoltObject::from_int(17).bits();
             for (operation, name, expected_error, routes) in [
-                ("get", "__missing_boxed_attribute__", "AttributeError", 9),
+                ("get", "__missing_boxed_attribute__", "AttributeError", 8),
                 ("set", "__name__", "TypeError", 5),
                 ("del", "__missing_boxed_attribute__", "AttributeError", 4),
             ] {
@@ -2283,12 +2232,6 @@ mod tests {
                             ),
                             ("get", 6) => crate::molt_object_getattribute(class_bits, name_bits),
                             ("get", 7) => crate::molt_type_getattribute(class_bits, name_bits),
-                            ("get", 8) => crate::object::accessors::molt_getattr_ic_slow(
-                                class_ptr,
-                                name.as_ptr(),
-                                name.len() as u64,
-                                0,
-                            ),
                             ("set", 0) => {
                                 super::molt_set_attr_name(class_bits, name_bits, invalid_name)
                             }
@@ -2358,12 +2301,6 @@ mod tests {
                 Some("BoxedAttributeErrors")
             );
             assert!(!crate::exception_pending(_py));
-            // The no-GIL probe is a boxed-hit-or-raw-miss protocol, not an
-            // exception-returning API: its explicit zero miss must survive.
-            assert_eq!(
-                unsafe { crate::object::accessors::molt_ic_probe_fast(std::ptr::null_mut(), 0) },
-                0u64
-            );
             dec_ref_bits(_py, actual_name);
             dec_ref_bits(_py, name_key);
             dec_ref_bits(_py, class_bits);
@@ -2552,16 +2489,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(17, string_bits(_py, b"site-name"));
-            attributes.attr_ic_result_cache.lock().unwrap().insert(
-                23,
-                AttrICEntry {
-                    name_bits: string_bits(_py, b"ic-name"),
-                    result_bits: string_bits(_py, b"ic-result"),
-                    type_version: 1,
-                    obj_type_id: 2,
-                    class_bits: string_bits(_py, b"ic-class"),
-                },
-            );
 
             for (idx, slot) in attributes.object_slots().iter().enumerate() {
                 let label = format!("attributes-slot-{idx}");
@@ -2571,7 +2498,6 @@ mod tests {
             attributes_clear_runtime_state(_py, state);
 
             assert!(attributes.attr_site_name_cache.lock().unwrap().is_empty());
-            assert!(attributes.attr_ic_result_cache.lock().unwrap().is_empty());
             assert_eq!(
                 attributes.wrapper_members_version.load(Ordering::Acquire),
                 0
@@ -2659,67 +2585,158 @@ mod tests {
     }
 
     #[test]
-    fn attr_ic_entry_owns_class_bits_through_replacement_and_clear() {
+    fn attr_site_name_cache_releases_replaced_and_cleared_names() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             attributes_clear_runtime_state(_py, state);
-            let attributes = &state.attributes;
+            let first = unsafe { attr_name_bits_for_site(_py, 42, b"first-name") }.unwrap();
+            inc_ref_bits(_py, first);
+            dec_ref_bits(_py, first);
+            let first_with_cache = refcount(first);
 
-            let first_name = string_bits(_py, b"first-name");
-            let first_result = string_bits(_py, b"first-result");
-            let first_class = string_bits(_py, b"first-class");
-            let second_name = string_bits(_py, b"second-name");
-            let second_result = string_bits(_py, b"second-result");
-            let second_class = string_bits(_py, b"second-class");
-
-            let first = AttrICEntry {
-                name_bits: first_name,
-                result_bits: first_result,
-                type_version: 1,
-                obj_type_id: 2,
-                class_bits: first_class,
-            };
-            first.retain_owned_refs(_py);
-            assert_eq!(refcount(first_class), 2);
-            attributes
-                .attr_ic_result_cache
-                .lock()
-                .unwrap()
-                .insert(42, first);
-
-            let second = AttrICEntry {
-                name_bits: second_name,
-                result_bits: second_result,
-                type_version: 2,
-                obj_type_id: 3,
-                class_bits: second_class,
-            };
-            second.retain_owned_refs(_py);
-            let old = attributes
-                .attr_ic_result_cache
-                .lock()
-                .unwrap()
-                .insert(42, second)
-                .unwrap();
-            old.release_owned_refs(_py);
-
-            assert_eq!(refcount(first_class), 1);
-            assert_eq!(refcount(second_class), 2);
+            let second = unsafe { attr_name_bits_for_site(_py, 42, b"second-name") }.unwrap();
+            assert_eq!(refcount(first) + 1, first_with_cache);
+            assert_eq!(
+                crate::string_obj_to_owned(MoltObject::from_bits(second)).as_deref(),
+                Some("second-name")
+            );
+            inc_ref_bits(_py, second);
+            dec_ref_bits(_py, second);
+            let second_with_cache = refcount(second);
 
             attributes_clear_runtime_state(_py, state);
-            assert_eq!(refcount(second_class), 1);
+            assert_eq!(refcount(second) + 1, second_with_cache);
 
-            for bits in [
-                first_name,
-                first_result,
-                first_class,
-                second_name,
-                second_result,
-                second_class,
-            ] {
-                dec_ref_bits(_py, bits);
-            }
+            dec_ref_bits(_py, first);
+            dec_ref_bits(_py, second);
+        });
+    }
+
+    #[test]
+    fn attr_object_ic_uses_requested_name_when_a_site_is_reused() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = test_class_bits(_py, b"SiteCollisionOwner", &[]);
+            let instance_bits = unsafe { test_instance_bits(_py, class_bits) };
+            let first_name = string_bits(_py, b"first");
+            let second_name = string_bits(_py, b"second");
+            assert_eq!(
+                super::molt_set_attr_name(
+                    instance_bits,
+                    first_name,
+                    MoltObject::from_int(11).bits()
+                ),
+                MoltObject::none().bits()
+            );
+            assert_eq!(
+                super::molt_set_attr_name(
+                    instance_bits,
+                    second_name,
+                    MoltObject::from_int(22).bits(),
+                ),
+                MoltObject::none().bits()
+            );
+            let site = MoltObject::from_int(700).bits();
+            assert_eq!(
+                unsafe {
+                    super::molt_get_attr_object_ic(instance_bits, b"first".as_ptr(), 5, site)
+                },
+                MoltObject::from_int(11).bits()
+            );
+            assert_eq!(
+                unsafe {
+                    super::molt_get_attr_object_ic(instance_bits, b"second".as_ptr(), 6, site)
+                },
+                MoltObject::from_int(22).bits()
+            );
+            assert!(!crate::exception_pending(_py));
+
+            attributes_clear_runtime_state(_py, runtime_state(_py));
+            dec_ref_bits(_py, second_name);
+            dec_ref_bits(_py, first_name);
+            dec_ref_bits(_py, instance_bits);
+            dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn attr_object_ic_observes_each_receivers_instance_shadow() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let class_bits = test_class_bits(
+                _py,
+                b"InstanceShadowOwner",
+                &[(b"value", MoltObject::from_int(3).bits())],
+            );
+            let first = unsafe { test_instance_bits(_py, class_bits) };
+            let second = unsafe { test_instance_bits(_py, class_bits) };
+            let name_bits = string_bits(_py, b"value");
+            assert_eq!(
+                super::molt_set_attr_name(first, name_bits, MoltObject::from_int(31).bits()),
+                MoltObject::none().bits()
+            );
+            assert_eq!(
+                super::molt_set_attr_name(second, name_bits, MoltObject::from_int(32).bits()),
+                MoltObject::none().bits()
+            );
+            let site = MoltObject::from_int(701).bits();
+            assert_eq!(
+                unsafe { super::molt_get_attr_object_ic(first, b"value".as_ptr(), 5, site) },
+                MoltObject::from_int(31).bits()
+            );
+            assert_eq!(
+                unsafe { super::molt_get_attr_object_ic(second, b"value".as_ptr(), 5, site) },
+                MoltObject::from_int(32).bits()
+            );
+            assert!(!crate::exception_pending(_py));
+
+            attributes_clear_runtime_state(_py, runtime_state(_py));
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, second);
+            dec_ref_bits(_py, first);
+            dec_ref_bits(_py, class_bits);
+        });
+    }
+
+    #[test]
+    fn attr_object_ic_runs_custom_getattribute_on_every_lookup() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let hook_bits = runtime_function_bits(
+                _py,
+                "changing_getattribute",
+                changing_getattribute as *const (),
+                2,
+            );
+            let class_bits = test_class_bits(
+                _py,
+                b"ChangingGetattributeOwner",
+                &[(b"__getattribute__", hook_bits)],
+            );
+            dec_ref_bits(_py, hook_bits);
+            let instance_bits = unsafe { test_instance_bits(_py, class_bits) };
+            CUSTOM_GETATTRIBUTE_CALLS.store(0, Ordering::SeqCst);
+            let site = MoltObject::from_int(702).bits();
+
+            assert_eq!(
+                unsafe {
+                    super::molt_get_attr_object_ic(instance_bits, b"probe".as_ptr(), 5, site)
+                },
+                MoltObject::from_int(1).bits()
+            );
+            assert_eq!(
+                unsafe {
+                    super::molt_get_attr_object_ic(instance_bits, b"probe".as_ptr(), 5, site)
+                },
+                MoltObject::from_int(2).bits()
+            );
+            assert_eq!(CUSTOM_GETATTRIBUTE_CALLS.load(Ordering::SeqCst), 2);
+            assert!(!crate::exception_pending(_py));
+
+            attributes_clear_runtime_state(_py, runtime_state(_py));
+            dec_ref_bits(_py, instance_bits);
+            dec_ref_bits(_py, class_bits);
         });
     }
 }

@@ -268,12 +268,9 @@ class ImportLoweringMixin(_MixinBase):
             return next(iter(symbols)), 0
         requirements = 0
         for module in protected_modules:
-            symbol, bits = self._runtime_qualified_callable_requirement(
+            requirements |= self._runtime_qualified_callable_requirement_bits(
                 module, attr_name
             )
-            requirements |= bits
-            if symbol is not None:
-                requirements |= SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS[symbol]
         return None, requirements
 
     def _begin_module_provenance_flow(
@@ -341,6 +338,17 @@ class ImportLoweringMixin(_MixinBase):
         if requirement_bits:
             return {"runtime_requirement_bits": requirement_bits}
         return None
+
+    def _runtime_qualified_callable_requirement_bits(
+        self, module_name: str | None, attr_name: str
+    ) -> int:
+        """Project possible callable provenance without claiming exact identity."""
+        symbol, bits = self._runtime_qualified_callable_requirement(
+            module_name, attr_name
+        )
+        if symbol is not None:
+            bits |= SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS[symbol]
+        return bits
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool:
         if module_name in self.known_modules:

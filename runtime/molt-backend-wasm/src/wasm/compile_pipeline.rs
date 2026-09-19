@@ -117,7 +117,6 @@ impl WasmBackend {
             .filter(|function| !function.is_extern)
         {
             crate::fold_constants(&mut func_ir.ops);
-            crate::passes::hoist_loop_invariants(func_ir);
         }
         split_wasm_megafunctions(&mut ir);
         super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info);

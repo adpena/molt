@@ -146,7 +146,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 #### 2a. Positional/keyword/defaults/*args/**kwargs binding
 
-**UPSTREAM.** The call visitor (`visitors/calls.py`) is extensive. Fast path: direct function calls with known arity emit `call_func`/`call_guarded` or direct `call` with packed arguments. Variadic path: `CALLARGS_NEW` → `CALLARGS_PUSH_POS`/`CALLARGS_PUSH_KW`/`CALLARGS_EXPAND_STAR`/`CALLARGS_EXPAND_KWSTAR` → `CALL_BIND`. IC infrastructure: `_next_ic_index` (`_types.py:104`) feeds IC slots into `call_bind` ops.
+**UPSTREAM.** The call visitor (`visitors/calls.py`) is extensive. Fast path: direct function calls with known arity emit `call_func`/`call_guarded` or direct `call` with packed arguments. Variadic path: `CALLARGS_NEW` → `CALLARGS_PUSH_POS`/`CALLARGS_PUSH_KW`/`CALLARGS_EXPAND_STAR`/`CALLARGS_EXPAND_KWSTAR` → `CALL_BIND`. Cache-site identity is derived from the function and stable source-operation index; there is no frontend process-global IC allocator.
 
 **DOWNSTREAM.** `call_bind` (IC lineage): the native backend implements a dispatch-IC for `call_bind` ops (block_versioning pass + the 7× dispatch IC improvement from 2026-06-04 swarm). The LLVM backend has separate arms.
 

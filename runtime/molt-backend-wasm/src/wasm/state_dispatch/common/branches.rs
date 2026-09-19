@@ -6,7 +6,6 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_plan::wasm_scalar_truthiness_fast_path_for_name;
 use crate::wasm_values::emit_branch_truthiness_i32;
 use crate::{FunctionIR, OpIR};
-use std::collections::BTreeSet;
 use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(in crate::wasm::state_dispatch) fn emit_dispatch_if(
@@ -84,13 +83,11 @@ pub(in crate::wasm::state_dispatch) fn emit_dispatch_check_exception(
     op: &OpIR,
     idx: usize,
     depth: u32,
-    exception_regions: &BTreeSet<usize>,
 ) {
     let async_work_poll = op.is_async_work_poll();
-    if !async_work_poll && (op_emitter.native_eh_enabled || exception_regions.contains(&idx)) {
-        emit_set_state_and_br(func, locals.state_local, idx + 1, depth);
-        return;
-    }
+    // Each observer carries its actual exceptional successor. Handler/else
+    // membership and source order cannot suppress a live check; dispatch uses
+    // the polling exception protocol even when native EH was requested.
     let target_label = op.value.unwrap_or_else(|| {
         dispatch_control_panic(
             &op_emitter.func_ir.name,

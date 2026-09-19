@@ -11,6 +11,5 @@ enum DispatchMode {
     Jumpful,
 }
 
-pub(super) use common::exception_handler_region_indices;
 pub(super) use emit::{emit_jumpful_dispatch, emit_stateful_dispatch};
 pub(super) use plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};

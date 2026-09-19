@@ -38,7 +38,6 @@ from molt.frontend.lowering.serialization_loop_string_async_ops import (
 from molt.frontend.lowering.serialization_object_attr_ops import (
     SerializationObjectAttrOpsMixin,
 )
-from molt.frontend.lowering.try_regions import try_region_id
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -74,7 +73,7 @@ class SerializationMixin(
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int:
-        raw = try_region_id(op) if op.kind in {"TRY_START", "TRY_END"} else op.args[0]
+        raw = op.args[0]
         if isinstance(raw, bool):
             return int(raw)
         if isinstance(raw, int):
@@ -539,39 +538,6 @@ class SerializationMixin(
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         emit_function_frame = self._function_needs_frame_trace(function_name)
 
-        # The midend LICM pass hoists CONST_NONE ops out of loops, and the
-        # CSE then merges them with earlier CONST_NONE ops in the pre-loop
-        # block.  This creates an alias (e.g. v187 -> v182) but the alias
-        # only applies within the pre-loop block.  The IS instruction that
-        # originally used v187 remains inside the loop, now referencing an
-        # undefined variable.  The Cranelift backend defaults undefined i64
-        # variables to 0, and since box_none() != 0, the IS(exc, none) check
-        # always returns False, causing raise_if_pending to fire spuriously
-        # with a TypeError.
-        #
-        # Fix: collect all variable names produced by CONST_NONE ops after
-        # the midend.  In the lowering loop, re-emit const_none immediately
-        # before every IS instruction that references one of these variables
-        # to guarantee the definition and use share the same Cranelift block.
-        const_none_vars: set[str] = {
-            o.result.name
-            for o in ops
-            if o.kind == "CONST_NONE" and o.result.name != "none"
-        }
-        # Also collect variables that WERE produced by CONST_NONE but whose
-        # definition was eliminated by DCE/CSE.  These are variables
-        # referenced in IS args whose names are NOT defined by any op.
-        defined_vars: set[str] = {o.result.name for o in ops if o.result.name != "none"}
-        for o in ops:
-            if o.kind == "IS":
-                for a in o.args:
-                    if (
-                        isinstance(a, MoltValue)
-                        and a.type_hint == "None"
-                        and a.name not in defined_vars
-                    ):
-                        const_none_vars.add(a.name)
-
         # Track json_ops start index for each MoltOp so we can inject
         # expression-level col_offset after the main serialization loop.
         _col_inject: list[tuple[int, MoltOp]] = []
@@ -580,7 +546,6 @@ class SerializationMixin(
             _col_inject.append((serialized_start, op))
             ctx = SerializationContext(
                 json_ops=json_ops,
-                const_none_vars=const_none_vars,
                 json_list_int_containers=json_list_int_containers,
                 function_name=function_name,
             )

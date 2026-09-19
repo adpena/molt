@@ -8,7 +8,8 @@ mod pre_ssa;
 mod type_inference;
 
 use self::loop_structure::{detect_loop_cond_blocks, detect_loop_structure};
-use self::pre_ssa::{rewrite_cell_locals_to_store_load, rewrite_loop_index_to_store_load};
+use self::pre_ssa::rewrite_cell_locals_to_store_load;
+pub use self::pre_ssa::rewrite_loop_index_to_store_load;
 use self::type_inference::param_string_to_tir_type;
 #[cfg(test)]
 use self::type_inference::string_to_tir_type;

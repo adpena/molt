@@ -100,6 +100,12 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Delegate deliberately
 
+- Before designing, implementing, or deleting, every worker must search the
+  current canonical authority, relevant history and recorded handoffs, and
+  preserved WIP/donor trees for an existing solution. Report what already owns
+  the invariant and what will be reused, reconciled, or retired. Task messages
+  and remembered summaries are leads to verify, not permission to build a
+  second implementation. Ask the integrator when ownership or custody is unclear.
 - Use subagents for independent, bounded work that benefits from parallel
   attention or would pollute the orchestrator context: exploration, audits, log
   analysis, proof review, mechanical migration, and disjoint implementation.
@@ -113,6 +119,11 @@ tests, measurements, and explicit user direction over stale prose.
 - Match model speed and reasoning effort to the task: strongest available
   reasoning for load-bearing architecture and correctness; faster workers for
   well-bounded scans and mechanical work.
+- Respect the operator's active cap (currently two additional Codex workers).
+  Use Astra for the most complex, mission-critical or long-running reasoning;
+  calibrate other workers' models and effort to their scopes. Claude Fable/Opus
+  may provide independent design or review when available, under the same search,
+  ownership and evidence discipline; they do not create a second integration lane.
 
 ## Verify the claim, not the ritual
 

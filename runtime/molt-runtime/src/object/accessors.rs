@@ -2,7 +2,6 @@ use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
 use super::field_storage::{self, FieldStorage};
-use super::inline_cache::{IC_TABLE_CAPACITY, global_ic_table};
 use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
@@ -11,11 +10,11 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_TYPE,
-    attr_name_bits_from_bytes, builtin_classes_if_initialized, class_field_offset,
-    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_set_in_place,
-    exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, is_missing_bits,
-    obj_from_bits, object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs,
-    object_payload_size, object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
+    builtin_classes_if_initialized, class_layout_version_bits, dec_ref_bits, dict_get_in_place,
+    dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
+    is_missing_bits, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
+    object_mark_has_ptrs, object_payload_size, object_type_id, profile_hit, raise_exception,
+    to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -36,25 +35,6 @@ fn debug_field_enabled() -> bool {
 fn debug_guard_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_GUARD").is_ok())
-}
-
-#[inline(always)]
-unsafe fn attr_ic_class_key(obj_ptr: *mut u8) -> Option<(u64, *mut u8, u64)> {
-    unsafe {
-        let type_id = object_type_id(obj_ptr);
-        if !super::heap_kind_has_class_shape(type_id) && type_id != TYPE_ID_DATACLASS {
-            return None;
-        }
-        let class_bits = object_class_bits(obj_ptr);
-        if class_bits == 0 {
-            return None;
-        }
-        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return None;
-        }
-        Some((class_bits, class_ptr, class_layout_version_bits(class_ptr)))
-    }
 }
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {
@@ -680,140 +660,6 @@ pub unsafe extern "C" fn molt_object_field_init(
                 return MoltObject::none().bits();
             };
             object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// IC-accelerated attribute access
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// GIL-free inline-cache probe for the native backend's split-phase IC.
-//
-// The native backend emits:
-//   fast_result = molt_ic_probe_fast(obj_ptr, ic_index)
-//   if fast_result != 0:
-//       result = fast_result   // IC hit — no function-call overhead for getattr
-//   else:
-//       result = molt_getattr_ic_slow(obj_ptr, attr_name_ptr, attr_len, ic_index)
-//
-// This function performs *only* the IC probe and the slot read.  It does NOT
-// acquire the GIL because:
-//   - The IC fields are atomics with relaxed ordering (safe without GIL).
-//   - The object header and payload are immutable during single-threaded
-//     execution (the GIL is held by the caller at the compiled-code level).
-//   - The refcount bump is a relaxed atomic add.
-//
-// Returns the NaN-boxed slot value on hit (with refcount incremented), or 0
-// on any miss.
-// ---------------------------------------------------------------------------
-
-/// # Safety
-/// `obj_ptr` must point to a valid molt object (or be null, which returns 0).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> u64 {
-    unsafe {
-        if obj_ptr.is_null() {
-            return 0;
-        }
-
-        // Materialization retires inferred inline words. The slow path knows
-        // whether this offset is a real slot or dictionary-backed attribute.
-        if instance_dict_bits(obj_ptr) != 0 {
-            return 0;
-        }
-
-        let Some((class_bits, _class_ptr, class_version)) = attr_ic_class_key(obj_ptr) else {
-            return 0;
-        };
-
-        let Some(idx) = usize_from_bits(ic_index) else {
-            return 0;
-        };
-        if idx >= IC_TABLE_CAPACITY {
-            return 0;
-        }
-
-        let ic = global_ic_table().get(idx);
-
-        if let Some(cached_offset) = ic.probe(class_bits, class_version) {
-            let offset = cached_offset as usize;
-            let payload = object_payload_size(obj_ptr);
-            if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
-                let slot = obj_ptr.add(offset) as *const u64;
-                let bits = *slot;
-                // Skip uninitialised / missing sentinel slots.
-                if bits != 0 {
-                    // Check for the "missing" sentinel — canonical NaN-boxed None.
-                    let none_bits = molt_obj_model::MoltObject::none().bits();
-                    if bits != none_bits {
-                        // Bump refcount — safe as a relaxed atomic even without GIL.
-                        let ptr = obj_from_bits(bits).as_ptr();
-                        if let Some(p) = ptr {
-                            let header = p.sub(std::mem::size_of::<super::MoltHeader>())
-                                as *mut super::MoltHeader;
-                            let flags = (*header).load_synchronized_flags();
-                            (*header).retain_owned_mirrored(bits, 1, "molt_ic_probe_fast", flags);
-                        }
-                        return bits;
-                    }
-                }
-            }
-        }
-
-        0 // miss
-    }
-}
-
-/// IC slow path: full attribute resolution with GIL, populates the IC on success.
-///
-/// This is the complement to `molt_ic_probe_fast`.  The caller already did the
-/// IC probe and got a miss, so this function skips the probe and goes straight
-/// to full attribute resolution.  On a successful lookup it populates the IC
-/// entry so subsequent calls hit the fast path.
-///
-/// # Safety
-/// Same preconditions as `molt_getattr_ic`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_getattr_ic_slow(
-    obj_ptr: *mut u8,
-    attr_name_ptr: *const u8,
-    attr_name_len_bits: u64,
-    ic_index: u64,
-) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            if obj_ptr.is_null() {
-                return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
-            }
-
-            let idx = usize_from_bits(ic_index).unwrap_or(IC_TABLE_CAPACITY);
-
-            // Full resolution.
-            let result = crate::molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits);
-
-            // Populate the IC on success.
-            if idx < IC_TABLE_CAPACITY
-                && result != 0
-                && !obj_from_bits(result).is_none()
-                && !exception_pending(_py)
-                && let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
-                && let Some(attr_len) = usize_from_bits(attr_name_len_bits)
-            {
-                let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                    if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                        && offset <= u32::MAX as usize
-                    {
-                        let ic = global_ic_table().get(idx);
-                        ic.update(class_bits, offset as u32, class_version);
-                    }
-                    dec_ref_bits(_py, attr_bits);
-                }
-            }
-
-            result
         })
     }
 }

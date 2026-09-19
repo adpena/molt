@@ -4,6 +4,7 @@ impl LuauBackend {
     pub(super) fn emit_return_op(&mut self, op: &OpIR) -> bool {
         match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
             molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => {
+                self.emit_line("molt_exception_propagate()");
                 let value = op
                     .args
                     .as_deref()
@@ -12,6 +13,7 @@ impl LuauBackend {
                 self.emit_line(&format!("return {}", sanitize_ident(value)));
             }
             molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
+                self.emit_line("molt_exception_propagate()");
                 self.emit_line("return");
             }
             molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::NotReturn => return false,

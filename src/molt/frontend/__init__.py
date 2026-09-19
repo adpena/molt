@@ -22,10 +22,6 @@ from typing import (
 # source also covers the compat / cfg_analysis / type_facts names the assembly
 # class uses (they are re-exported from _types).
 from molt.frontend._types import (
-    _IC_TABLE_CAPACITY,
-    _ic_counter,
-    _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
-    _next_ic_index,
     MoltValue,
     MoltOp,
     SCCPResult,
@@ -157,10 +153,6 @@ from molt.frontend.visitors.statement_control_flow import (
 from molt.frontend.visitors.statement_scope import StatementScopeVisitorMixin
 
 __all__ = [
-    "_IC_TABLE_CAPACITY",
-    "_ic_counter",
-    "_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF",
-    "_next_ic_index",
     "MoltValue",
     "MoltOp",
     "SCCPResult",
@@ -289,9 +281,6 @@ def compile_to_tir(
     type_hint_policy: Literal["ignore", "trust", "check"] = "ignore",
     fallback_policy: FallbackPolicy = "error",
 ) -> dict[str, Any]:
-    # Reset the IC counter so that repeated compilations of the same source
-    # produce identical IR (determinism guarantee).
-    _ic_counter[0] = 0
     tree = ast.parse(source)
     gen = SimpleTIRGenerator(
         parse_codec=parse_codec,

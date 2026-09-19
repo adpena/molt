@@ -523,9 +523,6 @@ class MidendDataflowMixin(_MixinBase):
         executable_edges: set[tuple[int, int]] = set()
         branch_choice_by_if_index: dict[int, bool] = {}
         loop_break_choice_by_index: dict[int, bool] = {}
-        try_exception_possible_by_start: dict[int, bool] = {}
-        try_normal_possible_by_start: dict[int, bool] = {}
-        guard_fail_indices: set[int] = set()
         loop_bound_facts = self._analyze_loop_bound_facts(ops, cfg)
         loop_compare_truth = self._analyze_affine_loop_compare_truth(ops, cfg)
 
@@ -926,110 +923,6 @@ class MidendDataflowMixin(_MixinBase):
                 return _SCCP_OVERDEFINED
             return _SCCP_OVERDEFINED
 
-        def evaluate_try_behavior(start_idx: int, end_idx: int) -> tuple[bool, bool]:
-            known: dict[str, Any] = {}
-            may_raise = False
-            may_complete_normally = True
-            if end_idx <= start_idx + 1:
-                return False, True
-            for op_idx in range(start_idx + 1, end_idx):
-                op = ops[op_idx]
-                invalidate_heap_facts(op, known)
-                if op.kind in {
-                    "IF",
-                    "ELSE",
-                    "END_IF",
-                    "LOOP_START",
-                    "LOOP_END",
-                    "LOOP_BREAK",
-                    "LOOP_BREAK_IF_TRUE",
-                    "LOOP_BREAK_IF_FALSE",
-                    "LOOP_BREAK_IF_EXCEPTION",
-                    "LOOP_CONTINUE",
-                    "TRY_START",
-                    "TRY_END",
-                    "JUMP",
-                    "LABEL",
-                    "STATE_LABEL",
-                }:
-                    return True, True
-                if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
-                    guarded = op.args[0]
-                    expected = op.args[1]
-                    if isinstance(guarded, MoltValue) and isinstance(
-                        expected, MoltValue
-                    ):
-                        expected_value = value_lattice(expected.name, known)
-                        guarded_tag = value_type_tag(guarded.name, known)
-                        if (
-                            isinstance(expected_value, int)
-                            and guarded_tag is not None
-                            and guarded_tag == expected_value
-                        ):
-                            known[type_fact_key(guarded.name)] = expected_value
-                            continue
-                    return True, False
-                if op.kind == "GUARD_DICT_SHAPE" and len(op.args) == 3:
-                    guarded = op.args[0]
-                    dict_type = op.args[1]
-                    version = op.args[2]
-                    if (
-                        isinstance(guarded, MoltValue)
-                        and isinstance(dict_type, MoltValue)
-                        and isinstance(version, MoltValue)
-                    ):
-                        shape_key = dict_shape_fact_key(guarded.name)
-                        expected = (dict_type.name, version.name)
-                        known_shape = known.get(shape_key)
-                        if isinstance(known_shape, tuple):
-                            if known_shape == expected:
-                                continue
-                            return True, False
-                        known[shape_key] = expected
-                        continue
-                    return True, True
-                if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
-                    return True, False
-                out_name = op.result.name
-                lattice_value: Any = _SCCP_UNKNOWN
-                if out_name != "none":
-                    known.pop(out_name, None)
-                    known.pop(type_fact_key(out_name), None)
-                    known.pop(dict_shape_fact_key(out_name), None)
-                    lattice_value = _admit_sccp_value(
-                        eval_lattice_value(op, known, op_idx)
-                    )
-                    if (
-                        lattice_value is not _SCCP_UNKNOWN
-                        and lattice_value is not _SCCP_OVERDEFINED
-                    ):
-                        known[out_name] = lattice_value
-                        tag = self._const_type_tag_for_lattice_value(lattice_value)
-                        if tag is not None:
-                            known[type_fact_key(out_name)] = tag
-                if self._op_may_raise_for_sccp(op.kind):
-                    if (
-                        lattice_value is _SCCP_OVERDEFINED
-                        or lattice_value is _SCCP_UNKNOWN
-                    ):
-                        may_raise = True
-            return may_raise, may_complete_normally
-
-        for try_start_idx, try_end_idx in cfg.control.try_start_to_end.items():
-            may_raise, may_complete_normally = evaluate_try_behavior(
-                try_start_idx, try_end_idx
-            )
-            try_exception_possible_by_start[try_start_idx] = may_raise
-            try_normal_possible_by_start[try_start_idx] = may_complete_normally
-        check_exception_try_owner: dict[int, int] = {}
-        for try_start_idx, try_end_idx in cfg.control.try_start_to_end.items():
-            for op_idx in range(try_start_idx + 1, try_end_idx):
-                if op_idx >= len(ops) or ops[op_idx].kind != "CHECK_EXCEPTION":
-                    continue
-                owner = check_exception_try_owner.get(op_idx)
-                if owner is None or try_start_idx > owner:
-                    check_exception_try_owner[op_idx] = try_start_idx
-
         iterations = 0
         ssa_defs = sum(1 for op in ops if op.result.name != "none")
         if max_iters_override is None or max_iters_override <= 0:
@@ -1105,9 +998,6 @@ class MidendDataflowMixin(_MixinBase):
                 all_edges = {
                     (src, dst) for src, succs in cfg.successors.items() for dst in succs
                 }
-                conservative_try = {
-                    start_idx: True for start_idx in cfg.control.try_start_to_end
-                }
                 return SCCPResult(
                     in_values={block.id: {} for block in cfg.blocks},
                     out_values={block.id: {} for block in cfg.blocks},
@@ -1115,9 +1005,6 @@ class MidendDataflowMixin(_MixinBase):
                     executable_edges=all_edges,
                     branch_choice_by_if_index={},
                     loop_break_choice_by_index={},
-                    try_exception_possible_by_start=conservative_try,
-                    try_normal_possible_by_start=dict(conservative_try),
-                    guard_fail_indices=set(),
                 )
 
             block_id = block_queue.popleft()
@@ -1142,9 +1029,6 @@ class MidendDataflowMixin(_MixinBase):
 
             known = dict(new_in)
             block_traps = False
-            # Newly executable predecessors can remove a must-fact which made
-            # a guard look certain to fail in an earlier transfer.
-            guard_fail_indices.difference_update(range(block.start, block.end))
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 # Include no-result operations: a callback need not produce an
@@ -1163,7 +1047,6 @@ class MidendDataflowMixin(_MixinBase):
                                 guarded_tag is not None
                                 and guarded_tag != expected_value
                             ):
-                                guard_fail_indices.add(op_idx)
                                 block_traps = True
                                 break
                             known[type_fact_key(guarded.name)] = expected_value
@@ -1182,7 +1065,6 @@ class MidendDataflowMixin(_MixinBase):
                         known_shape = known.get(shape_key)
                         if isinstance(known_shape, tuple):
                             if known_shape != expected_shape:
-                                guard_fail_indices.add(op_idx)
                                 block_traps = True
                                 break
                         else:
@@ -1228,9 +1110,9 @@ class MidendDataflowMixin(_MixinBase):
 
             succs = cfg.successors.get(block_id, [])
             chosen_succs = succs
-            if block_traps:
-                chosen_succs = []
-            elif block.start < block.end:
+            # A failing guard sets pending state; CHECK_EXCEPTION still owns
+            # its transfer. Never prune the routing after a known failure.
+            if not block_traps and block.start < block.end:
                 terminator_idx = block.end - 1
                 terminator = ops[terminator_idx]
                 if terminator.kind == "IF" and len(terminator.args) == 1:
@@ -1263,20 +1145,6 @@ class MidendDataflowMixin(_MixinBase):
                         chosen_succs = [succs[1] if break_taken else succs[0]]
                     else:
                         loop_break_choice_by_index.pop(terminator_idx, None)
-                elif terminator.kind == "TRY_START":
-                    can_raise = try_exception_possible_by_start.get(
-                        terminator_idx, True
-                    )
-                    if not can_raise and succs:
-                        chosen_succs = [succs[0]]
-                elif terminator.kind == "CHECK_EXCEPTION":
-                    owner_start = check_exception_try_owner.get(terminator_idx)
-                    if owner_start is not None:
-                        can_raise = try_exception_possible_by_start.get(
-                            owner_start, True
-                        )
-                        if not can_raise and succs:
-                            chosen_succs = [succs[0]]
                 elif terminator.kind == "LOOP_END" and len(succs) >= 2:
                     loop_start_idx = cfg.control.loop_end_to_start.get(terminator_idx)
                     back_succ = (
@@ -1315,9 +1183,6 @@ class MidendDataflowMixin(_MixinBase):
             executable_edges=executable_edges,
             branch_choice_by_if_index=branch_choice_by_if_index,
             loop_break_choice_by_index=loop_break_choice_by_index,
-            try_exception_possible_by_start=try_exception_possible_by_start,
-            try_normal_possible_by_start=try_normal_possible_by_start,
-            guard_fail_indices=guard_fail_indices,
         )
 
     def _sccp_in_const_int_values(self, sccp: SCCPResult) -> dict[int, dict[str, int]]:

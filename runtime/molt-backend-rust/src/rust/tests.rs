@@ -8,6 +8,8 @@ mod cargo_test_artifacts {
     ));
 }
 
+mod labelled_flow;
+
 #[test]
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
@@ -205,7 +207,18 @@ fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary(
             functions: vec![FunctionIR {
                 name: format!("{kind}_test"),
                 params: vec![],
-                ops: vec![op],
+                ops: vec![
+                    op,
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(0),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1194,7 +1207,7 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
 }
 
 #[test]
-fn jump_after_loop_does_not_capture_scoped_set_item_temps() {
+fn jump_after_loop_rejects_an_undefined_target_before_emission() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -1249,77 +1262,13 @@ fn jump_after_loop_does_not_capture_scoped_set_item_temps() {
         profile: None,
     };
 
-    let _source = backend.compile(&ir);
-    let err = backend.unsupported_ops.join(", ");
-    assert!(err.contains("`jump` (rust backend)"), "got: {err}");
+    let err = backend
+        .compile_checked(&ir)
+        .expect_err("undefined label must be rejected");
+    assert!(err.contains("undefined label 1"), "got: {err}");
     assert!(err.contains("helper"), "got: {err}");
-}
-
-#[test]
-fn strip_dead_after_return_skips_jump_after_nested_return_until_else() {
-    let ops = vec![
-        OpIR {
-            kind: "if".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "jump".to_string(),
-            value: Some(1),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "else".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "const".to_string(),
-            out: Some("v0".to_string()),
-            value: Some(1),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "end_if".to_string(),
-            ..OpIR::default()
-        },
-    ];
-
-    let lowered = strip_dead_after_return(&ops);
-    let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["if", "ret_void", "else", "const", "end_if"]);
-}
-
-#[test]
-fn strip_dead_after_return_skips_top_level_jump_after_return() {
-    let ops = vec![
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "jump".to_string(),
-            value: Some(1),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "label".to_string(),
-            value: Some(1),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "const".to_string(),
-            out: Some("v0".to_string()),
-            value: Some(1),
-            ..OpIR::default()
-        },
-    ];
-
-    let lowered = strip_dead_after_return(&ops);
-    let kinds: Vec<&str> = lowered.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["ret_void"]);
+    assert!(backend.output.is_empty());
+    assert!(backend.unsupported_ops.is_empty());
 }
 
 /// An op kind that no dispatch arm claims must fail at the Result boundary.

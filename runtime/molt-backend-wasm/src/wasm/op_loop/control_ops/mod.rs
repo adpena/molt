@@ -6,7 +6,7 @@ use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::is_shared_drop_fact_marker;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use wasm_encoder::Function;
 
 mod branches;
@@ -21,7 +21,6 @@ pub(super) struct ControlOpContext<'a> {
     pub(super) const_cache: &'a ConstantCache,
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
     pub(super) frame: &'a WasmFunctionFrame,
-    pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
     pub(super) control_stack: &'a mut Vec<ControlKind>,
     pub(super) try_stack: &'a mut Vec<usize>,
     pub(super) label_stack: &'a mut Vec<i64>,

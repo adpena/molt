@@ -43,10 +43,10 @@ import os
 import shutil
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol
 
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
@@ -90,12 +90,84 @@ class BackendResult:
     returncode: int
     build_failed: bool = False
     detail: str = ""
+    timed_out: bool = False
+
+    @staticmethod
+    def _text(value: str | bytes | None) -> str:
+        return (
+            value.decode("utf-8", errors="replace")
+            if isinstance(value, bytes)
+            else value or ""
+        )
+
+    @classmethod
+    def from_deadline(
+        cls,
+        *,
+        timeout: float | int,
+        stdout: str | bytes | None = None,
+        stderr: str | bytes | None = None,
+        build_failed: bool = False,
+    ) -> BackendResult:
+        out_text = cls._text(stdout)
+        err_text = cls._text(stderr)
+        deadline = f"timeout after {timeout}s"
+        err_text = "\n".join(part for part in (err_text, deadline) if part)
+        return cls(
+            stdout=None if build_failed else out_text,
+            stderr=(
+                "\n".join(part for part in (out_text, err_text) if part)
+                if build_failed
+                else err_text
+            ),
+            returncode=124,
+            build_failed=build_failed,
+            timed_out=True,
+        )
+
+    @classmethod
+    def from_timeout(
+        cls, exc: subprocess.TimeoutExpired, *, build_failed: bool = False
+    ) -> BackendResult:
+        return cls.from_deadline(
+            timeout=exc.timeout,
+            stdout=exc.stdout,
+            stderr=exc.stderr,
+            build_failed=build_failed,
+        )
+
+    def as_build_failure(self, *, detail: str, fallback: str) -> BackendResult:
+        diagnostics = "\n".join(
+            part for part in (self.stdout or "", self.stderr) if part
+        )
+        return replace(
+            self,
+            stdout=None,
+            stderr=diagnostics or fallback,
+            returncode=self.returncode if self.returncode != 0 else 1,
+            build_failed=True,
+            detail=detail,
+        )
 
 
 @dataclass(frozen=True)
 class BackendAvailability:
     available: bool
     reason: str = ""
+
+
+def stdlib_profile_from_environment(
+    environment: Mapping[str, str],
+) -> Literal["micro", "full"] | None:
+    """Resolve the differential selector once for every execution transport."""
+    raw = environment.get("MOLT_DIFF_STDLIB_PROFILE", "").strip().lower()
+    if not raw:
+        return None
+    if raw == "micro":
+        return "micro"
+    if raw == "full":
+        return "full"
+    raise ValueError("MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +178,7 @@ class BackendExecutionContext:
     build_profile: str
     capabilities: str
     environment: Mapping[str, str]
+    stdlib_profile: Literal["micro", "full"] | None = field(init=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.target_python, TargetPythonVersion):
@@ -118,6 +191,9 @@ class BackendExecutionContext:
             for key, value in self.environment.items()
         ):
             raise TypeError("backend execution environment must be string-to-string")
+        object.__setattr__(
+            self, "stdlib_profile", stdlib_profile_from_environment(self.environment)
+        )
         object.__setattr__(
             self,
             "environment",
@@ -168,19 +244,16 @@ def _apply_fault_injection(backend: str, result: BackendResult) -> BackendResult
     if result.stdout is None:
         # Even a build failure becomes a visible, distinct divergence so the
         # proof can witness the RED regardless of where the fault lands.
-        return BackendResult(
+        return replace(
+            result,
             stdout=f"<MOLT_COMPAT_FAULT_INJECT::{backend}>\n",
-            stderr=result.stderr,
-            returncode=result.returncode,
             build_failed=False,
             detail="fault-injected stdout (was build failure)",
         )
     perturbed = result.stdout + f"<MOLT_COMPAT_FAULT_INJECT::{backend}>\n"
-    return BackendResult(
+    return replace(
+        result,
         stdout=perturbed,
-        stderr=result.stderr,
-        returncode=result.returncode,
-        build_failed=result.build_failed,
         detail="fault-injected stdout",
     )
 
@@ -194,7 +267,7 @@ def _apply_fault_injection(backend: str, result: BackendResult) -> BackendResult
 # machinery, the native adapter is constructed with a callable that runs it
 # (molt_diff.run_molt), keeping the single rich implementation as the source of
 # truth and this module free of an import cycle.
-RunMoltCallable = Callable[..., "tuple[str | None, str, int]"]
+RunMoltCallable = Callable[..., BackendResult]
 
 
 @dataclass
@@ -215,16 +288,10 @@ class NativeAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
-        stdout, stderr, rc = self.run_molt(
+        return self.run_molt(
             file_path,
             context.build_profile,
             execution_context=context,
-        )
-        return BackendResult(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=rc,
-            build_failed=stdout is None,
         )
 
 
@@ -246,12 +313,11 @@ def _guarded_run(
     env: dict[str, str],
     timeout_default: float,
     cwd: str | None = None,
-) -> tuple[str, str, int, bool]:
+) -> BackendResult:
     """Run a child under the shared harness memory guard.
 
-    Returns (stdout, stderr, returncode, timed_out). Every cross-backend build
-    and artifact run goes through the guard so a runaway compile or program can
-    never OOM/hang the host (CLAUDE.md Safe Execution).
+    Every cross-backend build and artifact run returns the canonical typed
+    outcome so deadline and partial-output facts survive adapter boundaries.
     """
     from tools import harness_memory_guard
 
@@ -270,10 +336,18 @@ def _guarded_run(
             text=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        return "", f"timeout after {timeout}s", 124, True
+    except subprocess.TimeoutExpired as exc:
+        return BackendResult.from_timeout(exc)
     timed_out = bool(getattr(proc, "timed_out", False))
-    return proc.stdout, proc.stderr, proc.returncode, timed_out
+    if timed_out:
+        # A guard may terminate a timed-out child with SIGKILL/137. Preserve its
+        # explicit deadline instead of letting the OOM heuristic reinterpret it.
+        return BackendResult.from_deadline(
+            timeout=timeout,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    return BackendResult(proc.stdout, proc.stderr, proc.returncode)
 
 
 def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
@@ -310,6 +384,8 @@ def _build_cmd(
     ]
     if context.capabilities:
         cmd.extend(["--capabilities", context.capabilities])
+    if context.stdlib_profile is not None:
+        cmd.extend(["--stdlib-profile", context.stdlib_profile])
     if extra_build_args:
         cmd.extend(extra_build_args)
     return cmd
@@ -379,7 +455,7 @@ class WasmAdapter:
             context,
             extra_build_args=["--linked", "--require-linked"],
         )
-        b_out, b_err, b_rc, b_to = _guarded_run(
+        build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_WASM_BUILD",
             env=env,
@@ -389,30 +465,21 @@ class WasmAdapter:
         linked = out_dir / "output_linked.wasm"
         if not linked.exists():
             linked = out_dir / "output.wasm"
-        if b_rc != 0 or not linked.exists():
-            return BackendResult(
-                stdout=None,
-                stderr=(b_err or b_out or "wasm build failed"),
-                returncode=b_rc if b_rc != 0 else 1,
-                build_failed=True,
+        if build.returncode != 0 or not linked.exists():
+            return build.as_build_failure(
                 detail="wasm build produced no linked module",
+                fallback="wasm build failed",
             )
         run_env = dict(env)
         manifest = wasm_runtime_manifest_path(linked)
-        r_out, r_err, r_rc, r_to = _guarded_run(
+        result = _guarded_run(
             [shutil.which("node") or "node", str(_RUN_WASM_JS), str(manifest)],
             prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
             timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
-        r_err = _strip_node_noise(r_err)
-        return BackendResult(
-            stdout=r_out,
-            stderr=r_err,
-            returncode=r_rc,
-            build_failed=False,
-        )
+        return replace(result, stderr=_strip_node_noise(result.stderr))
 
 
 def _wasm_stderr_is_noise(line: str) -> bool:
@@ -471,7 +538,7 @@ class LlvmAdapter:
             context,
             extra_build_args=["--emit", "bin", "--output", str(output_binary)],
         )
-        b_out, b_err, b_rc, b_to = _guarded_run(
+        build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_LLVM_BUILD",
             env=env,
@@ -481,26 +548,17 @@ class LlvmAdapter:
         binary = output_binary
         if not binary.exists() and (out_dir / f"{stem}_molt.exe").exists():
             binary = out_dir / f"{stem}_molt.exe"
-        if b_rc != 0 or not binary.exists():
-            return BackendResult(
-                stdout=None,
-                stderr=(b_err or b_out or "llvm build failed"),
-                returncode=b_rc if b_rc != 0 else 1,
-                build_failed=True,
+        if build.returncode != 0 or not binary.exists():
+            return build.as_build_failure(
                 detail="llvm build produced no binary",
+                fallback="llvm build failed",
             )
-        r_out, r_err, r_rc, r_to = _guarded_run(
+        return _guarded_run(
             [str(binary)],
             prefix="MOLT_COMPAT_LLVM_RUN",
             env=env,
             timeout_default=60.0,
             cwd=str(_REPO_ROOT),
-        )
-        return BackendResult(
-            stdout=r_out,
-            stderr=r_err,
-            returncode=r_rc,
-            build_failed=False,
         )
 
 
@@ -532,7 +590,7 @@ class LuauAdapter:
         env = _cross_build_env(context)
         stem = Path(file_path).stem
         cmd = _build_cmd(file_path, "luau", out_dir, context)
-        b_out, b_err, b_rc, b_to = _guarded_run(
+        build = _guarded_run(
             cmd,
             prefix="MOLT_COMPAT_LUAU_BUILD",
             env=env,
@@ -545,26 +603,17 @@ class LuauAdapter:
             alt = out_dir / "output.luau"
             if alt.exists():
                 luau_out = alt
-        if b_rc != 0 or not luau_out.exists():
-            return BackendResult(
-                stdout=None,
-                stderr=(b_err or b_out or "luau build failed"),
-                returncode=b_rc if b_rc != 0 else 1,
-                build_failed=True,
+        if build.returncode != 0 or not luau_out.exists():
+            return build.as_build_failure(
                 detail="luau build produced no .luau source",
+                fallback="luau build failed",
             )
-        r_out, r_err, r_rc, r_to = _guarded_run(
+        return _guarded_run(
             [shutil.which("lune") or "lune", "run", str(luau_out)],
             prefix="MOLT_COMPAT_LUAU_RUN",
             env=env,
             timeout_default=60.0,
             cwd=str(_REPO_ROOT),
-        )
-        return BackendResult(
-            stdout=r_out,
-            stderr=r_err,
-            returncode=r_rc,
-            build_failed=False,
         )
 
 

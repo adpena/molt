@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING, Sequence
 
 from molt.frontend._types import (
     ActiveException,
+    AsyncContextExit,
     BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS,
     MoltOp,
     MoltValue,
+    ScratchCell,
+    SyncContextExit,
     TryScope,
 )
 
@@ -262,120 +265,378 @@ class ExceptionLoweringMixin(_MixinBase):
         self._emit_active_handler_name_deletes(escaped)
 
     def _emit_guarded_body(
-        self, body: list[ast.stmt], baseline_exc: ActiveException | None
+        self,
+        body: list[ast.stmt],
+        *,
+        abandon_on_unwind: ScratchCell | None = None,
     ) -> None:
         if not body:
             return
-        self.visit(body[0])
-        remaining = body[1:]
-        if not remaining:
-            return
-        skip_label = self.next_label()
-        self.emit(
-            MoltOp(
-                kind="CHECK_EXCEPTION",
-                args=[skip_label],
-                result=MoltValue("none"),
-            )
+        # Handler, else and finally bodies need a real cleanup continuation.
+        # Per-statement checks miss exceptions inside a nonlocal unwind and
+        # can dispatch past the enclosing finally. One scope also avoids the
+        # old recursive lowering of long guarded statement lists.
+        cleanup_label = self.next_label()
+        done_label = self.next_label() if abandon_on_unwind is not None else None
+        scope = TryScope(
+            finalbody=None,
+            handler_label=cleanup_label,
+            abandon_on_unwind=abandon_on_unwind,
         )
-        self._emit_guarded_body(remaining, baseline_exc)
-        self.emit(MoltOp(kind="LABEL", args=[skip_label], result=MoltValue("none")))
+        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+        self.try_scopes.append(scope)
+        self.try_end_labels.append(cleanup_label)
+        self.emit(
+            MoltOp(kind="TRY_START", args=[cleanup_label], result=MoltValue("none"))
+        )
+        try:
+            self._visit_block(body)
+        finally:
+            self.try_end_labels.pop()
+            self.try_scopes.pop()
+        if done_label is not None:
+            # Ordinary cleanup completion keeps the pending transfer's value.
+            # Only exceptional or escaping nonlocal exits abandon that value.
+            self.emit(
+                MoltOp(kind="TRY_END", args=[cleanup_label], result=MoltValue("none"))
+            )
+            self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="JUMP", args=[done_label], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[cleanup_label], result=MoltValue("none")))
+        self.emit(
+            MoltOp(kind="TRY_END", args=[cleanup_label], result=MoltValue("none"))
+        )
+        if abandon_on_unwind is not None:
+            self._clear_scratch_cell(abandon_on_unwind)
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        if done_label is not None:
+            self.emit(MoltOp(kind="LABEL", args=[done_label], result=MoltValue("none")))
+        # Successful nonlocal exits already left. The failure continuation is
+        # reachable even if every source-level path ends with return/raise.
+        self.block_terminated = False
 
     def _emit_finalbody(
         self,
-        finalbody: list[ast.stmt],
-        baseline_exc: ActiveException | None,
+        scope: TryScope,
         *,
-        popped_scopes: int = 0,
+        pending_return: ScratchCell | None = None,
     ) -> None:
+        assert scope.finalbody is not None
+        prior_running = scope.finalbody_running
+        prior_loops = self.loop_scopes
+        scope.finalbody_running = True
+        # A nonlocal transfer can inline this body inside younger loops. Its
+        # break/continue destinations still belong to the try's lexical site.
+        self.loop_scopes = list(scope.lexical_loops)
         self.return_unwind_depth += 1
         self.finally_depth += 1
-        self.return_unwind_popped_scopes.append(popped_scopes)
-        self._emit_guarded_body(finalbody, baseline_exc)
-        self.return_unwind_popped_scopes.pop()
-        self.finally_depth -= 1
-        self.return_unwind_depth -= 1
+        try:
+            self._emit_guarded_body(scope.finalbody, abandon_on_unwind=pending_return)
+        finally:
+            self.finally_depth -= 1
+            self.return_unwind_depth -= 1
+            self.loop_scopes = prior_loops
+            scope.finalbody_running = prior_running
 
-    def _ctx_mark_arg(self, scope: TryScope) -> MoltValue:
-        if not scope.needs_context_unwind or scope.ctx_mark is None:
-            raise AssertionError("context unwind requested without a context mark")
-        if scope.ctx_mark_offset is None or not self.is_async():
-            return scope.ctx_mark
-        res = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", scope.ctx_mark_offset],
-                result=res,
+    def _emit_context_entry(
+        self,
+        action: SyncContextExit | AsyncContextExit,
+        enter: MoltValue,
+    ) -> MoltValue:
+        """Release captured exit storage if entry fails, without calling exit."""
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = None
+        try:
+            failed = self.next_label()
+            done = self.next_label()
+            self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+            self.try_end_labels.append(failed)
+            self.emit(MoltOp(kind="TRY_START", args=[failed], result=MoltValue("none")))
+            try:
+                if isinstance(action, SyncContextExit):
+                    hint = (
+                        enter.type_hint
+                        if enter.type_hint in {"file_text", "file_bytes"}
+                        else "Any"
+                    )
+                    entered = MoltValue(self.next_var(), type_hint=hint)
+                    self.emit(
+                        MoltOp(kind="CONTEXT_ENTER", args=[enter], result=entered)
+                    )
+                    self._emit_raise_if_pending()
+                else:
+                    awaitable = self._emit_call_bound_or_func(enter, [])
+                    self._emit_raise_if_pending()
+                    entered = self._emit_await_value(awaitable)
+            finally:
+                self.try_end_labels.pop()
+            self.emit(MoltOp(kind="TRY_END", args=[failed], result=MoltValue("none")))
+            self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+            self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
+            self.emit(MoltOp(kind="LABEL", args=[failed], result=MoltValue("none")))
+            self.emit(MoltOp(kind="TRY_END", args=[failed], result=MoltValue("none")))
+            capture = (
+                action.manager
+                if isinstance(action, SyncContextExit)
+                else action.callback
             )
-        )
-        return res
+            with self._suppress_check_exception(emit_on_exit=False):
+                self._clear_scratch_cell(capture)
+                self.emit(
+                    MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
+                )
+            self._emit_raise_exit()
+            self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
+            return entered
+        finally:
+            self.try_suppress_depth = prior_suppress
 
-    def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None:
-        if not scope.needs_context_unwind:
-            return
-        ctx_arg = self._ctx_mark_arg(scope)
+    def _emit_context_body(
+        self,
+        node: ast.With | ast.AsyncWith,
+        entered: MoltValue,
+        action: SyncContextExit | AsyncContextExit,
+    ) -> None:
+        """One protected body/cleanup authority for sync and async managers."""
+        handler = self.next_label()
+        done = self.next_label()
+        scope = TryScope(
+            finalbody=None,
+            handler_label=handler,
+            done_label=done,
+            context_exit=action,
+        )
+        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+        self.try_scopes.append(scope)
+        self.try_end_labels.append(handler)
         self.emit(
             MoltOp(
-                kind="CONTEXT_UNWIND_TO",
-                args=[ctx_arg, exc_val],
+                kind="TRY_START",
+                args=[handler],
                 result=MoltValue("none"),
             )
         )
+        self.control_flow_depth += 1
+        unbound_snapshot = set(self.unbound_check_names)
+        prior_terminated = self.block_terminated
+        self.block_terminated = False
+        try:
+            target = node.items[0].optional_vars
+            if target is not None:
+                self._emit_assign_target(target, entered, None)
+            terminated = self._visit_block(node.body)
+        finally:
+            self.unbound_check_names = unbound_snapshot
+            self.block_terminated = prior_terminated
+            self.control_flow_depth -= 1
+            self.try_end_labels.pop()
+            self.try_scopes.pop()
+        if not terminated:
+            self.emit(MoltOp(kind="TRY_END", args=[handler], result=MoltValue("none")))
+            self._emit_context_exit(action)
+            self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[handler], result=MoltValue("none")))
+        self.emit(MoltOp(kind="TRY_END", args=[handler], result=MoltValue("none")))
+        pending = MoltValue(self.next_var(), type_hint="exception")
+        with self._suppress_check_exception(emit_on_exit=False):
+            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=pending))
+            saved: MoltValue | ScratchCell
+            if self.is_async():
+                saved = self._new_scratch_cell(pending, type_hint="exception")
+            else:
+                # The observer's MatchRef is released at the body frame pop.
+                # Cleanup needs an independent owned root, not an SSA copy of
+                # that region-owned reference. Ordinary drop insertion owns it.
+                saved = MoltValue(self.next_var(), type_hint="exception")
+                self.emit(MoltOp(kind="BINDING_ALIAS", args=[pending], result=saved))
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        self._emit_context_exit(action, exception=saved)
+        self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
+        self._expire_exact_class_facts()
 
-    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> list[int]:
+    def _emit_context_exit(
+        self,
+        action: SyncContextExit | AsyncContextExit,
+        *,
+        exception: MoltValue | ScratchCell | None = None,
+        abandon_on_error: ScratchCell | None = None,
+    ) -> None:
+        """Retain handled context through exit invocation, await and truth test.
+
+        The consumed body cannot catch an exit failure. A separate cleanup
+        continuation restores the enclosing context on every exceptional path.
+        Normal exits never truth-test the callback's ignored return value.
+        """
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
+        guarded = exception is not None or abandon_on_error is not None
+        cleanup = self.next_label() if guarded else None
+        done = self.next_label() if guarded else None
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = None
+        if cleanup is not None:
+            self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
+            self.try_end_labels.append(cleanup)
+            self.emit(
+                MoltOp(kind="TRY_START", args=[cleanup], result=MoltValue("none"))
+            )
+        try:
+            try:
+                if exception is None:
+                    error = MoltValue(self.next_var(), type_hint="None")
+                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=error))
+                else:
+                    error = (
+                        self._load_scratch_cell(exception)
+                        if isinstance(exception, ScratchCell)
+                        else exception
+                    )
+                    self.emit(
+                        MoltOp(
+                            kind="EXCEPTION_CONTEXT_SET",
+                            args=[error],
+                            result=MoltValue("none"),
+                        )
+                    )
+                if isinstance(action, SyncContextExit):
+                    manager = self._consume_scratch_cell(action.manager)
+                    result = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="CONTEXT_EXIT", args=[manager, error], result=result
+                        )
+                    )
+                    self._emit_raise_if_pending()
+                else:
+                    callback = self._consume_scratch_cell(action.callback)
+                    if exception is None:
+                        args = [error, error, error]
+                    else:
+                        kind = MoltValue(self.next_var(), type_hint="Any")
+                        self.emit(MoltOp(kind="TYPE_OF", args=[error], result=kind))
+                        traceback = MoltValue(self.next_var(), type_hint="Any")
+                        self.emit(
+                            MoltOp(
+                                kind="GETATTR_GENERIC_OBJ",
+                                args=[error, "__traceback__"],
+                                result=traceback,
+                            )
+                        )
+                        args = [kind, error, traceback]
+                    awaitable = self._emit_call_bound_or_func(callback, args)
+                    self._emit_raise_if_pending()
+                    result = self._emit_await_value(awaitable)
+                if exception is not None:
+                    not_suppressed = MoltValue(self.next_var(), type_hint="bool")
+                    self.emit(MoltOp(kind="NOT", args=[result], result=not_suppressed))
+            finally:
+                if cleanup is not None:
+                    self.try_end_labels.pop()
+            if cleanup is not None:
+                assert done is not None
+                if exception is not None:
+                    error = (
+                        self._consume_scratch_cell(exception)
+                        if isinstance(exception, ScratchCell)
+                        else exception
+                    )
+                self.emit(
+                    MoltOp(kind="TRY_END", args=[cleanup], result=MoltValue("none"))
+                )
+                self.emit(
+                    MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
+                )
+                if exception is not None:
+                    self.emit(
+                        MoltOp(
+                            kind="IF", args=[not_suppressed], result=MoltValue("none")
+                        )
+                    )
+                    self.emit(
+                        MoltOp(kind="RAISE", args=[error], result=MoltValue("none"))
+                    )
+                    self._emit_raise_if_pending()
+                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
+                self.emit(
+                    MoltOp(kind="LABEL", args=[cleanup], result=MoltValue("none"))
+                )
+                self.emit(
+                    MoltOp(kind="TRY_END", args=[cleanup], result=MoltValue("none"))
+                )
+                if isinstance(exception, ScratchCell):
+                    self._clear_scratch_cell(exception)
+                if abandon_on_error is not None:
+                    self._clear_scratch_cell(abandon_on_error)
+                self.emit(
+                    MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
+                )
+                self._emit_raise_if_pending()
+                self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
+        finally:
+            self.try_suppress_depth = prior_suppress
+
+    def _emit_control_flow_scope_unwind(
+        self,
+        scopes: Sequence[TryScope],
+        *,
+        pending_return: ScratchCell | None = None,
+    ) -> list[int]:
         unwind_scopes = list(scopes)
         if not unwind_scopes:
             return []
-        none_exc = None
-        if self.context_depth > 0 and any(
-            scope.needs_context_unwind for scope in unwind_scopes
-        ):
-            none_exc = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exc))
-        skip_pops = 0
-        if self.return_unwind_depth > 0 and self.return_unwind_popped_scopes:
-            skip_pops = self.return_unwind_popped_scopes[-1]
-        popped_scopes = 0
-        skip_finalbody = self.return_unwind_depth
         popped_labels: list[int] = []
-        for scope in reversed(unwind_scopes):
-            if skip_pops > 0:
-                skip_pops -= 1
-                popped_scopes += 1
-                if skip_finalbody > 0:
-                    skip_finalbody -= 1
-                continue
-            if none_exc is not None:
-                self._emit_context_unwind_to(scope, none_exc)
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_POP",
-                    args=[],
-                    result=MoltValue("none"),
-                )
-            )
-            if scope.handler_label is not None:
-                if scope.handler_label not in self.try_end_labels:
-                    pass
-                elif self.try_end_labels[-1] != scope.handler_label:
+        prior_scopes = self.try_scopes
+        prior_active = self.active_exceptions
+        self.try_scopes = list(prior_scopes)
+        self.active_exceptions = list(prior_active)
+        try:
+            for scope in reversed(unwind_scopes):
+                if not self.try_scopes or self.try_scopes[-1] is not scope:
                     raise AssertionError(
-                        "control-flow unwind tried to pop handler label "
-                        f"{scope.handler_label}, active labels={self.try_end_labels}"
+                        "control-flow unwind must consume a scope suffix"
                     )
-                else:
+                # A nested manager must finish while its enclosing handler's
+                # exception and target binding remain visible to callbacks.
+                for entry in reversed(self.active_exceptions):
+                    if entry.is_handler and entry.scope is scope:
+                        self._emit_exception_handler_exit_cleanup(entry)
+                if scope.handler_label in self.try_end_labels:
+                    if self.try_end_labels[-1] != scope.handler_label:
+                        raise AssertionError(
+                            "control-flow unwind tried to pop handler label "
+                            f"{scope.handler_label}, active labels={self.try_end_labels}"
+                        )
                     popped_labels.append(self.try_end_labels.pop())
-            popped_scopes += 1
-            if scope.finalbody:
-                if skip_finalbody > 0:
-                    skip_finalbody -= 1
-                else:
-                    prior_active = self.active_exceptions[:]
-                    self.active_exceptions.clear()
-                    self._emit_finalbody(
-                        scope.finalbody, None, popped_scopes=popped_scopes
+                self.try_scopes.pop()
+                self.active_exceptions = [
+                    entry
+                    for entry in self.active_exceptions
+                    if entry.scope is not scope
+                ]
+                if scope.context_exit is not None:
+                    self.emit(
+                        MoltOp(
+                            kind="TRY_END",
+                            args=[scope.handler_label],
+                            result=MoltValue("none"),
+                        )
                     )
-                    self.active_exceptions = prior_active
+                    self._emit_context_exit(
+                        scope.context_exit, abandon_on_error=pending_return
+                    )
+                else:
+                    self.emit(
+                        MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
+                    )
+                    if scope.abandon_on_unwind is not None:
+                        self._clear_scratch_cell(scope.abandon_on_unwind)
+                    self._emit_raise_if_pending()
+                if scope.finalbody and not scope.finalbody_running:
+                    self._emit_finalbody(scope, pending_return=pending_return)
+                    self._emit_raise_if_pending()
+        finally:
+            self.try_scopes = prior_scopes
+            self.active_exceptions = prior_active
         return popped_labels
 
     def _restore_control_flow_unwind_labels(self, popped_labels: Sequence[int]) -> None:
@@ -526,7 +787,6 @@ class ExceptionLoweringMixin(_MixinBase):
 
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
-        self._emit_context_unwind_to(scope, exc_val)
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -547,6 +807,7 @@ class ExceptionLoweringMixin(_MixinBase):
                 slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
+                scope=scope,
                 handler_try_depth=len(self.try_end_labels),
             )
             self.active_exceptions.append(exc_entry)
@@ -558,7 +819,7 @@ class ExceptionLoweringMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-            self._emit_guarded_body(handler.body, exc_entry)
+            self._emit_guarded_body(handler.body)
             handler_terminated = self.block_terminated
             if not handler_terminated:
                 self._emit_exception_handler_exit_cleanup(exc_entry)
@@ -589,7 +850,7 @@ class ExceptionLoweringMixin(_MixinBase):
             )
         )
         if node.orelse:
-            self._emit_guarded_body(node.orelse, None)
+            self._emit_guarded_body(node.orelse)
             self.emit(
                 MoltOp(
                     kind="JUMP",

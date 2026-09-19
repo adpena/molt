@@ -411,22 +411,21 @@ def test_diff_memory_guard_global_disable_is_ignored(monkeypatch) -> None:
 
 def test_diff_stdlib_profile_ignores_ambient_build_profile() -> None:
     module = _load_diff_module()
-    profile, error = module._diff_stdlib_profile(
+    profile = module.compat_backends.stdlib_profile_from_environment(
         {
             "MOLT_STDLIB_PROFILE": "micro",
         }
     )
 
     assert profile is None
-    assert error is None
 
 
 def test_diff_stdlib_profile_rejects_invalid_values() -> None:
     module = _load_diff_module()
-    profile, error = module._diff_stdlib_profile({"MOLT_DIFF_STDLIB_PROFILE": "wide"})
-
-    assert profile is None
-    assert error == "MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'"
+    with pytest.raises(ValueError, match="must be 'micro' or 'full'"):
+        module.compat_backends.stdlib_profile_from_environment(
+            {"MOLT_DIFF_STDLIB_PROFILE": "wide"}
+        )
 
 
 def test_metadata_stdlib_profile_is_validated(tmp_path: Path) -> None:

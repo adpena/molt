@@ -286,7 +286,11 @@ pub fn simpleir_kind_is_verifier_label_reference(kind: &str) -> bool {
 pub fn simpleir_kind_is_verifier_loop_scoped(kind: &str) -> bool {
     matches!(
         kind,
-        "loop_break" | "loop_continue" | "loop_break_if_true" | "loop_break_if_false"
+        "loop_break"
+            | "loop_continue"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
     )
 }
 
@@ -368,8 +372,6 @@ pub fn simpleir_verifier_region_role(
         "end_if" => Some(("if", SimpleIrVerifierRegionRole::End)),
         "loop_start" => Some(("loop", SimpleIrVerifierRegionRole::Start)),
         "loop_end" => Some(("loop", SimpleIrVerifierRegionRole::End)),
-        "try_start" => Some(("try", SimpleIrVerifierRegionRole::Start)),
-        "try_end" => Some(("try", SimpleIrVerifierRegionRole::End)),
         _ => None,
     }
 }

@@ -15,7 +15,7 @@ use libfuzzer_sys::fuzz_target;
 use molt_backend::{
     FunctionIR, OpIR, SimpleIR, apply_profile_order, elide_dead_struct_allocs,
     eliminate_dead_functions, eliminate_dead_ops, escape_analysis, fold_constants,
-    fold_constants_cross_block, hoist_loop_invariants, rc_coalescing, rewrite_stateful_loops,
+    fold_constants_cross_block, rc_coalescing, rewrite_stateful_loops,
 };
 
 /// Generate a structurally valid IR with ops that exercise the passes.
@@ -249,9 +249,6 @@ fuzz_target!(|input: PassFuzzInput| {
     }
     for func in &mut ir.functions {
         rewrite_stateful_loops(func);
-    }
-    for func in &mut ir.functions {
-        hoist_loop_invariants(func);
     }
     for func in &mut ir.functions {
         rc_coalescing(func);

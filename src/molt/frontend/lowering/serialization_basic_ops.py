@@ -384,12 +384,6 @@ class SerializationBasicOpsMixin(_MixinBase):
                 }
             )
         elif op.kind == "IS":
-            # Re-materialise any CONST_NONE variable referenced by this
-            # IS instruction so the definition and use share the same
-            # Cranelift basic block.
-            for a in op.args:
-                if isinstance(a, MoltValue) and a.name in ctx.const_none_vars:
-                    ctx.json_ops.append({"kind": "const_none", "out": a.name})
             ctx.json_ops.append(
                 {
                     "kind": "is",

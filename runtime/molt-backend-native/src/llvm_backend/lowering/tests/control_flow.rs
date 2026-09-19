@@ -1,6 +1,79 @@
 use super::*;
 
 #[test]
+fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new("path_local_try".into(), vec![TirType::Bool], TirType::None);
+    let left = func.fresh_block();
+    let right = func.fresh_block();
+    let previous_baseline = func.fresh_value();
+    let marker = |opcode| TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: vec![],
+        results: vec![],
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(100))]),
+        source_span: None,
+    };
+    let runtime = |kind: &str, operands, results| TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands,
+        results,
+        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+        source_span: None,
+    };
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.extend([
+        runtime("exception_stack_enter", vec![], vec![previous_baseline]),
+        runtime("exception_push", vec![], vec![]),
+        marker(OpCode::TryStart),
+    ]);
+    entry.terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    for id in [left, right] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![
+                    marker(OpCode::TryEnd),
+                    runtime("exception_pop", vec![], vec![]),
+                    runtime("exception_stack_exit", vec![previous_baseline], vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let llvm_fn = try_lower_tir_to_llvm(&func, &backend)
+        .expect("alternative region closes must lower independently of block visitation order");
+    backend
+        .module
+        .verify()
+        .expect("path-local cleanup must verify");
+    let ir = llvm_fn.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("@molt_exception_stack_enter(").count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(ir.matches("@molt_exception_push(").count(), 1, "{ir}");
+    assert_eq!(ir.matches("@molt_exception_pop(").count(), 2, "{ir}");
+    assert_eq!(ir.matches("@molt_exception_stack_exit(").count(), 2, "{ir}");
+    assert!(
+        !ir.contains("try_baseline"),
+        "metadata must not allocate a second runtime baseline: {ir}"
+    );
+}
+
+#[test]
 fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
     use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 

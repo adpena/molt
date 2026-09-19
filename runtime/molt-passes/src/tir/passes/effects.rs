@@ -4,7 +4,6 @@
 //! exact-`ConstVal` call folding, while escape analysis requires an explicit
 //! non-capture fact before weakening an opaque call boundary.
 
-use crate::tir::effect_proof::tir_has_static_module_class_binding_effect_proof;
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -34,12 +33,7 @@ pub(super) fn op_effects_with_types(
             return crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
         }
     }
-    let mut effects = crate::tir::op_semantics::op_instance_effects_for_op(op, value_types);
-    if tir_has_static_module_class_binding_effect_proof(op) {
-        effects.effect_free = true;
-        effects.nothrow = true;
-    }
-    effects
+    crate::tir::op_semantics::op_instance_effects_for_op(op, value_types)
 }
 
 pub(super) fn op_may_throw_with_types(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> bool {

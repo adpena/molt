@@ -26,7 +26,7 @@ impl RustBackend {
             .is_some_and(|plan| plan.op_prefers_integer_runtime_lane(op))
     }
 
-    fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
+    pub(super) fn emit_unsupported_op(&mut self, op: &OpIR, reason: impl Into<String>) {
         let reason = reason.into();
         // Record failure at dispatch and deliberately emit no source.
         // `emit_source` is private and `compile_checked` rejects this record,
@@ -85,8 +85,8 @@ impl RustBackend {
             "contains" => self.emit_op_contains(op),
             "and" | "_m_and" => self.emit_op_and(op),
             "or" => self.emit_op_or(op),
-            "if" | "branch_false" => self.emit_op_if(op),
-            "if_not" | "branch_true" => self.emit_op_if_not(op),
+            "if" => self.emit_op_if(op),
+            "if_not" => self.emit_op_if_not(op),
             "else" => self.emit_op_else(op),
             "end_if" => self.emit_op_end_if(op),
             "loop_start" | "while_start" => self.emit_op_loop_start(op),
@@ -203,7 +203,9 @@ impl RustBackend {
             "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "bridge_unavailable" => {
                 self.emit_op_runtime_value_call(op)
             }
-            "br_if" | "branch" => self.emit_op_unstructured_branch(op),
+            "jump" | "goto" | "br_if" | "branch" | "branch_true" | "branch_false" => {
+                self.emit_op_unstructured_branch(op)
+            }
             "alloc_task"
             | "block_on"
             | "asyncgen_locals_register"

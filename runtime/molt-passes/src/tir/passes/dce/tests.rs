@@ -1,9 +1,8 @@
 use super::run;
 use crate::tir::blocks::{Terminator, TirBlock};
-use crate::tir::effect_proof::EffectProof;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_may_throw_table as is_potentially_throwing;
-use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
@@ -235,26 +234,18 @@ fn module_cache_get_kept_when_result_dead() {
 }
 
 #[test]
-fn static_module_class_binding_effect_proof_allows_dead_lookup_removal() {
+fn dead_module_class_lookup_chain_is_preserved() {
     let mut func = TirFunction::new("f".into(), vec![TirType::Str, TirType::Str], TirType::None);
     let module_name = ValueId(0);
     let attr_name = ValueId(1);
     let module = func.fresh_value();
     let class_ref = func.fresh_value();
 
-    let mut cache_get = make_op(OpCode::ModuleCacheGet, vec![module_name], vec![module]);
-    cache_get.attrs.insert(
-        "effect_proof".into(),
-        AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
-    );
-    let mut attr_get = make_op(
+    let cache_get = make_op(OpCode::ModuleCacheGet, vec![module_name], vec![module]);
+    let attr_get = make_op(
         OpCode::ModuleGetAttr,
         vec![module, attr_name],
         vec![class_ref],
-    );
-    attr_get.attrs.insert(
-        "effect_proof".into(),
-        AttrValue::Str(EffectProof::StaticModuleClassBinding.name().into()),
     );
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -264,10 +255,20 @@ fn static_module_class_binding_effect_proof_allows_dead_lookup_removal() {
 
     let stats = run(&mut func);
 
-    assert_eq!(stats.ops_removed, 2);
+    assert_eq!(stats.ops_removed, 0);
     assert!(
-        func.blocks[&func.entry_block].ops.is_empty(),
-        "effect-proven static module/class lookup chain should be removable when dead"
+        func.blocks[&func.entry_block]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::ModuleCacheGet),
+        "module cache lookup must remain because lookup and exceptions are observable"
+    );
+    assert!(
+        func.blocks[&func.entry_block]
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::ModuleGetAttr),
+        "module attribute lookup must remain because lookup and exceptions are observable"
     );
 }
 

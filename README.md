@@ -8,6 +8,10 @@ an expanding verified subset without a hidden host-Python fallback. Language,
 stdlib, third-party package support, and native/WASM parity remain incomplete;
 see [current status](docs/spec/STATUS.md) before choosing a workload.
 
+The first release milestone is a scoped, evidence-backed initial
+release, not a claim of full Python or ecosystem compatibility. See the
+[release milestone](ROADMAP.md#first-release-milestone).
+
 ## Why Molt
 
 - **Standalone output**: compiled binaries do not rely on a host Python installation.

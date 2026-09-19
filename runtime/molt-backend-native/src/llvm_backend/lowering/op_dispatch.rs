@@ -906,56 +906,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
-            // Exception region markers. LLVM still uses polling-based Molt
-            // exceptions, but the runtime expects a handler frame to be
-            // established around try regions so raise/catch semantics match
-            // native and wasm.
-            OpCode::TryStart => {
-                let enter_fn = self.ensure_runtime_i64_fn("molt_exception_stack_enter", 0);
-                let baseline = self
-                    .backend
-                    .builder
-                    .build_call(enter_fn, &[], "try_enter")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                let baseline_slot = self.build_entry_i64_alloca("try_baseline");
-                self.backend
-                    .builder
-                    .build_store(baseline_slot, baseline)
-                    .unwrap();
-                self.try_stack_baselines.push(baseline_slot);
-                if let Some(&result_id) = op.results.first() {
-                    self.values.insert(result_id, baseline);
-                    self.value_types.insert(result_id, TirType::DynBox);
-                }
-            }
-            OpCode::TryEnd => {
-                if let Some(baseline_slot) = self.try_stack_baselines.pop() {
-                    let exit_fn = self.ensure_runtime_i64_fn("molt_exception_stack_exit", 1);
-                    let baseline_bits = self
-                        .backend
-                        .builder
-                        .build_load(
-                            self.backend.context.i64_type(),
-                            baseline_slot,
-                            "try_baseline_load",
-                        )
-                        .unwrap()
-                        .into_int_value();
-                    let result = self
-                        .backend
-                        .builder
-                        .build_call(exit_fn, &[baseline_bits.into()], "try_exit")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic();
-                    if let Some(&result_id) = op.results.first() {
-                        self.values.insert(result_id, result);
-                        self.value_types.insert(result_id, TirType::DynBox);
-                    }
-                }
-            }
+            // Path-local region metadata does not mutate runtime state. The
+            // preserved exception_push/pop and stack operations own that state;
+            // explicit exception edges own transfer, independent of block order.
+            OpCode::TryStart | OpCode::TryEnd => {}
             OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
             OpCode::UnpackSequence => {
                 assert!(

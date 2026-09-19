@@ -16,10 +16,7 @@ use std::fmt::Write;
 
 #[path = "luau_backend/ir_rewrites.rs"]
 mod ir_rewrites;
-use ir_rewrites::{
-    hoist_exception_edge_block_arg_stores, lower_early_returns, lower_iter_to_for,
-    lower_try_to_pcall, strip_dead_after_return,
-};
+use ir_rewrites::{lower_exception_captures, strip_dead_after_return};
 
 #[path = "luau_backend/source_postprocess.rs"]
 mod source_postprocess;
@@ -31,6 +28,7 @@ pub use source_checks::{review_luau_perf, validate_luau_source};
 
 mod compile_pipeline;
 mod dict_runtime;
+mod flow_dispatch;
 mod frame_runtime;
 mod function_body;
 mod helpers;
@@ -152,15 +150,8 @@ pub struct LuauBackend {
     /// Backend-neutral scalar representation facts for the function currently
     /// being emitted.
     scalar_plan: ScalarRepresentationPlan,
-    /// Stack of pcall counter values for nested try/except blocks.
-    try_depth_counter: Vec<u32>,
-    /// Monotonically increasing counter for generating unique pcall variable names.
-    pcall_counter: u32,
     /// Monotonically increasing counter for backend-owned temporary locals.
     temp_counter: u32,
-    /// True when we are inside a pcall body (between pcall_wrap_begin and
-    /// pcall_wrap_end). exception_last should return nil in this zone.
-    inside_pcall_body: bool,
     /// Whether the active function owns a TRACE_ENTER_SLOT activation local.
     /// Compiler-generated module chunks inherit the caller's execution context.
     has_local_frame_context: bool,
@@ -202,10 +193,7 @@ impl LuauBackend {
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
             scalar_plan: ScalarRepresentationPlan::default(),
-            try_depth_counter: Vec::new(),
-            pcall_counter: 0,
             temp_counter: 0,
-            inside_pcall_body: false,
             has_local_frame_context: false,
             nonneg_consts: BTreeSet::new(),
             scope_local_count: 0,
@@ -247,19 +235,9 @@ fn python_type_to_luau(hint: &str) -> &'static str {
 }
 
 const USER_SYMBOL_ESCAPE_PREFIX: &str = "_m_user_";
-const LABEL_SYMBOL_ESCAPE_PREFIX: &str = "_m_label_";
 
-#[derive(Clone, Copy)]
-enum LuauSymbolDomain {
-    UserValue,
-    StringLabel,
-}
-
-fn encode_symbol(name: &str, domain: LuauSymbolDomain) -> String {
-    let prefix = match domain {
-        LuauSymbolDomain::UserValue => USER_SYMBOL_ESCAPE_PREFIX,
-        LuauSymbolDomain::StringLabel => LABEL_SYMBOL_ESCAPE_PREFIX,
-    };
+fn encode_symbol(name: &str) -> String {
+    let prefix = USER_SYMBOL_ESCAPE_PREFIX;
     let mut encoded = String::with_capacity(prefix.len() + name.len() * 2);
     encoded.push_str(prefix);
     for byte in name.as_bytes() {
@@ -287,11 +265,7 @@ fn sanitize_ident(name: &str) -> String {
     {
         return name.to_string();
     }
-    encode_symbol(name, LuauSymbolDomain::UserValue)
-}
-
-fn sanitize_string_label(label: &str) -> String {
-    encode_symbol(label, LuauSymbolDomain::StringLabel)
+    encode_symbol(name)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

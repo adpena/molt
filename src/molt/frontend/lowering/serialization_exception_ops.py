@@ -190,13 +190,8 @@ class SerializationExceptionOpsMixin(_MixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TRY_START":
-            payload: dict[str, Any] = {"kind": "try_start"}
-            if try_region_id(op) is not None:
-                payload["value"] = self._serialization_control_value(op)
-            ctx.json_ops.append(payload)
-        elif op.kind == "TRY_END":
-            payload: dict[str, Any] = {"kind": "try_end"}
+        elif op.kind in {"TRY_START", "TRY_END"}:
+            payload: dict[str, Any] = {"kind": op.kind.lower()}
             if try_region_id(op) is not None:
                 payload["value"] = self._serialization_control_value(op)
             ctx.json_ops.append(payload)

@@ -23,7 +23,6 @@ from typing import (
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
-    _STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF,
     AsyncFrameSlotRole,
     ComprehensionBinding,
     ExactClassFact,
@@ -363,10 +362,15 @@ class LocalBindingMixin(_MixinBase):
     def _consume_scratch_cell(self, cell: ScratchCell) -> MoltValue:
         """Retain the loaded value before releasing compiler-owned storage."""
         value = self._load_scratch_cell(cell)
-        cleared = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared))
-        self._store_scratch_cell(cell, cleared)
+        self._clear_scratch_cell(cell)
         return value
+
+    def _clear_scratch_cell(self, cell: ScratchCell) -> None:
+        """Release hidden storage without acquiring another owned reference."""
+        with self._suppress_check_exception(emit_on_exit=False):
+            cleared = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared))
+            self._store_scratch_cell(cell, cleared)
 
     def _store_scratch_cell(self, cell: ScratchCell, value: MoltValue) -> None:
         if cell.async_slot is not None:
@@ -576,34 +580,6 @@ class LocalBindingMixin(_MixinBase):
         cell = MoltValue(self.next_var(), type_hint="cell")
         self.emit(MoltOp(kind="INDEX", args=[closure, idx_val], result=cell))
         return cell
-
-    def _push_loop_static_class_refs(self, body: list[ast.stmt]) -> None:
-        refs: dict[str, MoltValue] = {}
-        eager_refs: set[str] = set()
-        for class_name in self._collect_loop_static_class_candidates(body):
-            self.loop_static_class_counter += 1
-            slot = f"__molt_static_class_{self.loop_static_class_counter}_{class_name}"
-            init = self._emit_module_attr_get(
-                class_name, effect_proof=_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_VAR",
-                    args=[init],
-                    result=MoltValue("none"),
-                    metadata={"var": slot},
-                )
-            )
-            refs[class_name] = MoltValue(slot, type_hint="type")
-            eager_refs.add(class_name)
-        self.loop_static_class_refs.append(refs)
-        self.loop_static_class_eager_refs.append(eager_refs)
-
-    def _pop_loop_static_class_refs(self) -> None:
-        if self.loop_static_class_refs:
-            self.loop_static_class_refs.pop()
-        if self.loop_static_class_eager_refs:
-            self.loop_static_class_eager_refs.pop()
 
     def _module_globals_dict_escapes(self, node: ast.Module) -> bool:
         """Use executed binding facts, including reflective aliases and callbacks."""

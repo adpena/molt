@@ -475,7 +475,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
             };
             let mut file = "<none>".to_string();
             if name == "<unnamed>" {
-                let code_bits = ensure_function_code_bits(_py, func_ptr);
+                let code_bits = crate::object::layout::ensure_function_code_bits(_py, func_ptr);
                 if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
                     let code_name_bits = crate::code_name_bits(code_ptr);
                     name = string_obj_to_owned(obj_from_bits(code_name_bits))

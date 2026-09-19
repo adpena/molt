@@ -911,7 +911,6 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
         "EXCEPTION_CONTEXT_SET",
         "EXCEPTION_MATCH_BUILTIN",
         "CONTEXT_EXIT",
-        "CONTEXT_UNWIND_TO",
         "LINE",
         "TRACE_ENTER_SLOT",
         "TRACE_EXIT",
@@ -1545,22 +1544,6 @@ SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {
     "sys.settrace": "molt_sys_settrace",
 }
 
-SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(
-    {
-        "__import__",
-        "_getframe",
-        "currentframe",
-        "getprofile",
-        "gettrace",
-        "import_module",
-        "reload",
-        "run_module",
-        "run_path",
-        "setprofile",
-        "settrace",
-    }
-)
-
 SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS: dict[str, int] = {
     "molt_cell_eq": 131072,
     "molt_cell_ge": 131072,
@@ -1611,15 +1594,20 @@ SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS: dict[str, int] = {
     "__getattribute__": 81920,
     "__import__": 65536,
     "_getframe": 16384,
+    "attrgetter": 81920,
     "currentframe": 16384,
+    "getattr": 81920,
+    "getattr_static": 81920,
     "getprofile": 16384,
     "gettrace": 16384,
     "import_module": 65536,
+    "methodcaller": 81920,
     "reload": 65536,
     "run_module": 65536,
     "run_path": 65536,
     "setprofile": 16384,
     "settrace": 16384,
+    "vars": 81920,
 }
 
 SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS: int = 81920

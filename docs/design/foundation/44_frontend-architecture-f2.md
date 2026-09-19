@@ -14,6 +14,13 @@
 
 **Frame-elision update (2026-09-08):** The old static zero-argument `super()` fold and its sema method-set projection were deleted: visible-class MRO agreement does not prove immutable class-cell identity or executing-frame semantics. Method/constructor inline extraction now shares the generated effect authority through `python_inlining.py`; unknown callbacks, descriptors, operators, and scope references keep their real Python frame. Rejected candidates emit no speculative prefix.
 
+**Attribute-site update (2026-09-19):** The process-global `_ic_counter` and
+`_next_ic_index` described in the historical audit below are retired, including
+the profiler's reset. Stable function/source-operation identity and the existing
+runtime name cache now own sites. See the canonical
+[lookup contract](../../spec/areas/compiler/0190_LOWERING_RULES.md#builtin-shape-and-lifetime-authority);
+this closes the allocator finding, not the remaining F2 decomposition.
+
 **Date:** 2026-06-06. Every file:line anchor verified against HEAD `dc6965d8d`. Current-code note, 2026-06-26: F1 plus the first F2 authority cuts have reduced `src/molt/frontend/__init__.py` to a 302-line facade shell, not the final F2d facade. Function-shape spelling and suspension classifiers now have one semantic home in `frontend.sema.funcmeta`; static class graph, local class-member facts with fail-closed opacity, C3/static-MRO/reachability, class-body block-exec facts now live in `frontend.sema.classgraph`, and call/class lowering consume those facts through explicit sema inputs. The generator is still one shared-state lowering shell, so the F2 target below remains the required end-state: data contracts and phase separation, not permanent mixins over the god object.
 
 **The verdict this engineers against** (supervisor, "engineered like Chris Lattner would?"): **NO, today.** At the original audit, `src/molt/frontend/__init__.py` was 27,071 lines, one class `SimpleTIRGenerator` with 538 `def`s (`__init__.py:211`), assembled from four MRO-mixins (`SerializationMixin, PatternMatchMixin, CallVisitorMixin, ClassDefVisitorMixin, ast.NodeVisitor` — `__init__.py:211-217`) that shared its ~150 mutable instance fields. Current F1 has moved more families out of the file, including `LocalBindingMixin` and `MidendOptimizationMixin`, and the first F2 sema cuts have removed the duplicate function-shape and static-class-graph authorities. The architectural defect remains: scope binding, IC index allocation, exception-edge insertion, const handling, augassign-kind selection, and emitted class metadata are still partly recomputed or supplied during the lowering walk behind one shared generator state. The cost is measured below in §6.

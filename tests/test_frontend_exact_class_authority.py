@@ -5,6 +5,69 @@ import ast
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend.lowering.serialization_context import SerializationContext
+
+
+@pytest.mark.parametrize("kind", ["GETATTR", "GUARDED_GETATTR", "GETATTR_GENERIC_PTR"])
+def test_attribute_serialization_is_independent_of_global_cache_allocation(
+    kind: str,
+) -> None:
+    owner = MoltValue("owner")
+    args = {
+        "GETATTR": [owner, "x", "Point"],
+        "GUARDED_GETATTR": [
+            owner,
+            MoltValue("class"),
+            MoltValue("version"),
+            "x",
+            "Point",
+        ],
+        "GETATTR_GENERIC_PTR": [owner, "x"],
+    }[kind]
+    generators = [SimpleTIRGenerator(), SimpleTIRGenerator()]
+    for generator in generators + generators[::-1]:
+        context = SerializationContext([], set(), None)
+        assert generator._serialize_object_attr_op(
+            MoltOp(kind, args, MoltValue("result")), context
+        )
+        assert context.json_ops == [
+            {
+                "kind": "get_attr_generic_ptr",
+                "args": ["owner"],
+                "s_value": "x",
+                "out": "result",
+            }
+        ]
+
+
+def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
+    generator = SimpleTIRGenerator()
+    generator.classes["Point"] = {"fields": {"x": 8}}
+    context = SerializationContext([], set(), None)
+    assert generator._serialize_object_attr_op(
+        MoltOp(
+            "GUARDED_GETATTR",
+            [
+                MoltValue("owner"),
+                MoltValue("class"),
+                MoltValue("version"),
+                "x",
+                "Point",
+            ],
+            MoltValue("result"),
+        ),
+        context,
+    )
+    assert context.json_ops == [
+        {
+            "kind": "guarded_field_get",
+            "args": ["owner", "class", "version"],
+            "s_value": "x",
+            "value": 8,
+            "out": "result",
+            "class": "Point",
+        }
+    ]
 
 
 def _ops(source: str, *, function: str | None = None) -> list[MoltOp]:

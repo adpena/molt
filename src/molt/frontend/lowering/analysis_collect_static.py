@@ -1111,51 +1111,6 @@ class AnalysisCollectStaticMixin(_MixinBase):
             candidates[name] = expected_class
         return candidates
 
-    def _collect_loop_static_class_candidates(self, body: list[ast.stmt]) -> list[str]:
-        if (
-            self.is_async()
-            or self.current_func_name == "molt_main"
-            or not self.stable_module_classes
-        ):
-            return []
-        assigned = self._collect_assigned_names(body)
-        assigned |= {
-            name for stmt in body for name in self._collect_namedexpr_names(stmt)
-        }
-        candidates: set[str] = set()
-        outer = self
-
-        class ClassCallCollector(ast.NodeVisitor):
-            def visit_Call(self, node: ast.Call) -> None:
-                if isinstance(node.func, ast.Name):
-                    class_name = node.func.id
-                    if (
-                        class_name in outer.stable_module_classes
-                        and class_name not in assigned
-                        and class_name not in outer.scope_assigned
-                        and class_name not in outer.global_decls
-                        and outer._class_layout_stable(class_name)
-                    ):
-                        candidates.add(class_name)
-                self.generic_visit(node)
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-        collector = ClassCallCollector()
-        for stmt in body:
-            collector.visit(stmt)
-        return sorted(candidates)
-
     def _collect_target_names(self, target: ast.AST) -> list[str]:
         # Source (left-to-right) order, deduplicated.  A set would be lossy: its
         # iteration order is PYTHONHASHSEED-dependent, and several callers feed

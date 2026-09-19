@@ -2,12 +2,28 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_function_body(&mut self, func: &FunctionIR) {
-        // Pre-process: lower early returns (store+jump→ret) then strip dead code.
-        let ops = lower_early_returns(&func.ops);
-        let ops = strip_dead_after_return(&ops);
-        let ops = lower_iter_to_for(&ops);
-        let ops = hoist_exception_edge_block_arg_stores(&ops);
-        let (ops, pcall_escaped_vars) = lower_try_to_pcall(&ops);
+        // Labelled transfers use the same logical flow as SimpleIR validation.
+        // Structured-only functions retain direct idiomatic Luau emission.
+        let dispatch = func.ops.iter().any(|op| {
+            molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_reference(&op.kind)
+                && !matches!(op.kind.as_str(), "try_start" | "try_end")
+        });
+        let ops = if dispatch {
+            let mut ops = func.ops.clone();
+            molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut ops);
+            let rewritten = crate::tir::lower_from_simple::rewrite_loop_index_to_store_load(&ops);
+            if rewritten.is_empty() { ops } else { rewritten }
+        } else {
+            strip_dead_after_return(&func.ops)
+        };
+        let ops = if dispatch {
+            ops.into_iter()
+                .filter(|op| !matches!(op.kind.as_str(), "try_start" | "try_end"))
+                .collect()
+        } else {
+            lower_exception_captures(&ops)
+        };
+        let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));
         let scalar_func = FunctionIR {
             name: func.name.clone(),
             params: func.params.clone(),
@@ -68,9 +84,6 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        self.try_depth_counter.clear();
-        self.pcall_counter = 0;
-        self.inside_pcall_body = false;
         self.has_local_frame_context =
             inherits_frame_context || ops.iter().any(|op| op.kind == "trace_enter_slot");
         self.nonneg_consts.clear();
@@ -139,7 +152,14 @@ impl LuauBackend {
         // the phi output variables.  Also find variables first declared
         // inside if/else blocks but referenced outside (scope escape).
         let mut phi_assignments: BTreeMap<usize, Vec<(String, Vec<String>)>> = BTreeMap::new();
-        {
+        if let Some(flow) = &flow {
+            self.hoisted_vars.extend(
+                flow.cross_block_values
+                    .iter()
+                    .filter(|name| !func.params.contains(name))
+                    .map(|name| sanitize_ident(name)),
+            );
+        } else {
             // Pass 1: find phi ops that follow end_if and record their
             // output vars plus branch values.
             let mut i = 0;
@@ -182,7 +202,7 @@ impl LuauBackend {
 
             for op in &ops {
                 match op.kind.as_str() {
-                    "if" | "loop_start" | "for_range" | "for_iter" | "pcall_wrap_begin" => {
+                    "if" | "loop_start" | "for_range" | "for_iter" => {
                         depth += 1;
                         block_id += 1;
                     }
@@ -190,7 +210,7 @@ impl LuauBackend {
                         // else starts a new block at the same depth
                         block_id += 1;
                     }
-                    "end_if" | "loop_end" | "end_for" | "pcall_wrap_end" => {
+                    "end_if" | "loop_end" | "end_for" => {
                         depth -= 1;
                         block_id += 1;
                     }
@@ -230,14 +250,9 @@ impl LuauBackend {
             }
         }
 
-        // Add pcall-escaped variables to hoisted set so they use assignment
-        // form instead of `local` inside the pcall closure.
-        for escaped_var in &pcall_escaped_vars {
-            self.hoisted_vars.insert(sanitize_ident(escaped_var));
-        }
         // TIR store_var/load_var represent named storage slots that must remain
         // visible across structured control-flow edges in the emitted function.
-        for op in &ops {
+        for op in ops.iter().filter(|_| flow.is_none()) {
             if op.kind == "store_var"
                 && let Some(name) = op.var.as_deref().or(op.out.as_deref())
             {
@@ -245,15 +260,14 @@ impl LuauBackend {
             }
         }
 
-        // Emit pre-declarations for hoisted variables.  Cap at 150 to stay
-        // within Luau's ~200 local register limit.  Variables beyond the cap
-        // are removed from hoisted_vars so they get `local` declarations
-        // inline (which Luau handles as new inner-scope bindings).
+        // Logical-flow declarations are the exact live-across-edge set and
+        // must never be truncated. The older structured-only emission retains
+        // its existing local-spill policy.
         if !self.hoisted_vars.is_empty() {
             let mut sorted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
             sorted.sort();
             let cap = 150;
-            if sorted.len() > cap {
+            if sorted.len() > cap && flow.is_none() {
                 let overflow: Vec<String> = sorted.drain(cap..).collect();
                 for var in &overflow {
                     self.hoisted_vars.remove(var);
@@ -347,53 +361,57 @@ impl LuauBackend {
         }
 
         // Emit ops with phi injection and loop_start handling.
-        let mut i = 0;
-        while i < ops.len() {
-            // Inject phi true-branch assignments before else.
-            if let Some(injects) = phi_inject_before_else.get(&i) {
-                for (var, val) in injects {
-                    self.emit_line(&format!("{var} = {val}"));
-                }
-            }
-            // Inject phi false-branch assignments before end_if.
-            if let Some(injects) = phi_inject_before_end_if.get(&i) {
-                for (var, val) in injects {
-                    self.emit_line(&format!("{var} = {val}"));
-                }
-            }
-            // Synthesize else branch for if-without-else + phi (and pattern).
-            // This assigns the condition variable when the if body was skipped.
-            if ops[i].kind == "end_if"
-                && let Some(synth) = phi_synthesize_else.get(&i)
-            {
-                self.pop_indent();
-                self.emit_line("else");
-                self.push_indent();
-                for (var, cond_val) in synth {
-                    self.emit_line(&format!("{var} = {cond_val}"));
-                }
-            }
-
-            if ops[i].kind == "loop_start"
-                && i + 1 < ops.len()
-                && ops[i + 1].kind == "loop_index_start"
-            {
-                let idx_op = &ops[i + 1];
-                if let Some(ref out_name) = idx_op.out {
-                    let out = sanitize_ident(out_name);
-                    let args = idx_op.args.as_deref().unwrap_or(&[]);
-                    if let Some(start_val) = args.first() {
-                        let start = sanitize_ident(start_val);
-                        self.emit_line(&format!("{out} = {start}"));
-                    } else {
-                        self.emit_line(&format!("{out} = 0"));
+        if let Some(flow) = &flow {
+            self.emit_logical_flow(&ops, flow, &func.params);
+        } else {
+            let mut i = 0;
+            while i < ops.len() {
+                // Inject phi true-branch assignments before else.
+                if let Some(injects) = phi_inject_before_else.get(&i) {
+                    for (var, val) in injects {
+                        self.emit_line(&format!("{var} = {val}"));
                     }
                 }
-                self.emit_op(&ops[i]);
-                i += 2;
-            } else {
-                self.emit_op(&ops[i]);
-                i += 1;
+                // Inject phi false-branch assignments before end_if.
+                if let Some(injects) = phi_inject_before_end_if.get(&i) {
+                    for (var, val) in injects {
+                        self.emit_line(&format!("{var} = {val}"));
+                    }
+                }
+                // Synthesize else branch for if-without-else + phi (and pattern).
+                // This assigns the condition variable when the if body was skipped.
+                if ops[i].kind == "end_if"
+                    && let Some(synth) = phi_synthesize_else.get(&i)
+                {
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
+                    for (var, cond_val) in synth {
+                        self.emit_line(&format!("{var} = {cond_val}"));
+                    }
+                }
+
+                if ops[i].kind == "loop_start"
+                    && i + 1 < ops.len()
+                    && ops[i + 1].kind == "loop_index_start"
+                {
+                    let idx_op = &ops[i + 1];
+                    if let Some(ref out_name) = idx_op.out {
+                        let out = sanitize_ident(out_name);
+                        let args = idx_op.args.as_deref().unwrap_or(&[]);
+                        if let Some(start_val) = args.first() {
+                            let start = sanitize_ident(start_val);
+                            self.emit_line(&format!("{out} = {start}"));
+                        } else {
+                            self.emit_line(&format!("{out} = 0"));
+                        }
+                    }
+                    self.emit_op(&ops[i]);
+                    i += 2;
+                } else {
+                    self.emit_op(&ops[i]);
+                    i += 1;
+                }
             }
         }
 
@@ -424,6 +442,19 @@ impl LuauBackend {
             }
             for line in func_output.lines() {
                 let trimmed = line.trim_start();
+                if dispatch
+                    && (trimmed.starts_with("if __molt_block ==")
+                        || trimmed.starts_with("elseif __molt_block =="))
+                {
+                    // Dispatcher cases are sibling lexical scopes. Only values
+                    // live across graph edges share a declaration.
+                    seen_locals = func
+                        .params
+                        .iter()
+                        .map(|name| sanitize_ident(name))
+                        .collect();
+                    seen_locals.extend(self.hoisted_vars.iter().cloned());
+                }
                 let mut replaced = false;
                 if let Some(after_local) = trimmed.strip_prefix("local ") {
                     // Extract the variable name: "local vXXX = ..." or "local vXXX"
@@ -465,7 +496,9 @@ impl LuauBackend {
                                 }
                             } else if rest.is_empty() || rest.starts_with("--") {
                                 // Bare `local var` pre-declaration.
-                                seen_locals.insert(var_name.to_string());
+                                // Repeated operation captures can define the same
+                                // mutable slot; its first declaration owns scope.
+                                replaced = !seen_locals.insert(var_name.to_string());
                             }
                         }
                     }

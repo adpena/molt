@@ -35,6 +35,7 @@ from contextlib import contextmanager
 
 from molt.frontend._types import (
     ActiveException,
+    AsyncContextExit,
     AsyncFrameSlot,
     AsyncFrameSlotRole,
     CFGGraph,
@@ -48,6 +49,7 @@ from molt.frontend._types import (
     FormatToken,
     IntrinsicHandleClassConstructorSpec,
     LoopBoundFact,
+    LoopScope,
     MethodDescriptor,
     MethodInfo,
     MidendEnvConfig,
@@ -59,6 +61,7 @@ from molt.frontend._types import (
     MoltValue,
     SCCPResult,
     ScratchCell,
+    SyncContextExit,
     TryScope,
     _ClassNsScope,
     _TrackedOpsList,
@@ -83,6 +86,8 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -100,13 +105,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     local_intrinsic_wrappers: set[str]
     locals: dict[str, MoltValue]
     locals_cache_cell: ScratchCell | None
-    loop_break_flags: list[int | ScratchCell | None]
     loop_guard_assumptions: list[dict[str, tuple[str, bool, int]]]
     loop_layout_guards: list[dict[str, tuple[str, MoltValue, int]]]
-    loop_static_class_counter: Any
-    loop_static_class_eager_refs: list[set[str]]
-    loop_static_class_refs: list[dict[str, MoltValue]]
-    loop_try_depths: list[int]
+    loop_scopes: list[LoopScope]
     midend_env: Any
     midend_hot_functions: set[str]
     midend_pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
@@ -161,14 +162,12 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     python_class_body_context: Any
     python_frame_context_active: Any
     qualname_stack: list[tuple[str, bool]]
-    range_loop_stack: list[tuple[MoltValue, MoltValue]]
     reserved_func_symbols: dict[str, str]
     reserved_python_identifiers: set[str]
     return_label: int | None
     return_slot: MoltValue | None
     return_slot_offset: int | None
     return_unwind_depth: Any
-    return_unwind_popped_scopes: Any
     scope_assigned: set[str]
     source_path: Any
     stable_module_classes: set[str]
@@ -295,9 +294,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> list[dict[str, frozenset[str]]]: ...
 
     def _binding_targets_module_namespace(self, name: str) -> bool: ...
-
-    @staticmethod
-    def _block_needs_context_unwind(body: list[ast.stmt]) -> bool: ...
 
     @staticmethod
     def _body_has_exception_handlers(body: list[ast.stmt]) -> bool: ...
@@ -497,6 +493,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, available: set[tuple[Any, ...]], op: MoltOp
     ) -> None: ...
 
+    def _clear_scratch_cell(self, cell: ScratchCell) -> None: ...
+
     def _clone_canonicalization_state(
         self, state: CanonicalizationState
     ) -> CanonicalizationState: ...
@@ -572,10 +570,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, body: list[ast.stmt]
     ) -> dict[str, str]: ...
 
-    def _collect_loop_static_class_candidates(
-        self, body: list[ast.stmt]
-    ) -> list[str]: ...
-
     def _collect_module_annotation_items(
         self, node: ast.Module
     ) -> tuple[list[tuple[str, ast.expr, int]], dict[int, int]]: ...
@@ -650,8 +644,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, ops: list[MoltOp]
     ) -> tuple[set[str], set[str]]: ...
 
-    def _compute_postdominators_for_cfg(self, cfg: CFGGraph) -> dict[int, set[int]]: ...
-
     def _compute_sccp(
         self, ops: list[MoltOp], cfg: CFGGraph, *, max_iters_override: int | None = ...
     ) -> SCCPResult: ...
@@ -687,8 +679,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[MoltValue, MoltValue, MoltValue, int | None] | None: ...
 
     def _create_class_annotation_namespace(self, scope: _ClassNsScope) -> None: ...
-
-    def _ctx_mark_arg(self, scope: TryScope) -> MoltValue: ...
 
     def _current_module_pressure_snapshot(self) -> tuple[int, int, int]: ...
 
@@ -913,10 +903,27 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_contains(self, container: MoltValue, item: MoltValue) -> MoltValue: ...
 
-    def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None: ...
+    def _emit_context_body(
+        self,
+        node: ast.With | ast.AsyncWith,
+        entered: MoltValue,
+        action: SyncContextExit | AsyncContextExit,
+    ) -> None: ...
+
+    def _emit_context_entry(
+        self, action: SyncContextExit | AsyncContextExit, enter: MoltValue
+    ) -> MoltValue: ...
+
+    def _emit_context_exit(
+        self,
+        action: SyncContextExit | AsyncContextExit,
+        *,
+        exception: MoltValue | ScratchCell | None = ...,
+        abandon_on_error: ScratchCell | None = ...,
+    ) -> None: ...
 
     def _emit_control_flow_scope_unwind(
-        self, scopes: Sequence[TryScope]
+        self, scopes: Sequence[TryScope], *, pending_return: ScratchCell | None = ...
     ) -> list[int]: ...
 
     def _emit_counted_while(
@@ -988,11 +995,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[MoltValue, ...]: ...
 
     def _emit_finalbody(
-        self,
-        finalbody: list[ast.stmt],
-        baseline_exc: ActiveException | None,
-        *,
-        popped_scopes: int = ...,
+        self, scope: TryScope, *, pending_return: ScratchCell | None = ...
     ) -> None: ...
 
     def _emit_for_loop(
@@ -1097,7 +1100,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_guard_type(self, value: MoltValue, hint: str) -> None: ...
 
     def _emit_guarded_body(
-        self, body: list[ast.stmt], baseline_exc: ActiveException | None
+        self, body: list[ast.stmt], *, abandon_on_unwind: ScratchCell | None = ...
     ) -> None: ...
 
     def _emit_guarded_field_get_with_guard(
@@ -1234,11 +1237,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_locals_dict(self) -> MoltValue: ...
 
+    def _emit_loop_exit(self, scope: LoopScope) -> None: ...
+
     def _emit_loop_orelse(
         self, break_cell: ScratchCell, orelse: list[ast.stmt]
     ) -> None: ...
-
-    def _emit_loop_static_class_ref(self, class_name: str) -> MoltValue | None: ...
 
     def _emit_loop_unwind(self) -> list[int]: ...
 
@@ -1315,9 +1318,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_module_annotations_dict_dynamic(self) -> MoltValue: ...
 
-    def _emit_module_attr_get(
-        self, name: str, *, effect_proof: str | None = ...
-    ) -> MoltValue: ...
+    def _emit_module_attr_get(self, name: str) -> MoltValue: ...
 
     def _emit_module_attr_get_default_on(
         self, module_name: str, name: str, default_val: MoltValue
@@ -1694,9 +1695,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _genexpr_symbol(self) -> str: ...
 
-    def _get_or_emit_module_cache(
-        self, module_name: str, *, effect_proof: str | None = ...
-    ) -> MoltValue: ...
+    def _get_or_emit_module_cache(self, module_name: str) -> MoltValue: ...
 
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None: ...
 
@@ -1722,10 +1721,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _heap_read_key_class(self, key: tuple[Any, ...]) -> str | None: ...
 
     def _hints_enabled(self) -> bool: ...
-
-    def _hoist_loop_invariant_pure_ops(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int]: ...
 
     def _imported_attr_name(self, bind_name: str) -> str: ...
 
@@ -2175,8 +2170,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _pop_loop_guard_assumptions(self) -> None: ...
 
-    def _pop_loop_static_class_refs(self) -> None: ...
-
     def _pop_qualname(self) -> None: ...
 
     def _populate_sema_state(self, node: ast.Module) -> SemaResult: ...
@@ -2234,8 +2227,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _push_loop_guard_assumptions(
         self, guard_map: dict[str, tuple[str, MoltValue, int]], assume_true: bool
     ) -> None: ...
-
-    def _push_loop_static_class_refs(self, body: list[ast.stmt]) -> None: ...
 
     def _push_qualname(self, name: str, is_function: bool) -> None: ...
 
@@ -2414,7 +2405,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, value: Any, aliases: dict[str, MoltValue]
     ) -> Any: ...
 
-    def _rewrite_loop_try_edge_threading(
+    def _rewrite_loop_edge_threading(
         self,
         ops: list[MoltOp],
         *,
@@ -2422,10 +2413,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         control: ControlMaps,
         executable_edges: set[tuple[int, int]],
         loop_break_choice_by_index: dict[int, bool],
-        try_exception_possible_by_start: dict[int, bool],
-        try_normal_possible_by_start: dict[int, bool],
-        guard_fail_indices: set[int],
-    ) -> tuple[list[MoltOp], int, int, int, int, int, int]: ...
+    ) -> tuple[list[MoltOp], int, int, int]: ...
 
     def _rewrite_structured_if_regions(
         self,
@@ -2466,6 +2454,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _runtime_qualified_callable_requirement(
         self, module_name: str | None, attr_name: str
     ) -> tuple[str | None, int]: ...
+
+    def _runtime_qualified_callable_requirement_bits(
+        self, module_name: str | None, attr_name: str
+    ) -> int: ...
 
     def _runtime_qualified_callable_symbol(
         self, module_name: str | None, attr_name: str
@@ -2763,7 +2755,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         body: list[ast.stmt],
         prefill: dict[str, tuple[str, MoltValue, int]] | None = ...,
         loop_break_flag: int | ScratchCell | None = ...,
-    ) -> bool: ...
+    ) -> LoopScope: ...
 
     def emit(self, op: MoltOp) -> None: ...
 
