@@ -11,6 +11,7 @@ from tools.proof_queue_pkg.diagnostic_model import _diagnostics_have_signal
 
 AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
+        "guard-infrastructure-error",
         "memory-guard-summary-incomplete",
         "memory-guard-timeout",
         "native-call-lane-memory-guard-timeout",

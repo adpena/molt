@@ -112,21 +112,47 @@ class RunnerMode(enum.Enum):
 class ModuleResult:
     module: str
     returncode: int
-    passed: bool
+    passed: bool | None
     elapsed_s: float
     peak_rss_bytes: Optional[int]
     timed_out: bool
     tail: str  # last non-empty stdout line (regrtest verdict line)
+    child_returncode: int | None = None
+    infrastructure_failure: (
+        pc.harness_memory_guard.memory_guard.GuardInfrastructureFailure | None
+    ) = None
+
+    @property
+    def status(self) -> str:
+        if self.infrastructure_failure is not None:
+            return "infrastructure_error"
+        if self.timed_out:
+            return "timeout"
+        return "pass" if self.passed else "failed"
+
+    @property
+    def evidence_eligible(self) -> bool:
+        return self.infrastructure_failure is None
 
     def to_json(self) -> dict[str, object]:
         # `benchmark` + `elapsed_s` are the keys bench_friends'
         # _extract_structured_elapsed() reads from each `results` entry.
         return {
             "benchmark": self.module,
-            "elapsed_s": self.elapsed_s,
+            "elapsed_s": self.elapsed_s if self.evidence_eligible else None,
+            "diagnostic_elapsed_s": self.elapsed_s,
             "passed": self.passed,
+            "status": self.status,
+            "evidence_eligible": self.evidence_eligible,
             "returncode": self.returncode,
-            "peak_rss_bytes": self.peak_rss_bytes,
+            "child_returncode": self.child_returncode,
+            "infrastructure_failure": (
+                pc.harness_memory_guard.memory_guard.infrastructure_failure_payload(
+                    self.infrastructure_failure
+                )
+            ),
+            "peak_rss_bytes": (self.peak_rss_bytes if self.evidence_eligible else None),
+            "diagnostic_peak_rss_bytes": self.peak_rss_bytes,
             "timed_out": self.timed_out,
             "verdict": self.tail,
         }
@@ -147,15 +173,29 @@ class RunReport:
 
     @property
     def all_passed(self) -> bool:
-        return all(r.passed for r in self.results) if self.results else False
+        return (
+            all(r.passed is True and r.evidence_eligible for r in self.results)
+            if self.results
+            else False
+        )
+
+    @property
+    def infrastructure_error_modules(self) -> list[str]:
+        return [
+            result.module for result in self.results if not result.evidence_eligible
+        ]
 
     @property
     def total_elapsed_s(self) -> float:
-        return sum(r.elapsed_s for r in self.results)
+        return sum(r.elapsed_s for r in self.results if r.evidence_eligible)
 
     @property
     def peak_rss_bytes_max(self) -> Optional[int]:
-        rss = [r.peak_rss_bytes for r in self.results if r.peak_rss_bytes]
+        rss = [
+            r.peak_rss_bytes
+            for r in self.results
+            if r.evidence_eligible and r.peak_rss_bytes
+        ]
         return max(rss) if rss else None
 
     def to_json(self) -> dict[str, object]:
@@ -168,7 +208,11 @@ class RunReport:
         #     structured timings on the scoreboard.
         #   - `total_elapsed_s`: bench_friends maps this to the "total" metric.
         #   - `python_version` + `host_*`: the version/host dimensioning (§3a).
-        status = "ok" if self.all_passed else "failed"
+        status = (
+            "infrastructure_error"
+            if self.infrastructure_error_modules
+            else ("ok" if self.all_passed else "failed")
+        )
         payload: dict[str, object] = {
             "schema": "molt.regrtest_adapter.v1",
             "status": status,
@@ -183,8 +227,16 @@ class RunReport:
             "test_dir": self.test_dir,
             "requested_modules": self.requested_modules,
             "module_count": len(self.results),
-            "passed_count": sum(1 for r in self.results if r.passed),
-            "failed_modules": [r.module for r in self.results if not r.passed],
+            "evidence_module_count": sum(
+                1 for result in self.results if result.evidence_eligible
+            ),
+            "passed_count": sum(1 for r in self.results if r.passed is True),
+            "failed_modules": [
+                r.module
+                for r in self.results
+                if r.passed is False and r.evidence_eligible
+            ],
+            "infrastructure_error_modules": self.infrastructure_error_modules,
             "results": [r.to_json() for r in self.results],
             "total_elapsed_s": self.total_elapsed_s,
             "peak_rss_bytes_max": self.peak_rss_bytes_max,
@@ -334,14 +386,21 @@ def run_module(
             tempdir=tempdir,
         )
         measurement = pc.run_and_measure(argv, timeout=timeout_s, env=env)
+        infrastructure_failure = measurement.infrastructure_failure
         return ModuleResult(
             module=module,
             returncode=measurement.returncode,
-            passed=(measurement.returncode == 0 and not measurement.timed_out),
+            passed=(
+                None
+                if infrastructure_failure is not None
+                else (measurement.returncode == 0 and not measurement.timed_out)
+            ),
             elapsed_s=measurement.elapsed_s,
             peak_rss_bytes=measurement.peak_rss_bytes,
             timed_out=measurement.timed_out,
             tail=_verdict_tail(measurement.stdout),
+            child_returncode=measurement.child_returncode,
+            infrastructure_failure=infrastructure_failure,
         )
     finally:
         shutil.rmtree(tempdir, ignore_errors=True)
@@ -480,18 +539,25 @@ def _cmd_run(args: argparse.Namespace) -> int:
         for result in report.results:
             rss_mb = (
                 f"{result.peak_rss_bytes / 1048576:.1f}MB"
-                if result.peak_rss_bytes
+                if result.evidence_eligible and result.peak_rss_bytes
                 else "?"
             )
-            verdict = "PASS" if result.passed else "FAIL"
+            verdict = result.status.upper()
+            elapsed = (
+                f"{result.elapsed_s:.3f}"
+                if result.evidence_eligible
+                else f"non-evidence (diagnostic={result.elapsed_s:.3f})"
+            )
             print(
                 f"[{verdict}] {result.module} "
-                f"elapsed_s={result.elapsed_s:.3f} peak_rss={rss_mb} "
+                f"elapsed_s={elapsed} peak_rss={rss_mb} "
                 f"({result.tail})"
             )
+        report_payload = report.to_json()
         print(
             f"runner={report.runner} python={report.python_version} "
-            f"passed={report.all_passed} total_elapsed_s={report.total_elapsed_s:.3f} "
+            f"status={report_payload['status']} passed={report.all_passed} "
+            f"total_elapsed_s={report.total_elapsed_s:.3f} "
             f"peak_rss_max={report.peak_rss_bytes_max}"
         )
     # Non-zero exit when the oracle (or molt) did not run the corpus GREEN, so a

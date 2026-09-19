@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ def _load_guarded_exec():
     return module
 
 
-def _install_fake_context(module, monkeypatch):
+def _install_fake_context(module, monkeypatch, result=None):
     captured: dict[str, object] = {}
 
     class FakeContext:
@@ -37,7 +38,11 @@ def _install_fake_context(module, monkeypatch):
             captured["run_env"] = dict(env)
             captured["capture_output"] = capture_output
             captured["timeout"] = timeout
-            return SimpleNamespace(returncode=0, stderr="")
+            return (
+                result
+                if result is not None
+                else SimpleNamespace(returncode=0, stderr="")
+            )
 
     monkeypatch.setattr(
         module.harness_memory_guard,
@@ -46,6 +51,38 @@ def _install_fake_context(module, monkeypatch):
         raising=True,
     )
     return captured
+
+
+def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
+    tmp_path, monkeypatch
+) -> None:
+    module = _load_guarded_exec()
+    guard = module.harness_memory_guard.memory_guard
+    failure = guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("invalid index",)
+    )
+    artifacts = {"state": "reclaimed", "retention": {"errors": ["invalid index"]}}
+    result = module.harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        guard.INFRASTRUCTURE_RETURN_CODE,
+        "",
+        "",
+        elapsed_s=0.25,
+        child_returncode=0,
+        infrastructure_failure=failure,
+        temporary_artifacts=artifacts,
+    )
+    _install_fake_context(module, monkeypatch, result)
+    metrics = tmp_path / "metrics.json"
+    rc = module.main(["--metrics-json", str(metrics), "--", "fixture"])
+    assert rc == guard.INFRASTRUCTURE_RETURN_CODE
+    payload = json.loads(metrics.read_text())
+    assert payload["returncode"] == rc
+    assert payload["child_returncode"] == 0
+    assert payload["infrastructure_failure"] == guard.infrastructure_failure_payload(
+        failure
+    )
+    assert payload["temporary_artifacts"] == artifacts
 
 
 def test_guarded_exec_uses_family_timeout_env(monkeypatch) -> None:

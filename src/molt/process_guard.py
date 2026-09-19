@@ -223,10 +223,14 @@ def run_completed_command(
         setattr(error, "guarded_result", result)
         raise error
     if check and result.returncode != 0:
-        raise subprocess.CalledProcessError(
+        error = subprocess.CalledProcessError(
             result.returncode,
             command,
             output=result.stdout,
             stderr=result.stderr,
         )
+        # Match TimeoutExpired above: subprocess compatibility remains intact,
+        # while callers retain the guard's child and infrastructure outcomes.
+        setattr(error, "guarded_result", result)
+        raise error
     return result

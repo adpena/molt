@@ -30,6 +30,10 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
 try:
     from tools.command_execution import CommandExecutor
@@ -131,21 +135,47 @@ class BinaryExecution:
     peak_tree_rss_kb: int | None
     stdout_evidence: Path | None = None
     stderr_evidence: Path | None = None
+    child_returncode: int | None = None
+    infrastructure_failure: GuardInfrastructureFailure | None = None
 
     @property
     def succeeded(self) -> bool:
-        return not self.timed_out and self.returncode == 0
+        return (
+            self.infrastructure_failure is None
+            and not self.timed_out
+            and self.returncode == 0
+        )
+
+    @property
+    def infrastructure_diagnosis(self) -> dict[str, object] | None:
+        if self.infrastructure_failure is None:
+            return None
+        return {
+            "kind": "infrastructure-error",
+            "child_returncode": self.child_returncode,
+            "infrastructure_failure": self.infrastructure_failure.json_payload(),
+        }
 
     @property
     def termination(self) -> dict[str, object]:
         return termination_payload(self.returncode, timed_out=self.timed_out)
 
     def receipt(self) -> dict[str, object]:
-        stdout_bytes, stdout_sha256 = _stream_identity(self.stdout_evidence, self.stdout)
-        stderr_bytes, stderr_sha256 = _stream_identity(self.stderr_evidence, self.stderr)
+        stdout_bytes, stdout_sha256 = _stream_identity(
+            self.stdout_evidence, self.stdout
+        )
+        stderr_bytes, stderr_sha256 = _stream_identity(
+            self.stderr_evidence, self.stderr
+        )
         payload: dict[str, object] = {
             "argv": list(self.argv),
             "returncode": self.returncode,
+            "child_returncode": self.child_returncode,
+            "infrastructure_failure": (
+                self.infrastructure_failure.json_payload()
+                if self.infrastructure_failure is not None
+                else None
+            ),
             "termination": self.termination,
             "timed_out": self.timed_out,
             "elapsed_seconds": round(self.elapsed_seconds, 6),
@@ -155,8 +185,12 @@ class BinaryExecution:
             "stderr_bytes": stderr_bytes,
             "stdout_sha256": stdout_sha256,
             "stderr_sha256": stderr_sha256,
-            "stdout_evidence": None if self.stdout_evidence is None else str(self.stdout_evidence),
-            "stderr_evidence": None if self.stderr_evidence is None else str(self.stderr_evidence),
+            "stdout_evidence": None
+            if self.stdout_evidence is None
+            else str(self.stdout_evidence),
+            "stderr_evidence": None
+            if self.stderr_evidence is None
+            else str(self.stderr_evidence),
             "stdout_tail": self.stdout[-RECEIPT_TAIL_BYTES:],
             "stderr_tail": self.stderr[-RECEIPT_TAIL_BYTES:],
         }
@@ -253,6 +287,10 @@ def execute_binary(argv: list[str], timeout_seconds: float) -> BinaryExecution:
             peak_tree_rss_kb=_rss_kb(getattr(guarded_result, "peak_total", None)),
             stdout_evidence=stdout_evidence,
             stderr_evidence=stderr_evidence,
+            child_returncode=getattr(guarded_result, "child_returncode", None),
+            infrastructure_failure=getattr(
+                guarded_result, "infrastructure_failure", None
+            ),
         )
     stdout_text = _text(getattr(process, "stdout", None))
     stderr_text = _text(getattr(process, "stderr", None))
@@ -273,6 +311,8 @@ def execute_binary(argv: list[str], timeout_seconds: float) -> BinaryExecution:
         peak_tree_rss_kb=_rss_kb(getattr(process, "peak_total", None)),
         stdout_evidence=stdout_evidence,
         stderr_evidence=stderr_evidence,
+        child_returncode=getattr(process, "child_returncode", None),
+        infrastructure_failure=getattr(process, "infrastructure_failure", None),
     )
 
 
@@ -339,6 +379,8 @@ def _structured_test_results(output: str) -> list[dict[str, str]]:
 
 
 def _test_results_for_execution(execution: BinaryExecution, status: str) -> list[str]:
+    if execution.infrastructure_failure is not None:
+        return []
     rows: list[str] = []
     for line in _execution_lines(execution):
         rows.extend(
@@ -352,6 +394,8 @@ def _test_results_for_execution(execution: BinaryExecution, status: str) -> list
 def _structured_results_for_execution(
     execution: BinaryExecution,
 ) -> list[dict[str, str]]:
+    if execution.infrastructure_failure is not None:
+        return []
     rows: list[dict[str, str]] = []
     for line in _execution_lines(execution):
         rows.extend(_structured_test_results(line))
@@ -415,6 +459,8 @@ def listed_tests(
         ],
         timeout_seconds,
     )
+    if process.infrastructure_failure is not None:
+        return [], process
     if not process.succeeded:
         raise RuntimeError(
             "test discovery failed: "
@@ -532,9 +578,7 @@ def _parse_libtest_selection(inherited_args: list[str]) -> LibtestSelectionDomai
         if argument in execution_value_options:
             index += 2
             continue
-        if any(
-            argument.startswith(f"{option}=") for option in execution_value_options
-        ):
+        if any(argument.startswith(f"{option}=") for option in execution_value_options):
             index += 1
             continue
         if argument == "--exact":
@@ -579,18 +623,16 @@ def _canonical_list_args(inherited_args: list[str]) -> list[str]:
     return _parse_libtest_selection(inherited_args).list_args()
 
 
-def _exact_reproduction_kind(
-    exact: BinaryExecution, identity: str
-) -> str | None:
-    if exact.timed_out:
+def _exact_reproduction_kind(exact: BinaryExecution, identity: str) -> str | None:
+    if exact.timed_out or exact.infrastructure_failure is not None:
         return None
     if identity in _test_results_for_execution(exact, "FAILED"):
         return "reported-test-failure"
     started = _started_tests_for_execution(exact)
-    if (
-        identity in started
-        and exact.termination.get("kind") in {"signal", "windows-exception"}
-    ):
+    if identity in started and exact.termination.get("kind") in {
+        "signal",
+        "windows-exception",
+    }:
         return "isolated-test"
     return None
 
@@ -609,6 +651,8 @@ def _diagnose_serial_last_started(
         return {"kind": "budget-exhausted", "candidate_tests": candidates}
     serial = execute_binary(_serial_argv(executable, inherited_args), timeout)
     executions.append(serial)
+    if serial.infrastructure_diagnosis is not None:
+        return serial.infrastructure_diagnosis
     failed = _test_results_for_execution(serial, "FAILED")
     started = _started_tests_for_execution(serial)
     identity = failed[0] if failed else (started[-1] if started else None)
@@ -636,6 +680,8 @@ def _diagnose_serial_last_started(
             timeout,
         )
         executions.append(exact)
+        if exact.infrastructure_diagnosis is not None:
+            return exact.infrastructure_diagnosis
     if exact is None:
         kind = "budget-exhausted"
     elif exact.succeeded:
@@ -673,6 +719,8 @@ def diagnose_abnormal_exit(
     except RuntimeError as exc:
         return {"kind": "discovery-failed", "error": str(exc)}, executions
     executions.append(discovery)
+    if discovery.infrastructure_diagnosis is not None:
+        return discovery.infrastructure_diagnosis, executions
     candidates = tests
 
     while len(candidates) > 1 and len(executions) < MAX_DIAGNOSTIC_EXECUTIONS:
@@ -700,6 +748,8 @@ def diagnose_abnormal_exit(
                 ), executions
             execution = execute_binary(subset_argv, timeout)
             executions.append(execution)
+            if execution.infrastructure_diagnosis is not None:
+                return execution.infrastructure_diagnosis, executions
             print(
                 "cargo-test-binary-runner: diagnostic "
                 f"candidate_count={len(partition)} "
@@ -762,6 +812,8 @@ def diagnose_abnormal_exit(
             timeout,
         )
         executions.append(exact)
+        if exact.infrastructure_diagnosis is not None:
+            return exact.infrastructure_diagnosis, executions
     if exact is None:
         kind = "budget-exhausted"
     elif exact.succeeded:
@@ -792,6 +844,8 @@ def run_resource_tests(
         timeout_seconds=timeout,
     )
     executions = [discovery]
+    if discovery.infrastructure_diagnosis is not None:
+        return 2, discovery.infrastructure_diagnosis, executions
     failed: list[str] = []
     structural: list[dict[str, object]] = []
     for identity in tests:
@@ -817,6 +871,8 @@ def run_resource_tests(
         )
         executions.append(process)
         _emit_output(process)
+        if process.infrastructure_diagnosis is not None:
+            return 2, process.infrastructure_diagnosis, executions
         reproduction_kind = _exact_reproduction_kind(process, identity)
         if reproduction_kind is not None:
             print(f"test {identity} ... FAILED")
@@ -913,7 +969,9 @@ def main(argv: list[str] | None = None) -> int:
         source_identity = decoded_identity
 
     executable, *inherited_args = command
-    executable_resolved, executable_size, executable_sha256 = _executable_identity(executable)
+    executable_resolved, executable_size, executable_sha256 = _executable_identity(
+        executable
+    )
     invocation_id = uuid.uuid4().hex
     _ACTIVE_EVIDENCE_DIR = args.receipt_dir / "evidence" / invocation_id
     _ACTIVE_EVIDENCE_DIR.mkdir(parents=True, exist_ok=False)
@@ -944,8 +1002,11 @@ def main(argv: list[str] | None = None) -> int:
             executions.append(baseline)
             _emit_output(baseline)
             returncode = 0 if baseline.succeeded else 1
-            reported_failures = _test_results_for_execution(baseline, "FAILED")
-            if returncode != 0 and not reported_failures:
+            if baseline.infrastructure_diagnosis is not None:
+                diagnosis = baseline.infrastructure_diagnosis
+            else:
+                reported_failures = _test_results_for_execution(baseline, "FAILED")
+            if returncode != 0 and not reported_failures and diagnosis is None:
                 diagnosis, diagnostic_executions = diagnose_abnormal_exit(
                     executable,
                     inherited_args,
@@ -954,11 +1015,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 executions.extend(diagnostic_executions)
                 identity = diagnosis.get("identity")
-                if (
-                    diagnosis.get("kind")
-                    in {"isolated-test", "reported-test-failure"}
-                    and isinstance(identity, str)
-                ):
+                if diagnosis.get("kind") in {
+                    "isolated-test",
+                    "reported-test-failure",
+                } and isinstance(identity, str):
                     print(f"test {identity} ... FAILED")
                 print(
                     "cargo-test-binary-runner: abnormal-exit-diagnosis="
@@ -969,6 +1029,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cargo-test-binary-runner: {exc}", file=sys.stderr)
         returncode = 2
 
+    infrastructure_failed = (
+        diagnosis is not None and diagnosis.get("kind") == "infrastructure-error"
+    )
+    if infrastructure_failed:
+        returncode = 2
+        # Direct Cargo invocations need the same typed outcome even when no
+        # cargo-test-truth receipt consumer is configured. This is a reported
+        # diagnostic, not authenticated queue acceptance or cleanup authority.
+        print(
+            "\ncargo-test-binary-runner: infrastructure-outcome="
+            + json.dumps(diagnosis, sort_keys=True),
+            flush=True,
+        )
     failure_identities = _confirmed_failure_identities(reported_failures, diagnosis)
     resource_isolation = is_resource_test_binary(executable)
     receipt = {
@@ -990,7 +1063,13 @@ def main(argv: list[str] | None = None) -> int:
         "executable_sha256": executable_sha256,
         "inherited_args": inherited_args,
         "resource_process_isolation": resource_isolation,
-        "status": "success" if returncode == 0 else "failed",
+        "status": (
+            "infrastructure_error"
+            if infrastructure_failed
+            else "success"
+            if returncode == 0
+            else "failed"
+        ),
         "returncode": returncode,
         "reported_failures": sorted(set(reported_failures)),
         "failure_identities": sorted(failure_identities),

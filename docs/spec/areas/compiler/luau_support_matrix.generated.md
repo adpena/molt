@@ -6,11 +6,11 @@
 
 ## Summary
 
-- `compile-error`: `2`
-- `implemented-exact`: `184`
+- `compile-error`: `0`
+- `implemented-exact`: `190`
 - `implemented-target-limited`: `13`
-- `not-admitted`: `224`
-- `total`: `423`
+- `not-admitted`: `221`
+- `total`: `424`
 
 ## Matrix
 
@@ -43,9 +43,9 @@
 | `borrow` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bound_method_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `box_from_raw_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `br_if` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `br_if` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `branch` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `branch_false` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `branch_false` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `bridge_unavailable` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `build_dict` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `build_list` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -162,9 +162,11 @@
 | `end_if` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `enumerate` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `eq` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `exception_active` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_class` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_clear` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_context_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `exception_current` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `exception_finally_pending_observer` | `implemented-target-limited` | Unmarked observer is lowered; the generated target contract rejects the pending-call/eval-breaker-marked variant. |
 | `exception_kind` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_last` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -176,6 +178,7 @@
 | `exception_new_builtin_empty` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_new_builtin_one` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_new_from_class` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `exception_pending` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_pop` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_push` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `exception_region_drops_inserted` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -331,8 +334,6 @@
 | `or` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `ord_at` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `pcall_failure_jump` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `pcall_handler_end` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `pcall_wrap_begin` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `pcall_wrap_end` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `phi` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -426,8 +427,8 @@
 | `trace_enter_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trace_exit` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `trunc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `try_end` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `try_start` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `try_end` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `try_start` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `tuple_from_list` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `tuple_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `type_of` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

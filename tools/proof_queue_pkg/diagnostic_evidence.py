@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Mapping
 
 from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
+from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 from tools.proof_queue_pkg import command_admission, command_identity, custody, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
@@ -213,6 +214,93 @@ def _read_json_object(path: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _guard_infrastructure_diagnostic(
+    row: sqlite3.Row, log_tail: str
+) -> dict[str, object] | None:
+    if row["status"] in {"queued", "running"}:
+        return None
+    summary_path = Path(row["summary_json"]) if row["summary_json"] else None
+    summary = _read_json_object(summary_path) if summary_path is not None else {}
+    if summary.get("infrastructure_failure") is None:
+        return _reported_cargo_infrastructure_diagnostic(row, log_tail)
+    try:
+        failure = GuardInfrastructureFailure.from_payload(
+            summary["infrastructure_failure"]
+        )
+    except ValueError as exc:
+        detail = f"Malformed guard infrastructure receipt: {exc}"
+    else:
+        assert failure is not None
+        detail = (
+            f"guard_returncode={summary.get('returncode')} "
+            f"child_returncode={summary.get('child_returncode')}: "
+            + "; ".join(failure.details)
+        )
+    return _diagnostic(
+        signal_id="guard-infrastructure-error",
+        severity="infra",
+        summary="The proof guard failed independently of the recorded child outcome.",
+        evidence=detail,
+        next_action=(
+            "Inspect and repair the recorded custody failure before replay; "
+            "this result is not compiler, test, conformance or performance evidence."
+        ),
+        scopes=("src/molt/temporary_artifacts.py", "tools/memory_guard.py"),
+        artifacts=(str(summary_path), str(row["log_path"])),
+    )
+
+
+def _reported_cargo_infrastructure_diagnostic(
+    row: sqlite3.Row, log_tail: str
+) -> dict[str, object] | None:
+    """Observe an explicit nested outcome without treating output as custody."""
+    prefix = "cargo-test-binary-runner: infrastructure-outcome="
+    for line in reversed(log_tail.splitlines()):
+        if not line.startswith(prefix):
+            continue
+        try:
+            payload = loads_exact(line[len(prefix) :])
+            if (
+                not isinstance(payload, dict)
+                or set(payload)
+                != {"kind", "child_returncode", "infrastructure_failure"}
+                or payload["kind"] != "infrastructure-error"
+                or (
+                    payload["child_returncode"] is not None
+                    and type(payload["child_returncode"]) is not int
+                )
+            ):
+                raise ValueError("invalid nested infrastructure outcome fields")
+            failure = GuardInfrastructureFailure.from_payload(
+                payload["infrastructure_failure"]
+            )
+            if failure is None:
+                raise ValueError("nested infrastructure outcome has no failure")
+        except ValueError as exc:
+            detail = f"Malformed reported Cargo infrastructure outcome: {exc}"
+        else:
+            detail = (
+                f"Reported child_returncode={payload['child_returncode']}: "
+                + "; ".join(failure.details)
+            )
+        diagnostic = _diagnostic(
+            signal_id="guard-infrastructure-error",
+            severity="infra",
+            summary="Cargo test runner reported a nested guard infrastructure failure.",
+            evidence=detail,
+            next_action=(
+                "Inspect the nested runner receipt and recorded scratch custody "
+                "failure; this log report is diagnostic only, not authenticated "
+                "proof or cleanup authority."
+            ),
+            scopes=("tools/cargo_test_binary_runner.py", "tools/memory_guard.py"),
+            artifacts=(str(row["log_path"]),),
+        )
+        diagnostic["observation_state"] = "reported"
+        return diagnostic
+    return None
 
 
 def _summary_limits(summary: Mapping[str, object]) -> Mapping[str, object]:

@@ -234,9 +234,40 @@ contention can defer the retention bound until a later completion. A pending
 index discovers unfinished retention work without rescanning all historical
 receipts, but grants no deletion authority. Interrupted deletions are never
 retried: absence repairs the receipt, surviving payloads become blocked.
+Index publication stages stay inside the locked generation; the shared pending
+namespace contains only complete entries. Discovery snapshots are reconciled
+under each generation's lock before reading the index or counting retained
+bytes. A disappeared entry is accepted only when verified terminal custody proves
+that generation was reclaimed; missing retained-owner indexes and malformed
+entries remain failures, never existence-check retries or ignored corruption.
 Owner/terminal/error receipts survive payload cleanup. Guard summaries and command
 profiles expose outcome, evidence path and finalization time; elapsed command
-time includes cleanup. No age/LRU janitor adopts legacy scratch or environments.
+time includes cleanup. `child_returncode` records the actual child result;
+`infrastructure_failure` records independent scratch-custody failures. Such a
+failure changes child success to guard status 125 (`infrastructure_error`), not
+137/SIGKILL, and never replaces a nonzero child status. Both facts survive captured
+and streamed harness results, command profiles, incident summaries and metrics.
+Differential consumers retain that typed failure through CPython and every backend:
+it is uncalibrated infrastructure evidence, never semantic parity, an expected
+language failure, OOM inferred from an exit code, or permission for a cold retry.
+Cargo execution preserves the same fields in each attempt and never retries a
+wrapper or bisects test failures on infrastructure evidence. Benchmark and
+calibration consumers exclude these runs from performance or conformance claims.
+Restored benchmark summaries derive metrics from normalized runner outcomes;
+serialized aggregate values cannot reintroduce rejected timings or speedups.
+Queue receipts bind guard and child return codes independently while retaining
+the existing process-closure and sampling checks. Every accepted guard receipt
+requires the shared descendant-closure result to be closed with its direct child
+reaped; an infrastructure incident cannot mask an indeterminate POSIX final sample
+or failed cleanup action. Infrastructure failures produce
+queue status `non-evidence` for successful children, or `failed` for unsuccessful
+children, with queue code 2 and an infrastructure diagnostic in either case.
+The sealed command result and guard receipt retain their actual return codes;
+an infrastructure diagnostic never enters the semantic-failure frontier.
+Nested Cargo test runners stop semantic attribution on the same typed outcome.
+Their explicit log reports are diagnostic observations only, never authenticated
+queue acceptance or process-cleanup authority.
+No age/LRU janitor adopts legacy scratch or environments.
 
 The disk space required to complete a build is a first-class optimization target,
 not only final binary size. Prerequisite footprint, successful cold/warm peak

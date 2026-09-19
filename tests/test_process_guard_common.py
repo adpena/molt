@@ -193,8 +193,13 @@ def test_invalid_owning_proof_timeout_fails_closed(raw: str) -> None:
 
 
 def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None:
+    guarded_result = subprocess.CompletedProcess(["false"], 17, "out", "err")
+    guarded_result.child_returncode = 0
+    guarded_result.infrastructure_failure = object()
+
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        return subprocess.CompletedProcess(cmd, 17, "out", "err")
+        del cmd, kwargs
+        return guarded_result
 
     monkeypatch.setattr(
         process_guard_common.harness_memory_guard,
@@ -212,18 +217,23 @@ def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None
         assert exc.returncode == 17
         assert exc.output == "out"
         assert exc.stderr == "err"
+        assert getattr(exc, "guarded_result") is guarded_result
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected CalledProcessError")
 
 
 def test_run_guarded_test_process_preserves_timeout_semantics(monkeypatch) -> None:
+    guarded_result = subprocess.CompletedProcess(
+        ["sleep", "10"],
+        process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+        "",
+        "memory_guard: timeout after 5s\n",
+    )
+    guarded_result.timed_out = True
+
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        return subprocess.CompletedProcess(
-            cmd,
-            process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
-            "",
-            "memory_guard: timeout after 5s\n",
-        )
+        del cmd, kwargs
+        return guarded_result
 
     monkeypatch.setattr(
         process_guard_common.harness_memory_guard,
@@ -243,8 +253,36 @@ def test_run_guarded_test_process_preserves_timeout_semantics(monkeypatch) -> No
         receipt = json.loads(exc.__notes__[0])
         assert receipt["schema"] == "molt.test-process-timeout.v1"
         assert receipt["stderr_tail"] == "memory_guard: timeout after 5s\n"
+        assert getattr(exc, "guarded_result") is guarded_result
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected TimeoutExpired")
+
+
+def test_run_guarded_test_process_does_not_infer_timeout_from_child_124(
+    monkeypatch,
+) -> None:
+    guarded_result = subprocess.CompletedProcess(
+        ["child"],
+        process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
+        "",
+        "memory_guard: timeout after is child output only\n",
+    )
+    guarded_result.timed_out = False
+    monkeypatch.setattr(
+        process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: guarded_result,
+    )
+
+    result = process_guard_common.run_guarded_test_process(
+        ["child"],
+        prefix="MOLT_UNIT_TEST",
+        timeout=5,
+        check=False,
+    )
+
+    assert result is guarded_result
+    assert result.returncode == 124
 
 
 def test_cleanup_failure_is_attached_without_replacing_primary() -> None:

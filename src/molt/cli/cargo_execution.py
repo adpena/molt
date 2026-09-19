@@ -10,7 +10,10 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
 from molt.cargo_execution_policy import (
     _wrapper_is_sccache,
@@ -68,6 +71,8 @@ def _rss_bytes(result: subprocess.CompletedProcess[Any], attr: str) -> int | Non
 def _cargo_result_signal(
     result: subprocess.CompletedProcess[Any], stderr: str
 ) -> dict[str, object] | None:
+    if getattr(result, "infrastructure_failure", None) is not None:
+        return None
     guard_signal = getattr(result, "guard_signal", None)
     if isinstance(guard_signal, int) and guard_signal > 0:
         try:
@@ -110,6 +115,8 @@ class CargoAttemptEvidence:
     failure_kind: str | None
     stdout: str
     stderr: str
+    child_returncode: int | None = None
+    infrastructure_failure: GuardInfrastructureFailure | None = None
 
     def json_payload(self) -> dict[str, object]:
         return {
@@ -117,6 +124,12 @@ class CargoAttemptEvidence:
             "index": self.index,
             "wrapper": self.wrapper,
             "returncode": self.returncode,
+            "child_returncode": self.child_returncode,
+            "infrastructure_failure": (
+                self.infrastructure_failure.json_payload()
+                if self.infrastructure_failure is not None
+                else None
+            ),
             "signal": self.signal,
             "timed_out": self.timed_out,
             "duration_seconds": round(self.duration_seconds, 6),
@@ -162,6 +175,8 @@ class CargoExecutionResult(subprocess.CompletedProcess[str]):
         )
         self.timed_out = bool(getattr(terminal, "timed_out", False))
         self.guard_signal = getattr(terminal, "guard_signal", None)
+        self.child_returncode = getattr(terminal, "child_returncode", None)
+        self.infrastructure_failure = getattr(terminal, "infrastructure_failure", None)
 
 
 def cargo_execution_evidence(
@@ -181,23 +196,15 @@ def cargo_execution_evidence(
     ):
         attempt_records = typed_attempts
     else:
-        stderr = _text_output(result.stderr)
-        stdout = _text_output(result.stdout)
         elapsed = getattr(result, "elapsed_s", 0.0)
         duration = float(elapsed) if isinstance(elapsed, (int, float)) else 0.0
         attempt_records = [
-            CargoAttemptEvidence(
+            _cargo_attempt(
+                result,
                 index=1,
                 wrapper=None,
-                returncode=result.returncode,
-                signal=_cargo_result_signal(result, f"{stderr}\n{stdout}"),
-                timed_out=bool(getattr(result, "timed_out", False)),
                 duration_seconds=max(0.0, duration),
-                peak_process_rss_bytes=_rss_bytes(result, "peak"),
-                peak_tree_rss_bytes=_rss_bytes(result, "peak_total"),
                 failure_kind=None,
-                stdout=_bounded_cargo_attempt_text(stdout),
-                stderr=_bounded_cargo_attempt_text(stderr),
             )
         ]
     final = attempt_records[-1]
@@ -218,6 +225,12 @@ def cargo_execution_evidence(
         "schema": _CARGO_EXECUTION_EVIDENCE_SCHEMA,
         "attempt_count": len(attempt_payloads),
         "retry_reason": retry_reason if isinstance(retry_reason, str) else None,
+        "child_returncode": final.child_returncode,
+        "infrastructure_failure": (
+            final.infrastructure_failure.json_payload()
+            if final.infrastructure_failure is not None
+            else None
+        ),
         "timed_out": final.timed_out,
         "duration_seconds": round(sum(durations), 6),
         "peak_process_rss_bytes": max(process_peaks, default=None),
@@ -435,6 +448,8 @@ def _sccache_wrapper_failure_reason(
     failed, was killed, or exhausted memory.  Command text is therefore never
     retry authority; an explicit sccache diagnostic or wrapper launch failure is.
     """
+    if getattr(result, "infrastructure_failure", None) is not None:
+        return None
     combined = f"{_text_output(result.stderr)}\n{_text_output(result.stdout)}"
     if _SCCACHE_EXPLICIT_ERROR_RE.search(combined):
         return "explicit-sccache-error"
@@ -468,9 +483,15 @@ def _cargo_attempt(
         duration_seconds=max(0.0, duration),
         peak_process_rss_bytes=_rss_bytes(result, "peak"),
         peak_tree_rss_bytes=_rss_bytes(result, "peak_total"),
-        failure_kind=failure_kind,
+        failure_kind=(
+            "infrastructure_error"
+            if getattr(result, "infrastructure_failure", None) is not None
+            else failure_kind
+        ),
         stdout=_bounded_cargo_attempt_text(stdout),
         stderr=_bounded_cargo_attempt_text(stderr),
+        child_returncode=getattr(result, "child_returncode", None),
+        infrastructure_failure=getattr(result, "infrastructure_failure", None),
     )
 
 
@@ -633,7 +654,7 @@ def _run_resolved_cargo_plan(
         raise CargoPlanExecutionError(
             f"Cargo plan changed during execution: {exc}", result
         ) from exc
-    if not json_output and wrapper:
+    if not json_output and wrapper and result.infrastructure_failure is None:
         _attest_sccache_stats(wrapper, label)
     return result
 
@@ -703,7 +724,12 @@ def _run_cargo_with_sccache_retry(
         )
     active_wrappers = sccache_compiler_wrappers(env)
     active_wrapper = active_wrappers[0][1] if active_wrappers else ""
-    if not json_output and active_wrapper and _wrapper_is_sccache(active_wrapper):
+    if (
+        not json_output
+        and active_wrapper
+        and _wrapper_is_sccache(active_wrapper)
+        and getattr(build, "infrastructure_failure", None) is None
+    ):
         _attest_sccache_stats(active_wrapper, label)
     return CargoExecutionResult(
         build,

@@ -22,6 +22,7 @@ from tools.memory_guard_core.payloads import (
     windows_job_cleanup_payload,
 )
 from tools.memory_guard_core.process_custody import (
+    GuardInfrastructureFailure,
     GuardResult,
     GuardSamplingTelemetry,
     GuardTerminationAction,
@@ -125,6 +126,14 @@ def sampling_telemetry_payload(
     }
 
 
+def infrastructure_failure_payload(
+    failure: GuardInfrastructureFailure | None,
+) -> dict[str, object] | None:
+    if failure is None:
+        return None
+    return failure.json_payload()
+
+
 def incident_payload(
     result: GuardResult,
     *,
@@ -193,6 +202,10 @@ def incident_payload(
         )
 
     def attach_guard_custody(payload: dict[str, object]) -> dict[str, object]:
+        payload["child_returncode"] = result.child_returncode
+        payload["infrastructure_failure"] = infrastructure_failure_payload(
+            result.infrastructure_failure
+        )
         child_payload = guarded_child_process_payload(result.child_process)
         if child_payload is not None:
             payload["child_process"] = child_payload
@@ -280,6 +293,19 @@ def incident_payload(
         if guard_signal_payload is not None:
             payload["guard_signal"] = guard_signal_payload
         return attach_guard_custody(payload)
+    if result.infrastructure_failure is not None:
+        return attach_guard_custody(
+            {
+                "reason": "infrastructure_error",
+                "cleanup": "see temporary_artifacts and closure evidence",
+                "recorded_at": utc_timestamp(),
+                "elapsed_s": result.elapsed_s,
+                "next_action": (
+                    "Inspect the recorded scratch custody failure; the child exit "
+                    "status is preserved separately from guard infrastructure health."
+                ),
+            }
+        )
     if incomplete_orphan_actions:
         return attach_guard_custody(
             {
@@ -361,6 +387,10 @@ def write_summary_json(
     payload = {
         "command": list(command),
         "returncode": result.returncode,
+        "child_returncode": result.child_returncode,
+        "infrastructure_failure": infrastructure_failure_payload(
+            result.infrastructure_failure
+        ),
         "elapsed_s": result.elapsed_s,
         "max_rss_kb": max_rss_kb,
         "max_rss_gb": max_rss_kb / (1024 * 1024),
@@ -522,6 +552,8 @@ def write_running_summary_json(
     payload = {
         "command": list(command),
         "returncode": None,
+        "child_returncode": None,
+        "infrastructure_failure": None,
         "recorded_at": utc_timestamp(),
         "status": "running",
         "max_rss_kb": max_rss_kb,
@@ -670,6 +702,15 @@ def emit_terminal_report(
             "memory_guard: next action: inspect child process lifecycle and logs; "
             "make helpers shut down explicitly, or run intentional warm daemons "
             "inside a suite-level sentinel that drains at scope exit.",
+            file=stderr,
+        )
+    if result.infrastructure_failure is not None:
+        print(
+            "memory_guard: infrastructure_error during "
+            f"{result.infrastructure_failure.phase}; "
+            f"guard_returncode={result.returncode} "
+            f"child_returncode={result.child_returncode}: "
+            + "; ".join(result.infrastructure_failure.details),
             file=stderr,
         )
     exit_signal = signal_payload(result.returncode)

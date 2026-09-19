@@ -25,7 +25,7 @@ def _run_prepare_steps(
     logs_dir: Path,
     dry_run: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
-) -> tuple[bool, str | None]:
+) -> tuple[str, str | None]:
     for idx, prepare_cmd in enumerate(suite.prepare_cmds, start=1):
         resolved_cmd = _resolve_tokenized(prepare_cmd, tokens)
         out = logs_dir / f"prepare_{idx}.stdout.log"
@@ -42,8 +42,13 @@ def _run_prepare_steps(
             progress_label=f"suite={suite.id} phase=prepare step={idx}/{len(suite.prepare_cmds)}",
         )
         if not phase.ok:
-            return False, f"prepare step {idx} failed"
-    return True, None
+            status = (
+                "infrastructure_error"
+                if phase.guard_status == "infrastructure_error"
+                else "failed"
+            )
+            return status, f"prepare step {idx} {status}"
+    return "ok", None
 
 
 def _run_runner(
@@ -94,7 +99,11 @@ def _run_runner(
         )
         result.build = build
         if not build.ok:
-            result.status = "failed"
+            result.status = (
+                "infrastructure_error"
+                if build.guard_status == "infrastructure_error"
+                else "failed"
+            )
             result.molt_failure = build.molt_failure
             result.reason = (
                 f"build failed{_molt_failure_reason_suffix(build.molt_failure)}"
@@ -121,7 +130,11 @@ def _run_runner(
         )
         result.runs.append(phase)
         if not phase.ok:
-            result.status = "failed"
+            result.status = (
+                "infrastructure_error"
+                if phase.guard_status == "infrastructure_error"
+                else "failed"
+            )
             result.molt_failure = phase.molt_failure
             result.reason = (
                 f"run {run_idx} failed{_molt_failure_reason_suffix(phase.molt_failure)}"
@@ -315,6 +328,16 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, object]:
 
 
 def _suite_status(runners: dict[str, RunnerResult]) -> tuple[str, str | None]:
+    infrastructure_errors = [
+        name
+        for name, runner in runners.items()
+        if runner.status == "infrastructure_error"
+    ]
+    if infrastructure_errors:
+        return (
+            "infrastructure_error",
+            "runner infrastructure errors: " + ", ".join(sorted(infrastructure_errors)),
+        )
     failed = [name for name, runner in runners.items() if runner.status == "failed"]
     if failed:
         return "failed", f"runner failures: {', '.join(sorted(failed))}"

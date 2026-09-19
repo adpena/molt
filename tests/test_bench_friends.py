@@ -134,14 +134,7 @@ def _sample_suite_result(module, suite_id: str = "replay_smoke"):
         adapter_notes="replay-only",
         tags=["unit"],
         runners={"tinygrad": runner},
-        metrics={
-            "cpython_median_s": 0.02,
-            "tinygrad_median_s": 0.0125,
-            "molt_median_s": None,
-            "molt_cpython_ratio": None,
-            "molt_vs_friend_speedup": None,
-            "molt_vs_numpy_speedup": None,
-        },
+        metrics=module._suite_metrics({"tinygrad": runner}),
     )
 
 
@@ -248,6 +241,54 @@ def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> Non
     round_tripped = module._suite_to_dict(module._suite_from_dict(payload))
 
     assert round_tripped == payload
+
+
+@pytest.mark.parametrize("location", ["build", "run", "molt_failure"])
+def test_bench_friends_restored_metrics_derive_from_admitted_runners(location) -> None:
+    module = _load_tool_module()
+    payload = module._suite_to_dict(_sample_suite_result(module))
+    molt = json.loads(json.dumps(payload["runners"]["tinygrad"]))
+    molt["name"] = "molt"
+    failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["receipt unavailable"],
+    }
+    if location == "molt_failure":
+        molt["molt_failure"] = {
+            "status": "ok",
+            "infrastructure_failure": failure,
+        }
+    else:
+        phase = molt["build"] if location == "build" else molt["runs"][0]
+        phase["infrastructure_failure"] = failure
+    payload["runners"]["molt"] = molt
+    payload["metrics"].update(
+        molt_median_s=42.0,
+        molt_cpython_ratio=42.0,
+        molt_workload_median_s=42.0,
+        molt_vs_tinygrad_workload_speedup=42.0,
+    )
+
+    restored = module._suite_from_dict(payload)
+    assert restored.status == "infrastructure_error"
+    assert restored.runners["molt"].run_samples_s == []
+    assert restored.runners["molt"].structured_samples_s == {}
+    assert restored.metrics["tinygrad_median_s"] == 0.0125
+    assert restored.metrics["molt_median_s"] is None
+    assert restored.metrics["molt_cpython_ratio"] is None
+    assert "molt_workload_median_s" not in restored.metrics
+    assert restored.metrics["molt_vs_tinygrad_workload_speedup"] is None
+    summary = module._render_summary_markdown(
+        run_started_at="2026-09-19T00:00:00+00:00",
+        manifest_path=Path("bench/friends/manifest.toml"),
+        json_rel="results.json",
+        suites=[restored],
+    )
+    row = next(line for line in summary.splitlines() if line.startswith("| replay"))
+    assert "infrastructure_error" in row
+    assert "0.0125" in row
+    assert "42.0000" not in row
+    assert module._suite_to_dict(restored)["metrics"] == restored.metrics
 
 
 def test_bench_friends_summary_row_spacing_is_regular() -> None:
@@ -655,6 +696,171 @@ def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
     assert payload["guard_orphaned_process_groups"] == [2345]
     assert payload["guard_exit_signal"]["name"] == "SIGTERM"
     assert payload["guard_violation"] is None
+
+
+def test_bench_friends_timeout_uses_typed_guard_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+
+    def guarded_result(*, timed_out: bool):
+        result = subprocess.CompletedProcess(
+            ["python3", "-c", "raise SystemExit(124)"],
+            124,
+            "",
+            "",
+        )
+        result.elapsed_s = 0.1
+        result.violation = None
+        result.timed_out = timed_out
+        result.limit_at_violation = None
+        result.orphaned_process_groups = ()
+        result.cargo_incremental_quarantine = None
+        result.child_returncode = 124
+        result.infrastructure_failure = None
+        return result
+
+    responses = iter([guarded_result(timed_out=False), guarded_result(timed_out=True)])
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    limits = module.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
+
+    intentional = module._run_command(
+        ["python3", "-c", "raise SystemExit(124)"],
+        cwd=tmp_path,
+        env={},
+        timeout_sec=30,
+        stdout_path=tmp_path / "intentional.stdout.log",
+        stderr_path=tmp_path / "intentional.stderr.log",
+        dry_run=False,
+        limits=limits,
+    )
+    actual_timeout = module._run_command(
+        ["python3", "-c", "raise SystemExit(124)"],
+        cwd=tmp_path,
+        env={},
+        timeout_sec=30,
+        stdout_path=tmp_path / "timeout.stdout.log",
+        stderr_path=tmp_path / "timeout.stderr.log",
+        dry_run=False,
+        limits=limits,
+    )
+
+    assert intentional.returncode == 124
+    assert intentional.timed_out is False
+    assert intentional.guard_status == "failed"
+    assert actual_timeout.returncode == -9
+    assert actual_timeout.timed_out is True
+    assert actual_timeout.guard_status == "timeout"
+
+
+def test_bench_friends_marks_guard_infrastructure_as_non_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+    infrastructure_failure = (
+        module.harness_memory_guard.memory_guard.GuardInfrastructureFailure(
+            phase="temporary_artifact_custody",
+            details=("scratch receipt retention failed",),
+        )
+    )
+
+    class GuardedResult(subprocess.CompletedProcess):
+        elapsed_s = 0.5
+        violation = None
+        timed_out = False
+        limit_at_violation = None
+        orphaned_process_groups = ()
+        cargo_incremental_quarantine = None
+        child_returncode = 0
+
+    def fake_guarded_completed_process(*args, **kwargs):  # noqa: ANN002, ANN003
+        result = GuardedResult(
+            args=["python3", "-m", "molt.cli", "run"],
+            returncode=125,
+            stdout="child completed\n",
+            stderr="scratch retention failed\n",
+        )
+        result.infrastructure_failure = infrastructure_failure
+        return result
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    runner = module.RunnerSpec(
+        name="molt",
+        role="workload",
+        build_cmd=None,
+        run_cmd=["python3", "-m", "molt.cli", "run"],
+        env={},
+        skip_reason=None,
+        json_stdout=False,
+    )
+    suite = module.SuiteSpec(
+        id="infrastructure_probe",
+        friend="tinygrad",
+        display_name="infrastructure probe",
+        enabled=True,
+        source="local",
+        repo_url=None,
+        repo_ref=None,
+        local_path=None,
+        workdir=None,
+        semantic_mode="runs_unmodified",
+        adapter_notes=None,
+        tags=[],
+        timeout_sec=30,
+        repeat=1,
+        env={},
+        prepare_cmds=[],
+        runners={"molt": runner},
+    )
+
+    result = module._run_runner(
+        runner,
+        suite=suite,
+        suite_workdir=tmp_path,
+        suite_env={},
+        tokens={},
+        logs_dir=tmp_path / "logs",
+        dry_run=False,
+        limits=module.harness_memory_guard.limits_from_env("MOLT_BENCH", {}),
+    )
+
+    phase_payload = module._phase_to_dict(result.runs[0])
+    assert result.status == "infrastructure_error"
+    assert result.reason == "run 1 failed: infrastructure_error"
+    assert phase_payload["guard_status"] == "infrastructure_error"
+    assert phase_payload["returncode"] == 125
+    assert phase_payload["child_returncode"] == 0
+    assert phase_payload["infrastructure_failure"] == {
+        "phase": "temporary_artifact_custody",
+        "details": ["scratch receipt retention failed"],
+    }
+    assert phase_payload["molt_failure"]["status"] == "infrastructure_error"
+    assert phase_payload["molt_failure"]["signal"] is None
+    restored = module._phase_from_dict(phase_payload)
+    assert restored is not None
+    assert restored.guard_status == "infrastructure_error"
+    assert restored.infrastructure_failure == phase_payload["infrastructure_failure"]
+    malformed = dict(phase_payload)
+    malformed["infrastructure_failure"] = {
+        "phase": "temporary_artifact_custody",
+        "details": [],
+    }
+    with pytest.raises(ValueError, match="infrastructure failure"):
+        module._phase_from_dict(malformed)
+    assert module._suite_status({"molt": result}) == (
+        "infrastructure_error",
+        "runner infrastructure errors: molt",
+    )
 
 
 def test_bench_friends_molt_runner_classifies_daemon_empty_response(

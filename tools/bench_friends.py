@@ -554,7 +554,7 @@ def main() -> int:
                                     suite_env,
                                     output_root=output_root,
                                 )
-                            prep_ok, prep_reason = _run_prepare_steps(
+                            prep_status, prep_reason = _run_prepare_steps(
                                 suite,
                                 suite_workdir=suite_workdir,
                                 suite_env=suite_env,
@@ -565,7 +565,7 @@ def main() -> int:
                                 limits=limits,
                             )
                             runners: dict[str, RunnerResult] = {}
-                            if prep_ok:
+                            if prep_status == "ok":
                                 for runner_name, runner_spec in suite.runners.items():
                                     runners[runner_name] = _run_runner(
                                         runner_spec,
@@ -582,7 +582,7 @@ def main() -> int:
                                     runners[runner_name] = RunnerResult(
                                         name=runner_name,
                                         role=suite.runners[runner_name].role,
-                                        status="failed",
+                                        status=prep_status,
                                         reason=prep_reason,
                                     )
                             post_run_source_custody = source_custody
@@ -647,7 +647,7 @@ def main() -> int:
                                 metrics=metrics,
                             )
                             suite_results.append(suite_result)
-                            if status == "failed":
+                            if status in {"failed", "infrastructure_error"}:
                                 overall_rc = 1
                                 if args.fail_fast:
                                     break

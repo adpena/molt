@@ -221,6 +221,42 @@ def _outcome(stdout, rc=0, stderr=""):
     return compat_backends.BackendResult(stdout=stdout, stderr=stderr, returncode=rc)
 
 
+def _infrastructure_outcome(*, child_returncode=0, build_failed=False):
+    failure = molt_diff.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("invalid retained index",)
+    )
+    return compat_backends.BackendResult(
+        None if build_failed else "partial",
+        "guard infrastructure diagnostic",
+        child_returncode or molt_diff.memory_guard.INFRASTRUCTURE_RETURN_CODE,
+        build_failed=build_failed,
+        child_returncode=child_returncode,
+        infrastructure_failure=failure,
+    )
+
+
+@pytest.mark.parametrize("child_returncode", [0, 7, 137])
+def test_guarded_adapter_keeps_child_and_infrastructure_failure(
+    monkeypatch, child_returncode
+):
+    expected = _infrastructure_outcome(child_returncode=child_returncode)
+    monkeypatch.setattr(
+        molt_diff.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: expected,
+    )
+    actual = compat_backends._guarded_run(
+        ["fixture"], prefix="MOLT_COMPAT_WASM_RUN", env={}, timeout_default=60
+    )
+    assert actual == expected
+    assert (
+        actual.as_build_failure(
+            detail="build guard failed", fallback="failed"
+        ).infrastructure_failure
+        is expected.infrastructure_failure
+    )
+
+
 def test_no_divergence_when_backends_agree() -> None:
     per_backend = {
         "native": _outcome("42\n"),
@@ -547,7 +583,10 @@ def test_timeout_preserves_diagnostic_and_is_never_oom(
 
 @pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
 @pytest.mark.parametrize("phase", ("build", "run"))
-def test_all_adapters_preserve_phase_timeout(backend, phase, tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_kind", ("timeout", "infrastructure"))
+def test_all_adapters_preserve_phase_failure(
+    backend, phase, failure_kind, tmp_path, monkeypatch
+):
     monkeypatch.setattr(compat_backends, "_scratch_dir", lambda *_: tmp_path)
     monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
     context = compat_backends.BackendExecutionContext(
@@ -571,6 +610,8 @@ def test_all_adapters_preserve_phase_timeout(backend, phase, tmp_path, monkeypat
             if backend == "wasm":
                 (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
             return compat_backends.BackendResult("", "", 0)
+        if failure_kind == "infrastructure":
+            return _infrastructure_outcome()
         return compat_backends.BackendResult.from_deadline(
             timeout=17.0,
             stdout="partial",
@@ -584,10 +625,15 @@ def test_all_adapters_preserve_phase_timeout(backend, phase, tmp_path, monkeypat
         "luau": compat_backends.LuauAdapter,
     }
     result = adapters[backend]().build_and_run("case.py", context=context)
-    assert result.timed_out and result.returncode == 124
+    if failure_kind == "timeout":
+        assert result.timed_out and result.returncode == 124
+        assert "deadline diagnostic" in result.stderr
+        assert "timeout after 17.0s" in result.stderr
+    else:
+        assert result.infrastructure_failure is not None
+        assert result.child_returncode == 0
+        assert result.returncode == molt_diff.memory_guard.INFRASTRUCTURE_RETURN_CODE
     assert result.build_failed == (phase == "build")
-    assert "deadline diagnostic" in result.stderr
-    assert "timeout after 17.0s" in result.stderr
     if phase == "build":
         assert result.stdout is None
         assert "partial" in result.stderr
@@ -596,7 +642,9 @@ def test_all_adapters_preserve_phase_timeout(backend, phase, tmp_path, monkeypat
     assert len(calls) == (1 if phase == "build" else 2)
     monkeypatch.setenv("MOLT_COMPAT_FAULT_INJECT", backend)
     injected = compat_backends._apply_fault_injection(backend, result)
-    assert injected.timed_out and injected.returncode == 124
+    assert injected.timed_out == result.timed_out
+    assert injected.returncode == result.returncode
+    assert injected.infrastructure_failure is result.infrastructure_failure
     assert injected.stderr == result.stderr
 
 
@@ -728,3 +776,105 @@ def test_intentional_exit_124_is_not_a_timeout(fake_test_file, install_fake_regi
     assert (
         molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm")) == "pass"
     )
+
+
+@pytest.mark.parametrize("backend", ("native", "wasm", "llvm", "luau"))
+@pytest.mark.parametrize("build_failed", (False, True))
+def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
+    backend, build_failed, fake_test_file, install_fake_registry, monkeypatch, capsys
+):
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+    )
+    targets = ("native", "wasm", "llvm", "luau")
+    outcomes = {name: _outcome(name) for name in targets}
+    failure = _infrastructure_outcome(child_returncode=137, build_failed=build_failed)
+    outcomes[backend] = failure
+    install_fake_registry(outcomes)
+    monkeypatch.setenv("MOLT_COMPAT_FAULT_INJECT", backend)
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    assert molt_diff.diff_test(str(fake_test_file), targets=targets) == "uncalibrated"
+    assert records[0]["reason_tag"] == "infrastructure_error"
+    assert records[0]["raw_status"] == records[0]["resolved_status"] == "uncalibrated"
+    row = next(row for row in records[0]["backend_rows"] if row["backend"] == backend)
+    assert row["raw_status"] == "uncalibrated"
+    assert row["child_returncode"] == 137
+    assert (
+        row["infrastructure_failure"] == failure.infrastructure_failure.json_payload()
+    )
+    assert "CROSS-BACKEND DIVERGENCE" not in capsys.readouterr().out
+    assert (
+        molt_diff._cross_backend_divergence(
+            {"valid": _outcome("42"), "invalid": failure},
+            stdout_mode="exact",
+            stderr_mode="ignore",
+        )
+        is None
+    )
+
+
+def test_cpython_infrastructure_failure_cannot_be_semantic_parity(
+    fake_test_file, install_fake_registry, monkeypatch
+):
+    oracle = _infrastructure_outcome()
+    _, contexts = install_fake_registry(
+        {"native": _outcome("partial", rc=125)}, cpython=oracle
+    )
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    assert molt_diff.diff_test(str(fake_test_file)) == "uncalibrated"
+    assert contexts == []
+    assert records[0]["reason_tag"] == "infrastructure_error"
+    assert records[0]["cpython_child_returncode"] == 0
+    assert (
+        records[0]["cpython_infrastructure_failure"]
+        == oracle.infrastructure_failure.json_payload()
+    )
+
+
+def test_intentional_exit_125_remains_semantic_evidence(
+    fake_test_file, install_fake_registry
+):
+    install_fake_registry({"native": _outcome("", rc=125)}, cpython=("", "", 125))
+    assert molt_diff.diff_test(str(fake_test_file)) == "pass"
+
+
+@pytest.mark.parametrize("entry", ["initial", "after-dyld", "after-daemon"])
+def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantine(
+    monkeypatch, entry
+):
+    failure = _infrastructure_outcome(build_failed=True)
+    results = [failure] if entry == "initial" else [_outcome(None, rc=1), failure]
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(kwargs)
+        return results.pop(0)
+
+    monkeypatch.setattr(molt_diff, "run_molt", run)
+    monkeypatch.setattr(
+        molt_diff, "_diff_retry_dyld_default", lambda: entry == "after-dyld"
+    )
+    monkeypatch.setattr(molt_diff, "_is_dyld_unknown_imports", lambda _: True)
+    monkeypatch.setattr(molt_diff, "_is_backend_daemon_build_error", lambda _: True)
+    monkeypatch.setattr(molt_diff, "_mark_dyld_guard", lambda _: None)
+    for hook in (
+        "_diff_disable_daemon_on_dyld",
+        "_diff_retry_isolated_default",
+        "_diff_force_rebuild_on_dyld",
+    ):
+        monkeypatch.setattr(
+            molt_diff,
+            hook,
+            lambda: pytest.fail("infrastructure cannot authorize retry/quarantine"),
+        )
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+    assert molt_diff._run_native_backend("fixture.py", context) is failure
+    assert len(calls) == (1 if entry == "initial" else 2)
+    assert results == []

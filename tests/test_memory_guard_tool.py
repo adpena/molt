@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import dataclasses
+import io
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,47 @@ from molt.memory_guard_paths import (
     active_guard_marker_dir,
     pytest_guard_summary_dir,
 )
+
+
+def test_infrastructure_failure_has_one_exact_wire_authority() -> None:
+    failure = memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("invalid index", "closure unknown")
+    )
+    payload = {
+        "phase": "temporary_artifact_custody",
+        "details": ["invalid index", "closure unknown"],
+    }
+    assert failure.json_payload() == payload
+    assert memory_guard.infrastructure_failure_payload(failure) == payload
+    assert memory_guard.GuardInfrastructureFailure.from_payload(payload) == failure
+    assert memory_guard.GuardInfrastructureFailure.from_payload(None) is None
+    assert memory_guard.infrastructure_failure_payload(None) is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        False,
+        "failure",
+        [],
+        {},
+        {"phase": "unknown", "details": ["failure"]},
+        {"phase": "temporary_artifact_custody", "details": []},
+        {"phase": "temporary_artifact_custody", "details": [""]},
+        {"phase": "temporary_artifact_custody", "details": [" "]},
+        {"phase": "temporary_artifact_custody", "details": [1]},
+        {"phase": "temporary_artifact_custody", "details": "failure"},
+        {"phase": "temporary_artifact_custody", "details": ("failure",)},
+        {
+            "phase": "temporary_artifact_custody",
+            "details": ["failure"],
+            "ignored": True,
+        },
+    ],
+)
+def test_infrastructure_failure_rejects_malformed_wire_payload(payload) -> None:
+    with pytest.raises(ValueError, match="invalid guard infrastructure failure"):
+        memory_guard.GuardInfrastructureFailure.from_payload(payload)
 
 
 @pytest.fixture
@@ -5287,7 +5329,7 @@ def test_run_guarded_marks_child_environment_as_guarded(
 
 @pytest.mark.parametrize(
     ("child_returncode", "expected_returncode"),
-    [(0, memory_guard.GUARD_RETURN_CODE), (7, 7)],
+    [(0, memory_guard.INFRASTRUCTURE_RETURN_CODE), (7, 7), (137, 137)],
 )
 def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
     tmp_path: Path,
@@ -5352,6 +5394,9 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
     )
 
     assert result.returncode == expected_returncode
+    assert result.child_returncode == child_returncode
+    assert result.infrastructure_failure is not None
+    assert result.infrastructure_failure.phase == "temporary_artifact_custody"
     assert result.temporary_artifacts is not None
     assert result.temporary_artifacts["state"] == "cleanup-error"
     assert result.temporary_artifacts["error"] == ("OSError: scratch cleanup failed")
@@ -5367,8 +5412,13 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
 @pytest.mark.parametrize(
     ("child_returncode", "retention_errors", "expected_returncode"),
     [
-        (0, ["prior generation receipt unreadable"], memory_guard.GUARD_RETURN_CODE),
+        (
+            0,
+            ["prior generation receipt unreadable"],
+            memory_guard.INFRASTRUCTURE_RETURN_CODE,
+        ),
         (7, ["prior generation receipt unreadable"], 7),
+        (137, ["prior generation receipt unreadable"], 137),
         (0, [], 0),
     ],
 )
@@ -5438,15 +5488,59 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     )
 
     assert result.returncode == expected_returncode
+    assert result.child_returncode == child_returncode
     assert result.temporary_artifacts is not None
     assert result.temporary_artifacts["state"] == "reclaimed"
     assert result.temporary_artifacts["retention"]["protected_count"] == 3
     if retention_errors:
+        assert result.infrastructure_failure is not None
+        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+        incident = memory_guard._incident_payload(result)
+        assert incident["reason"] == "infrastructure_error"
+        assert incident["child_returncode"] == child_returncode
+        assert "signal" not in incident
         assert "prior generation receipt unreadable" in result.stderr
         assert "retention sweep reported errors" in result.stderr
     else:
+        assert result.infrastructure_failure is None
+        assert memory_guard._incident_payload(result) is None
         assert "temporary artifact custody incomplete" not in result.stderr
     assert lease.release_calls == 1
+
+    summary = tmp_path / "outcome.json"
+    monkeypatch.setattr(memory_guard, "repro_context_payload", lambda **_: {})
+    memory_guard._write_summary_json(
+        str(summary),
+        result=result,
+        command=["fixture-child"],
+        cwd=tmp_path,
+        environ={},
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=None,
+        max_global_rss_kb=None,
+        child_rlimit_kb=None,
+        timeout_s=None,
+        poll_interval_s=0.01,
+    )
+    payload = json.loads(summary.read_text())
+    assert payload["returncode"] == expected_returncode
+    assert payload["child_returncode"] == child_returncode
+    assert payload[
+        "infrastructure_failure"
+    ] == memory_guard.infrastructure_failure_payload(result.infrastructure_failure)
+    assert payload["exit_signal"] == memory_guard.exit_signal_payload(child_returncode)
+    diagnostic = io.StringIO()
+    memory_guard._reporting.emit_terminal_report(
+        result,
+        timeout_s=None,
+        max_rss_gb=0.5,
+        max_total_rss_gb=1.0,
+        repro_payload=None,
+        signal_payload=memory_guard.exit_signal_payload,
+        stderr=diagnostic,
+    )
+    assert ("infrastructure_error" in diagnostic.getvalue()) is bool(retention_errors)
+    assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
 
 
 def test_run_guarded_exception_releases_lease_and_updates_marker(

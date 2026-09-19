@@ -171,6 +171,8 @@ class _RunResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    child_returncode: int | None = None
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,8 @@ class MoltFailure:
     guard_violation: dict[str, object] | None = None
     orphaned_process_groups: tuple[int, ...] = ()
     log_refs: tuple[dict[str, str], ...] = ()
+    child_returncode: int | None = None
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,13 @@ def _run_cmd(
         capture_output=capture,
         limits=resolved_limits,
     )
-    return _RunResult(res.returncode, res.stdout or "", res.stderr or "")
+    return _RunResult(
+        res.returncode,
+        res.stdout or "",
+        res.stderr or "",
+        child_returncode=getattr(res, "child_returncode", None),
+        infrastructure_failure=getattr(res, "infrastructure_failure", None),
+    )
 
 
 def _git_rev() -> str | None:
@@ -787,15 +797,25 @@ def _classified_molt_failure(
     timed_out: bool = False,
     violation: memory_guard.RssViolation | None = None,
     orphaned_process_groups: tuple[int, ...] = (),
+    child_returncode: int | None = None,
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     default_status: str,
     detail: str | None = None,
 ) -> MoltFailure:
-    phase = _resolved_molt_failure_phase(phase, stdout, stderr)
-    signal_payload = (
-        None if returncode is None else memory_guard.exit_signal_payload(returncode)
-    )
-    detail = detail or _failure_detail(phase, stdout, stderr)
-    if violation is not None:
+    if infrastructure_failure is None:
+        phase = _resolved_molt_failure_phase(phase, stdout, stderr)
+        signal_payload = (
+            None if returncode is None else memory_guard.exit_signal_payload(returncode)
+        )
+        detail = detail or _failure_detail(phase, stdout, stderr)
+    else:
+        # Guard infrastructure is not evidence about the child, even when the
+        # effective guard return code resembles a signal or output happens to
+        # contain a build/runtime signature.
+        signal_payload = None
+    if infrastructure_failure is not None:
+        status = "infrastructure_error"
+    elif violation is not None:
         status = "rss_limit_exceeded"
     elif timed_out:
         status = "timeout"
@@ -827,6 +847,8 @@ def _classified_molt_failure(
         guard_violation=_rss_record_payload(violation),
         orphaned_process_groups=orphaned_process_groups,
         log_refs=_failure_log_refs(stdout, stderr),
+        child_returncode=child_returncode,
+        infrastructure_failure=infrastructure_failure,
     )
 
 
@@ -840,9 +862,15 @@ def classify_molt_process_failure(
     timed_out: bool = False,
     violation: memory_guard.RssViolation | None = None,
     orphaned_process_groups: tuple[int, ...] = (),
+    child_returncode: int | None = None,
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     default_status: str | None = None,
 ) -> MoltFailure:
-    resolved_phase = _resolved_molt_failure_phase(phase, stdout, stderr)
+    resolved_phase = (
+        phase
+        if infrastructure_failure is not None
+        else _resolved_molt_failure_phase(phase, stdout, stderr)
+    )
     return _classified_molt_failure(
         phase=resolved_phase,
         returncode=returncode,
@@ -852,6 +880,8 @@ def classify_molt_process_failure(
         timed_out=timed_out,
         violation=violation,
         orphaned_process_groups=orphaned_process_groups,
+        child_returncode=child_returncode,
+        infrastructure_failure=infrastructure_failure,
         default_status=default_status
         or ("build_failed" if resolved_phase == "build" else "runtime_failed"),
     )
@@ -864,13 +894,42 @@ def _classified_molt_exception(
     elapsed_s: float | None,
     default_status: str,
 ) -> MoltFailure:
-    timed_out = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
+    guarded_result = getattr(exc, "guarded_result", None)
+    if guarded_result is None:
+        timed_out = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
+        returncode = memory_guard.TIMEOUT_RETURN_CODE if timed_out else None
+        stdout = ""
+        stderr = str(exc)
+        violation = None
+        orphaned_process_groups: tuple[int, ...] = ()
+        child_returncode = None
+        infrastructure_failure = None
+    else:
+        timed_out = bool(getattr(guarded_result, "timed_out", False))
+        returncode = getattr(guarded_result, "returncode", None)
+        stdout = getattr(guarded_result, "stdout", None)
+        stderr = getattr(guarded_result, "stderr", None)
+        violation = getattr(guarded_result, "violation", None)
+        orphaned_process_groups = tuple(
+            int(pgid)
+            for pgid in getattr(guarded_result, "orphaned_process_groups", ()) or ()
+        )
+        child_returncode = getattr(guarded_result, "child_returncode", None)
+        infrastructure_failure = getattr(guarded_result, "infrastructure_failure", None)
+        guarded_elapsed_s = getattr(guarded_result, "elapsed_s", None)
+        if guarded_elapsed_s is not None:
+            elapsed_s = guarded_elapsed_s
     return _classified_molt_failure(
         phase=phase,
-        returncode=memory_guard.TIMEOUT_RETURN_CODE if timed_out else None,
-        stderr=str(exc),
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
         elapsed_s=elapsed_s,
         timed_out=timed_out,
+        violation=violation,
+        orphaned_process_groups=orphaned_process_groups,
+        child_returncode=child_returncode,
+        infrastructure_failure=infrastructure_failure,
         default_status="timeout" if timed_out else default_status,
     )
 
@@ -893,6 +952,10 @@ def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
         "stdout_tail": _bounded_failure_text(failure.stdout),
         "stderr_tail": _bounded_failure_text(failure.stderr),
         "returncode": failure.returncode,
+        "child_returncode": failure.child_returncode,
+        "infrastructure_failure": memory_guard.infrastructure_failure_payload(
+            failure.infrastructure_failure
+        ),
         "timed_out": failure.timed_out,
         "elapsed_s": failure.elapsed_s,
         "signal": failure.signal,
@@ -916,6 +979,12 @@ def _molt_failure_json_fields(failure: MoltFailure | None) -> dict[str, object]:
         "molt_failure_detail": None if payload is None else payload["detail"],
         "molt_failure_message": None if payload is None else payload["message"],
         "molt_failure_returncode": None if payload is None else payload["returncode"],
+        "molt_failure_child_returncode": (
+            None if payload is None else payload["child_returncode"]
+        ),
+        "molt_failure_infrastructure_failure": (
+            None if payload is None else payload["infrastructure_failure"]
+        ),
         "molt_failure_timed_out": (False if payload is None else payload["timed_out"]),
         "molt_failure_elapsed_s": None if payload is None else payload["elapsed_s"],
         "molt_failure_signal": None if payload is None else payload["signal"],
@@ -959,6 +1028,10 @@ def _emit_molt_failure_summary(
         parts.append(f"detail={failure.detail}")
     if failure.returncode is not None:
         parts.append(f"returncode={failure.returncode}")
+    if failure.child_returncode is not None:
+        parts.append(f"child_returncode={failure.child_returncode}")
+    if failure.infrastructure_failure is not None:
+        parts.append(f"infrastructure_phase={failure.infrastructure_failure.phase}")
     if failure.timed_out:
         parts.append("timed_out=true")
     if failure.elapsed_s is not None:
@@ -982,7 +1055,9 @@ def _failure_should_restart_batch_server(failure: MoltFailure) -> bool:
 
 def _failure_should_retry_build(failure: MoltFailure) -> bool:
     return (
-        failure.phase == "build"
+        failure.infrastructure_failure is None
+        and failure.status != "infrastructure_error"
+        and failure.phase == "build"
         and failure.detail is not None
         and failure.detail.startswith(("backend_daemon_", "batch_server_"))
     )
@@ -1095,6 +1170,8 @@ def prepare_molt_binary(
                 elapsed_s=build_s,
                 timed_out=bool(getattr(res, "timed_out", False)),
                 violation=getattr(res, "violation", None),
+                child_returncode=getattr(res, "child_returncode", None),
+                infrastructure_failure=getattr(res, "infrastructure_failure", None),
                 orphaned_process_groups=tuple(
                     int(pgid)
                     for pgid in getattr(res, "orphaned_process_groups", ()) or ()
@@ -1186,21 +1263,23 @@ def measure_molt_run(
             timeout=timeout_s,
             limits=limits,
         )
-    except subprocess.TimeoutExpired:
-        msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
-        if label:
-            print(f"Molt run timed out for {label}{msg}.", file=sys.stderr)
-        else:
-            print(f"Molt run timed out{msg}.", file=sys.stderr)
-        return MoltFailure(
+    except subprocess.TimeoutExpired as exc:
+        failure = _classified_molt_exception(
             phase="run",
-            status="timeout",
-            returncode=memory_guard.TIMEOUT_RETURN_CODE,
-            timed_out=True,
-            elapsed_s=timeout_s,
-            detail=None,
-            message=None,
+            exc=exc,
+            elapsed_s=time.perf_counter() - start,
+            default_status="runtime_failed",
         )
+        _emit_molt_failure_summary(
+            label or str(binary),
+            failure,
+            prefix=(
+                "Molt run timed out"
+                if failure.status == "timeout"
+                else "Molt run failed"
+            ),
+        )
+        return failure
     elapsed_s = getattr(res, "elapsed_s", None)
     if elapsed_s is None:
         elapsed_s = time.perf_counter() - start
@@ -1220,6 +1299,8 @@ def measure_molt_run(
             timed_out=bool(getattr(res, "timed_out", False)),
             elapsed_s=elapsed_s,
             violation=getattr(res, "violation", None),
+            child_returncode=getattr(res, "child_returncode", None),
+            infrastructure_failure=getattr(res, "infrastructure_failure", None),
             orphaned_process_groups=orphaned_process_groups,
             default_status="runtime_failed",
         )

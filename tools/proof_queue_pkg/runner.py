@@ -20,6 +20,8 @@ from molt import disk_capacity
 from molt.exact_json import ExactJsonError, loads_exact, read_exact, write_exact
 from tools.command_execution import CommandExecutor
 from tools.memory_guard_core import repro_context as guard_repro_context
+from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+from tools.memory_guard import INFRASTRUCTURE_RETURN_CODE
 from molt.memory_guard_paths import pytest_guard_summary_dir
 from tools.proof_queue_pkg import (
     command_admission,
@@ -66,22 +68,67 @@ def _file_receipt_identity(path: Path) -> dict[str, object]:
     return {"path": str(path), "size_bytes": size, "sha256": digest.hexdigest()}
 
 
+def _validated_guard_outcome(
+    summary_json: Path,
+    *,
+    guarded_command: list[str],
+    returncode: int,
+    child_returncode: int,
+) -> tuple[dict[str, object], GuardInfrastructureFailure | None]:
+    payload = loads_exact(summary_json.read_text(encoding="utf-8"))
+    if not _is_receipt_object(payload):
+        raise ValueError("memory-guard receipt is not an object")
+    if payload.get("command") != guarded_command:
+        raise ValueError("memory-guard receipt command substitution detected")
+    if (
+        type(payload.get("returncode")) is not int
+        or payload["returncode"] != returncode
+    ):
+        raise ValueError("memory-guard receipt return-code substitution detected")
+    if (
+        type(payload.get("child_returncode")) is not int
+        or payload["child_returncode"] != child_returncode
+    ):
+        raise ValueError("memory-guard receipt child return-code substitution detected")
+    failure = GuardInfrastructureFailure.from_payload(
+        payload.get("infrastructure_failure")
+    )
+    if failure is None and returncode != child_returncode:
+        raise ValueError("guard/command return-code custody mismatch")
+    return payload, failure
+
+
 def _validated_guard_receipt(
     summary_json: Path,
     *,
     guarded_command: list[str],
     returncode: int,
+    child_returncode: int,
     run_id: str,
     execution_nonce: str,
     guard_pid: int,
 ) -> dict[str, object]:
-    payload = json.loads(summary_json.read_text(encoding="utf-8"))
-    if not _is_receipt_object(payload):
-        raise ValueError("memory-guard receipt is not an object")
-    if payload.get("command") != guarded_command:
-        raise ValueError("memory-guard receipt command substitution detected")
-    if payload.get("returncode") != returncode:
-        raise ValueError("memory-guard receipt return-code substitution detected")
+    payload, failure = _validated_guard_outcome(
+        summary_json,
+        guarded_command=guarded_command,
+        returncode=returncode,
+        child_returncode=child_returncode,
+    )
+    expected_returncode = (
+        INFRASTRUCTURE_RETURN_CODE
+        if failure is not None and child_returncode == 0
+        else child_returncode
+    )
+    if returncode != expected_returncode:
+        raise ValueError("guard/command return-code custody mismatch")
+    incident = payload.get("incident")
+    infrastructure_incident = (
+        failure is not None
+        and _is_receipt_object(incident)
+        and incident.get("reason") == "infrastructure_error"
+        and incident.get("child_returncode") == child_returncode
+        and incident.get("infrastructure_failure") == failure.json_payload()
+    )
     dirty_terminal_fields = {
         "violation": payload.get("violation"),
         "timed_out": payload.get("timed_out"),
@@ -95,7 +142,11 @@ def _validated_guard_receipt(
         or dirty_terminal_fields["timed_out"] is not False
         or dirty_terminal_fields["exit_signal"] is not None
         or dirty_terminal_fields["guard_signal"] is not None
-        or dirty_terminal_fields["incident"] is not None
+        or (
+            dirty_terminal_fields["incident"] is not None
+            and not infrastructure_incident
+        )
+        or (failure is not None and not infrastructure_incident)
         or dirty_terminal_fields["orphaned_process_groups"] not in ([], ())
     ):
         raise ValueError(
@@ -123,7 +174,24 @@ def _validated_guard_receipt(
         or sampling.get("transient_failures") != 0
     ):
         raise ValueError("memory-guard sampling enforcement is incomplete")
+    temporary_artifacts = payload.get("temporary_artifacts")
+    closure = (
+        temporary_artifacts.get("closure")
+        if _is_receipt_object(temporary_artifacts)
+        else None
+    )
+    if (
+        not _is_receipt_object(closure)
+        or closure.get("schema") != "molt.guard-scratch-closure.v1"
+        or closure.get("closed") is not True
+        or closure.get("direct_child_reaped") is not True
+    ):
+        raise ValueError("memory-guard descendant closure is incomplete")
     receipt = _file_receipt_identity(summary_json)
+    receipt["child_returncode"] = child_returncode
+    receipt["infrastructure_failure"] = (
+        None if failure is None else failure.json_payload()
+    )
     receipt["identity_sha256"] = hashlib.sha256(
         json.dumps(
             {
@@ -203,6 +271,7 @@ def _finalize_execution_receipt(
     status: str,
     returncode: int | None,
     execution_error: str | None,
+    guard_infrastructure_failure: GuardInfrastructureFailure | None = None,
 ) -> tuple[supervisor_custody.QueueTerminalOutcome, dict[str, object]]:
     """Choose one final queue result before binding any terminal projection.
 
@@ -221,6 +290,22 @@ def _finalize_execution_receipt(
         )
     )
     source = context.get("source_custody")
+    if guard_infrastructure_failure is not None:
+        status = (
+            "non-evidence"
+            if execution_record is not None
+            and execution_record.get("command_returncode") == 0
+            else "failed"
+        )
+        returncode = 2
+        infrastructure_error = "memory guard infrastructure error: " + "; ".join(
+            guard_infrastructure_failure.details
+        )
+        execution_error = (
+            f"{execution_error}; {infrastructure_error}"
+            if execution_error
+            else infrastructure_error
+        )
     if (
         process_cleanup_safe
         and status == "passed"
@@ -1563,6 +1648,7 @@ def _run_one(
     execution_error: str | None = None
     execution_record: dict[str, object] | None = None
     process_cleanup_safe = False
+    guard_infrastructure_failure: GuardInfrastructureFailure | None = None
     try:
         execution_record = _read_execution_record(execution_path)
         if execution_record.get("run_id") != run_id:
@@ -1576,11 +1662,14 @@ def _run_one(
             receipt_context = raw_context
         if execution_record.get("phase") == "complete":
             command_rc = execution_record.get("command_returncode")
-            if not isinstance(command_rc, int) or command_rc != rc:
-                raise ValueError(
-                    "guard/command return-code custody mismatch: "
-                    f"guard={rc!r} command={command_rc!r}"
-                )
+            if type(command_rc) is not int or type(rc) is not int:
+                raise ValueError("guard/command return-code custody is incomplete")
+            _, guard_infrastructure_failure = _validated_guard_outcome(
+                summary_json,
+                guarded_command=guarded_command,
+                returncode=rc,
+                child_returncode=command_rc,
+            )
             if receipt_context is None:
                 raise ValueError("complete guarded execution has no receipt context")
             _validated_execution_context(
@@ -1594,7 +1683,8 @@ def _run_one(
             guard_receipt = _validated_guard_receipt(
                 summary_json,
                 guarded_command=guarded_command,
-                returncode=command_rc,
+                returncode=rc,
+                child_returncode=command_rc,
                 run_id=run_id,
                 execution_nonce=execution_nonce,
                 guard_pid=proc.pid,
@@ -1623,6 +1713,7 @@ def _run_one(
             status=status,
             returncode=rc,
             execution_error=execution_error,
+            guard_infrastructure_failure=guard_infrastructure_failure,
         )
         status = str(outcome["status"])
         rc = outcome["returncode"]
