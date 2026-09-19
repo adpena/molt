@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.frontend.module_publication import (  # noqa: E402
+    project_frontend_tir_to_executable,
+)
 from tools.rust_ir_verifier import (  # noqa: E402
     close_process_local_verifier,
     verify_ir,
@@ -92,6 +95,19 @@ def _verification_result(report: dict[str, Any]) -> VerificationResult:
     )
 
 
+def _invalid_format_result(message: str) -> VerificationResult:
+    return VerificationResult(
+        errors=[
+            Diagnostic(
+                function="<top-level>",
+                op_index=-1,
+                kind="invalid-format",
+                message=message,
+            )
+        ]
+    )
+
+
 def verify_tir(
     tir: dict[str, Any],
     *,
@@ -100,16 +116,7 @@ def verify_tir(
 ) -> VerificationResult:
     """Verify a complete SimpleIR document with the canonical Rust oracle."""
     if not isinstance(tir, dict):
-        return VerificationResult(
-            errors=[
-                Diagnostic(
-                    function="<top-level>",
-                    op_index=-1,
-                    kind="invalid-format",
-                    message="TIR JSON root must be an object",
-                )
-            ]
-        )
+        return _invalid_format_result("TIR JSON root must be an object")
     try:
         report = verify_ir(
             tir,
@@ -117,17 +124,28 @@ def verify_tir(
             timeout_seconds=timeout_seconds,
         )
     except (TypeError, ValueError) as exc:
-        return VerificationResult(
-            errors=[
-                Diagnostic(
-                    function="<top-level>",
-                    op_index=-1,
-                    kind="invalid-format",
-                    message=str(exc),
-                )
-            ]
-        )
+        return _invalid_format_result(str(exc))
     return _verification_result(report)
+
+
+def verify_frontend_tir(
+    tir: dict[str, Any],
+    *,
+    request_id: int | None = None,
+    timeout_seconds: float | None = None,
+) -> VerificationResult:
+    """Project frontend assembly IR, then invoke the strict SimpleIR oracle."""
+    if not isinstance(tir, dict):
+        return _invalid_format_result("TIR JSON root must be an object")
+    try:
+        executable_tir = project_frontend_tir_to_executable(tir)
+    except (TypeError, ValueError) as exc:
+        return _invalid_format_result(str(exc))
+    return verify_tir(
+        executable_tir,
+        request_id=request_id,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

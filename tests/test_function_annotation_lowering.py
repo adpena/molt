@@ -5,7 +5,7 @@ import ast
 import pytest
 
 from molt.frontend import SimpleTIRGenerator, compile_to_tir
-from tools.check_ir_structure import verify_tir
+from tools.check_ir_structure import verify_frontend_tir
 
 
 def _function_names(source: str) -> list[str]:
@@ -92,20 +92,31 @@ class C:
         if op.get("kind") == "const_str" and "out" in op
     }
     class_attr_names = {
-        class_arg_values[arg]
-        for arg in class_def["args"]
-        if arg in class_arg_values
+        class_arg_values[arg] for arg in class_def["args"] if arg in class_arg_values
     }
     assert "__annotate__" in class_attr_names
     assert "__annotations__" not in class_attr_names
-    assert not any(str(op.get("s_value", "")).startswith("__molt_annotations_exec_C_") for op in main_ops)
+    assert not any(
+        str(op.get("s_value", "")).startswith("__molt_annotations_exec_C_")
+        for op in main_ops
+    )
     definitions = {op["out"]: op for op in main_ops if "out" in op}
-    constructor = next(op for op in main_ops if op.get("kind") == "func_new_closure" and op.get("s_value") == annotate_name)
+    constructor = next(
+        op
+        for op in main_ops
+        if op.get("kind") == "func_new_closure" and op.get("s_value") == annotate_name
+    )
     captures = definitions[constructor["args"][0]]["args"]
-    execution_maps = [name for name in captures if definitions[name]["kind"] == "dict_new"]
+    execution_maps = [
+        name for name in captures if definitions[name]["kind"] == "dict_new"
+    ]
     assert len(execution_maps) == 1
     execution_map = execution_maps[0]
-    marks = [op for op in main_ops if op.get("kind") == "store_index" and op["args"][0] == execution_map]
+    marks = [
+        op
+        for op in main_ops
+        if op.get("kind") == "store_index" and op["args"][0] == execution_map
+    ]
     assert len(marks) == 2
     child_defs = {op["out"]: op for op in annotate_ops if "out" in op}
     reads = [op for op in annotate_ops if op.get("kind") == "dict_get"]
@@ -130,9 +141,7 @@ def test_python_314_module_annotation_execution_state_is_globally_resolvable() -
         op["out"]
         for op in main_ops
         if op.get("kind") == "const_str"
-        and str(op.get("s_value", "")).startswith(
-            "__molt_annotations_exec___main___"
-        )
+        and str(op.get("s_value", "")).startswith("__molt_annotations_exec___main___")
     }
 
     assert exec_map_keys
@@ -153,16 +162,14 @@ class Box[T]:
 """
     )
     annotate = next(
-        function
-        for function in ir["functions"]
-        if "__annotate__" in function["name"]
+        function for function in ir["functions"] if "__annotate__" in function["name"]
     )
 
     assert annotate["params"] == ["__molt_closure__", "format"]
     assert any(
-        op.get("kind") == "func_new_closure"
-        and op.get("s_value") == annotate["name"]
+        op.get("kind") == "func_new_closure" and op.get("s_value") == annotate["name"]
         for function in ir["functions"]
         for op in function["ops"]
     )
-    assert verify_tir(ir).ok
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors

@@ -9,7 +9,6 @@ It must never import from molt.frontend.__init__ or any mixin (cycle break).
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import (
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolicy
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
+from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
 
 if TYPE_CHECKING:
@@ -1510,34 +1510,6 @@ class ClassInfo(TypedDict, total=False):
     constructor_fold_safe: bool
     decorated: bool
     heap_kind: str | None
-
-
-class SourceModulePublication(TypedDict):
-    """Backend-assembly facts owned by the source module-init prologue."""
-
-    module_name: str
-    module_value: str
-    failure_label: int
-
-
-def parse_source_module_publication(payload: object) -> SourceModulePublication:
-    """Validate the assembly-only identity and frame publication boundary."""
-    if (
-        not isinstance(payload, Mapping)
-        or set(payload) != {"module_name", "module_value", "failure_label"}
-        or not isinstance(payload.get("module_name"), str)
-        or not payload.get("module_name")
-        or not isinstance(payload.get("module_value"), str)
-        or not payload.get("module_value")
-        or not isinstance(payload.get("failure_label"), int)
-        or isinstance(payload.get("failure_label"), bool)
-    ):
-        raise ValueError("missing canonical source-module publication metadata")
-    return SourceModulePublication(
-        module_name=payload["module_name"],
-        module_value=payload["module_value"],
-        failure_label=payload["failure_label"],
-    )
 
 
 class FuncInfo(TypedDict):

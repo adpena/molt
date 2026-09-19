@@ -5,13 +5,16 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.frontend import SimpleTIRGenerator
-from molt.frontend._types import parse_source_module_publication
 from molt.frontend.lowering.function_metadata import (
     FunctionMetadataEmitter,
     MaterializedFunctionMetadata,
     emit_materialized_function_metadata,
 )
 from molt.frontend.lowering.op_kinds_generated import SIMPLEIR_STRUCTURAL_KINDS
+from molt.frontend.module_publication import (
+    consume_source_module_publication,
+    inspect_source_module_publication,
+)
 from molt.frontend.sema import FunctionKind
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
@@ -1779,9 +1782,13 @@ def _attach_static_native_publication_to_source_init(
             f"existing source init {init_symbol!r} cannot publish native callables: "
             "ops must be a mutable list of operation objects"
         )
-    source_publication = parse_source_module_publication(
-        function.get("source_module_publication")
-    )
+    publication_envelope = inspect_source_module_publication(function)
+    if publication_envelope is None:
+        raise ValueError(
+            f"existing source init {init_symbol!r} cannot publish native callables: "
+            "missing canonical source-module publication metadata"
+        )
+    source_publication = publication_envelope.publication
     if source_publication["module_name"] != spec.module:
         raise ValueError(
             f"source module identity {source_publication['module_name']!r} "
@@ -1789,23 +1796,7 @@ def _attach_static_native_publication_to_source_init(
         )
     module_var = str(source_publication["module_value"])
     failure_label = int(source_publication["failure_label"])
-    boundary_indices = [
-        index
-        for index, op in enumerate(ops)
-        if op.get("source_module_publication_boundary") is True
-    ]
-    if len(boundary_indices) != 1:
-        raise ValueError(
-            f"existing source init {init_symbol!r} cannot publish native callables: "
-            "expected one canonical publication boundary"
-        )
-    boundary_index = boundary_indices[0]
-    boundary_op = ops[boundary_index]
-    if boundary_op.get("kind") != "frame_locals_set":
-        raise ValueError(
-            f"existing source init {init_symbol!r} cannot publish native callables: "
-            "publication boundary lost its frame-locals anchor"
-        )
+    boundary_index = publication_envelope.boundary_index
 
     wrapper_symbols = {
         _native_callable_wrapper_symbol(export) for export in spec.direct_symbol_exports
@@ -1860,13 +1851,14 @@ def _append_static_native_module_init_functions(
     existing: dict[str, list[dict[str, Any]]] = {}
     source_inits: dict[str, dict[str, Any]] = {}
     for func in functions:
-        if not isinstance(func, dict) or not isinstance(func.get("name"), str):
+        if not isinstance(func, dict):
+            continue
+        publication_envelope = inspect_source_module_publication(func)
+        if not isinstance(func.get("name"), str):
             continue
         existing.setdefault(func["name"], []).append(func)
-        if "source_module_publication" in func:
-            publication = parse_source_module_publication(
-                func["source_module_publication"]
-            )
+        if publication_envelope is not None:
+            publication = publication_envelope.publication
             module = publication["module_name"]
             if func["name"] != SimpleTIRGenerator.module_init_symbol(module):
                 raise ValueError(
@@ -1957,17 +1949,11 @@ def _append_static_native_module_init_functions(
         functions.append(function)
         owned_modules.append(spec.module)
         existing[init_symbol] = [function]
-    # These frontend facts exist only to assemble native publication into the
-    # canonical source init. They are not part of executable SimpleIR.
-    for function_group in existing.values():
-        for function in function_group:
-            function.pop("source_module_publication", None)
-            function_ops = function.get("ops")
-            if not isinstance(function_ops, list):
-                continue
-            for op in function_ops:
-                if isinstance(op, dict):
-                    op.pop("source_module_publication_boundary", None)
+    # Consume the validated frontend envelopes after all native publication has
+    # been assembled. These facts are not part of executable SimpleIR.
+    for function in functions:
+        if isinstance(function, dict):
+            consume_source_module_publication(function)
     return tuple(owned_modules)
 
 

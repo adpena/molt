@@ -8,14 +8,15 @@ import pytest
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import BUILTIN_TYPE_TAGS
 from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
-from tools.check_ir_structure import verify_tir
+from tools.check_ir_structure import verify_frontend_tir
 
 
 def compile_source(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))
     ir = generator.to_json()
-    assert verify_tir(ir).ok
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors
     return generator, ir
 
 
@@ -532,7 +533,8 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(tree)
     ir = generator.to_json()
-    assert verify_tir(ir).ok
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors
     evaluators = [
         (name, fn["ops"])
         for name, fn in generator.funcs_map.items()

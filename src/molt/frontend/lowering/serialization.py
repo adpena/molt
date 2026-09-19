@@ -16,11 +16,8 @@ from typing import (
     Literal,
 )
 
-from molt.frontend._types import (
-    MoltOp,
-    MoltValue,
-    parse_source_module_publication,
-)
+from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend.module_publication import inspect_source_module_publication
 from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOpsMixin
 from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
@@ -561,7 +558,7 @@ class SerializationMixin(
                 pass
             else:
                 self._serialize_loop_string_async_op(op, ctx)
-            if op.metadata and op.metadata.get("source_module_publication_boundary"):
+            if op.metadata and "source_module_publication_boundary" in op.metadata:
                 if (
                     len(json_ops) != serialized_start + 1
                     or json_ops[-1].get("kind") != "frame_locals_set"
@@ -570,7 +567,9 @@ class SerializationMixin(
                         "source module publication boundary must serialize as one "
                         "frame_locals_set operation"
                     )
-                json_ops[-1]["source_module_publication_boundary"] = True
+                json_ops[-1]["source_module_publication_boundary"] = op.metadata[
+                    "source_module_publication_boundary"
+                ]
 
         if ops and ops[-1].kind not in {"ret", "ret_void"} and not emit_function_frame:
             json_ops.append({"kind": "ret_void"})
@@ -666,28 +665,14 @@ class SerializationMixin(
                 "params": data["params"],
                 "ops": json_ops,
             }
-            source_publication = data.get("source_module_publication")
-            boundary_ops = [
-                op
-                for op in json_ops
-                if op.get("source_module_publication_boundary") is True
-            ]
-            if source_publication is not None:
-                source_publication = parse_source_module_publication(source_publication)
-                if len(boundary_ops) != 1:
-                    raise ValueError(
-                        f"source module init {name!r} must retain exactly one native "
-                        "publication boundary"
-                    )
-                if boundary_ops[0].get("kind") != "frame_locals_set":
-                    raise ValueError(
-                        f"source module init {name!r} publication boundary lost its "
-                        "frame-locals anchor"
-                    )
-                func_entry["source_module_publication"] = dict(source_publication)
-            elif boundary_ops:
-                raise ValueError(
-                    f"source module init {name!r} has an unowned publication boundary"
+            if "source_module_publication" in data:
+                func_entry["source_module_publication"] = data[
+                    "source_module_publication"
+                ]
+            publication_envelope = inspect_source_module_publication(func_entry)
+            if publication_envelope is not None:
+                func_entry["source_module_publication"] = dict(
+                    publication_envelope.publication
                 )
             if name in self.module_chunk_symbols:
                 func_entry["execution_context"] = "inherited"
