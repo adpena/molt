@@ -493,24 +493,11 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   source-file-aware cache keying. The aggregate backend keeps only Luau target
   policy and stats formatting. Guarded evidence:
   `luau_tir_module_pipeline_inlines_direct_local_calls`.
-- Luau `checked_add` and `checked_mul` are implemented through explicit f64
-  helper contracts. `molt_checked_i64_add(a, b)` returns `(a + b, false)`,
-  preserving Luau's existing number model while avoiding target-gating the
-  portable TIR `CheckedAdd` transform. `molt_checked_i64_mul(a, b)` returns a
-  conservative overflow/inexactness flag when the product reaches the f64
-  exact-integer boundary, forcing the boxed BigInt slow loop instead of
-  silently accepting a rounded product. Guarded evidence:
-  `test_compile_checked_lowers_checked_add_helper` and
-  `test_compile_checked_lowers_checked_mul_helper`; generated matrix statuses:
-  `implemented-exact`.
-- Luau `matmul` and `inplace_matmul` now lower through checked descriptor
-  helpers instead of unsupported-output stubs. `molt_matmul` dispatches
-  `__matmul__` / `__rmatmul__`; `molt_inplace_matmul` tries `__imatmul__`
-  first and falls back to the same binary protocol with the `@=` TypeError
-  spelling. Guarded evidence:
-  `test_compile_checked_lowers_matmul_dunder_dispatch`,
-  `test_compile_checked_lowers_inplace_matmul_dunder_dispatch`, and generated
-  matrix statuses `implemented-exact`.
+- Luau contains emitter helpers and focused helper-level tests for operations
+  that remain outside the admitted target surface; helper presence is not
+  target support. The generated Luau support matrix is the sole admission
+  authority. An operation remains unsupported until that contract admits it and
+  checked emission plus CPython-vs-Luau execution prove the claimed semantics.
 - Native, WASM, LLVM, Luau, and fact-graph backend-facing lowering now run
   through the TIR pipeline; the old environment-variable opt-out has been
   removed so SimpleIR transport metadata cannot bypass typed-IR validation.
