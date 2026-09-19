@@ -16,7 +16,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     BoxedAllocationLayoutRule, opcode_boxed_allocation_layout_rule_table,
 };
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult, MemRegion};
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::values::ValueId;

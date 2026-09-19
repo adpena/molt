@@ -1,5 +1,4 @@
 use super::super::structured::{emit_block_arg_loads, emit_block_arg_stores};
-use super::super::structured::{emit_block_arg_loads, emit_block_arg_stores};
 use super::*;
 
 fn block(id: BlockId, terminator: Terminator) -> TirBlock {

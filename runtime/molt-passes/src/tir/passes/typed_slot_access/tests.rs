@@ -1,5 +1,5 @@
 use super::*;
-use crate::tir::ops::{AttrDict, Dialect};
+use crate::tir::ops::{AttrDict, Dialect, OpCode};
 
 fn allocation(opcode: OpCode, payload: i64) -> TirOp {
     let mut attrs = AttrDict::new();
