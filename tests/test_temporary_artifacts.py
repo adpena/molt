@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from molt import temporary_artifacts as scratch
+from molt import file_locks
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
 
 
@@ -215,6 +216,34 @@ def test_pending_publication_exposes_only_committed_locked_generations(
     assert result["errors"] == []
     assert result["protected_count"] == 0
     assert result["retained_count"] == 1
+
+
+def test_pending_sweep_treats_empty_locked_generation_as_busy_not_io_failure(tmp_path):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    lock_path = lease.generation / "lock"
+    with lock_path.open("r+b", buffering=0) as holder:
+        assert file_locks._try_lock_file_handle(holder)
+        try:
+            # Reproduce the historical advisory-PID truncate window without
+            # changing scratch authority or teaching the sweep to ignore I/O.
+            holder.truncate(0)
+            result = scratch.reclaim_terminal_scratch(
+                lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+            )
+            assert result["errors"] == []
+            assert result["protected_count"] == 1
+            assert result["reclaimed"] == []
+            assert lock_path.stat().st_size == 0
+            assert (lease.generation / "payload").is_dir()
+        finally:
+            file_locks._unlock_file_handle(holder)
+    result = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert result["errors"] == []
+    assert result["reclaimed"] == [str(lease.generation)]
+    assert not (lease.generation / "payload").exists()
 
 
 @pytest.mark.parametrize("terminal_reclaimed", [False, True])

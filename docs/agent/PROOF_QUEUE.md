@@ -222,6 +222,8 @@ durable `<artifact-root>/uv-project-envs/<purpose-python-source-key>` namespace;
 an explicit `UV_PROJECT_ENVIRONMENT` is honored without moving existing data.
 
 The parent holds an OS lock and its original allocation identity through closure.
+Shared lock files are content-neutral: OS lock arbitration precedes any protected
+work, and unused PID publication cannot race a contender's lock initialization.
 Windows requires completed empty-Job accounting; POSIX records sampled/process-
 group closure with a final sample and positive-bounded liveness probe, not a
 kernel-equivalent tree guarantee. Indeterminate closure preserves the allocation.

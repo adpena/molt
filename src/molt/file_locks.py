@@ -67,33 +67,27 @@ def _in_process_lock_drop(key: str, entry: _InProcessLockEntry) -> None:
 def _open_file_lock_handle(lock_path: Path) -> BinaryIO:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
-    handle = os.fdopen(fd, "r+b", buffering=0)
     try:
-        if os.fstat(fd).st_size == 0:
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
+        # Lock ownership is the OS region plus the in-process mutex, never file
+        # contents. Windows permits locking byte zero beyond EOF. In particular,
+        # opening a contender must not write a byte that another handle owns.
+        return os.fdopen(fd, "r+b", buffering=0)
     except BaseException:
-        handle.close()
+        os.close(fd)
         raise
-    return handle
 
 
 def _try_lock_file_handle(handle: BinaryIO) -> bool:
     handle.seek(0)
-    if os.name == "nt":
-        import msvcrt
-
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
-        return True
-
-    import fcntl
-
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         if exc.errno in (errno.EACCES, errno.EAGAIN):
             return False
@@ -114,15 +108,6 @@ def _unlock_file_handle(handle: BinaryIO) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _write_lock_holder_pid(handle: BinaryIO) -> None:
-    with contextlib.suppress(OSError):
-        handle.seek(0)
-        handle.truncate(0)
-        handle.write(f"{os.getpid()}\n".encode("ascii"))
-        handle.flush()
-        handle.seek(0)
-
-
 def _try_acquire_file_lock(lock_path: Path) -> _FileLockHandle | None:
     registry_key, entry = _in_process_lock_reserve(lock_path)
     if not entry.mutex.acquire(blocking=False):
@@ -140,7 +125,6 @@ def _try_acquire_file_lock(lock_path: Path) -> _FileLockHandle | None:
             entry.mutex.release()
             _in_process_lock_drop(registry_key, entry)
             return None
-        _write_lock_holder_pid(file_handle)
         return _FileLockHandle(
             file=file_handle,
             registry_key=registry_key,
