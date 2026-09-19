@@ -115,6 +115,26 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                 ],
             ),
             function(
+                "backward_swap",
+                &[("run", "bool"), ("left", "float"), ("right", "float")],
+                vec![
+                    label("label", 1),
+                    branch("run", 2),
+                    op("ret", &["left"], None),
+                    label("label", 2),
+                    boolean("stop", false),
+                    OpIR {
+                        // Metadata deliberately differs from the SSA operand.
+                        var: Some("right".to_string()),
+                        ..op("copy_var", &["left"], Some("old_left"))
+                    },
+                    store("left", "right"),
+                    store("right", "old_left"),
+                    store("run", "stop"),
+                    label("jump", 1),
+                ],
+            ),
+            function(
                 "structured_phi",
                 &[("flag", "bool")],
                 vec![
@@ -127,7 +147,11 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                     op("phi", &["left", "right"], Some("selected")),
                     label("jump", 20),
                     label("label", 20),
-                    op("ret", &["selected"], None),
+                    OpIR {
+                        var: Some("flag".to_string()),
+                        ..op("load_var", &["selected"], Some("copied"))
+                    },
+                    op("ret", &["copied"], None),
                 ],
             ),
             function(
@@ -195,8 +219,12 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
     source.push_str(
         r#"
 fn check_labelled_flow() {
+    #[track_caller]
     fn is_float(value: MoltValue, expected: f64) {
-        assert!(matches!(value, MoltValue::Float(actual) if actual == expected));
+        assert!(
+            matches!(&value, MoltValue::Float(actual) if *actual == expected),
+            "expected Float({expected}), got {value:?}"
+        );
     }
     is_float(forward(&mut vec![]), 7.0);
     let mut args = vec![MoltValue::Float(0.0)];
@@ -209,6 +237,11 @@ fn check_labelled_flow() {
         is_float(backward(&mut args), if flag { 5.0 } else { 4.0 });
         assert!(matches!(args[0], MoltValue::Bool(false)));
         is_float(args[1].clone(), if flag { 5.0 } else { 4.0 });
+        let mut args = vec![MoltValue::Bool(flag), MoltValue::Float(5.0), MoltValue::Float(9.0)];
+        is_float(backward_swap(&mut args), if flag { 9.0 } else { 5.0 });
+        assert!(matches!(args[0], MoltValue::Bool(false)));
+        is_float(args[1].clone(), if flag { 9.0 } else { 5.0 });
+        is_float(args[2].clone(), if flag { 5.0 } else { 9.0 });
         let mut args = vec![MoltValue::Bool(flag)];
         is_float(structured_phi(&mut args), if flag { 3.0 } else { 7.0 });
     }

@@ -180,44 +180,29 @@ impl RustBackend {
         self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
     }
 
-    pub(super) fn emit_op_load_local(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
+    pub(super) fn emit_op_local_copy(&mut self, op: &OpIR) {
+        // The shared field-role authority distinguishes a slot load from an
+        // SSA copy: load_var/copy_var's var is metadata when args is present.
+        // Use the same source that CFG liveness and normalization consume.
+        let mut source = None;
+        let mut read_count = 0;
+        molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+            read_count += 1;
+            source.get_or_insert(read.name);
+        });
+        let Some(source) = source.filter(|_| read_count == 1) else {
+            self.emit_unsupported_op(op, "local copy requires exactly one source operand");
+            return;
         };
-
-        let o = out();
-        let v = var_ref(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("{v}.clone()"),
-            &self.hoisted_vars.clone(),
+        let output = out_var(op);
+        self.emit_line(&declare_molt_value(
+            &output,
+            &rust_clone(source),
+            &self.hoisted_vars,
         ));
-        self.note_alias(o, v);
-    }
-
-    pub(super) fn emit_op_load_var(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let v = var_ref(op);
-        self.emit_line(&declare(
-            &o,
-            &format!("{v}.clone()"),
-            &self.hoisted_vars.clone(),
-        ));
-        self.note_alias(o, v);
+        if is_assignable_var(source) {
+            self.note_alias(output, rust_ident(source));
+        }
     }
 
     pub(super) fn emit_op_store_var(&mut self, op: &OpIR) {

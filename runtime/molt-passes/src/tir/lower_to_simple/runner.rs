@@ -12,13 +12,12 @@ use crate::tir::ops::{AttrValue, OpCode};
 
 use super::cfg::{collect_guard_raise_path_blocks, reverse_postorder, successor_reaches_header};
 use super::cleanup::{
-    eliminate_dead_labels, missing_label_references, validate_labels,
-    validate_structured_if_markers,
+    eliminate_dead_labels, missing_label_references, validate_structured_if_markers,
 };
-use super::op_lowering::lower_op_many;
-use super::op_utils::{annotate_lowered_op, attr_int};
+use super::op_utils::attr_int;
 use super::structured::{
-    LoopRegion, emit_block_ops_inner, emit_return_ops, emit_structured_loop_region, emit_terminator,
+    LoopRegion, emit_block_arg_loads, emit_block_arg_stores, emit_block_ops_inner, emit_return_ops,
+    emit_structured_loop_region, emit_terminator,
 };
 use crate::tir::simple_value_names::{
     SimpleValueNames, reset_value_names, set_value_names, value_var,
@@ -217,10 +216,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         })
         .collect();
 
-    // Collect block argument info for all blocks so we can generate
-    // `store_var` assignments at branch sites.
-    // Map: (source_block, target_block) → Vec<(arg_value, param_var_name)>
-    // Build param-variable names for every block that has args.
+    // Every block owns an exact argument-slot vector, including empty vectors.
+    // Predecessor stores and block-entry loads consume the same map.
     let block_param_vars: HashMap<BlockId, Vec<String>> = func
         .blocks
         .iter()
@@ -596,9 +593,10 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // interior as well as plain `jump`/`br_if` reentry.
         let has_external_reentry = region_block_set.iter().any(|member| {
             *member != *bid
-                && all_predecessors
-                    .get(member)
-                    .is_some_and(|preds| preds.iter().any(|p| !region_block_set.contains(p)))
+                && (*member == func.entry_block
+                    || all_predecessors
+                        .get(member)
+                        .is_some_and(|preds| preds.iter().any(|p| !region_block_set.contains(p))))
         });
         if has_external_reentry {
             // Leave this loop to the generic block-by-block lowering, which
@@ -652,7 +650,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     struct IfPattern {
         then_bid: BlockId,
         else_bid: BlockId,
-        join_bid: Option<BlockId>,
     }
     let block_contains_nested_scf = |block: &TirBlock| {
         block
@@ -686,7 +683,9 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             continue;
         };
         let (then_bid, else_bid) = (*then_block, *else_block);
-        if then_bid == else_bid {
+        // Function invocation is an implicit predecessor of entry. It cannot
+        // be consumed as an arm merely because all explicit edges come here.
+        if then_bid == else_bid || then_bid == func.entry_block || else_bid == func.entry_block {
             continue;
         }
         // Successor blocks that are loop headers must not be inlined.
@@ -774,6 +773,11 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             continue;
         }
         if let Some(join) = join_bid {
+            // An entry join is a backedge, never lexical fallthrough after
+            // end_if. Leave both predecessor transfers in the canonical CFG.
+            if join == func.entry_block {
+                continue;
+            }
             let join_role = func
                 .loop_roles
                 .get(&join)
@@ -790,14 +794,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 continue;
             }
         }
-        if_patterns.insert(
-            *bid,
-            IfPattern {
-                then_bid,
-                else_bid,
-                join_bid,
-            },
-        );
+        if_patterns.insert(*bid, IfPattern { then_bid, else_bid });
         if debug_loop_if_return {
             eprintln!(
                 "LOWER_DEBUG_IF_PATTERN bid={:?} then={:?} else={:?} join={:?}",
@@ -806,6 +803,21 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         }
         if_inlined_blocks.insert(then_bid);
         if_inlined_blocks.insert(else_bid);
+    }
+    // Invocation supplies entry arguments once. Reentry supplies them through
+    // the same join slots as every other predecessor. Keep these seed stores
+    // outside the entry label/loop so a backedge cannot replay initialization.
+    let entry_needs_join = all_predecessors
+        .get(&func.entry_block)
+        .is_some_and(|preds| !preds.is_empty())
+        || loop_regions.contains_key(&func.entry_block);
+    if entry_needs_join {
+        let entry = func
+            .blocks
+            .get(&func.entry_block)
+            .expect("missing TIR entry block");
+        let args: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
+        emit_block_arg_stores(func.entry_block, &args, &block_param_vars, &mut out);
     }
     for bid in &rpo {
         if debug_loop_if_return {
@@ -864,11 +876,11 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             None => continue,
         };
 
-        // Emit block header: label for non-entry blocks.
+        // Emit every executable destination, including entry with predecessors.
         // LoopHeaders with proven regions are handled above.  Remaining loop
         // headers stay in the generic label/jump form: emitting only loop_start
         // here creates a half-structured loop with no matching loop_end.
-        if *bid != func.entry_block {
+        if *bid != func.entry_block || entry_needs_join {
             let label_id = block_label_id(bid);
             let label_kind = if state_yield_resume_state_for_block
                 .get(bid)
@@ -884,19 +896,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 ..OpIR::default()
             });
 
-            // Load block argument variables into SSA-named vars.
-            if let Some(param_vars) = block_param_vars.get(bid) {
-                for (i, var_name) in param_vars.iter().enumerate() {
-                    if i < block.args.len() {
-                        out.push(OpIR {
-                            kind: "load_var".to_string(),
-                            var: Some(var_name.clone()),
-                            out: Some(value_var(block.args[i].id)),
-                            ..OpIR::default()
-                        });
-                    }
-                }
-            }
+            emit_block_arg_loads(block, &block_param_vars, &mut out);
         }
 
         // Helper: emit a block's ops with type annotation.
@@ -916,7 +916,13 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             // blocks between if/else/end_if markers with phi ops.
             emit_block_ops(block, &mut out);
 
-            let Terminator::CondBranch { cond, .. } = &block.terminator else {
+            let Terminator::CondBranch {
+                cond,
+                then_args,
+                else_args,
+                ..
+            } = &block.terminator
+            else {
                 unreachable!();
             };
 
@@ -934,44 +940,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 .map(|v| matches!(v, AttrValue::Bool(true)))
                 .unwrap_or(false);
 
-            // Materialize join block arguments as explicit store_var writes on
-            // the then/else edges. The join block itself already re-loads its
-            // block args via load_var when emitted later.
-            let join_arg_stores: Vec<(String, String, String)> =
-                if let Some(join_bid) = pattern.join_bid {
-                    let join_blk = func.blocks.get(&join_bid);
-                    let join_param_count = join_blk.map(|b| b.args.len()).unwrap_or(0);
-                    let join_param_vars = block_param_vars.get(&join_bid);
-                    let then_branch_args = match &then_blk.terminator {
-                        Terminator::Branch { args, .. } => args.as_slice(),
-                        _ => &[],
-                    };
-                    let else_branch_args = match &else_blk.terminator {
-                        Terminator::Branch { args, .. } => args.as_slice(),
-                        _ => &[],
-                    };
-                    (0..join_param_count)
-                        .filter_map(|i| {
-                            let join_param_var =
-                                join_param_vars.and_then(|vars| vars.get(i)).cloned()?;
-                            let join_value_name = join_blk
-                                .and_then(|b| b.args.get(i))
-                                .map(|a| value_var(a.id))?;
-                            let then_val = then_branch_args
-                                .get(i)
-                                .map(|v| value_var(*v))
-                                .unwrap_or_else(|| join_value_name.clone());
-                            let else_val = else_branch_args
-                                .get(i)
-                                .map(|v| value_var(*v))
-                                .unwrap_or_else(|| join_value_name.clone());
-                            Some((join_param_var, then_val, else_val))
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
-
             // Emit: if cond
             out.push(OpIR {
                 kind: "if".to_string(),
@@ -979,52 +947,30 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 ..OpIR::default()
             });
 
-            // Emit then-block ops inline.
-            for op in &then_blk.ops {
-                for mut opir in lower_op_many(op) {
-                    annotate_lowered_op(&mut opir, op, &original_to_new_label);
-                    out.push(opir);
+            for (index, (arm, args)) in [(then_blk, then_args), (else_blk, else_args)]
+                .into_iter()
+                .enumerate()
+            {
+                if index != 0 {
+                    out.push(OpIR {
+                        kind: "else".to_string(),
+                        ..OpIR::default()
+                    });
                 }
-            }
-            // Emit then-block terminator if terminal (Return).
-            if let Terminator::Return { values } = &then_blk.terminator {
-                emit_return_ops(values, original_has_ret, &mut out);
-            }
-
-            for (join_param_var, then_val, _) in &join_arg_stores {
-                out.push(OpIR {
-                    kind: "store_var".to_string(),
-                    var: Some(join_param_var.clone()),
-                    args: Some(vec![then_val.clone()]),
-                    ..OpIR::default()
-                });
-            }
-
-            // Emit: else
-            out.push(OpIR {
-                kind: "else".to_string(),
-                ..OpIR::default()
-            });
-
-            // Emit else-block ops inline.
-            for op in &else_blk.ops {
-                for mut opir in lower_op_many(op) {
-                    annotate_lowered_op(&mut opir, op, &original_to_new_label);
-                    out.push(opir);
+                // Inlining removes labels, not predecessor value transport.
+                emit_block_arg_stores(arm.id, args, &block_param_vars, &mut out);
+                emit_block_arg_loads(arm, &block_param_vars, &mut out);
+                emit_block_ops(arm, &mut out);
+                match &arm.terminator {
+                    Terminator::Return { values } => {
+                        emit_return_ops(values, original_has_ret, &mut out);
+                    }
+                    Terminator::Branch { target, args } => {
+                        emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
+                    }
+                    Terminator::Unreachable => {}
+                    _ => unreachable!("non-simple terminator in structured if arm"),
                 }
-            }
-            // Emit else-block terminator if terminal (Return).
-            if let Terminator::Return { values } = &else_blk.terminator {
-                emit_return_ops(values, original_has_ret, &mut out);
-            }
-
-            for (join_param_var, _, else_val) in &join_arg_stores {
-                out.push(OpIR {
-                    kind: "store_var".to_string(),
-                    var: Some(join_param_var.clone()),
-                    args: Some(vec![else_val.clone()]),
-                    ..OpIR::default()
-                });
             }
 
             // Emit: end_if
@@ -1066,39 +1012,15 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         );
     }
 
-    // Validate: every label referenced by check_exception/jump/br_if must
-    // have a corresponding label op. If validation fails, it means the
-    // TIR roundtrip lost a handler block's label mapping.
-    let warn_invalid_labels = func.has_exception_handling
-        || std::env::var("MOLT_TIR_WARN_INVALID_LABELS").as_deref() == Ok("1");
-    if warn_invalid_labels && !validate_labels(&out) {
-        let missing = missing_label_references(&out);
-        eprintln!(
-            "[TIR] WARNING: label validation failed for {} — missing labels {:?}",
-            func.name, missing
-        );
-        for (idx, op) in out.iter().enumerate() {
-            if matches!(
-                op.kind.as_str(),
-                "label"
-                    | "state_label"
-                    | "jump"
-                    | "br_if"
-                    | "check_exception"
-                    | "async_work_poll"
-                    | "try_start"
-                    | "try_end"
-                    | "if"
-                    | "else"
-                    | "end_if"
-            ) {
-                eprintln!(
-                    "  [TIR:{}] {} kind={} value={:?} args={:?}",
-                    func.name, idx, op.kind, op.value, op.args
-                );
-            }
-        }
-    }
+    // Never turn a lost destination into target-specific falloff. All consumers
+    // must receive the same closed namespace, not an optional EH-only warning.
+    let missing = missing_label_references(&out);
+    assert!(
+        missing.is_empty(),
+        "[TIR] invalid label lowering for {}: missing labels {:?}",
+        func.name,
+        missing
+    );
 
     out
 }

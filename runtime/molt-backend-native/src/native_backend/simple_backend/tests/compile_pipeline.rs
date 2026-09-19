@@ -472,7 +472,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         ("alloc_task", "coroutine"),
         ("call_async", "future"),
     ] {
-        let clif = compile_function_to_clif_text(
+        let compiled = compile_function_to_clif_with_imports(
             vec![
                 FunctionIR {
                     name: "task_allocation_probe".into(),
@@ -508,26 +508,30 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
             ],
             "task_allocation_probe",
         );
-        let none = cranelift_codegen::ir::immediates::Imm64::new(molt_codegen_abi::box_none_bits())
-            .to_string();
-        let guard = clif
-            .lines()
-            .find(|line| line.contains("icmp_imm ne") && line.contains(&none))
-            .unwrap_or_else(|| {
-                panic!("{op_kind}/{task_kind} lacks exact allocation admission:\n{clif}")
-            });
-        let condition = guard.trim().split_once(" = ").unwrap().0;
-        let branch = format!("brif {condition},");
-        let branch_pos = clif
-            .find(&branch)
-            .expect("allocation condition must control initialization");
-        let store_pos = clif
-            .find("store ")
-            .expect("task argument payload must be stored");
-        assert!(
-            branch_pos < store_pos,
-            "{op_kind}/{task_kind} stores before admission:\n{clif}"
-        );
+        let function = &compiled.function;
+        let (_, success, _) = assert_task_allocation_admission(&compiled);
+        let cfg = ControlFlowGraph::with_function(function);
+        let dominators =
+            cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+        let allocator =
+            call_sites_for_import(function, compiled.import_ids[MOLT_TASK_NEW.name])[0].1;
+        let mut stores = 0;
+        for block in function.layout.blocks() {
+            for inst in function.layout.block_insts(block) {
+                let opcode = function.dfg.insts[inst].opcode();
+                stores += usize::from(opcode.can_store());
+                if inst != allocator
+                    && (opcode.can_load() || opcode.can_store() || opcode.is_call())
+                {
+                    assert!(
+                        dominators.dominates(success, inst, &function.layout),
+                        "{op_kind}/{task_kind} payload, RC or cancellation bypasses allocation admission:\n{}",
+                        function.display()
+                    );
+                }
+            }
+        }
+        assert_eq!(stores, 1, "{}", function.display());
     }
 }
 
@@ -678,8 +682,13 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                         ..OpIR::default()
                     },
                     OpIR {
-                        kind: "is_none".into(),
-                        args: Some(vec!["owned_task".into()]),
+                        kind: "const_none".into(),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "is".into(),
+                        args: Some(vec!["owned_task".into(), "none".into()]),
                         out: Some("task_is_none".into()),
                         ..OpIR::default()
                     },

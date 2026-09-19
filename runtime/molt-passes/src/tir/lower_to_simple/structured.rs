@@ -77,13 +77,13 @@ pub(super) fn emit_structured_loop_region(
     //    The native backend's pre-analysis registers label IDs from `label`
     //    ops to create Cranelift blocks; without this, `jump(header_label)`
     //    from the entry path would reference a non-existent block.
-    if header != func.entry_block {
-        out.push(OpIR {
-            kind: "label".to_string(),
-            value: Some(block_label_id(&header)),
-            ..OpIR::default()
-        });
-    }
+    // Entry is also a destination when the loop returns to it; its invocation
+    // arguments have already been seeded before this label by the runner.
+    out.push(OpIR {
+        kind: "label".to_string(),
+        value: Some(block_label_id(&header)),
+        ..OpIR::default()
+    });
 
     // 2. loop_start — creates loop_block, body_block, after_block in the
     //    native backend and pushes a LoopFrame.
@@ -93,20 +93,7 @@ pub(super) fn emit_structured_loop_region(
     });
 
     // 3. Header block argument loads (phi values from entry/back-edge).
-    if header != func.entry_block
-        && let Some(param_vars) = block_param_vars.get(&header)
-    {
-        for (i, var_name) in param_vars.iter().enumerate() {
-            if i < block.args.len() {
-                out.push(OpIR {
-                    kind: "load_var".to_string(),
-                    var: Some(var_name.clone()),
-                    out: Some(value_var(block.args[i].id)),
-                    ..OpIR::default()
-                });
-            }
-        }
-    }
+    emit_block_arg_loads(block, block_param_vars, out);
 
     // 4. Emit all header-region blocks' ops sequentially in CFG order.
     //    The header region = [header, chain blocks (guards + non-guards), cond_block].
@@ -187,36 +174,8 @@ pub(super) fn emit_structured_loop_region(
                         // Store args for the Branch target, load args for
                         // the next block in the emission sequence.
                         emit_block_arg_stores(*target, args, block_param_vars, out);
-                        // If target != next_bid (e.g., Branch → guard, but
-                        // next is a non-guard), also load for next_bid.
-                        if *target != next_bid {
-                            if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid)
-                            {
-                                for (i, var_name) in param_vars.iter().enumerate() {
-                                    if i < next_block.args.len() {
-                                        out.push(OpIR {
-                                            kind: "load_var".to_string(),
-                                            var: Some(var_name.clone()),
-                                            out: Some(value_var(next_block.args[i].id)),
-                                            ..OpIR::default()
-                                        });
-                                    }
-                                }
-                            }
-                        } else if let Some(next_block) = func.blocks.get(&next_bid)
-                            && let Some(param_vars) = block_param_vars.get(&next_bid)
-                        {
-                            for (i, var_name) in param_vars.iter().enumerate() {
-                                if i < next_block.args.len() {
-                                    out.push(OpIR {
-                                        kind: "load_var".to_string(),
-                                        var: Some(var_name.clone()),
-                                        out: Some(value_var(next_block.args[i].id)),
-                                        ..OpIR::default()
-                                    });
-                                }
-                            }
+                        if let Some(next_block) = func.blocks.get(&next_bid) {
+                            emit_block_arg_loads(next_block, block_param_vars, out);
                         }
                     }
                     Terminator::CondBranch {
@@ -258,19 +217,8 @@ pub(super) fn emit_structured_loop_region(
                                 out,
                             );
                             // Load args for next block in emission sequence.
-                            if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid)
-                            {
-                                for (i, var_name) in param_vars.iter().enumerate() {
-                                    if i < next_block.args.len() {
-                                        out.push(OpIR {
-                                            kind: "load_var".to_string(),
-                                            var: Some(var_name.clone()),
-                                            out: Some(value_var(next_block.args[i].id)),
-                                            ..OpIR::default()
-                                        });
-                                    }
-                                }
+                            if let Some(next_block) = func.blocks.get(&next_bid) {
+                                emit_block_arg_loads(next_block, block_param_vars, out);
                             }
                         } else {
                             // else = raise, then = continue.
@@ -313,19 +261,8 @@ pub(super) fn emit_structured_loop_region(
                                 block_param_vars,
                                 out,
                             );
-                            if let Some(next_block) = func.blocks.get(&next_bid)
-                                && let Some(param_vars) = block_param_vars.get(&next_bid)
-                            {
-                                for (i, var_name) in param_vars.iter().enumerate() {
-                                    if i < next_block.args.len() {
-                                        out.push(OpIR {
-                                            kind: "load_var".to_string(),
-                                            var: Some(var_name.clone()),
-                                            out: Some(value_var(next_block.args[i].id)),
-                                            ..OpIR::default()
-                                        });
-                                    }
-                                }
+                            if let Some(next_block) = func.blocks.get(&next_bid) {
+                                emit_block_arg_loads(next_block, block_param_vars, out);
                             }
                         }
                     }
@@ -498,18 +435,7 @@ pub(super) fn emit_structured_loop_region(
         is_first_body = false;
 
         // Load block args.
-        if let Some(param_vars) = block_param_vars.get(body_bid) {
-            for (i, var_name) in param_vars.iter().enumerate() {
-                if i < body_block.args.len() {
-                    out.push(OpIR {
-                        kind: "load_var".to_string(),
-                        var: Some(var_name.clone()),
-                        out: Some(value_var(body_block.args[i].id)),
-                        ..OpIR::default()
-                    });
-                }
-            }
-        }
+        emit_block_arg_loads(body_block, block_param_vars, out);
 
         // Emit ops.
         emit_block_ops_inner(
@@ -588,15 +514,9 @@ pub(super) fn emit_structured_loop_region(
     // sibling code before the real post-loop continuation. Emit the edge
     // explicitly so nested loop regions inside larger branch regions retain
     // their outer merge target.
-    let exit_role = func
-        .loop_roles
-        .get(&region.exit_block)
-        .cloned()
-        .unwrap_or(LoopRole::None);
-    let exit_needs_fallthrough = if_inlined_blocks.contains(&region.exit_block)
-        || region.exit_block == func.entry_block
-        || exit_role == LoopRole::LoopHeader;
-    if !exit_needs_fallthrough {
+    // Loop headers (including entry) also have labels. Their textual position
+    // is not the control edge: an outer header may already have been emitted.
+    if !if_inlined_blocks.contains(&region.exit_block) {
         out.push(OpIR {
             kind: "jump".to_string(),
             value: Some(block_label_id(&region.exit_block)),
@@ -617,18 +537,7 @@ pub(super) fn emit_structured_loop_region(
             value: Some(block_label_id(&body_bid)),
             ..OpIR::default()
         });
-        if let Some(param_vars) = block_param_vars.get(&body_bid) {
-            for (i, var_name) in param_vars.iter().enumerate() {
-                if i < body_block.args.len() {
-                    out.push(OpIR {
-                        kind: "load_var".to_string(),
-                        var: Some(var_name.clone()),
-                        out: Some(value_var(body_block.args[i].id)),
-                        ..OpIR::default()
-                    });
-                }
-            }
-        }
+        emit_block_arg_loads(body_block, block_param_vars, out);
         emit_block_ops_inner(
             body_block,
             original_to_new_label,
@@ -691,18 +600,7 @@ pub(super) fn emit_guard_raise_path(
         });
 
         // Load block args.
-        if let Some(param_vars) = block_param_vars.get(&cur) {
-            for (i, var_name) in param_vars.iter().enumerate() {
-                if i < blk.args.len() {
-                    out.push(OpIR {
-                        kind: "load_var".to_string(),
-                        var: Some(var_name.clone()),
-                        out: Some(value_var(blk.args[i].id)),
-                        ..OpIR::default()
-                    });
-                }
-            }
-        }
+        emit_block_arg_loads(blk, block_param_vars, out);
 
         // Emit ops.
         emit_block_ops_inner(
@@ -1026,6 +924,33 @@ pub(super) fn emit_terminator(
     }
 }
 
+/// Reload predecessor-supplied join slots into the block's SSA value names.
+/// Entry, generic labels, structured loops and inlined/deferred regions all
+/// consume this transport; none may substitute a previous lexical value.
+pub(super) fn emit_block_arg_loads(
+    block: &TirBlock,
+    block_param_vars: &HashMap<BlockId, Vec<String>>,
+    out: &mut Vec<OpIR>,
+) {
+    let param_vars = block_param_vars
+        .get(&block.id)
+        .unwrap_or_else(|| panic!("missing block-argument slots for {}", block.id));
+    assert_eq!(
+        block.args.len(),
+        param_vars.len(),
+        "block-argument load arity mismatch for {}",
+        block.id
+    );
+    for (arg, var_name) in block.args.iter().zip(param_vars) {
+        out.push(OpIR {
+            kind: "load_var".to_string(),
+            var: Some(var_name.clone()),
+            out: Some(value_var(arg.id)),
+            ..OpIR::default()
+        });
+    }
+}
+
 /// Emit `store_var` ops to pass values to the target block's argument variables.
 pub(super) fn emit_block_arg_stores(
     target: BlockId,
@@ -1033,16 +958,20 @@ pub(super) fn emit_block_arg_stores(
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     out: &mut Vec<OpIR>,
 ) {
-    if let Some(param_vars) = block_param_vars.get(&target) {
-        for (i, arg_val) in args.iter().enumerate() {
-            if let Some(var_name) = param_vars.get(i) {
-                out.push(OpIR {
-                    kind: "store_var".to_string(),
-                    var: Some(var_name.clone()),
-                    args: Some(vec![value_var(*arg_val)]),
-                    ..OpIR::default()
-                });
-            }
-        }
+    let param_vars = block_param_vars
+        .get(&target)
+        .unwrap_or_else(|| panic!("missing block-argument slots for {target}"));
+    assert_eq!(
+        args.len(),
+        param_vars.len(),
+        "block-argument edge arity mismatch for {target}"
+    );
+    for (arg_val, var_name) in args.iter().zip(param_vars) {
+        out.push(OpIR {
+            kind: "store_var".to_string(),
+            var: Some(var_name.clone()),
+            args: Some(vec![value_var(*arg_val)]),
+            ..OpIR::default()
+        });
     }
 }

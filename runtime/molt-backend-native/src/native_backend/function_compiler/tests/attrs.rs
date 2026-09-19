@@ -1,5 +1,5 @@
+use super::native_object_symbols;
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR, stable_ic_site_id};
-use cranelift_object::object::{Object, ObjectSymbol};
 use std::collections::BTreeSet;
 
 const BOXED_ATTR_SYMBOL: &str = "molt_get_attr_object";
@@ -7,15 +7,6 @@ const BOXED_ATTR_IC_SYMBOL: &str = "molt_get_attr_object_ic";
 const RETIRED_RAW_PTR_SYMBOL: &str = "molt_get_attr_ptr";
 const RETIRED_OFFSET_PROBE_SYMBOL: &str = "molt_ic_probe_fast";
 const RETIRED_OFFSET_SLOW_SYMBOL: &str = "molt_getattr_ic_slow";
-
-fn undefined_symbols(bytes: &[u8]) -> BTreeSet<String> {
-    let object = cranelift_object::object::File::parse(bytes).expect("parse native object");
-    object
-        .symbols()
-        .filter(|symbol| symbol.is_undefined())
-        .filter_map(|symbol| symbol.name().ok().map(str::to_owned))
-        .collect()
-}
 
 fn attr_program(kind: &str) -> SimpleIR {
     SimpleIR {
@@ -50,13 +41,13 @@ fn attr_program(kind: &str) -> SimpleIR {
 #[test]
 fn native_attribute_lanes_keep_one_owned_boxed_result_protocol() {
     let direct = SimpleBackend::new().compile(attr_program("get_attr"));
-    let direct_imports = undefined_symbols(&direct.bytes);
+    let direct_imports = native_object_symbols(&direct.bytes).undefined;
     assert!(direct_imports.contains(BOXED_ATTR_SYMBOL));
     assert!(!direct_imports.contains(BOXED_ATTR_IC_SYMBOL));
 
     for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
         let output = SimpleBackend::new().compile(attr_program(kind));
-        let imports = undefined_symbols(&output.bytes);
+        let imports = native_object_symbols(&output.bytes).undefined;
         assert!(
             imports.contains(BOXED_ATTR_IC_SYMBOL),
             "{kind} must call the canonical boxed attribute entrypoint"

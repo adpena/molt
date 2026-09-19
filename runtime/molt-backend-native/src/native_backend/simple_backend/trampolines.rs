@@ -298,7 +298,7 @@ impl SimpleBackend {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         func_name: &str,
         spec: TrampolineSpec,
-    ) -> String {
+    ) -> cranelift_codegen::ir::Function {
         let mut trampoline_ids = BTreeMap::new();
         let mut clif = None;
         Self::ensure_trampoline_with_inspector(
@@ -308,7 +308,7 @@ impl SimpleBackend {
             func_name,
             Linkage::Import,
             spec,
-            |ctx| clif = Some(ctx.func.display().to_string()),
+            |ctx| clif = Some(ctx.func.clone()),
         );
         clif.expect("new task trampoline must expose generated CLIF")
     }

@@ -58,7 +58,18 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
                 is_extern: false,
                 codegen_partition: false,
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![op],
+                ops: if kind == "async_work_poll" {
+                    vec![
+                        op,
+                        OpIR {
+                            kind: "label".to_string(),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
+                    ]
+                } else {
+                    vec![op]
+                },
             }],
             profile: None,
         };
@@ -723,18 +734,16 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..FunctionIR::default()
         },
         FunctionIR {
-            name: "loop_resume_index".into(),
+            name: "loop_resume_state".into(),
             ops: vec![
-                exception_op("const_int", &[], Some("zero"), Some(0)),
-                exception_op("const_int", &[], Some("one"), Some(1)),
+                exception_op("const_bool", &[], Some("done"), Some(0)),
                 exception_op("loop_start", &[], None, None),
-                exception_op("loop_index_start", &["zero"], Some("index"), None),
-                exception_op("loop_break_if_true", &["index"], None, None),
+                exception_op("loop_break_if_true", &["done"], None, None),
                 exception_op("check_exception", &[], None, Some(40)),
-                exception_op("loop_index_next", &["one"], Some("index"), None),
+                exception_op("not", &["done"], Some("done"), None),
                 exception_op("loop_continue", &[], None, None),
                 exception_op("loop_end", &[], None, None),
-                exception_op("ret", &["index"], None, None),
+                exception_op("ret", &["done"], None, None),
                 exception_op("label", &[], None, Some(40)),
                 exception_op("ret_void", &[], None, None),
             ],
@@ -803,7 +812,7 @@ end, true) == host_failure)
 assert(host_failure.__context__ == abandoned_inner)
 assert(molt_exception_stack_depth() == owned_depth and molt_exception_active() == outer)
 assert(molt_frame_context().exceptions.baseline == owned_baseline)
-assert(loop_resume_index() == 1)
+assert(loop_resume_state() == true)
 
 -- Each coroutine owns handled state across suspension, while unhandled
 -- coroutines inherit only the active exception of the current resumer.

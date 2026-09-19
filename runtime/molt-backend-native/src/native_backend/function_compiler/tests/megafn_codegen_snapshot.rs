@@ -66,7 +66,6 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
         "call_direct_and_guarded",
         SimpleIR {
             functions: vec![
-                func("callee_leaf", vec![const_int("k", 3), ret("k")]),
                 func(
                     "caller_direct",
                     vec![
@@ -81,6 +80,12 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                         ret("r"),
                     ],
                 ),
+                FunctionIR {
+                    params: vec!["value".into()],
+                    // Keep the call boundary under test through the module inliner.
+                    codegen_partition: true,
+                    ..func("callee_leaf", vec![ret("value")])
+                },
             ],
             profile: None,
         },
@@ -114,7 +119,6 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
         "call_internal",
         SimpleIR {
             functions: vec![
-                func("internal_target", vec![const_int("z", 9), ret("z")]),
                 func(
                     "caller_internal",
                     vec![
@@ -129,6 +133,11 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                         ret("r"),
                     ],
                 ),
+                FunctionIR {
+                    params: vec!["value".into()],
+                    codegen_partition: true,
+                    ..func("internal_target", vec![ret("value")])
+                },
             ],
             profile: None,
         },
@@ -139,11 +148,16 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
         "call_guarded",
         SimpleIR {
             functions: vec![
-                func("guarded_target", vec![const_int("z", 4), ret("z")]),
                 func(
                     "caller_guarded",
                     vec![
-                        const_str("callee", "guarded_target"),
+                        OpIR {
+                            kind: "func_new".into(),
+                            s_value: Some("guarded_target".into()),
+                            out: Some("callee".into()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
                         const_int("a", 7),
                         OpIR {
                             kind: "call_guarded".to_string(),
@@ -155,6 +169,7 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                         ret("r"),
                     ],
                 ),
+                func("guarded_target", vec![const_int("z", 4), ret("z")]),
             ],
             profile: None,
         },
@@ -441,20 +456,46 @@ fn stable_hash(bytes: &[u8]) -> u64 {
 fn megafn_call_family_codegen_snapshot() {
     let obj_dir = std::env::var("MEGAFN_OBJ_DIR").ok();
     if let Some(dir) = obj_dir.as_deref() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).expect("create requested object snapshot directory");
     }
-    for (name, ir) in call_family_programs() {
+    for (name, mut ir) in call_family_programs() {
+        // The first function is the canonical entry root. An object containing
+        // only the callee is not a call-family consumer proof.
+        let entry = ir.functions[0].name.clone();
+        if ir.functions.len() > 1 {
+            ir.profile = Some(crate::PgoProfileIR {
+                hot_functions: ir
+                    .functions
+                    .iter()
+                    .skip(1)
+                    .map(|func| func.name.clone())
+                    .collect(),
+                ..crate::PgoProfileIR::default()
+            });
+        }
         let output = SimpleBackend::new().compile(ir);
         assert!(
             !output.bytes.is_empty(),
             "program {name} produced no object bytes"
         );
+        let symbols = native_object_symbols(&output.bytes);
+        assert!(
+            symbols.defined.contains(&entry),
+            "program {name} discarded caller {entry}"
+        );
+        for target in match name {
+            "call_direct_and_guarded" => &["callee_leaf"][..],
+            "call_internal" => &["internal_target"][..],
+            _ => &[],
+        } {
+            assert!(
+                symbols.defined.contains(*target),
+                "program {name} lost call boundary {target}"
+            );
+        }
         if name == "call_guarded" {
             assert!(
-                output
-                    .bytes
-                    .windows(b"molt_call_bind_ic".len())
-                    .any(|symbol| symbol == b"molt_call_bind_ic"),
+                symbols.undefined.contains("molt_call_bind_ic"),
                 "non-exact guarded ABI must enter the Python binder"
             );
         }
@@ -465,10 +506,7 @@ fn megafn_call_family_codegen_snapshot() {
                 "molt_frame_invocation_exit",
             ] {
                 assert!(
-                    output
-                        .bytes
-                        .windows(required.len())
-                        .any(|symbol| symbol == required.as_bytes()),
+                    symbols.undefined.contains(required),
                     "inline calls must consume {required}"
                 );
             }
