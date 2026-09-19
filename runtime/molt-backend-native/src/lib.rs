@@ -62,8 +62,8 @@ pub use crate::passes::{
     elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_functions_with_roots,
     eliminate_dead_imports, eliminate_dead_ops, eliminate_redundant_guard_tags,
     eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
-    fuse_method_dispatch, hoist_loop_invariants, inject_runtime_exit, rc_coalescing,
-    rewrite_stateful_loops, split_megafunctions,
+    fuse_method_dispatch, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
+    split_megafunctions,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 #[allow(unused_imports)]

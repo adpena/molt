@@ -7,41 +7,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const ATTRIBUTES_OBJECT_SLOT_COUNT: usize = 7;
 
-/// Result-level inline cache entry for attribute lookups.
-/// Caches the full lookup result alongside the attribute name to skip
-/// MRO traversal when the global type version hasn't changed.
-pub(super) struct AttrICEntry {
-    /// Cached attribute name string (NaN-boxed bits)
-    pub(super) name_bits: u64,
-    /// Cached lookup result (the attribute value, NaN-boxed bits)
-    pub(super) result_bits: u64,
-    /// Global type version when result was cached
-    pub(super) type_version: u64,
-    /// type_id of the object this was cached for
-    pub(super) obj_type_id: u32,
-    /// Logical lookup owner for result IC correctness: the class object for
-    /// TYPE_ID_TYPE, otherwise the receiver's class object.
-    pub(super) class_bits: u64,
-}
-
-impl AttrICEntry {
-    pub(super) fn retain_owned_refs(&self, _py: &PyToken<'_>) {
-        for bits in [self.name_bits, self.result_bits, self.class_bits] {
-            if bits != 0 {
-                inc_ref_bits(_py, bits);
-            }
-        }
-    }
-
-    pub(super) fn release_owned_refs(&self, _py: &PyToken<'_>) {
-        for bits in [self.name_bits, self.result_bits, self.class_bits] {
-            if bits != 0 {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
-}
-
 pub(crate) struct AttributesRuntimeState {
     pub(super) wrapper_member_get: AtomicU64,
     pub(super) wrapper_member_set: AtomicU64,
@@ -50,7 +15,6 @@ pub(crate) struct AttributesRuntimeState {
     pub(super) wrapper_members_version: AtomicU64,
     pub(super) attr_site_name_cache: Mutex<HashMap<u64, u64>>,
     pub(super) generic_alias_mro_entries: AtomicU64,
-    pub(super) attr_ic_result_cache: Mutex<HashMap<u64, AttrICEntry>>,
     pub(super) bytes_fromhex: AtomicU64,
     pub(super) bytearray_fromhex: AtomicU64,
     pub(super) memoryview_from_flags: AtomicU64,
@@ -65,7 +29,6 @@ impl AttributesRuntimeState {
             wrapper_members_version: AtomicU64::new(0),
             attr_site_name_cache: Mutex::new(HashMap::new()),
             generic_alias_mro_entries: AtomicU64::new(0),
-            attr_ic_result_cache: Mutex::new(HashMap::new()),
             bytes_fromhex: AtomicU64::new(0),
             bytearray_fromhex: AtomicU64::new(0),
             memoryview_from_flags: AtomicU64::new(0),
@@ -113,10 +76,6 @@ pub(crate) fn debug_bound_method_enabled() -> bool {
 
 pub(super) fn attributes_state(_py: &PyToken<'_>) -> &'static AttributesRuntimeState {
     &crate::runtime_state(_py).attributes
-}
-
-pub(super) fn attr_ic_result_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<u64, AttrICEntry>> {
-    &attributes_state(_py).attr_ic_result_cache
 }
 
 pub(super) struct AttrLookupTraceGuard {
@@ -168,25 +127,15 @@ pub(crate) fn attributes_clear_runtime_state(
             .unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *cache)
     };
-    let results = {
-        let mut cache = attributes
-            .attr_ic_result_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *cache)
-    };
-    // Both maps and every atomic slot are empty before the first release;
+    // The map and every atomic slot are empty before the first release;
     // callbacks can repopulate them without lock recursion or lost publication.
-    let changed = !names.is_empty() || !results.is_empty();
+    let changed = !names.is_empty();
     let slots = attributes.object_slots();
     let slots_changed = crate::state::cache::clear_atomic_slots(_py, &slots);
     for bits in names.into_values() {
         if bits != 0 {
             dec_ref_bits(_py, bits);
         }
-    }
-    for entry in results.into_values() {
-        entry.release_owned_refs(_py);
     }
     changed | slots_changed
 }

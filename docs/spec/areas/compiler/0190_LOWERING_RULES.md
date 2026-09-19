@@ -4,7 +4,118 @@
 **Purpose:** Define deterministic, testable transforms from Python AST → Molt IR for supported idioms.
 **Audience:** Compiler engineers, optimization authors writing compiler passes.
 
+## Context-manager scope custody
+
+`TryScope` owns nonlocal cleanup for `return`, `break`, and `continue` in both
+synchronous and suspended functions. An async manager stores its captured
+special `__aexit__` callable in a typed `AsyncContextExit` action before invoking
+`__aenter__`. Successful entry establishes the protected scope before assigning
+the `as` target; failed assignment therefore exits the manager too.
+
+Normal, exceptional and nonlocal exits use one body/cleanup emitter for both
+`SyncContextExit` (runtime-owned manager) and `AsyncContextExit` (captured callable).
+It closes the body region and consumes its exception frame exactly once before
+calling the captured exit. Exceptional cleanup retains the original exception
+across suspension, supplies its actual traceback, and keeps it active during
+the exit call, await and suppression truth test. A separate protected cleanup
+region restores the enclosing context if any of those operations fails; errors
+cannot re-enter the exited manager. Suspended pending return values use one
+scratch carrier passed through the cleanup scopes, not a persistent raw spill.
+Normal cleanup preserves it; an escaping transfer or failed exit clears it,
+and successful return consumes it. A loop inside a finally does not consume
+that finally's guard, so its local break/continue retains the pending value.
+Normal exits do not truth-test the ignored callback result. Synchronous pending
+errors cross the body pop through an independently retained `BINDING_ALIAS`, not
+the observer's region-owned MatchRef; suspended paths retain them in frame storage.
+Explicit manager actions are the only frontend lexical cleanup authority. Generic
+try/try-star scopes carry no context-depth marks or fallback stack-unwind calls.
+Runtime context stacks still own manager retention and uncaught-error boundaries.
+Entry failure releases captured exit storage without invoking exit. Successful
+entry and failed-entry dispatch ignore suppression inherited from an abandoned
+return path: their fresh guard and remaining outer continuation are authoritative.
+Successful cleanup consumes manager/callback storage before invocation and saved-error
+storage after suppression testing, including exceptional cleanup paths. Source
+`await` and internal awaits share one state-transition/result authority; its
+owned result load clears the hidden carrier before pending-error dispatch.
+Handler target deletion is tied to the owning scope, so inner cleanup can still
+observe an enclosing handler and a loop transfer cannot clear a handler it stays
+inside. Runtime stack-depth restoration is not lexical-region closure.
+Every saved handler/finally entry has an explicit owning scope; nonlocal cleanup
+retains only entries whose owners remain live, including when an inner finally
+overrides the original transfer. Pending-error save/restore slots are distinct
+from handled-exception state: bare raise consults the existing runtime authority
+used by `sys.exception()`, including dynamically enclosing callers.
+
+Each source loop has one `LoopScope` containing its lexical break destination,
+continue destination, cleanup depth and else-suppression flag. A try captures its
+lexical loop scopes; inlined finalbodies restore those scopes even when emitted
+inside younger loops. Source `break` and `continue` become explicit jumps, not
+targetless transfers bound to the physical emission site. Continue shares the
+normal latch and index update; break publishes its else flag only after cleanup,
+so an overriding continue cannot suppress loop-else. Structured loop markers
+remain balanced even when every body path terminates. No backend-specific
+exception or loop-target fallback is needed.
+
+Labeled `TRY_START`/`TRY_END` carry path-local exception-region custody, not
+textual brackets. Every named frontend scope carries its handler in the same
+first operand, including context managers and generator resumption; serialization
+projects it directly to the IR label. There is no metadata-only context identity
+or scope flag selecting another carrier. Named starts and ends require a defined
+handler target, while anonymous IR regions have no named target. One region may
+close on several alternative paths, including
+an early return inside a still-open `IF` or loop. Frontend structural repair
+must preserve those branches and every labeled close; it must not pair a start
+with the first textual end or discard later closes. Frontend CFG/SCCP preserves
+explicit pending-error transfers and conservative handler reachability; shared
+TIR exception analysis owns region facts after control-flow construction.
+LLVM emits only explicit exception-stack operations, not implicit frames for
+TRY markers. WASM dispatch uses pending-state checks; native EH is selected only
+for a structured, non-relocatable frame that actually emits an EH region. Luau
+labelled transfers project the shared executable SimpleIR graph (excluding
+verifier-only reachability edges), with explicit pending/handled exception state
+in the coroutine-owned frame context. No backend pairs textual TRY intervals or
+skips cleanup operations by matching source patterns.
+
+Rust-source labelled control flow uses the existing structured-PHI rewrite and
+shared TIR lift/lowering for SSA edge assignments, then the shared executable
+SimpleIR graph for dispatch. Residual unstructured PHIs fail explicitly instead
+of guessing a predecessor. A jump never
+implies a return or selects the last stored value. Source-order alias hints cannot
+cross dispatch blocks. This does not expand Rust's admitted object, exception or
+coroutine capabilities; unsupported domains remain explicit admission failures.
+The current Rust target policy also gates unstructured control and truthiness;
+internal executable-emission tests do not confer checked-target support.
+
+Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow
+and SSA construction. Source-ordered SimpleIR motion cannot prove dominance of
+resumption edges into a loop and must not run before that analysis. Native,
+LLVM and WASM preparation and the frontend midend no longer have a second
+constant-hoisting pass;
+Luau source postprocessing likewise does not perform textual LICM.
+Deferred class calls keep live global lookup inside the executed loop body;
+there is no frontend preheader class cache or name-based effect-proof override.
+Zero-iteration loops cannot acquire, cache or raise from an unexecuted class read.
+Serialization preserves the resulting definitions: identity comparisons do not
+redefine `None` operands or invent values for undefined inputs. SSA construction
+and verification, not serializer rematerialization, own def-use correctness.
+
+Guarded handler/else/finally bodies each have one lexical cleanup continuation,
+not recursive per-statement pending checks. Exit failures inside those bodies
+join their cleanup before the enclosing finally runs. Nonlocal unwind exposes
+only the remaining scope prefix while lowering cleanup; a typed executing-finally
+flag prevents re-entry. Positional counts of already-popped scopes are not a
+second unwind authority. A failure from a finally is dispatched while the next
+outer region is still active, allowing its manager to observe or suppress it.
+
 ## Builtin shape and lifetime authority
+
+Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
+which caches only an owned interned name before invoking `molt_get_attr_name`.
+Stable function/source-operation identity selects the name-cache site; the actual
+name is checked on every hit. There is no wrapping frontend slot allocator,
+class-only raw-offset cache or instance-independent result cache. Descriptor
+precedence, instance shadowing, `__getattribute__`, exceptions and ownership remain
+the canonical lookup's responsibility on every access.
 
 `compiler_analysis.python_builtin_shapes` describes builtin constructors,
 methods, file modes, `range`, and `len`. `PythonBindingIndex` transports their results
@@ -176,6 +287,20 @@ consumers must validate the fact at the actual access, not reuse an earlier
 boolean decision. Dataclass field offsets obey the same authority as ordinary
 class offsets. `getattr` evaluates all arguments, including an unused default,
 before lookup; field specialization cannot elide or move those effects.
+
+Callable capability requirements are independent of exact callable identity.
+Live global loads union the requirements of possible imported provenance and
+builtin fallback, without substituting a callable or stamping an exact runtime
+symbol. Unknown attribute receivers consume the generated requirement union for
+both protected callables and reflection-gateway suffixes. Constructionally exact
+nonmodule receivers may suppress that generic acquisition requirement, but a
+lexical class name or callback-invalidated result is not such a proof. The
+operation registry owns these masks; frontend consumers do not mirror the names.
+Captured cells are mutable activation inputs across functions, generators,
+coroutines and lambdas. Their enclosing import origin contributes only possible
+requirements at entry, never exact module/callable identity. An import or write
+executed in the current activation may establish fresh binding facts; copying an
+enclosing import map cannot override canonical binding-flow widening.
 
 Generated arbitrary-heap effects are independent of local memory effects.
 `LOAD_VAR` is a slot read and `BINDING_ALIAS` retains an existing value without

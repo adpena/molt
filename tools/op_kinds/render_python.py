@@ -262,21 +262,6 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'    "{row["qualified"]}": "{row["symbol"]}",\n')
     out.append("}\n\n")
 
-    protected_attrs = sorted(
-        {
-            row["qualified"].rsplit(".", 1)[1]
-            for row in data.get("simpleir_runtime_qualified_callable", [])
-        }
-    )
-    out.append(
-        "SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS: frozenset[str] = frozenset(\n"
-    )
-    out.append("    {\n")
-    for attr in protected_attrs:
-        out.append(f'        "{attr}",\n')
-    out.append("    }\n")
-    out.append(")\n\n")
-
     out.append("SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS: dict[str, int] = {\n")
     for symbol, bits in sorted(runtime_symbol_requirement_masks(data).items()):
         out.append(f'    "{symbol}": {bits},\n')

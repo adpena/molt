@@ -13,6 +13,26 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import _SCCP_OVERDEFINED, _SCCP_UNKNOWN
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.midend_dataflow import _same_sccp_state
+from molt.frontend.lowering.serialization_context import SerializationContext
+
+
+@pytest.mark.parametrize("defined", [False, True])
+def test_identity_serialization_never_invents_or_redefines_none_inputs(
+    defined: bool,
+) -> None:
+    gen = SimpleTIRGenerator()
+    ctx = SerializationContext([], set(), None)
+    operand = MoltValue("none_operand", "None")
+    if defined:
+        assert gen._serialize_basic_op(MoltOp("CONST_NONE", [], operand), ctx)
+    comparison = MoltOp("IS", [operand, MoltValue("other")], MoltValue("same", "bool"))
+    assert gen._serialize_basic_op(comparison, ctx)
+    assert ctx.json_ops[-1] == {
+        "kind": "is",
+        "args": ["none_operand", "other"],
+        "out": "same",
+    }
+    assert sum(op.get("out") == "none_operand" for op in ctx.json_ops) == int(defined)
 
 
 def _float(bits: int) -> float:
@@ -177,7 +197,7 @@ def test_sccp_rejects_mutable_contents_even_when_host_object_is_shared(
     assert _phi_result(value, value)["joined"] is _SCCP_OVERDEFINED
 
 
-def test_try_analysis_uses_the_same_immutable_lattice_admission() -> None:
+def test_region_markers_preserve_immutable_lattice_admission() -> None:
     ops = [
         MoltOp("TRY_START", [], MoltValue("none")),
         MoltOp("CONST", [[1]], MoltValue("mutable")),
@@ -186,8 +206,9 @@ def test_try_analysis_uses_the_same_immutable_lattice_admission() -> None:
         MoltOp("TRY_END", [], MoltValue("none")),
         MoltOp("RETURN", [MoltValue("item")], MoltValue("none")),
     ]
-    result = SimpleTIRGenerator()._compute_sccp(ops, build_cfg(ops))
-    assert result.try_exception_possible_by_start[0]
+    cfg = build_cfg(ops)
+    result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
+    assert result.out_values[cfg.index_to_block[3]]["item"] is _SCCP_OVERDEFINED
 
 
 def test_sccp_state_identity_handles_sentinels_and_key_presence() -> None:

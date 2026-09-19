@@ -36,24 +36,6 @@ if TYPE_CHECKING:
     from molt.frontend import SimpleTIRGenerator
     from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
 
-# ---------------------------------------------------------------------------
-# Inline cache (IC) site index allocator
-# ---------------------------------------------------------------------------
-# Each GETATTR_GENERIC_PTR site gets a unique IC index so the runtime can
-# map it to a slot in the lock-free InlineCache table (4096 entries).
-# The counter wraps around at the table capacity.
-
-_IC_TABLE_CAPACITY = 4096
-_ic_counter: list[int] = [0]  # mutable counter in list for closure capture
-_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF = "static_module_class_binding"
-
-
-def _next_ic_index() -> int:
-    """Return a monotonically increasing IC site index (mod table capacity)."""
-    idx = _ic_counter[0] % _IC_TABLE_CAPACITY
-    _ic_counter[0] += 1
-    return idx
-
 
 @dataclass
 class MoltValue:
@@ -200,9 +182,6 @@ class SCCPResult:
     executable_edges: set[tuple[int, int]]
     branch_choice_by_if_index: dict[int, bool]
     loop_break_choice_by_index: dict[int, bool]
-    try_exception_possible_by_start: dict[int, bool]
-    try_normal_possible_by_start: dict[int, bool]
-    guard_fail_indices: set[int]
 
 
 @dataclass(frozen=True)
@@ -300,7 +279,7 @@ class MidendTierClassification:
 # inside the per-round body of `_canonicalize_control_aware_ops_impl`).  Used
 # only to size the budget headroom; an exact match is not required (the growth
 # headroom multiplier absorbs drift), but keep it in the right ballpark.
-_MIDEND_DEGRADE_CHECKPOINTS = 12
+_MIDEND_DEGRADE_CHECKPOINTS = 9
 # Multiplier applied to the nominal per-round work so a function whose op count
 # stays roughly stable across its permitted rounds never degrades.  Pathological
 # op-count explosion (a pass that balloons the IR) still exceeds the budget.
@@ -325,7 +304,6 @@ class MidendFunctionPolicy:
     cse_iter_cap: int
     enable_deep_edge_thread: bool
     enable_cse: bool
-    enable_licm: bool
     enable_guard_hoist: bool
     budget_ms: float
     # Deterministic work-unit budget for the mid-end pass-degrade ladder.
@@ -334,7 +312,7 @@ class MidendFunctionPolicy:
     # makes the compiled IR depend on machine speed / scheduling, which silently
     # violated the determinism contract (#73 — identical source + seed produced
     # divergent IR across processes whenever a compile happened to run slow
-    # enough to trip the old `time.perf_counter()` budget and disable CSE/LICM).
+    # enough to trip the old `time.perf_counter()` budget and disable CSE).
     # `budget_ms` is retained for telemetry/logging only.
     work_budget: float
     allow_hot_promotion: bool
@@ -365,6 +343,7 @@ class MidendEnvConfig:
 @dataclass
 class ActiveException:
     value: MoltValue
+    scope: TryScope
     slot: int | None = None
     handler_name: str | None = None
     is_handler: bool = False
@@ -1431,15 +1410,46 @@ STDLIB_DIRECT_CALL_MODULES = {
 }
 
 
+@dataclass(frozen=True)
+class SyncContextExit:
+    """Runtime-owned manager consumed by the common context cleanup path."""
+
+    manager: ScratchCell
+
+
+@dataclass(frozen=True)
+class AsyncContextExit:
+    """Captured special method retained across entry, body and exit suspension."""
+
+    callback: ScratchCell
+
+
+@dataclass
+class LoopScope:
+    """Lexical transfer destinations independent of inlined cleanup position."""
+
+    break_label: int
+    continue_label: int
+    try_depth: int
+    break_flag: int | ScratchCell | None = None
+    break_used: bool = False
+    continue_used: bool = False
+    body_terminated: bool = False
+
+    @property
+    def needs_latch(self) -> bool:
+        return not self.body_terminated or self.continue_used
+
+
 @dataclass
 class TryScope:
-    ctx_mark: MoltValue | None
     finalbody: list[ast.stmt] | None
-    ctx_mark_offset: int | None = None
     done_label: int | None = None
     handler_label: int | None = None
-    needs_context_unwind: bool = True
-    try_start_has_handler_value: bool = True
+    context_exit: SyncContextExit | AsyncContextExit | None = None
+    abandon_on_unwind: ScratchCell | None = None
+    finalbody_running: bool = False
+    lexical_loops: tuple[LoopScope, ...] = ()
 
 
 type MethodDescriptor = Literal[
@@ -1627,10 +1637,6 @@ class CanonicalizationState(TypedDict):
 _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY = "__signature_cache"
 
 __all__ = [
-    "_IC_TABLE_CAPACITY",
-    "_ic_counter",
-    "_STATIC_MODULE_CLASS_BINDING_EFFECT_PROOF",
-    "_next_ic_index",
     "MoltValue",
     "MoltOp",
     "SCCPResult",

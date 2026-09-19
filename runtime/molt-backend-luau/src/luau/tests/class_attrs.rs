@@ -601,7 +601,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
 }
 
 #[test]
-fn test_compile_checked_rejects_internal_marker() {
+fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "internal_test".to_string(),
@@ -622,11 +622,12 @@ fn test_compile_checked_rejects_internal_marker() {
     let mut backend = LuauBackend::new();
     let err = backend
         .compile_checked(&ir)
-        .expect_err("compile_checked must reject unsupported internal operations");
+        .expect_err("compile_checked must reject unsupported lexical-cell transport");
     assert!(
         err.contains("rejected before source generation")
             && err.contains("`function_closure_bits`")
-            && err.contains("unclassified"),
+            && err.contains("shared mutable lexical cells")
+            && err.contains("exact closure transport"),
         "error should come from generated pre-source admission, got: {err}"
     );
 }

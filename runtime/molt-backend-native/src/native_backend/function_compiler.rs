@@ -80,7 +80,7 @@ impl SimpleBackend {
             dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 dump.push_str(&format!(
-                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?} stack={:?} task={:?} container={:?} type={:?} ic={:?}\n",
+                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} fi={:?} ff={:?} stack={:?} task={:?} container={:?} type={:?}\n",
                     idx,
                     op.kind,
                     op.out.as_deref().unwrap_or(""),
@@ -94,7 +94,6 @@ impl SimpleBackend {
                     op.task_kind,
                     op.container_type,
                     op.type_hint,
-                    op.ic_index,
                 ));
             }
             let _ = crate::debug_artifacts::write_debug_artifact(

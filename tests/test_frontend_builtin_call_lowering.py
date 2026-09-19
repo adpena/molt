@@ -1004,7 +1004,7 @@ def test_print_value_uses_shared_builtin_call_authority(expression: str) -> None
     assert any(op.kind == "LIST_NEW" and calls[0].result in op.args for op in ops)
 
 
-def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
+def test_sync_try_except_uses_explicit_exit_when_body_enters_with() -> None:
     source = (
         "def f(p):\n"
         "    try:\n"
@@ -1018,11 +1018,13 @@ def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
 
-    assert any(op.get("kind") == "context_depth" for op in func_ops)
-    assert any(op.get("kind") == "context_unwind_to" for op in func_ops)
+    assert any(op.get("kind") == "context_exit" for op in func_ops)
+    assert not {"context_depth", "context_unwind", "context_unwind_to"}.intersection(
+        op.get("kind") for op in func_ops
+    )
 
 
-def test_break_inside_try_except_nested_in_with_does_not_unwind_unmarked_try() -> None:
+def test_break_inside_try_except_keeps_enclosing_with_until_loop_end() -> None:
     source = (
         "class C:\n"
         "    def __enter__(self):\n"
@@ -1044,11 +1046,17 @@ def test_break_inside_try_except_nested_in_with_does_not_unwind_unmarked_try() -
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
 
-    assert any(op.get("kind") == "context_depth" for op in func_ops)
-    assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
+    loop_end = next(i for i, op in enumerate(func_ops) if op.get("kind") == "loop_end")
+    first_exit = next(
+        i for i, op in enumerate(func_ops) if op.get("kind") == "context_exit"
+    )
+    assert loop_end < first_exit
+    assert not {"context_depth", "context_unwind", "context_unwind_to"}.intersection(
+        op.get("kind") for op in func_ops
+    )
 
 
-def test_return_inside_try_nested_in_with_unwinds_only_marked_scopes() -> None:
+def test_return_inside_try_nested_in_with_uses_explicit_scope_exit() -> None:
     source = (
         "class C:\n"
         "    def __enter__(self):\n"
@@ -1070,8 +1078,10 @@ def test_return_inside_try_nested_in_with_unwinds_only_marked_scopes() -> None:
         func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
     )
 
-    assert any(op.get("kind") == "context_depth" for op in func_ops)
-    assert any(op.get("kind") == "context_unwind_to" for op in func_ops)
+    assert any(op.get("kind") == "context_exit" for op in func_ops)
+    assert not {"context_depth", "context_unwind", "context_unwind_to"}.intersection(
+        op.get("kind") for op in func_ops
+    )
 
 
 def test_sync_try_except_splits_clean_and_pending_cleanup_lanes() -> None:
@@ -3709,41 +3719,105 @@ def test_sum_generator_expr_target_shadow_does_not_leak() -> None:
     assert "v" in store_vars
 
 
-def test_any_all_generator_expr_use_scalar_result_slots() -> None:
-    ir = compile_to_tir(
-        "def f(data):\n"
-        "    return any(v for v in data)\n"
-        "def g(data):\n"
-        "    return all(v for v in data)\n"
+@pytest.mark.parametrize("name", ["any", "all"])
+def test_admitted_any_all_generator_expr_use_scalar_result_slots(name: str) -> None:
+    # Exercise the reducer after callable admission, not by assuming that an
+    # unbound source spelling in a deferred function proves builtin identity.
+    gen = SimpleTIRGenerator()
+    gen.start_function("admitted_reduction", params=["data"], param_types=["Any"])
+    gen.locals["data"] = MoltValue("data", type_hint="Any")
+    node = ast.parse(f"{name}(v for v in data)", mode="eval").body
+    assert isinstance(node, ast.Call)
+    result = gen._emit_any_all_call(name, node, needs_bind=False)
+    ops = gen.current_ops
+    stores = [
+        op
+        for op in ops
+        if op.kind == "STORE_VAR"
+        and op.metadata.get("var", "").startswith(f"__molt_{name}_result_")
+    ]
+    assert len(stores) == 2
+    slot = stores[0].metadata["var"]
+    assert stores[1].metadata["var"] == slot
+    producers = {op.result.name: op for op in ops}
+    initial = producers[stores[0].args[0].name]
+    terminal = producers[stores[1].args[0].name]
+    assert initial.kind == terminal.kind == "CONST_BOOL"
+    assert initial.args == [name == "all"]
+    assert terminal.args == [name == "any"]
+    (load,) = (
+        op for op in ops if op.kind == "LOAD_VAR" and op.metadata.get("var") == slot
+    )
+    assert load.result is result
+    assert result.type_hint == "bool"
+    assert sum(op.kind == "LOOP_START" for op in ops) == 1
+    assert sum(op.kind == "LOOP_END" for op in ops) == 1
+    assert sum(op.kind == "LOOP_BREAK" for op in ops) == 1
+    assert (
+        ops.index(stores[1])
+        < next(i for i, op in enumerate(ops) if op.kind == "LOOP_BREAK")
+        < ops.index(load)
+    )
+    assert not any(
+        op.kind in {"ALLOC_TASK", "LIST_NEW", "BUILTIN_FUNC"}
+        or (op.metadata or {}).get("task_kind") == "generator"
+        for op in ops
     )
 
-    for func_name, slot_prefix in [
-        ("__main____f", "__molt_any_result_"),
-        ("__main____g", "__molt_all_result_"),
-    ]:
-        func_ops = next(
-            func["ops"] for func in ir["functions"] if func["name"] == func_name
-        )
-        slots = {
-            op.get("var")
-            for op in func_ops
-            if op.get("kind") in {"store_var", "load_var"}
-            and isinstance(op.get("var"), str)
-            and op.get("var", "").startswith(slot_prefix)
-        }
 
-        assert slots
-        assert not any(op.get("task_kind") == "generator" for op in func_ops)
-        assert all(op.get("kind") != "list_new" for op in func_ops)
-        assert any(op.get("kind") == "loop_break" for op in func_ops)
-        assert any(
-            op.get("kind") == "load_var" and op.get("var") in slots for op in func_ops
-        )
-        assert not any(
+@pytest.mark.parametrize("name", ["any", "all"])
+@pytest.mark.parametrize("binding", ["deferred_global", "parameter", "rebound_global"])
+def test_any_all_generator_expr_preserve_unproven_callable_and_generator(
+    name: str, binding: str
+) -> None:
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
+    )
+
+    parameters = f"data, {name}" if binding == "parameter" else "data"
+    source = f"def f({parameters}):\n    return {name}(v for v in data)\n"
+    if binding == "rebound_global":
+        source += f"{name} = replacement\n"
+    node = next(
+        node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+    )
+    fact = analyze_python_source_bindings(source).call_fact(node)
+    assert fact is not None
+    assert fact.exact_builtin_name() is None
+    assert not fact.callee_elision_safe
+
+    ir = compile_to_tir(source)
+    function = next(func for func in ir["functions"] if func["name"] == "__main____f")
+    ops = function["ops"]
+    targets = (
+        _local_reads(ops, name)
+        if binding == "parameter"
+        else _module_attr_accesses(ops, "module_get_global", name)
+    )
+    call = _positional_call(ops, targets, 1, parameters=function["params"])
+    (definition,) = (op for op in ops if op.get("task_kind") == "generator")
+    assert definition["kind"] == "func_new"
+    assert any(func["name"] == definition["s_value"] for func in ir["functions"])
+    generator_call = _positional_call(ops, {definition["out"]}, 1)
+    producers = {op["out"]: op for op in ops if "out" in op}
+    iterator = producers[generator_call["args"][1]]
+    assert iterator["kind"] == "iter"
+    assert iterator["args"][0] in _local_reads(ops, "data")
+    assert call["args"][1] == generator_call["out"]
+    assert ops.index(iterator) < ops.index(generator_call) < ops.index(call)
+    if binding != "parameter":
+        # Capture the callable before eager outer-iterator acquisition, which
+        # can invoke Python and replace the module's any/all binding.
+        assert ops.index(producers[call["args"][0]]) < ops.index(iterator)
+    assert not any(
+        op.get("kind") in {"alloc_task", "loop_start"}
+        or op.get("var", "").startswith(f"__molt_{name}_result_")
+        or (
             op.get("kind") == "builtin_func"
             and op.get("s_value") in {"molt_any_builtin", "molt_all_builtin"}
-            for op in func_ops
         )
+        for op in ops
+    )
 
 
 def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:

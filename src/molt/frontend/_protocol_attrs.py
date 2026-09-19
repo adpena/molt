@@ -73,7 +73,6 @@ class _GeneratorProtocolAttrs(Protocol):
     async_closure_offset: int | None
     async_context: Any
     async_frame_slots: list[AsyncFrameSlot]
-    async_index_loop_stack: list[int]
     async_internal_bindings: dict[str, AsyncFrameSlot]
     async_internal_hints: dict[str, str]
     async_locals: dict[str, AsyncFrameSlot]
@@ -99,7 +98,6 @@ class _GeneratorProtocolAttrs(Protocol):
     comprehension_bindings: dict[str, ComprehensionBinding]
     const_ints: dict[str, int]
     container_elem_hints: dict[str, str]
-    context_depth: Any
     control_flow_depth: Any
     current_class: str | None
     current_func_name: str
@@ -146,5 +144,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     gpu_kernel_symbols_by_name: dict[str, str]
-    imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: set[tuple[str, str]]

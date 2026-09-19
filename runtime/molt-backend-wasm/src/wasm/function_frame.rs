@@ -17,6 +17,10 @@ pub(in crate::wasm) enum WasmFrameControlMode {
 }
 
 impl WasmFrameControlMode {
+    pub(in crate::wasm) fn native_eh_enabled(self, requested: bool, reloc_enabled: bool) -> bool {
+        requested && !reloc_enabled && matches!(self, Self::Plain)
+    }
+
     pub(in crate::wasm) fn is_stateful(self) -> bool {
         matches!(self, Self::Stateful)
     }

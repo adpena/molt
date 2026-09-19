@@ -14,8 +14,8 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     // `guarded_field_get`s in `__future__._Feature.__repr__`). rust/luau/llvm
     // all handle the canonical forms; the native backend must too, or the op
     // hits the dispatch's loud no-codegen catch-all at user `molt build` time.
-    // Each routes to its `*_generic_obj` arm below (the bits-validating,
-    // tagged-safe, generic-by-name path).
+    // All three get spellings share the bits-validating, tagged-safe boxed
+    // setup below; only stable site identity selects the IC ABI.
     "get_attr",
     "get_attr_generic_ptr",
     "get_attr_generic_obj",
@@ -35,15 +35,13 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for object attribute ops: get (`get_attr` (canonical)/`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr` (canonical)/`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr` (canonical)/`del_attr_generic_ptr`/`_obj`/`_name`). The canonical `get_attr`/`set_attr`/`del_attr` — `tir::lower_to_simple`'s no-`_original_kind` default — route to the matching `*_generic_obj` arm.
+/// Cranelift codegen handlers for object attribute ops: get (`get_attr` (canonical)/`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr` (canonical)/`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr` (canonical)/`del_attr_generic_ptr`/`_obj`/`_name`). The canonical `get_attr`/`set_attr`/`del_attr` — `tir::lower_to_simple`'s no-`_original_kind` default — share their matching generic boxed lowering.
 ///
-/// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
-/// Each arm body is byte-for-byte identical to the original; only the access
-/// path to the backend's split-borrowed fields changed (`self.module` ->
-/// `module`, `Self::` -> `SimpleBackend::`, owned locals -> reborrowed params,
-/// outer-loop `continue`/`break` -> `OpFlow` returns).
-/// The op-local closure `var_get_boxed_overflow_safe` is reconstructed with the
-/// same capture so the arm bodies are unchanged.
+/// Extracted from `compile_func_inner`'s per-op dispatch (M1). Shared setup and
+/// authority-equivalent lanes are intentionally consolidated here so new
+/// attribute spellings cannot mint backend-local lookup protocols.
+/// The op-local closure `var_get_boxed_overflow_safe` preserves the original
+/// split-borrow access pattern while the handlers share authority.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_attr_op(
@@ -87,7 +85,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
         )
     };
     match op.kind.as_str() {
-        "get_attr_generic_ptr" => {
+        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -100,7 +98,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 representation_plan,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -119,162 +116,43 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-
-            let res = if let Some(ic_idx) = op.ic_index {
-                // Split-phase IC: fast GIL-free probe, then slow path on miss.
-                //
-                // Phase 1: molt_ic_probe_fast(obj_ptr, ic_index) → hit or 0
-                // Phase 2 (miss only): molt_getattr_ic_slow(obj_ptr, attr, len, ic_index)
-                //
-                // The raw ic_index is passed as a plain i64 — NOT NaN-boxed —
-                // because the runtime treats it as a direct table index.
-                let ic_raw = builder.ins().iconst(types::I64, ic_idx);
-
-                // --- Declare molt_ic_probe_fast(obj_ptr, ic_index) -> i64 ---
-                let probe_callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_ic_probe_fast",
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
-                let probe_local = module.declare_func_in_func(probe_callee, builder.func);
-
-                // --- Declare molt_getattr_ic_slow(obj_ptr, attr, len, ic_index) -> i64 ---
-                let slow_callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_getattr_ic_slow",
-                    &[types::I64, types::I64, types::I64, types::I64],
-                    &[types::I64],
-                );
-                let slow_local = module.declare_func_in_func(slow_callee, builder.func);
-
-                // --- Emit: probe_result = molt_ic_probe_fast(obj_ptr, ic_raw) ---
-                let probe_call = builder.ins().call(probe_local, &[obj_ptr, ic_raw]);
-                let probe_result = builder.inst_results(probe_call)[0];
-
-                // --- Branch: hit (probe_result != 0) vs miss ---
-                let hit_block = builder.create_block();
-                let miss_block = builder.create_block();
-                builder.set_cold_block(miss_block);
-                let merge_block = builder.create_block();
-                builder.append_block_param(merge_block, types::I64);
-
-                let zero = builder.ins().iconst(types::I64, 0);
-                let is_hit = builder.ins().icmp(IntCC::NotEqual, probe_result, zero);
-                builder.ins().brif(is_hit, hit_block, &[], miss_block, &[]);
-
-                // --- Hit block: probe returned an owned reference ---
-                switch_to_block_materialized(&mut *builder, hit_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, hit_block);
-                jump_block(&mut *builder, merge_block, &[probe_result]);
-
-                // --- Miss block: full resolution via slow path ---
-                switch_to_block_materialized(&mut *builder, miss_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, miss_block);
-                let slow_call = builder
-                    .ins()
-                    .call(slow_local, &[obj_ptr, attr_ptr, attr_len, ic_raw]);
-                let slow_result = builder.inst_results(slow_call)[0];
-                jump_block(&mut *builder, merge_block, &[slow_result]);
-
-                // --- Merge ---
-                switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
-                builder.block_params(merge_block)[0]
-            } else {
-                // Legacy path: no IC index available.
+            let call = if op.kind == "get_attr" {
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    "molt_get_attr_ptr",
+                    "molt_get_attr_object",
                     &[types::I64, types::I64, types::I64],
                     &[types::I64],
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
-                let call = builder
+                builder
                     .ins()
-                    .call(local_callee, &[obj_ptr, attr_ptr, attr_len]);
-                builder.inst_results(call)[0]
-            };
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "get_attr" | "get_attr_generic_obj" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let obj = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
-            let Some(attr_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
-            };
-            let data_id = module
-                .declare_data(
-                    &format!("attr_{}_{}", func_name, op_idx),
-                    Linkage::Local,
-                    false,
-                    false,
-                )
-                .unwrap();
-            let mut data_ctx = DataDescription::new();
-            data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
-            module.define_data(data_id, &data_ctx).unwrap();
-
-            let global_ptr = module.declare_data_in_func(data_id, builder.func);
-            let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-            let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let call = match op.kind.as_str() {
-                "get_attr" => {
-                    let callee = SimpleBackend::import_func_id_split(
-                        &mut *module,
-                        &mut *import_ids,
-                        "molt_get_attr_object",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = module.declare_func_in_func(callee, builder.func);
-                    builder
-                        .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len])
-                }
-                "get_attr_generic_obj" => {
-                    let source_op_idx = op.required_source_op_index(op_idx, "get_attr_generic_obj");
-                    let callee = SimpleBackend::import_func_id_split(
-                        &mut *module,
-                        &mut *import_ids,
-                        "molt_get_attr_object_ic",
-                        &[types::I64, types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = module.declare_func_in_func(callee, builder.func);
-                    let site_bits = builder.ins().iconst(
-                        types::I64,
-                        box_int(stable_ic_site_id(
-                            func_name,
-                            source_op_idx,
-                            "get_attr_generic_obj",
-                        )),
-                    );
-                    builder
-                        .ins()
-                        .call(local_callee, &[*obj, attr_ptr, attr_len, site_bits])
-                }
-                _ => unreachable!("handler invoked with non-matching op.kind"),
+                    .call(local_callee, &[*obj, attr_ptr, attr_len])
+            } else {
+                let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+                let callee = SimpleBackend::import_func_id_split(
+                    &mut *module,
+                    &mut *import_ids,
+                    "molt_get_attr_object_ic",
+                    &[types::I64, types::I64, types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = module.declare_func_in_func(callee, builder.func);
+                let site_bits = builder.ins().iconst(
+                    types::I64,
+                    box_int(stable_ic_site_id(
+                        func_name,
+                        source_op_idx,
+                        op.kind.as_str(),
+                    )),
+                );
+                builder
+                    .ins()
+                    .call(local_callee, &[*obj, attr_ptr, attr_len, site_bits])
             };
             let res = builder.inst_results(call)[0];
-            // Every canonical runtime getattr entry point returns one owned
-            // result on success. The IC hit and miss paths normalize to that
-            // same contract; adding another retain here leaks bound receivers.
+            // The canonical boxed runtime entrypoints return exactly one owned
+            // result on success for every spelling in this branch.
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }

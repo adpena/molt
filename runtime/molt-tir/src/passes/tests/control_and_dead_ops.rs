@@ -360,7 +360,7 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
 }
 
 #[test]
-fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
+fn dead_op_elim_preserves_observable_module_lookup_chain() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "dead_static_class_guard".to_string(),
@@ -381,7 +381,6 @@ fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
                     kind: "module_cache_get".to_string(),
                     args: Some(vec!["module_name".to_string()]),
                     out: Some("module".to_string()),
-                    effect_proof: Some(EffectProof::StaticModuleClassBinding.name().to_string()),
                     ..Default::default()
                 },
                 OpIR {
@@ -394,7 +393,6 @@ fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
                     kind: "module_get_attr".to_string(),
                     args: Some(vec!["module".to_string(), "attr_name".to_string()]),
                     out: Some("class_ref".to_string()),
-                    effect_proof: Some(EffectProof::StaticModuleClassBinding.name().to_string()),
                     ..Default::default()
                 },
                 make_op("ret_void"),
@@ -407,9 +405,12 @@ fn dead_op_elim_removes_effect_proven_static_module_class_lookup_chain() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter()
-            .all(|op| !matches!(op.kind.as_str(), "module_cache_get" | "module_get_attr")),
-        "effect-proven dead static class guard should be removed: {ops:?}"
+        ops.iter().any(|op| op.kind == "module_cache_get"),
+        "module cache lookup must remain because lookup and exceptions are observable: {ops:?}"
+    );
+    assert!(
+        ops.iter().any(|op| op.kind == "module_get_attr"),
+        "module attribute lookup must remain because lookup and exceptions are observable: {ops:?}"
     );
 }
 

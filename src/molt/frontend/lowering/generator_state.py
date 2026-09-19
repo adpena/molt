@@ -22,6 +22,7 @@ from molt.frontend._types import (
     FallbackPolicy,
     FormatToken,
     FuncInfo,
+    LoopScope,
     MidendProfile,
     MoltOp,
     MoltValue,
@@ -111,7 +112,6 @@ FUNCTION_CACHE_STATE_ATTRS = (
 )
 
 FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
-    "context_depth",
     "control_flow_depth",
     "try_end_labels",
     "try_scopes",
@@ -121,18 +121,11 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
     "exception_stack_depth_baseline",
     "exception_stack_prev_baseline",
     "return_unwind_depth",
-    "return_unwind_popped_scopes",
     "finally_depth",
     "active_exceptions",
-    "range_loop_stack",
-    "async_index_loop_stack",
-    "loop_break_flags",
-    "loop_try_depths",
+    "loop_scopes",
     "loop_layout_guards",
     "loop_guard_assumptions",
-    "loop_static_class_refs",
-    "loop_static_class_eager_refs",
-    "loop_static_class_counter",
     "return_label",
     "return_slot",
     "return_slot_offset",
@@ -285,7 +278,6 @@ class GeneratorStateMixin(_MixinBase):
         *,
         reset_function_exception_label: bool,
     ) -> None:
-        self.context_depth = 0
         self.control_flow_depth = 0
         self.try_end_labels = []
         self.try_scopes = []
@@ -296,21 +288,14 @@ class GeneratorStateMixin(_MixinBase):
         self.exception_stack_depth_baseline = None
         self.exception_stack_prev_baseline = None
         self.return_unwind_depth = 0
-        self.return_unwind_popped_scopes = []
         self.finally_depth = 0
         self.return_label = None
         self.return_slot = None
         self.return_slot_offset = None
         self.block_terminated = False
-        self.range_loop_stack = []
-        self.async_index_loop_stack = []
-        self.loop_break_flags: list[int | ScratchCell | None] = []
-        self.loop_try_depths = []
+        self.loop_scopes: list[LoopScope] = []
         self.loop_layout_guards = []
         self.loop_guard_assumptions = []
-        self.loop_static_class_refs = []
-        self.loop_static_class_eager_refs = []
-        self.loop_static_class_counter = 0
         self.active_exceptions = []
 
     def __init__(

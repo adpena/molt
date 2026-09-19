@@ -115,6 +115,7 @@ fn op_kind(kind: &str) -> OpIR {
 }
 
 mod block_control;
+mod attrs;
 mod cleanup_roots;
 mod compile;
 mod list_index_fast_path;

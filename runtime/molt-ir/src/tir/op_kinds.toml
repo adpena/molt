@@ -2216,6 +2216,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_break_if_exception"
+verifier_loop_scoped = true
 structural = true
 terminator = false
 suspend = false
@@ -2507,8 +2508,6 @@ wasm_state_resume_at = false
 [[simpleir_control_kind]]
 kind = "try_start"
 verifier_label_reference = true
-verifier_region = "try"
-verifier_region_role = "start"
 structural = false
 terminator = false
 suspend = false
@@ -2528,8 +2527,6 @@ wasm_state_resume_at = false
 [[simpleir_control_kind]]
 kind = "try_end"
 verifier_label_reference = true
-verifier_region = "try"
-verifier_region_role = "end"
 structural = false
 terminator = false
 suspend = false
@@ -5624,10 +5621,6 @@ reason = "structural: except-clause type match test (pure predicate)"
 [[frontend_check_exception_skip]]
 kind = "CONTEXT_EXIT"
 reason = "control-flow: propagation check is owned by with cleanup after exception frame release"
-
-[[frontend_check_exception_skip]]
-kind = "CONTEXT_UNWIND_TO"
-reason = "control-flow: unwind handler context to a target depth"
 
 [[frontend_check_exception_skip]]
 kind = "LINE"

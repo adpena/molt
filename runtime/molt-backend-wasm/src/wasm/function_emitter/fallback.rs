@@ -6,7 +6,6 @@ use crate::wasm::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
 use crate::wasm::op_loop::{WasmFunctionAnalysis, WasmFunctionEmitContext};
 use crate::wasm::state_dispatch::{
     NonLinearDispatchPlan, emit_jumpful_dispatch, emit_stateful_dispatch,
-    exception_handler_region_indices,
 };
 use std::cell::Cell;
 
@@ -40,16 +39,20 @@ pub(super) fn emit_fallback_function_body(
     );
 
     // Capture native_eh_enabled before the closure to avoid borrowing backend.
-    // Native EH requires non-relocatable output because wasm-ld does not
-    // support EH relocations.
-    let native_eh_enabled = backend.options.native_eh_enabled && !backend.options.reloc_enabled;
+    // Dispatch lowers path-local exception regions through explicit runtime
+    // state and target-labelled checks, not lexical WASM TryTable scopes.
+    // Native EH is valid only for the plain structured emitter, and requires
+    // non-relocatable output because wasm-ld does not support EH relocations.
+    let native_eh_enabled = frame.control_mode().native_eh_enabled(
+        backend.options.native_eh_enabled,
+        backend.options.reloc_enabled,
+    );
     let tail_call_enabled = backend.options.tail_call_enabled;
 
     // Uses Cell so stateful dispatch can emit ops one at a time while sharing
     // the same tail-call counter.
     let tail_call_count: Cell<usize> = Cell::new(0);
 
-    let exception_handler_region_indices = exception_handler_region_indices(&func_ir.ops);
     let analysis = WasmFunctionAnalysis::for_function(func_ir);
 
     {
@@ -59,7 +62,6 @@ pub(super) fn emit_fallback_function_body(
             ctx,
             call_site_abi,
             import_ids,
-            exception_handler_region_indices: &exception_handler_region_indices,
             frame: &frame,
             func_index,
             reloc_enabled,

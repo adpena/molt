@@ -56,29 +56,6 @@ pub fn optional_i64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<i64
     }
 }
 
-pub fn optional_f64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<f64>, String> {
-    match obj.get(key) {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(value) => {
-            if let Some(n) = value.as_f64() {
-                return Ok(Some(n));
-            }
-            // Accept string representations of non-finite floats
-            if let Some(s) = value.as_str() {
-                return match s {
-                    "Infinity" => Ok(Some(f64::INFINITY)),
-                    "-Infinity" => Ok(Some(f64::NEG_INFINITY)),
-                    "NaN" => Ok(Some(f64::NAN)),
-                    _ => Err(format!(
-                        "{ctx}.{key} must be a number or special float string"
-                    )),
-                };
-            }
-            Err(format!("{ctx}.{key} must be a number"))
-        }
-    }
-}
-
 pub fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u32>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
@@ -146,7 +123,7 @@ fn parse_string_list(value: &JsonValue, ctx: &str) -> Result<Vec<String>, String
 
 #[cfg(test)]
 mod float_roundtrip_regression {
-    use crate::json_boundary::optional_f64;
+    use crate::OpIR;
     use serde_json::Value as JsonValue;
 
     const HARD_FLOAT_CASES: &[(&str, u64)] = &[
@@ -170,19 +147,19 @@ mod float_roundtrip_regression {
     }
 
     #[test]
-    fn optional_f64_reads_const_float_f_value_exactly() {
+    fn typed_op_reads_const_float_f_value_exactly() {
         for &(text, want_bits) in HARD_FLOAT_CASES {
             let obj_text = format!("{{\"kind\":\"const_float\",\"f_value\":{text}}}");
             let value: JsonValue =
                 serde_json::from_str(&obj_text).expect("parse const_float object");
-            let obj = value.as_object().expect("object");
-            let f_value = optional_f64(obj, "f_value", "test")
-                .expect("optional_f64 ok")
+            let f_value = serde_json::from_value::<OpIR>(value)
+                .expect("typed float transport")
+                .f_value
                 .expect("f_value present");
             assert_eq!(
                 f_value.to_bits(),
                 want_bits,
-                "optional_f64(f_value:{text}) = {f_value:?} bits=0x{:016x}, want 0x{want_bits:016x}",
+                "OpIR(f_value:{text}) = {f_value:?} bits=0x{:016x}, want 0x{want_bits:016x}",
                 f_value.to_bits()
             );
         }

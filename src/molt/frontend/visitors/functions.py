@@ -76,26 +76,36 @@ class FunctionVisitorMixin(_MixinBase):
         if self.finally_depth > 0:
             self._emit_syntax_warning(node, "'return' in a 'finally' block")
         self.block_terminated = True
-        if self.in_generator:
-            val = self.visit(node.value) if node.value is not None else None
-            if val is None:
-                val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-            self._emit_exception_handler_exit_cleanup()
-            if self.return_unwind_depth == 0:
-                self._emit_raise_if_pending()
-            if self.return_unwind_depth > 0:
-                self.emit(
-                    MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
-                )
-            popped_labels: list[int] = []
-            if self.try_scopes:
-                popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
-            try:
-                # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
-                # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
+        val = self.visit(node.value) if node.value else None
+        if val is None:
+            val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
+        pending_return = (
+            self._new_scratch_cell(val, type_hint=val.type_hint)
+            if self.is_async() and self.try_scopes
+            else None
+        )
+        needs_scope_exit = (
+            self.in_generator or self.exception_stack_prev_baseline is not None
+        )
+        if needs_scope_exit and self.return_unwind_depth == 0:
+            self._emit_raise_if_pending()
+        if needs_scope_exit and self.return_unwind_depth > 0:
+            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        popped_labels = []
+        if self.try_scopes:
+            popped_labels = self._emit_control_flow_scope_unwind(
+                self.try_scopes, pending_return=pending_return
+            )
+        try:
+            if pending_return is not None:
+                val = self._consume_scratch_cell(pending_return)
+            # The lexical scope actions above own manager cleanup; restoring
+            # exception depth must not consume managers belonging to callers.
+            if needs_scope_exit:
                 self._emit_restore_exception_stack_depth(exit_baseline=False)
                 self._emit_raise_if_pending()
+            if self.in_generator:
                 closed = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
                 self.emit(
@@ -109,29 +119,7 @@ class FunctionVisitorMixin(_MixinBase):
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="TUPLE_NEW", args=[val, done], result=pair))
-                self._emit_return_value(pair)
-            finally:
-                self._restore_control_flow_unwind_labels(popped_labels)
-            return None
-        val = self.visit(node.value) if node.value else None
-        if val is None:
-            val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=val))
-        self._emit_exception_handler_exit_cleanup()
-        _has_exc_stack = self.exception_stack_prev_baseline is not None
-        if _has_exc_stack and self.return_unwind_depth == 0:
-            self._emit_raise_if_pending()
-        if _has_exc_stack and self.return_unwind_depth > 0:
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        popped_labels = []
-        if self.try_scopes:
-            popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
-        try:
-            # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
-            # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
-            if _has_exc_stack:
-                self._emit_restore_exception_stack_depth(exit_baseline=False)
-                self._emit_raise_if_pending()
+                val = pair
             self._emit_return_value(val)
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)

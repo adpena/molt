@@ -209,7 +209,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
                 out: out_var,
-                ic_index: attr_int(&op.attrs, "ic_index"),
                 // Preserve the typed-slot class identity across the roundtrip so
                 // the alias oracle's class+offset region is stable (S5-1.5).
                 class_name: attr_str(&op.attrs, "_class"),
@@ -376,7 +375,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     task_closure_size: attr_int(&op.attrs, "task_closure_size"),
                     container_type: attr_str(&op.attrs, "container_type"),
-                    ic_index: attr_int(&op.attrs, "ic_index"),
                     // Named-local fact (#58) — container literals (`list_new`/
                     // `tuple_new`) ride this passthrough; losing the attr here
                     // silently degrades the scope-boundary deferral.
@@ -619,7 +617,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "module_cache_get".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
-            effect_proof: attr_str(&op.attrs, "effect_proof"),
             ..OpIR::default()
         }),
         OpCode::ModuleCacheSet => Some(OpIR {
@@ -638,7 +635,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             kind: "module_get_attr".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
-            effect_proof: attr_str(&op.attrs, "effect_proof"),
             ..OpIR::default()
         }),
         OpCode::ModuleImportFrom => Some(OpIR {

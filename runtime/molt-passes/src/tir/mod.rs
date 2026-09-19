@@ -18,7 +18,7 @@ pub mod translation_validator;
 pub mod type_refine;
 
 pub use molt_ir::tir::{
-    blocks, call_targets, cfg, clone_support, dominators, effect_proof, function, numeric_facts,
+    blocks, call_targets, cfg, clone_support, dominators, function, numeric_facts,
     op_kinds_generated, op_semantics, ops, printer, serialize, ssa, target_info, types,
     value_range, values, verify,
 };

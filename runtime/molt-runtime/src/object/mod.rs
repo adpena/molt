@@ -49,8 +49,6 @@ pub(crate) mod heap_kinds_generated;
 pub(crate) mod heap_lifecycle;
 #[cfg(test)]
 mod immortal_owner_tests;
-#[allow(dead_code)]
-pub mod inline_cache;
 pub(crate) mod iterable;
 pub(crate) mod layout;
 pub(crate) mod list_mutation;

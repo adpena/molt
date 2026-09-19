@@ -462,17 +462,7 @@ class CallReductionMixin(_MixinBase):
             # the range), so the element expression and accumulator raw-lane.
             self.locals[target_name] = item
             self._store_comprehension_local_value(target_name, item)
-            # `range_loop_stack` carries the (index, step) pair the top-level
-            # range loop publishes, keeping the counted-loop optimizer facts
-            # (e.g. `range(len(seq))` index reuse) identical to the statement
-            # form while the element expression is visited. The generic lane
-            # advances the index by 1 (it counts positions into the range), the
-            # pure lane by the range step.
-            self.range_loop_stack.append((idx, step if step_const is not None else one))
-            try:
-                value = self.visit(genexpr.elt)
-            finally:
-                self.range_loop_stack.pop()
+            value = self.visit(genexpr.elt)
             if value is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,

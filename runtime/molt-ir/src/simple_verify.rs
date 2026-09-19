@@ -45,15 +45,19 @@ impl SimpleIrVerificationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LogicalEdge {
-    source: usize,
-    target: usize,
-    role: EdgeRole,
-    ordinal: usize,
+pub struct LogicalEdge {
+    pub source: usize,
+    pub target: usize,
+    pub role: EdgeRole,
+    pub ordinal: usize,
+    /// False for verifier-only reachability, never a runtime transfer.
+    pub executable: bool,
+    /// Transfer polarity before PHI predecessor-order annotation.
+    pub execution_role: EdgeRole,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum EdgeRole {
+pub enum EdgeRole {
     BranchTrue,
     BranchFalse,
     LoopEntry,
@@ -94,6 +98,98 @@ struct BasicBlocks {
     op_to_block: Vec<usize>,
 }
 
+/// The executable projection of the verifier's operation-level control flow, shared with
+/// targets that cannot express labelled transfers directly. Block ranges are
+/// inclusive. Exception observers remain exact operation boundaries; TRY
+/// metadata must not be reinterpreted as a lexical protected interval.
+pub struct SimpleIrLogicalFlow {
+    pub edges: Vec<Vec<LogicalEdge>>,
+    pub blocks: Vec<(usize, usize)>,
+    pub op_to_block: Vec<usize>,
+    pub cross_block_values: BTreeSet<String>,
+}
+
+/// Project operations after [`validate_simple_ir_control_flow`] has admitted
+/// their function's label namespace and structured regions.
+pub fn simple_ir_logical_flow(ops: &[OpIR]) -> SimpleIrLogicalFlow {
+    if ops.is_empty() {
+        return SimpleIrLogicalFlow {
+            edges: Vec::new(),
+            blocks: Vec::new(),
+            op_to_block: Vec::new(),
+            cross_block_values: BTreeSet::new(),
+        };
+    }
+    let edges: Vec<Vec<_>> = op_edges(ops)
+        .into_iter()
+        .map(|edges| {
+            edges
+                .into_iter()
+                .filter(|edge| edge.executable)
+                .map(|mut edge| {
+                    edge.role = edge.execution_role;
+                    edge
+                })
+                .collect()
+        })
+        .collect();
+    let blocks = basic_blocks(ops, &edges);
+    let count = blocks.ranges.len();
+    let mut definitions = vec![BTreeSet::new(); count];
+    let mut uses = vec![BTreeSet::new(); count];
+    let mut successors = vec![BTreeSet::new(); count];
+    for (block, &(start, end)) in blocks.ranges.iter().enumerate() {
+        for index in start..=end {
+            visit_simple_ir_reads(&ops[index], |read| {
+                if !definitions[block].contains(read.name) {
+                    uses[block].insert(read.name.to_string());
+                }
+            });
+            visit_simple_ir_defined_names(&ops[index], |name| {
+                definitions[block].insert(name.to_string());
+            });
+        }
+        // Only the tail transfers between executable blocks. Retain a real
+        // backedge to this same block; internal fallthroughs are not backedges.
+        for edge in &edges[end] {
+            successors[block].insert(blocks.op_to_block[edge.target]);
+        }
+    }
+    let mut live_in = uses.clone();
+    let mut live_out = vec![BTreeSet::new(); count];
+    loop {
+        let mut changed = false;
+        for block in (0..count).rev() {
+            let outgoing: BTreeSet<String> = successors[block]
+                .iter()
+                .flat_map(|target| live_in[*target].iter().cloned())
+                .collect();
+            let incoming = uses[block]
+                .union(&outgoing.difference(&definitions[block]).cloned().collect())
+                .cloned()
+                .collect();
+            changed |= outgoing != live_out[block] || incoming != live_in[block];
+            live_out[block] = outgoing;
+            live_in[block] = incoming;
+        }
+        if !changed {
+            break;
+        }
+    }
+    let all_defined: BTreeSet<String> = definitions.into_iter().flatten().collect();
+    let cross_block_values = live_out
+        .into_iter()
+        .flatten()
+        .filter(|name| all_defined.contains(name))
+        .collect();
+    SimpleIrLogicalFlow {
+        edges,
+        blocks: blocks.ranges,
+        op_to_block: blocks.op_to_block,
+        cross_block_values,
+    }
+}
+
 pub fn verify_simple_ir(ir: &SimpleIR) -> SimpleIrVerificationReport {
     let mut report = SimpleIrVerificationReport::default();
     let function_names: BTreeSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
@@ -111,6 +207,26 @@ pub fn verify_simple_ir(ir: &SimpleIR) -> SimpleIrVerificationReport {
         ));
     }
     report
+}
+
+/// Admit the control-flow graph consumed by lowering and target planning.
+///
+/// Reuse the full verifier's structural and label checks without imposing its
+/// whole-function completion or dataflow diagnostics on partial IR fragments.
+/// In particular, implicit falloff is an executable exit, not an undefined
+/// label, and path-local TRY markers are never lexical brackets.
+pub fn validate_simple_ir_control_flow(ir: &SimpleIR) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for function in &ir.functions {
+        verify_control_flow(function, &mut errors);
+    }
+    if let Some(error) = errors.first() {
+        return Err(format!(
+            "function `{}` op#{} [{}]: {}",
+            error.function, error.op_index, error.kind, error.message
+        ));
+    }
+    Ok(())
 }
 
 fn diagnostic(
@@ -144,8 +260,7 @@ fn verify_function(
     }
     verify_definite_definitions(function, errors);
     verify_function_references(function, function_names, errors);
-    verify_block_structure(function, errors);
-    verify_labels(function, errors);
+    verify_control_flow(function, errors);
     if !simpleir_kind_is_return_terminator(&ops[ops.len() - 1].kind) {
         errors.push(diagnostic(
             &function.name,
@@ -157,6 +272,11 @@ fn verify_function(
             ),
         ));
     }
+}
+
+fn verify_control_flow(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
+    verify_block_structure(function, errors);
+    verify_labels(function, errors);
 }
 
 fn verify_function_references(
@@ -295,7 +415,10 @@ fn verify_labels(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
                 &function.name,
                 index as isize,
                 "invalid-jump-target",
-                format!("jump/check_exception targets undefined label {target}"),
+                format!(
+                    "{:?} references undefined label {target}",
+                    function.ops[index].kind
+                ),
             ));
         }
     }
@@ -408,6 +531,12 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
         if target >= count {
             return;
         }
+        // TRY_START describes handler reachability for verification, not a
+        // runtime pending-state observation. LOOP_END's exit is likewise a
+        // conservative verifier join; actual execution takes its latch.
+        let executable = !((ops[source].kind == "try_start" && role == EdgeRole::Exception)
+            || (ops[source].kind == "loop_end" && role == EdgeRole::LoopExit));
+        let execution_role = role;
         if let Some((start, alternate)) = if_by_end.get(&target) {
             role = match alternate {
                 None if *start < source && source < target => EdgeRole::BranchTrue,
@@ -422,6 +551,8 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
             target,
             role,
             ordinal,
+            executable,
+            execution_role,
         });
     };
     for (index, op) in ops.iter().enumerate() {
@@ -447,7 +578,7 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
                     .values()
                     .find_map(|(alternate, end)| (*alternate == Some(index)).then_some(*end))
                 {
-                    add(index, end, EdgeRole::BranchTrue);
+                    add(index, end, EdgeRole::Taken);
                 }
             }
             "loop_end" => {
@@ -645,6 +776,8 @@ fn verify_definite_definitions(function: &FunctionIR, errors: &mut Vec<SimpleIrD
                 target: successor,
                 role: edge.role,
                 ordinal: edge.ordinal,
+                executable: edge.executable,
+                execution_role: edge.execution_role,
             });
         }
     }
@@ -784,6 +917,94 @@ mod tests {
     }
 
     #[test]
+    fn control_flow_admission_reuses_every_label_reference_family() {
+        for kind in [
+            "jump",
+            "goto",
+            "br_if",
+            "try_start",
+            "try_end",
+            "check_exception",
+            "async_work_poll",
+        ] {
+            for reference in [
+                OpIR {
+                    value: Some(19),
+                    ..op(kind)
+                },
+                OpIR {
+                    s_value: Some("alias".into()),
+                    ..op(kind)
+                },
+            ] {
+                let expected = if reference.value.is_some() {
+                    "invalid-jump-target"
+                } else {
+                    "malformed-label-reference"
+                };
+                let ir = SimpleIR {
+                    functions: vec![FunctionIR {
+                        name: "bad_graph".into(),
+                        ops: vec![reference],
+                        ..FunctionIR::default()
+                    }],
+                    profile: None,
+                };
+                let error = validate_simple_ir_control_flow(&ir).unwrap_err();
+                assert!(error.contains(expected), "{kind}: {error}");
+                assert!(
+                    verify_simple_ir(&ir)
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == expected)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn control_flow_admission_keeps_valid_falloff_and_path_local_metadata() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "falloff".into(),
+                ops: vec![
+                    OpIR {
+                        value: Some(19),
+                        ..op("try_start")
+                    },
+                    OpIR {
+                        value: Some(19),
+                        ..op("try_end")
+                    },
+                    OpIR {
+                        value: Some(19),
+                        ..op("try_end")
+                    },
+                    OpIR {
+                        value: Some(19),
+                        ..op("label")
+                    },
+                    OpIR {
+                        value: Some(19),
+                        ..op("check_exception")
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        validate_simple_ir_control_flow(&ir)
+            .expect("graph admission is not a lexical TRY or module-completion check");
+        assert!(
+            verify_simple_ir(&ir)
+                .errors
+                .iter()
+                .any(|error| error.kind == "missing-return"),
+            "full module verification retains its stronger completion contract"
+        );
+    }
+
+    #[test]
     fn exception_phi_predecessors_are_explicit_transfers_not_try_region_blocks() {
         let mut try_start = op("try_start");
         try_start.value = Some(100);
@@ -835,6 +1056,219 @@ mod tests {
             report.is_ok(),
             "only try_start, check_exception, and its async_work_poll alias may feed the handler phi: {report:?}"
         );
+    }
+
+    #[test]
+    fn path_local_try_closes_do_not_pair_with_lexical_if_or_loop_regions() {
+        let labelled = |kind: &str| OpIR {
+            value: Some(100),
+            ..op(kind)
+        };
+        let mut branch = op("if");
+        branch.args = Some(vec!["condition".into()]);
+        let report = verify(
+            &["condition"],
+            vec![
+                labelled("try_start"),
+                op("loop_start"),
+                branch,
+                labelled("try_end"),
+                op("ret_void"),
+                op("end_if"),
+                labelled("try_end"),
+                op("loop_break"),
+                op("loop_end"),
+                op("ret_void"),
+                labelled("label"),
+                labelled("try_end"),
+                op("ret_void"),
+            ],
+        );
+        assert!(
+            report.is_ok(),
+            "path-local metadata is not a lexical bracket: {report:?}"
+        );
+    }
+
+    #[test]
+    fn executable_flow_separates_metadata_and_phi_order_from_transfer_polarity() {
+        let labelled = |kind: &str| OpIR {
+            value: Some(100),
+            ..op(kind)
+        };
+        let branch = OpIR {
+            args: Some(vec!["condition".into()]),
+            ..op("if")
+        };
+        let ops = vec![
+            labelled("try_start"),
+            op("loop_start"),
+            branch,
+            labelled("check_exception"),
+            op("end_if"),
+            op("loop_end"),
+            labelled("label"),
+            op("ret_void"),
+        ];
+        let analysis = op_edges(&ops);
+        assert!(
+            analysis[0]
+                .iter()
+                .any(|edge| edge.role == EdgeRole::Exception && !edge.executable)
+        );
+        assert!(
+            analysis[5]
+                .iter()
+                .any(|edge| edge.role == EdgeRole::LoopExit && !edge.executable)
+        );
+        let flow = simple_ir_logical_flow(&ops);
+        assert_eq!(
+            flow.edges[0].len(),
+            1,
+            "TRY metadata cannot observe pending state"
+        );
+        assert_eq!(flow.edges[5].len(), 1, "LOOP_END executes only its latch");
+        assert_eq!(flow.edges[5][0].target, 1);
+        assert!(
+            flow.edges[3]
+                .iter()
+                .any(|edge| edge.role == EdgeRole::Normal && edge.target == 4)
+        );
+        assert!(
+            flow.edges[3]
+                .iter()
+                .any(|edge| edge.role == EdgeRole::Exception && edge.target == 6)
+        );
+    }
+
+    #[test]
+    fn logical_flow_liveness_keeps_only_values_crossing_executable_blocks() {
+        let ops = vec![
+            OpIR {
+                value: Some(1),
+                out: Some("live".into()),
+                ..op("const_int")
+            },
+            OpIR {
+                value: Some(2),
+                out: Some("local_only".into()),
+                ..op("const_int")
+            },
+            OpIR {
+                value: Some(100),
+                ..op("check_exception")
+            },
+            OpIR {
+                args: Some(vec!["live".into()]),
+                ..op("ret")
+            },
+            OpIR {
+                value: Some(100),
+                ..op("label")
+            },
+            OpIR {
+                args: Some(vec!["live".into()]),
+                ..op("ret")
+            },
+        ];
+        let flow = simple_ir_logical_flow(&ops);
+        assert_eq!(
+            flow.cross_block_values,
+            BTreeSet::from(["live".to_string()])
+        );
+    }
+
+    #[test]
+    fn logical_flow_liveness_retains_values_across_a_same_block_backedge() {
+        let ops = vec![
+            OpIR {
+                value: Some(10),
+                ..op("label")
+            },
+            OpIR {
+                var: Some("carried".into()),
+                out: Some("local".into()),
+                ..op("load_var")
+            },
+            OpIR {
+                var: Some("carried".into()),
+                args: Some(vec!["local".into()]),
+                ..op("store_var")
+            },
+            OpIR {
+                value: Some(10),
+                ..op("jump")
+            },
+        ];
+        let flow = simple_ir_logical_flow(&ops);
+        assert_eq!(flow.blocks, vec![(0, 3)]);
+        assert_eq!(
+            flow.cross_block_values,
+            BTreeSet::from(["carried".to_string()])
+        );
+    }
+
+    #[test]
+    fn path_local_try_metadata_does_not_relax_lexical_bracket_validation() {
+        for (open, close) in [("if", "loop_end"), ("loop_start", "end_if")] {
+            let mut opener = op(open);
+            if open == "if" {
+                opener.args = Some(vec!["condition".into()]);
+            }
+            let report = verify(
+                &["condition"],
+                vec![
+                    OpIR {
+                        value: Some(100),
+                        ..op("try_start")
+                    },
+                    opener,
+                    OpIR {
+                        value: Some(100),
+                        ..op("try_end")
+                    },
+                    op(close),
+                    OpIR {
+                        value: Some(100),
+                        ..op("label")
+                    },
+                    op("ret_void"),
+                ],
+            );
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == "unbalanced-control-flow"),
+                "removing metadata brackets must still reject mismatched {open}/{close}: {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_local_try_metadata_still_requires_a_defined_handler_label() {
+        for kind in ["try_start", "try_end"] {
+            for (value, diagnostic_kind) in [
+                (None, "malformed-label-reference"),
+                (Some(100), "invalid-jump-target"),
+            ] {
+                let report = verify(&[], vec![OpIR { value, ..op(kind) }, op("ret_void")]);
+                assert!(
+                    report
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == diagnostic_kind),
+                    "{report:?}"
+                );
+                assert!(
+                    !report
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == "unbalanced-control-flow"),
+                    "{report:?}"
+                );
+            }
+        }
     }
 
     #[test]

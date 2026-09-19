@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from molt.frontend._types import (
-    _next_ic_index,
     MoltOp,
     MoltValue,
 )
@@ -248,18 +247,12 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                         }
                     )
                 else:
-                    _ic = (
-                        op.metadata["ic_index"]
-                        if op.metadata and "ic_index" in op.metadata
-                        else _next_ic_index()
-                    )
                     ctx.json_ops.append(
                         {
                             "kind": "get_attr_generic_ptr",
                             "args": [obj.name],
                             "s_value": attr,
                             "out": op.result.name,
-                            "metadata": {"ic_index": _ic},
                         }
                     )
             else:
@@ -292,18 +285,12 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                         }
                     )
                 else:
-                    _ic = (
-                        op.metadata["ic_index"]
-                        if op.metadata and "ic_index" in op.metadata
-                        else _next_ic_index()
-                    )
                     ctx.json_ops.append(
                         {
                             "kind": "get_attr_generic_ptr",
                             "args": [obj.name],
                             "s_value": attr,
                             "out": op.result.name,
-                            "metadata": {"ic_index": _ic},
                         }
                     )
             else:
@@ -314,7 +301,6 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                         "s_value": attr,
                         "value": offset,
                         "out": op.result.name,
-                        "metadata": {"expected_type_id": 100},
                         # The class the runtime version-guard proves at this
                         # op; authority for `offset`. Carried through TIR for
                         # the class+offset `TypedField` alias region (S5-1.5).
@@ -328,8 +314,6 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
                 "s_value": op.args[1],
                 "out": op.result.name,
             }
-            if op.metadata and "ic_index" in op.metadata:
-                ptr_entry["metadata"] = {"ic_index": op.metadata["ic_index"]}
             ctx.json_ops.append(ptr_entry)
         elif op.kind == "GETATTR_GENERIC_OBJ":
             entry = {
@@ -382,7 +366,10 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
             }
             if op.metadata is not None:
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
-                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "HASATTR_NAME":

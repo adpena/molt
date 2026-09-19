@@ -5849,7 +5849,7 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
 ):
     generator = _gen()
     rendered = generator.render_py(generator.load_table())
-    assert "SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_ATTRS" in rendered
+    assert "SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS" in rendered
     for attr in [
         "_getframe",
         "currentframe",
@@ -5858,7 +5858,7 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
         "setprofile",
         "settrace",
     ]:
-        assert f'        "{attr}",' in rendered
+        assert f'    "{attr}":' in rendered
 
     assert "SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS" in rendered
     for gateway in ["__dict__", "__getattr__", "__getattribute__"]:
@@ -5904,6 +5904,9 @@ def test_runtime_callable_requirements_compose_generated_roles_without_frame_sho
     data["simpleir_runtime_qualified_callable"].append(
         {"qualified": "another.reload", "symbol": "molt_getframe"}
     )
+    data["simpleir_runtime_protected_gateway_callables"].extend(
+        ["another.import_module", "another.future_gateway"]
+    )
     namespace: dict[str, object] = {}
     exec(generator.render_py(data), namespace)
     symbols = namespace["SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS"]
@@ -5911,10 +5914,12 @@ def test_runtime_callable_requirements_compose_generated_roles_without_frame_sho
     imports = namespace["SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL"]
     frames = namespace["SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION"]
     assert symbols["molt_importlib_import_transaction"] == imports
-    assert attributes["import_module"] == imports
+    assert attributes["import_module"] == imports | frames
     assert attributes["_getframe"] == frames
     assert attributes["reload"] == imports | frames
     assert attributes["__dict__"] == imports | frames
+    for qualified in data["simpleir_runtime_protected_gateway_callables"]:
+        assert attributes[qualified.rsplit(".", 1)[1]] == imports | frames
     assert (
         namespace["SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS"]
         == imports | frames

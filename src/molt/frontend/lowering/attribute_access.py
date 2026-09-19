@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
-    _next_ic_index,
     BUILTIN_TYPE_TAGS,
     MoltOp,
     MoltValue,
@@ -172,9 +171,7 @@ class AttributeAccessMixin(_MixinBase):
         ):
             self._module_attr_type_hints[name] = value.type_hint
 
-    def _emit_module_attr_get(
-        self, name: str, *, effect_proof: str | None = None
-    ) -> MoltValue:
+    def _emit_module_attr_get(self, name: str) -> MoltValue:
         # A bare module binding referenced from a Python function belongs to
         # that function object's active globals mapping. MODULE_GET_GLOBAL
         # supplies its builtins fallback and NameError behavior; explicit
@@ -188,22 +185,18 @@ class AttributeAccessMixin(_MixinBase):
         if self.current_func_name == "molt_main" and self.module_obj is not None:
             module_val = self.module_obj
         else:
-            module_val = self._get_or_emit_module_cache(
-                self.module_name, effect_proof=effect_proof
-            )
+            module_val = self._get_or_emit_module_cache(self.module_name)
         # Propagate the last-known type hint for this module attribute.
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
         # that type so downstream _should_fast_int checks can fire.
         attr_hint = self._module_attr_type_hints.get(name, "Any")
         res = MoltValue(self.next_var(), type_hint=attr_hint)
-        metadata = {"effect_proof": effect_proof} if effect_proof else None
         self.emit(
             MoltOp(
                 kind="MODULE_GET_ATTR",
                 args=[module_val, name_val],
                 result=res,
-                metadata=metadata,
             )
         )
         return res
@@ -513,7 +506,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -524,7 +516,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -549,7 +540,6 @@ class AttributeAccessMixin(_MixinBase):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, attr],
                         result=res,
-                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -578,7 +568,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -647,7 +636,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, fallback_attr],
                     result=slow_val,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -700,7 +688,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, fallback_attr],
                     result=slow_val,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(
@@ -740,7 +727,6 @@ class AttributeAccessMixin(_MixinBase):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, fallback_attr],
                 result=slow_val,
-                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
@@ -776,7 +762,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=slow_val,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
@@ -817,7 +802,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, attr],
                     result=slow_val,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             self.emit(
@@ -847,7 +831,6 @@ class AttributeAccessMixin(_MixinBase):
                 kind="GETATTR_GENERIC_PTR",
                 args=[obj, attr],
                 result=slow_val,
-                metadata={"ic_index": _next_ic_index()},
             )
         )
         self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
@@ -949,7 +932,6 @@ class AttributeAccessMixin(_MixinBase):
                         kind="GETATTR_GENERIC_PTR",
                         args=[obj, node.attr],
                         result=res,
-                        metadata={"ic_index": _next_ic_index()},
                     )
                 )
                 return res
@@ -1115,7 +1097,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -1127,7 +1108,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res
@@ -1138,7 +1118,6 @@ class AttributeAccessMixin(_MixinBase):
                     kind="GETATTR_GENERIC_PTR",
                     args=[obj, node.attr],
                     result=res,
-                    metadata={"ic_index": _next_ic_index()},
                 )
             )
             return res

@@ -390,7 +390,7 @@ def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
     assert "__dict_shape__:obj" not in state
 
 
-def test_sccp_try_analysis_invalidates_shape_facts_at_no_result_callback() -> None:
+def test_sccp_region_body_invalidates_shape_facts_at_no_result_callback() -> None:
     gen = SimpleTIRGenerator()
     obj, dict_type = MoltValue("obj"), MoltValue("dict_type")
     ops = [
@@ -408,9 +408,11 @@ def test_sccp_try_analysis_invalidates_shape_facts_at_no_result_callback() -> No
         ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
     ]
-    sccp = gen._compute_sccp(ops, build_cfg(ops))
-    assert sccp.try_exception_possible_by_start[0] is True
-    assert sccp.try_normal_possible_by_start[0] is True
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    callback_state = sccp.out_values[cfg.index_to_block[2]]
+    assert callback_state["__dict_shape__:obj"] == ("dict_type", "new_version")
+    assert cfg.index_to_block[4] in sccp.executable_blocks
 
 
 def test_callback_invalidates_all_heap_read_keys_and_current_type_guards() -> None:
@@ -572,10 +574,13 @@ def test_dynamic_operators_survive_dce_and_remain_inside_loops(
         operator,
         MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
     ]
-    rewritten, _ = gen._hoist_loop_invariant_pure_ops(ops)
-    start = next(i for i, op in enumerate(rewritten) if op.kind == "LOOP_START")
-    end = next(i for i, op in enumerate(rewritten) if op.kind == "LOOP_END")
-    assert start < next(i for i, op in enumerate(rewritten) if op is operator) < end, (
+    rewritten = gen.map_ops_to_json(ops)
+    start = next(i for i, op in enumerate(rewritten) if op["kind"] == "loop_start")
+    end = next(i for i, op in enumerate(rewritten) if op["kind"] == "loop_end")
+    operator_index = next(
+        i for i, op in enumerate(rewritten) if op["kind"] == kind.lower()
+    )
+    assert start < operator_index < end, (
         f"{kind} must not move a callback out of a possibly unexecuted loop"
     )
 
@@ -583,7 +588,7 @@ def test_dynamic_operators_survive_dce_and_remain_inside_loops(
 @pytest.mark.parametrize("overwrite_kind", ["COPY", "CALL", "PHI", "CONST"])
 @pytest.mark.parametrize("reverse_definitions", [False, True])
 @pytest.mark.parametrize("kind", ["BOOL", "NOT"])
-def test_repeated_literal_names_cannot_admit_dead_or_hoisted_callbacks(
+def test_repeated_literal_names_cannot_admit_dead_callbacks(
     overwrite_kind: str, reverse_definitions: bool, kind: str
 ) -> None:
     gen = SimpleTIRGenerator()
@@ -609,15 +614,6 @@ def test_repeated_literal_names_cannot_admit_dead_or_hoisted_callbacks(
     assert any(op is predicate for op in result)
     assert gen._op_by_result is emitter_index
 
-    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
-    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-    result, hoists = gen._hoist_loop_invariant_pure_ops(
-        producers + [start, predicate, end]
-    )
-    assert hoists == 0
-    assert result.index(start) < result.index(predicate) < result.index(end)
-    assert gen._op_by_result is emitter_index
-
 
 @pytest.mark.parametrize("kind", ["BOOL", "NOT"])
 def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) -> None:
@@ -629,11 +625,6 @@ def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) 
     gen._op_by_result = emitter_index
     predicate = MoltOp(kind=kind, args=[value], result=MoltValue("unused", "bool"))
     assert gen._eliminate_dead_trivial_consts([predicate]) == [predicate]
-    assert gen._op_by_result is emitter_index
-    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
-    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-    ops = [start, predicate, end]
-    assert gen._hoist_loop_invariant_pure_ops(ops) == (ops, 0)
     assert gen._op_by_result is emitter_index
 
 
@@ -664,14 +655,6 @@ def test_unique_current_literal_and_copy_remain_optimizable(
     assert type(literals[value.name]) is type(expected)
     rewritten = gen._eliminate_dead_trivial_consts([producer, copy, predicate])
     assert all(op is not predicate for op in rewritten)
-    assert gen._op_by_result is emitter_index
-    start = MoltOp(kind="LOOP_START", args=[], result=MoltValue("none"))
-    end = MoltOp(kind="LOOP_END", args=[], result=MoltValue("none"))
-    result, hoists = gen._hoist_loop_invariant_pure_ops(
-        [producer, copy, start, predicate, end]
-    )
-    assert hoists == 1
-    assert result.index(predicate) < result.index(start)
     assert gen._op_by_result is emitter_index
 
 
@@ -718,18 +701,6 @@ def test_exact_primitive_predicate_control_remains_optimizable() -> None:
     gen._op_by_result[value.name] = producer
     predicate = MoltOp(kind="NOT", args=[value], result=MoltValue("negated", "bool"))
     assert gen._eliminate_dead_trivial_consts([producer, predicate]) == []
-    rewritten, hoists = gen._hoist_loop_invariant_pure_ops(
-        [
-            producer,
-            MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
-            predicate,
-            MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
-        ]
-    )
-    assert hoists == 1
-    assert rewritten.index(predicate) < next(
-        i for i, op in enumerate(rewritten) if op.kind == "LOOP_START"
-    )
 
 
 @pytest.mark.parametrize("kind", ["EQ", "NE", "LT", "LE", "GT", "GE"])
@@ -920,32 +891,67 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
     assert gen._op_by_result is emitter_index
 
 
-def test_genexpr_outer_iterator_is_eager_and_frame_owned() -> None:
-    source = """
-def outer():
-    return [1, 2]
-
-gen = (value for value in outer())
-"""
+@pytest.mark.parametrize(
+    ("enclosing_source", "owner_name", "has_closure"),
+    [
+        pytest.param(
+            "gen = (value for value in outer())\n",
+            "molt_main",
+            False,
+            id="without-lexical-capture",
+        ),
+        pytest.param(
+            "def make(captured):\n    return (value + captured for value in outer())\n",
+            "genexpr_eager__make",
+            True,
+            id="with-lexical-capture",
+        ),
+    ],
+)
+def test_genexpr_outer_iterator_is_eager_and_frame_owned(
+    enclosing_source: str, owner_name: str, has_closure: bool
+) -> None:
+    source = "def outer():\n    return [1, 2]\n" + enclosing_source
     gen = SimpleTIRGenerator(module_name="genexpr_eager", source_path="probe.py")
     gen.visit(ast.parse(source))
     functions = {fn["name"]: fn for fn in gen.to_json()["functions"]}
-    module_ops = functions["molt_main"]["ops"]
-    poll_ops = functions["genexpr_eager__genexpr_1_poll"]["ops"]
+    owner_ops = functions[owner_name]["ops"]
+    (definition,) = (op for op in owner_ops if op.get("task_kind") == "generator")
+    assert definition["kind"] == ("func_new_closure" if has_closure else "func_new")
+    plan = gen.funcs_map[definition["s_value"]]["stateful_frame_plan"]
+    assert plan.poll_symbol == definition["s_value"]
+    assert plan.param_count == definition["value"] == 1
+    assert plan.has_closure is has_closure
+    poll_ops = functions[plan.poll_symbol]["ops"]
 
-    iter_index = next(i for i, op in enumerate(module_ops) if op["kind"] == "iter")
-    alloc_index = next(
-        i for i, op in enumerate(module_ops) if op["kind"] == "alloc_task"
+    (generator_call,) = (
+        op
+        for op in owner_ops
+        if op["kind"] == "call_func" and op["args"][0] == definition["out"]
     )
-    assert iter_index < alloc_index
-    assert module_ops[alloc_index]["args"], (
-        "outer iterator cell must enter task payload"
-    )
-    assert any(op["kind"] == "closure_load" for op in poll_ops)
-    assert not any(
-        op["kind"] == "module_get_global" and op.get("s_value") == "outer"
+    assert len(generator_call["args"]) == 2
+    producers = {op["out"]: op for op in owner_ops if "out" in op}
+    iterator = producers[generator_call["args"][1]]
+    assert iterator["kind"] == "iter"
+    assert owner_ops.index(iterator) < owner_ops.index(generator_call)
+
+    # The hidden .0 parameter follows any lexical closure in the shared frame
+    # layout; a load of generator control state does not prove iterator custody.
+    assert any(
+        op["kind"] == "closure_load"
+        and op["args"] == ["self"]
+        and op["value"] == plan.async_locals_base
         for op in poll_ops
-    ), "outer iterable expression must not be deferred into the poll state machine"
+    )
+    assert definition["task_closure_size"] >= plan.async_locals_base + 8
+    assert not any(
+        op["kind"] in {"alloc_task", "asyncgen_new"}
+        for function in functions.values()
+        for op in function["ops"]
+    )
+    assert not _module_global_reads_named(poll_ops, "outer"), (
+        "outer iterable expression must not be deferred into the poll state machine"
+    )
 
 
 def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
@@ -1455,7 +1461,8 @@ class C(metaclass=Meta):
     store_index, store = stores[0]
     cell = store["args"][2]
     definitions = {op["out"]: op for op in ops if "out" in op}
-    assert definitions[cell]["kind"] == "list_new"
+    assert definitions[cell]["kind"] == "call"
+    assert definitions[cell]["s_value"] == "molt_cell_new"
     assert definitions[cell]["args"] == [store["args"][0]]
     assert any(op.get("kind") == "tuple_new" and cell in op["args"] for op in ops)
     assert not any(
@@ -1712,37 +1719,29 @@ def test_dce_preserves_dead_may_raise_arithmetic_without_primitive_proof() -> No
     assert gen.midend_stats["dce_removed_total"] == 0
 
 
-def test_sccp_try_edges_follow_generated_raising_authority_for_arithmetic() -> None:
-    gen = SimpleTIRGenerator()
-    unknown_ops = [
-        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
-        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
+@pytest.mark.parametrize("constant_operand", [False, True])
+def test_sccp_retains_declared_handler_edges_without_textual_try_inference(
+    constant_operand: bool,
+) -> None:
+    ops = [
+        MoltOp("TRY_START", [99], MoltValue("none")),
         MoltOp(
-            kind="ADD",
-            args=[MoltValue("obj"), MoltValue("one")],
-            result=MoltValue("sum"),
+            "CONST" if constant_operand else "MISSING",
+            [7] if constant_operand else [],
+            MoltValue("lhs"),
         ),
-        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
+        MoltOp("CONST", [3], MoltValue("rhs")),
+        MoltOp("ADD", [MoltValue("lhs"), MoltValue("rhs")], MoltValue("sum")),
+        MoltOp("TRY_END", [99], MoltValue("none")),
+        MoltOp("RETURN", [MoltValue("sum")], MoltValue("none")),
+        MoltOp("LABEL", [99], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
     ]
-    unknown_cfg = build_cfg(unknown_ops)
-    unknown_sccp = gen._compute_sccp(unknown_ops, unknown_cfg)
-    assert unknown_sccp.try_exception_possible_by_start[0] is True
-
-    constant_ops = [
-        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CONST", args=[7], result=MoltValue("lhs")),
-        MoltOp(kind="CONST", args=[3], result=MoltValue("rhs")),
-        MoltOp(
-            kind="ADD",
-            args=[MoltValue("lhs"), MoltValue("rhs")],
-            result=MoltValue("sum"),
-        ),
-        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-    ]
-    constant_cfg = build_cfg(constant_ops)
-    constant_sccp = gen._compute_sccp(constant_ops, constant_cfg)
-    assert constant_sccp.try_exception_possible_by_start[0] is False
+    cfg = build_cfg(ops)
+    result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
+    handler = cfg.label_to_block["99"]
+    assert handler in result.executable_blocks
+    assert (cfg.index_to_block[0], handler) in result.executable_edges
 
 
 def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
@@ -2054,7 +2053,7 @@ def test_cfg_prunes_unreachable_loop_region_after_jump() -> None:
     assert all(op.get("value") != 99 for op in lowered if op.get("kind") == "const")
 
 
-def test_cfg_prunes_unreachable_try_region_after_jump() -> None:
+def test_cfg_prunes_dead_data_but_retains_region_metadata_after_jump() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="JUMP", args=[3], result=MoltValue("none")),
@@ -2067,7 +2066,10 @@ def test_cfg_prunes_unreachable_try_region_after_jump() -> None:
         ]
     )
 
-    assert all(op.get("kind") not in {"try_start", "try_end"} for op in lowered)
+    assert [op["kind"] for op in lowered if op["kind"].startswith("try_")] == [
+        "try_start",
+        "try_end",
+    ]
     assert all(op.get("value") != 101 for op in lowered if op.get("kind") == "const")
 
 
@@ -2162,19 +2164,74 @@ def test_cfg_models_check_exception_target_edge() -> None:
     assert label_block in cfg.successors.get(check_block, [])
 
 
-def test_cfg_tracks_try_end_to_start_and_block_entry_label() -> None:
+def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> None:
     ops = [
-        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
-        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-        MoltOp(kind="LABEL", args=[11], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+        MoltOp("TRY_START", [11], MoltValue("none")),
+        MoltOp("IF", [MoltValue("cond")], MoltValue("none")),
+        MoltOp("TRY_END", [11], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("END_IF", [], MoltValue("none")),
+        MoltOp("TRY_END", [11], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("LABEL", [11], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
-    assert cfg.control.try_start_to_end.get(0) == 2
-    assert cfg.control.try_end_to_start.get(2) == 0
-    label_block = cfg.label_to_block["11"]
-    assert cfg.block_entry_label.get(label_block) == "11"
+    assert cfg.control.if_to_end == {1: 4}
+    handler = cfg.label_to_block["11"]
+    assert cfg.block_entry_label[handler] == "11"
+    assert handler in cfg.successors[cfg.index_to_block[0]]
+
+
+def test_structural_validator_preserves_alternative_region_closes_verbatim() -> None:
+    ops = [
+        MoltOp("TRY_START", [11], MoltValue("none")),
+        MoltOp("LOOP_START", [], MoltValue("none")),
+        MoltOp("IF", [MoltValue("cond")], MoltValue("none")),
+        MoltOp("TRY_END", [11], MoltValue("none")),
+        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
+        MoltOp("END_IF", [], MoltValue("none")),
+        MoltOp("LOOP_END", [], MoltValue("none")),
+        MoltOp("TRY_END", [11], MoltValue("none")),
+        MoltOp("LABEL", [11], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
+    ]
+    rewritten, repairs = SimpleTIRGenerator()._ensure_structural_cfg_validity(
+        ops, stage="path_local_close"
+    )
+    assert repairs == 0
+    assert rewritten == ops
+
+
+@pytest.mark.parametrize("pass_name", ["edge_thread", "join_normalize"])
+def test_label_threading_preserves_region_handler_identity(
+    pass_name: str,
+) -> None:
+    ops = [
+        MoltOp("TRY_START", [10], MoltValue("none")),
+        MoltOp("CHECK_EXCEPTION", [10], MoltValue("none")),
+        MoltOp("TRY_END", [10], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("LABEL", [10], MoltValue("none")),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+        MoltOp("RETURN", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    if pass_name == "edge_thread":
+        sccp = gen._compute_sccp(ops, cfg)
+        rewritten, *_ = gen._rewrite_loop_edge_threading(
+            ops,
+            cfg=cfg,
+            control=cfg.control,
+            executable_edges=sccp.executable_edges,
+            loop_break_choice_by_index=sccp.loop_break_choice_by_index,
+        )
+    else:
+        rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=cfg)
+    assert next(op.args for op in rewritten if op.kind == "CHECK_EXCEPTION") == [10]
+    assert any(op.kind == "LABEL" and op.args == [10] for op in rewritten)
 
 
 def test_cfg_precanonicalizer_aligns_phi_to_predecessor_shape() -> None:
@@ -2239,32 +2296,26 @@ def test_structural_cfg_validator_canonicalizes_unbalanced_regions() -> None:
 def test_structural_cfg_validator_repairs_before_function_terminal_tail() -> None:
     gen = SimpleTIRGenerator()
     ops = [
-        MoltOp(
-            kind="TRY_START",
-            args=[],
-            result=MoltValue("none"),
-            metadata={"try_region_id": 7},
-        ),
+        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
         MoltOp(kind="CONST_NONE", args=[], result=MoltValue("value")),
         MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")),
         MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
     ]
-
     rewritten, rewrites = gen._ensure_structural_cfg_validity(ops, stage="unit_test")
-
     assert rewrites == 1
-    assert [op.kind for op in rewritten[-3:]] == ["TRY_END", "TRACE_EXIT", "ret_void"]
+    assert [op.kind for op in rewritten[-3:]] == ["LOOP_END", "TRACE_EXIT", "ret_void"]
     assert rewritten[-3].metadata == {
         "synthetic": "cfg_structural_canonicalizer",
         "stage": "unit_test",
     }
 
 
-def test_structural_cfg_validator_rejects_missing_check_exception_target() -> None:
+@pytest.mark.parametrize("kind", ["JUMP", "CHECK_EXCEPTION", "TRY_START", "TRY_END"])
+def test_structural_cfg_validator_rejects_missing_control_target(kind: str) -> None:
     gen = SimpleTIRGenerator()
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[404], result=MoltValue("none")),
+        MoltOp(kind=kind, args=[404], result=MoltValue("none")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="RETURN", args=[], result=MoltValue("none")),
     ]
@@ -2283,47 +2334,40 @@ def test_range_loop_lowering_keeps_loop_index_control_within_loop_markers() -> N
     gen._ensure_structural_cfg_validity(ops, stage="unit_test")
 
 
-def test_try_check_exception_threading_rewrites_to_jump_with_dominance_proof() -> None:
+def test_known_guard_failure_preserves_pending_exception_routing() -> None:
     ops = [
-        MoltOp(kind="CONST", args=[10], result=MoltValue("value")),
-        MoltOp(kind="CONST", args=[2], result=MoltValue("float_tag")),
-        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
+        MoltOp("CONST", [10], MoltValue("value")),
+        MoltOp("CONST", [2], MoltValue("float_tag")),
+        MoltOp("TRY_START", [99], MoltValue("none")),
         MoltOp(
-            kind="GUARD_TAG",
-            args=[MoltValue("value"), MoltValue("float_tag")],
-            result=MoltValue("none"),
+            "GUARD_TAG",
+            [MoltValue("value"), MoltValue("float_tag")],
+            MoltValue("none"),
         ),
-        MoltOp(kind="LINE", args=[1], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[99], result=MoltValue("none")),
-        MoltOp(kind="CONST", args=[333], result=MoltValue("dead_after_check")),
-        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-        MoltOp(kind="LABEL", args=[99], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+        MoltOp("CHECK_EXCEPTION", [99], MoltValue("none")),
+        MoltOp("TRY_END", [99], MoltValue("none")),
+        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
+        MoltOp("LABEL", [99], MoltValue("none")),
+        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
     ]
-    gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
+    gen = SimpleTIRGenerator()
     sccp = gen._compute_sccp(ops, cfg)
-    (
-        rewritten,
-        _loop_rewrites,
-        _try_marker_prunes,
-        _loop_marker_prunes,
-        _try_body_prunes,
-        check_threads,
-        _check_elisions,
-    ) = gen._rewrite_loop_try_edge_threading(
+    assert cfg.index_to_block[4] in sccp.executable_blocks
+    rewritten, _, _, check_threads = gen._rewrite_loop_edge_threading(
         ops,
         cfg=cfg,
         control=cfg.control,
         executable_edges=sccp.executable_edges,
         loop_break_choice_by_index=sccp.loop_break_choice_by_index,
-        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
-        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
-        guard_fail_indices=sccp.guard_fail_indices,
     )
-    assert check_threads >= 1
-    assert any(op.kind == "JUMP" and op.args and op.args[0] == 99 for op in rewritten)
-    assert all(op.kind != "CHECK_EXCEPTION" for op in rewritten)
+    assert check_threads == 0
+    assert any(op.kind == "CHECK_EXCEPTION" and op.args == [99] for op in rewritten)
+    lowered = gen.map_ops_to_json(ops)
+    check = next(op for op in lowered if op["kind"] == "check_exception")
+    handler = next(op["value"] for op in lowered if op["kind"] == "try_start")
+    assert check["value"] == handler
+    assert any(op["kind"] == "label" and op["value"] == handler for op in lowered)
 
 
 def test_loop_break_if_true_threads_to_jump_when_exit_has_label() -> None:
@@ -2342,15 +2386,12 @@ def test_loop_break_if_true_threads_to_jump_when_exit_has_label() -> None:
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    rewritten, *_rest = gen._rewrite_loop_try_edge_threading(
+    rewritten, *_rest = gen._rewrite_loop_edge_threading(
         ops,
         cfg=cfg,
         control=cfg.control,
         executable_edges=sccp.executable_edges,
         loop_break_choice_by_index=sccp.loop_break_choice_by_index,
-        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
-        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
-        guard_fail_indices=sccp.guard_fail_indices,
     )
     assert any(
         op.kind == "JUMP" and op.args and str(op.args[0]) == "77" for op in rewritten
@@ -2375,15 +2416,12 @@ def test_loop_break_if_true_threads_through_exit_label_trampoline() -> None:
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    rewritten, *_rest = gen._rewrite_loop_try_edge_threading(
+    rewritten, *_rest = gen._rewrite_loop_edge_threading(
         ops,
         cfg=cfg,
         control=cfg.control,
         executable_edges=sccp.executable_edges,
         loop_break_choice_by_index=sccp.loop_break_choice_by_index,
-        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
-        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
-        guard_fail_indices=sccp.guard_fail_indices,
     )
     assert any(
         op.kind == "JUMP" and op.args and str(op.args[0]) == "88" for op in rewritten
@@ -2415,15 +2453,12 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    rewritten, *_stats = gen._rewrite_loop_try_edge_threading(
+    rewritten, *_stats = gen._rewrite_loop_edge_threading(
         ops,
         cfg=cfg,
         control=cfg.control,
         executable_edges=sccp.executable_edges,
         loop_break_choice_by_index=sccp.loop_break_choice_by_index,
-        try_exception_possible_by_start=sccp.try_exception_possible_by_start,
-        try_normal_possible_by_start=sccp.try_normal_possible_by_start,
-        guard_fail_indices=sccp.guard_fail_indices,
     )
     rewritten_check = next(op for op in rewritten if op.kind == "CHECK_EXCEPTION")
     assert rewritten_check.args and str(rewritten_check.args[0]) == "30"
@@ -2546,7 +2581,7 @@ def test_region_wide_guard_elision_removes_post_join_duplicate_guard() -> None:
     assert rejected == attempted - accepted
 
 
-def test_sccp_prunes_non_raising_try_markers() -> None:
+def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
@@ -2556,10 +2591,13 @@ def test_sccp_prunes_non_raising_try_markers() -> None:
         ]
     )
 
-    assert all(op.get("kind") not in {"try_start", "try_end"} for op in lowered)
+    assert [op["kind"] for op in lowered if op["kind"].startswith("try_")] == [
+        "try_start",
+        "try_end",
+    ]
 
 
-def test_try_exception_edge_prunes_dead_suffix_after_proven_guard_failure() -> None:
+def test_guard_failure_retains_region_metadata_while_dce_removes_unused_data() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="CONST", args=[10], result=MoltValue("value")),
@@ -2577,7 +2615,10 @@ def test_try_exception_edge_prunes_dead_suffix_after_proven_guard_failure() -> N
 
     assert any(op.get("kind") == "guard_tag" for op in lowered)
     assert all(op.get("value") != 111 for op in lowered if op.get("kind") == "const")
-    assert all(op.get("kind") not in {"try_start", "try_end"} for op in lowered)
+    assert [op["kind"] for op in lowered if op["kind"].startswith("try_")] == [
+        "try_start",
+        "try_end",
+    ]
     assert all(op.get("kind") != "check_exception" for op in lowered)
 
 
@@ -2963,7 +3004,7 @@ else:
 
 
 @pytest.mark.parametrize("condition", ["False", "unknown_condition"])
-def test_module_control_flow_named_calls_use_source_point_binding(
+def test_module_control_flow_named_calls_capture_live_callable_before_arguments(
     condition: str,
 ) -> None:
     source = f"""
@@ -2978,9 +3019,21 @@ value = len(globals())
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
-    assert bool(_module_global_reads_named(ops, "len")) is (condition != "False")
+    (callee,) = _module_global_reads_named(ops, "len")
     assert _module_attr_reads_named(ops, "len") == []
-    assert bool([op for op in ops if op.get("kind") == "len"]) is (condition == "False")
+    # Even when the local assignment is unreachable, Python evaluates the
+    # live callable before arguments. Spelling/flow facts cannot replace that
+    # captured object with an unconditional LEN operation.
+    invocation = next(
+        op
+        for op in ops
+        if op["kind"] in {"call_func", "call_bind", "call_indirect", "call_guarded"}
+        and op.get("args", [None])[0] == callee["out"]
+    )
+    arguments = {op["out"]: op for op in ops if "out" in op}
+    assert len(invocation["args"]) == 2
+    assert ops.index(callee) < ops.index(arguments[invocation["args"][1]])
+    assert ops.index(arguments[invocation["args"][1]]) < ops.index(invocation)
 
 
 def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
@@ -3155,12 +3208,6 @@ def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance(
             "molt_getframe",
         ),
         (
-            "captured-ordinary-module-alias",
-            "import sys\ndef outer():\n    s = sys\n    def inner():\n        return s._getframe\n    return inner\n",
-            "__inner",
-            "molt_getframe",
-        ),
-        (
             "global-ordinary-module-alias",
             "import sys\ns = sys\ndef f():\n    return s._getframe\n",
             "__f",
@@ -3264,7 +3311,7 @@ def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance(
         ),
     ],
 )
-def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acquisition(
+def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
     transport: str,
     source: str,
     function_suffix: str,
@@ -3279,12 +3326,31 @@ def test_prohibited_runtime_callable_provenance_is_stamped_at_every_frontend_acq
         if function["name"].endswith(function_suffix)
         for op in function["ops"]
     ]
-    acquisitions = [op for op in function_ops if op.get("runtime_symbol") == symbol]
+    required = SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS[symbol]
+    acquisitions = [
+        op
+        for op in function_ops
+        if (
+            op.get("runtime_requirement_bits", 0)
+            | SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS.get(op.get("runtime_symbol"), 0)
+        )
+        & required
+        == required
+    ]
     assert acquisitions, transport
     assert all(
-        op["kind"] in {"module_get_attr", "module_get_global", "module_import_from"}
+        op["kind"]
+        in {
+            "module_get_attr",
+            "module_get_global",
+            "module_import_from",
+            "get_attr_generic_obj",
+        }
         for op in acquisitions
     ), (transport, acquisitions)
+    # Invalidated global/nonlocal bindings intentionally lose exact symbol
+    # identity, but protected acquisition must keep its generated capability.
+    # Exact import-symbol provenance has its own test above.
     if transport == "dynamic-call-moot-at-producer":
         # Prologue/frame calls can precede acquisition. Follow the acquired
         # callable through actual SSA copies/local slots to its invocation.
@@ -3538,16 +3604,13 @@ def test_runtime_callable_import_requirements_survive_acquisition(source: str) -
     ), function["ops"]
 
 
-def test_runtime_callable_exact_class_receiver_is_proven_nonmodule() -> None:
+def test_live_global_requirement_unions_imported_binding_with_builtin_fallback() -> (
+    None
+):
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
-            "class Safe:\n"
-            "    def __init__(self):\n"
-            "        self._getframe = 1\n"
-            "def f():\n"
-            "    safe = Safe()\n"
-            "    return safe._getframe\n"
+            "from sys import gettrace as __import__\ndef f():\n    return __import__\n"
         )
     )
     function = next(
@@ -3555,12 +3618,47 @@ def test_runtime_callable_exact_class_receiver_is_proven_nonmodule() -> None:
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
+    (producer,) = _module_global_reads_named(function["ops"], "__import__")
+    assert producer.get("runtime_requirement_bits") == (
+        SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+        | SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL
+    )
+    assert "runtime_symbol" not in producer
+
+
+@pytest.mark.parametrize("name", ["__import__", "getattr", "vars"])
+def test_runtime_protected_builtin_parameter_shadows_are_not_stamped(
+    name: str,
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(f"def f({name}):\n    return {name}\n"))
+    function = next(
+        function
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith("__f")
+    )
+    assert not _module_global_reads_named(function["ops"], name)
     assert all(
-        not (
-            op.get("runtime_requirement_bits", 0)
-            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        )
+        not op.get("runtime_requirement_bits") and "runtime_symbol" not in op
         for op in function["ops"]
+    )
+
+
+@pytest.mark.parametrize(
+    "attribute", ["_getframe", "__dict__", "__getattribute__", None]
+)
+def test_producer_owned_exact_class_excludes_protected_attribute_requirement(
+    attribute: str | None,
+) -> None:
+    gen = SimpleTIRGenerator(module_name="__main__")
+    exact = gen._stamp_exact_class(MoltValue("safe", type_hint="Safe"), "Safe")
+    assert (
+        gen._runtime_protected_attribute_requirement_bits(
+            exact,
+            attribute,
+            exact_class=gen._exact_class_for_value(exact),
+        )
+        == 0
     )
 
 
@@ -3616,17 +3714,17 @@ def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
         (
             "builtin-alias-call",
             'import sys\ndef f():\n    gateway = getattr\n    return gateway(sys, "_getframe")\n',
-            "builtin_func",
+            "module_get_global",
         ),
         (
             "builtin-list-store",
             "def f():\n    return [vars]\n",
-            "builtin_func",
+            "module_get_global",
         ),
         (
             "builtin-argument-pass",
             "def sink(value):\n    return value\ndef f():\n    return sink(getattr)\n",
-            "builtin_func",
+            "module_get_global",
         ),
         (
             "builtins-qualified",
@@ -3661,7 +3759,7 @@ def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
         (
             "recursive-builtin-getattr",
             'import builtins\ndef f():\n    return getattr(builtins, "getattr")\n',
-            "get_attr_name_default",
+            "module_get_global",
         ),
     ],
 )
@@ -3683,6 +3781,8 @@ def test_runtime_protected_gateway_callable_identity_is_stamped_at_acquisition(
     ]
     assert len(protected) == 1, (transport, protected)
     assert protected[0]["kind"] == expected_kind, (transport, protected)
+    if expected_kind == "module_get_global":
+        assert "runtime_symbol" not in protected[0], (transport, protected)
 
 
 def test_foreign_import_keeps_recursive_gateway_dispatch_dynamic() -> None:
@@ -3703,8 +3803,15 @@ def test_foreign_import_keeps_recursive_gateway_dispatch_dynamic() -> None:
     ops = function["ops"]
     # Import hooks may replace getattr. Its spelling must not bypass dynamic
     # call dispatch; independently acquired operator gateways remain protected.
-    assert _module_global_reads_named(ops, "getattr")
-    assert any(op["kind"] in {"call_bind", "call_indirect"} for op in ops)
+    (callee,) = _module_global_reads_named(ops, "getattr")
+    assert callee.get("runtime_requirement_bits", 0) & (
+        SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    )
+    assert "runtime_symbol" not in callee
+    assert any(
+        op["kind"] == "call_func" and op.get("args") and op["args"][0] == callee["out"]
+        for op in ops
+    )
     assert not any(op["kind"] == "get_attr_name_default" for op in ops)
     protected = [
         op
@@ -3712,8 +3819,11 @@ def test_foreign_import_keeps_recursive_gateway_dispatch_dynamic() -> None:
         if op.get("runtime_requirement_bits", 0)
         & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
     ]
-    assert len(protected) == 1
-    assert protected[0]["kind"] == "get_attr_generic_obj"
+    assert {op["kind"] for op in protected} == {
+        "module_get_global",
+        "get_attr_generic_obj",
+    }
+    assert callee in protected
 
 
 @pytest.mark.parametrize(
@@ -3747,18 +3857,15 @@ def test_runtime_protected_gateway_from_import_stamps_import_and_global_load(
     assert {"module_import_from", "module_get_global"} <= protected_kinds
 
 
-def test_runtime_gateway_identity_exact_negative_authorities_stay_untagged() -> None:
+def test_runtime_gateway_deferred_global_class_receiver_is_fail_closed() -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
-            "import operator\n"
-            "def getattr(value):\n"
-            "    return value\n"
             "class Safe:\n"
             "    attrgetter = 1\n"
             "def f():\n"
             "    safe = Safe()\n"
-            "    return getattr, safe.attrgetter, operator.itemgetter\n"
+            "    return safe.attrgetter\n"
         )
     )
     function = next(
@@ -3766,16 +3873,19 @@ def test_runtime_gateway_identity_exact_negative_authorities_stay_untagged() -> 
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
-    assert all(
-        not (
-            op.get("runtime_requirement_bits", 0)
-            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        )
+    assert not any(op.get("kind") == "object_new_bound" for op in function["ops"])
+    protected = [
+        op
         for op in function["ops"]
-    )
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert protected
+    assert any(op["kind"] == "get_attr_generic_obj" for op in protected)
+    assert all("runtime_symbol" not in op for op in protected)
 
 
-def test_runtime_callable_reflection_gateways_preserve_exact_class_negatives() -> None:
+def test_runtime_callable_reflection_gateways_fail_closed_for_deferred_class() -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(
         ast.parse(
@@ -3797,16 +3907,17 @@ def test_runtime_callable_reflection_gateways_preserve_exact_class_negatives() -
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
-    assert all(
-        not (
-            op.get("runtime_requirement_bits", 0)
-            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        )
+    protected = [
+        op
         for op in function["ops"]
-    )
+        if op.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    ]
+    assert protected
+    assert all("runtime_symbol" not in op for op in protected)
 
 
-def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() -> None:
+def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse('def f(value):\n    return getattr(value, "safe_name")\n'))
     function = next(
@@ -3814,17 +3925,20 @@ def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() 
         for function in gen.to_json()["functions"]
         if function["name"].endswith("__f")
     )
-    assert all(
-        not (
-            op.get("runtime_requirement_bits", 0)
-            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
-        )
+    (callee,) = _module_global_reads_named(function["ops"], "getattr")
+    assert (
+        callee.get("runtime_requirement_bits", 0)
+        & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+    )
+    assert "runtime_symbol" not in callee
+    assert any(
+        op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
         for op in function["ops"]
     )
 
 
 @pytest.mark.parametrize(
-    ("scope", "source", "function_suffix"),
+    ("scope", "source", "function_suffix", "expected_exact_reads"),
     [
         (
             "local-shadow-after-import",
@@ -3835,6 +3949,7 @@ def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() 
             "    after = s._getframe\n"
             "    return before, after\n",
             "__f",
+            1,
         ),
         (
             "global-rebind",
@@ -3846,6 +3961,7 @@ def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() 
             "    after = s._getframe\n"
             "    return before, after\n",
             "__f",
+            0,
         ),
         (
             "nonlocal-rebind",
@@ -3859,11 +3975,12 @@ def test_runtime_callable_literal_safe_getattr_does_not_require_introspection() 
             "        return before, after\n"
             "    return inner\n",
             "__inner",
+            0,
         ),
     ],
 )
 def test_runtime_callable_provenance_stops_exactly_at_lexical_rebinding(
-    scope: str, source: str, function_suffix: str
+    scope: str, source: str, function_suffix: str, expected_exact_reads: int
 ) -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
@@ -3878,7 +3995,11 @@ def test_runtime_callable_provenance_stops_exactly_at_lexical_rebinding(
         if op.get("kind") == "module_get_attr"
         and op.get("runtime_symbol") == "molt_getframe"
     ]
-    assert len(frame_reads) == 1, (scope, frame_reads)
+    assert len(frame_reads) == expected_exact_reads, (scope, frame_reads)
+    if expected_exact_reads == 0:
+        assert not any(
+            op.get("runtime_symbol") == "molt_getframe" for op in function["ops"]
+        ), scope
     assert any(
         op.get("runtime_requirement_bits", 0)
         & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
@@ -3908,6 +4029,48 @@ def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -
     assert producers[0]["kind"] == "module_import_from"
 
 
+@pytest.mark.parametrize(
+    "definition, suffix",
+    [
+        ("def inner():\n    return EXPR", "__inner"),
+        ("def inner():\n    yield EXPR", "__inner_poll"),
+        ("async def inner():\n    return EXPR", "__inner_poll"),
+        ("async def inner():\n    yield EXPR", "__inner_poll"),
+        ("inner = lambda: EXPR", "lambda_1"),
+        ("inner = lambda: (yield EXPR)", "lambda_1_poll"),
+    ],
+)
+@pytest.mark.parametrize("from_import", [False, True])
+def test_captured_imports_are_mutable_activation_inputs(
+    definition: str, suffix: str, from_import: bool
+) -> None:
+    acquisition = "from sys import _getframe as s" if from_import else "import sys as s"
+    expression = "s()" if from_import else "s._getframe"
+    source = (
+        f"def outer():\n    {acquisition}\n"
+        + "\n".join(
+            "    " + line
+            for line in definition.replace("EXPR", expression).splitlines()
+        )
+        + "\n    return inner\n"
+    )
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ops = next(
+        function["ops"]
+        for function in gen.to_json()["functions"]
+        if function["name"].endswith(suffix)
+    )
+    assert not any(op.get("runtime_symbol") == "molt_getframe" for op in ops)
+    assert any(op.get("s_value") == "molt_cell_get" for op in ops)
+    if not from_import:
+        assert any(
+            op.get("runtime_requirement_bits", 0)
+            & SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION
+            for op in ops
+        )
+
+
 def test_module_control_flow_class_calls_use_load_global_semantics() -> None:
     source = """
 flag = False
@@ -3929,7 +4092,7 @@ except NameError:
     assert _module_attr_reads_named(ops, "C") == []
 
 
-def test_static_class_allocation_carries_result_class_type() -> None:
+def test_deferred_global_class_call_does_not_publish_exact_result_type() -> None:
     source = """
 class Point:
     def __init__(self, x):
@@ -3945,8 +4108,15 @@ def make():
         func["ops"] for func in ir["functions"] if func["name"].endswith("__make")
     )
 
-    alloc = next(op for op in ops if op.get("kind") == "object_new_bound")
-    assert alloc.get("type_hint") == "Point"
+    assert not any(op.get("kind") == "object_new_bound" for op in ops)
+    (callee,) = _module_global_reads_named(ops, "Point")
+    assert any(
+        op["kind"] == "call_func"
+        and op.get("args")
+        and op["args"][0] == callee["out"]
+        and op.get("type_hint") != "Point"
+        for op in ops
+    )
 
 
 def test_custom_new_classes_do_not_use_static_constructor_allocation() -> None:
@@ -3973,7 +4143,12 @@ overridden = Overridden(4)
     ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
 
     assert all(op.get("kind") != "object_new_bound" for op in ops)
-    assert any(op.get("kind") in {"call_bind", "call_indirect"} for op in ops)
+    for name in ("Inherited", "Overridden"):
+        (callee,) = _module_global_reads_named(ops, name)
+        assert any(
+            op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
+            for op in ops
+        ), name
 
 
 def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
@@ -4246,52 +4421,34 @@ def test_local_rebind_publishes_locals_cache_before_release() -> None:
     ), "the frame-locals projection must publish before displaced-owner callbacks"
 
 
-def test_builtin_exception_names_follow_target_version_and_platform() -> None:
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_builtin_exception_names_follow_target_version_and_platform(
+    target_python: tuple[int, int], platform: str
+) -> None:
     source = """
 def f():
     return PythonFinalizationError, WindowsError
 """
 
-    def function_ops(*, target_python: tuple[int, int], platform: str):
-        gen = SimpleTIRGenerator(
-            module_name="__main__",
-            target_python=target_python,
-            target_sys_platform=platform,
-        )
-        gen.visit(ast.parse(source))
-        ir = gen.to_json()
-        return next(
-            func["ops"] for func in ir["functions"] if func["name"].endswith("f")
-        )
-
-    py312_linux = function_ops(target_python=(3, 12), platform="linux")
-    assert not any(
-        op.get("kind") == "exception_class"
-        and op.get("s_value") in {"PythonFinalizationError", "WindowsError"}
-        for op in py312_linux
+    gen = SimpleTIRGenerator(
+        module_name="__main__",
+        target_python=target_python,
+        target_sys_platform=platform,
     )
-    constants = {
-        op["out"]: op.get("s_value")
-        for op in py312_linux
-        if op.get("kind") == "const_str"
-    }
-    assert {
-        constants.get(op.get("args", [None, None])[1])
-        for op in py312_linux
-        if op.get("kind") == "module_get_global"
-    } >= {"PythonFinalizationError", "WindowsError"}
-
-    py313_windows = function_ops(target_python=(3, 13), platform="win32")
-    constants = {
-        op["out"]: op.get("s_value")
-        for op in py313_windows
-        if op.get("kind") == "const_str"
-    }
-    assert {
-        constants.get(op.get("args", [None])[0])
-        for op in py313_windows
-        if op.get("kind") == "exception_class"
-    } >= {"PythonFinalizationError", "WindowsError"}
+    assert gen._builtin_exception_is_available("PythonFinalizationError") == (
+        target_python >= (3, 13)
+    )
+    assert gen._builtin_exception_is_available("WindowsError") == (platform == "win32")
+    gen.visit(ast.parse(source))
+    ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"].endswith("f")
+    )
+    # Availability gates the builtin namespace, not live LOAD_GLOBAL resolution:
+    # globals can shadow an available builtin or supply an unavailable name.
+    assert not any(op["kind"] == "exception_class" for op in ops)
+    for name in ("PythonFinalizationError", "WindowsError"):
+        assert len(_module_global_reads_named(ops, name)) == 1
 
 
 def test_with_context_exit_checks_after_exception_frame_release() -> None:
@@ -4311,8 +4468,9 @@ def f(cm):
     ]
     assert context_exit_indices
     for idx in context_exit_indices:
-        next_kinds = [op.get("kind") for op in ops[idx + 1 : idx + 3]]
-        assert next_kinds == ["exception_pop", "check_exception"]
+        assert ops[idx + 1]["kind"] == "check_exception"
+        body_end = max(i for i in range(idx) if ops[i]["kind"] == "try_end")
+        assert any(op["kind"] == "exception_pop" for op in ops[body_end + 1 : idx])
 
 
 def test_rebound_same_module_class_call_keeps_runtime_lookup() -> None:
@@ -4355,7 +4513,8 @@ value = Point(3)
     assert all(op.get("effect_proof") is None for op in reads)
 
 
-def test_function_loop_static_class_call_uses_eager_loop_preheader_cache() -> None:
+@pytest.mark.parametrize("loop", ["while i < 3:", "for i in range(3):"])
+def test_function_loop_class_lookup_stays_on_executed_path(loop: str) -> None:
     source = """
 class Point:
     def __init__(self, x):
@@ -4363,12 +4522,12 @@ class Point:
 
 def main():
     i = 0
-    while i < 3:
+    LOOP
         point = Point(i)
         i += 1
 """
     gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(ast.parse(source))
+    gen.visit(ast.parse(source.replace("LOOP", loop)))
     ir = gen.to_json()
     func_ops = next(
         func["ops"] for func in ir["functions"] if func["name"].endswith("main")
@@ -4380,27 +4539,17 @@ def main():
         if op.get("kind") == "store_var"
         and str(op.get("var", "")).startswith("__molt_static_class_")
     ]
-    assert cache_vars
-    assert len(set(cache_vars)) == 1
+    assert not cache_vars
     loop_start = next(
         i for i, op in enumerate(func_ops) if op.get("kind") == "loop_start"
     )
-    module_attr_reads = _module_attr_reads_named(func_ops, "Point")
-    assert len(module_attr_reads) == 1
-    assert module_attr_reads[0].get("effect_proof") == "static_module_class_binding"
-    cache_gets = [op for op in func_ops if op.get("kind") == "module_cache_get"]
+    assert not _module_attr_reads_named(func_ops, "Point")
+    (callee,) = _module_global_reads_named(func_ops, "Point")
+    assert func_ops.index(callee) > loop_start
     assert any(
-        op.get("effect_proof") == "static_module_class_binding" for op in cache_gets
+        op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
+        for op in func_ops[loop_start + 1 :]
     )
-    module_attr_idx = next(
-        i for i, op in enumerate(func_ops) if op is module_attr_reads[0]
-    )
-    assert module_attr_idx < loop_start
-    first_cache_store = next(
-        i for i, op in enumerate(func_ops) if op.get("var") == cache_vars[0]
-    )
-    assert first_cache_store < loop_start
-    assert all(op.get("kind") != "module_get_attr" for op in func_ops[loop_start + 1 :])
 
 
 def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -> None:
@@ -4559,65 +4708,32 @@ def test_affine_loop_compare_truth_proves_same_iv_offset_compare() -> None:
     assert proven[7] is True
 
 
-def test_licm_hoists_invariant_pure_ops_beyond_loop_prefix() -> None:
-    gen = SimpleTIRGenerator()
+def test_frontend_defers_loop_motion_to_canonical_tir() -> None:
+    assert not hasattr(SimpleTIRGenerator(), "_hoist_loop_invariant_pure_ops")
+
+
+def test_serialization_keeps_dynamic_arithmetic_inside_source_loop() -> None:
     ops = [
-        MoltOp(kind="CONST", args=[10], result=MoltValue("a")),
-        MoltOp(kind="CONST", args=[32], result=MoltValue("b")),
-        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
-        MoltOp(
-            kind="LOOP_BREAK_IF_TRUE",
-            args=[MoltValue("cond")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(
-            kind="ADD", args=[MoltValue("a"), MoltValue("b")], result=MoltValue("s")
-        ),
-        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
+        MoltOp("MISSING", [], MoltValue("obj")),
+        MoltOp("CONST", [1], MoltValue("one")),
+        MoltOp("LOOP_START", [], MoltValue("none")),
+        MoltOp("MISSING", [], MoltValue("cond")),
+        MoltOp("LOOP_BREAK_IF_TRUE", [MoltValue("cond")], MoltValue("none")),
+        MoltOp("ADD", [MoltValue("obj"), MoltValue("one")], MoltValue("maybe_raises")),
+        MoltOp("FLOORDIV", [MoltValue("obj"), MoltValue("one")], MoltValue("division")),
+        MoltOp("LOOP_END", [], MoltValue("none")),
     ]
-
-    rewritten, hoists = gen._hoist_loop_invariant_pure_ops(ops)
-    assert hoists >= 1
-    loop_start_idx = next(
-        i for i, op in enumerate(rewritten) if op.kind == "LOOP_START"
+    lowered = SimpleTIRGenerator().map_ops_to_json(ops)
+    positions = {
+        kind: next(i for i, op in enumerate(lowered) if op["kind"] == kind)
+        for kind in ("loop_start", "add", "floordiv", "loop_end")
+    }
+    assert (
+        positions["loop_start"]
+        < positions["add"]
+        < positions["floordiv"]
+        < positions["loop_end"]
     )
-    add_idx = next(i for i, op in enumerate(rewritten) if op.kind == "ADD")
-    assert add_idx < loop_start_idx
-
-
-def test_licm_preserves_may_raise_ops_without_instance_disproof() -> None:
-    gen = SimpleTIRGenerator()
-    ops = [
-        MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
-        MoltOp(kind="CONST", args=[1], result=MoltValue("one")),
-        MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
-        MoltOp(
-            kind="LOOP_BREAK_IF_TRUE",
-            args=[MoltValue("cond")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(
-            kind="ADD",
-            args=[MoltValue("obj"), MoltValue("one")],
-            result=MoltValue("maybe_raises"),
-        ),
-        MoltOp(
-            kind="FLOORDIV",
-            args=[MoltValue("one"), MoltValue("one")],
-            result=MoltValue("div_maybe_raises"),
-        ),
-        MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
-    ]
-
-    rewritten, _hoists = gen._hoist_loop_invariant_pure_ops(ops)
-    loop_start_idx = next(
-        i for i, op in enumerate(rewritten) if op.kind == "LOOP_START"
-    )
-    add_idx = next(i for i, op in enumerate(rewritten) if op.kind == "ADD")
-    div_idx = next(i for i, op in enumerate(rewritten) if op.kind == "FLOORDIV")
-    assert loop_start_idx < add_idx < div_idx
 
 
 def test_definite_assignment_verifier_flags_join_missing_defs() -> None:
@@ -4663,19 +4779,16 @@ def test_midend_telemetry_counters_account_for_expanded_vs_fallback() -> None:
     assert "cfg_region_prunes" in gen.midend_stats
     assert "label_prunes" in gen.midend_stats
     assert "jump_noop_elisions" in gen.midend_stats
-    assert "licm_hoists" in gen.midend_stats
     assert "<direct>" in gen.midend_stats_by_function
     assert "sccp_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "edge_thread_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "edge_thread_rejected" in gen.midend_stats_by_function["<direct>"]
     assert "cse_attempted" in gen.midend_stats_by_function["<direct>"]
-    assert "licm_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "loop_rewrite_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "loop_rewrite_rejected" in gen.midend_stats_by_function["<direct>"]
     assert "guard_hoist_rejected" in gen.midend_stats_by_function["<direct>"]
     assert "cse_readheap_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "cse_readheap_rejected" in gen.midend_stats_by_function["<direct>"]
-    assert "licm_rejected" in gen.midend_stats_by_function["<direct>"]
     assert "dce_pure_op_attempted" in gen.midend_stats_by_function["<direct>"]
     assert "dce_pure_op_rejected" in gen.midend_stats_by_function["<direct>"]
     assert attempts >= 1

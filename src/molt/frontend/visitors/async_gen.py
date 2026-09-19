@@ -23,8 +23,10 @@ from molt.frontend._types import (
     GEN_YIELD_FROM_OFFSET,
     AsyncFrameSlot,
     AsyncFrameSlotRole,
+    AsyncContextExit,
     MoltOp,
     MoltValue,
+    ScratchCell,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -553,15 +555,6 @@ class AsyncGenVisitorMixin(_MixinBase):
             )
             return None
 
-        ctx_slot = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", ctx_slot, ctx_val],
-                result=MoltValue("none"),
-            )
-        )
-
         aenter_fn = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
@@ -570,124 +563,18 @@ class AsyncGenVisitorMixin(_MixinBase):
                 result=aenter_fn,
             )
         )
-        aenter_call = self._emit_call_bound_or_func(aenter_fn, [])
-        self._emit_raise_if_pending()
-        enter_val = self._emit_await_value(aenter_call)
-        if item.optional_vars is not None:
-            self._emit_assign_target(item.optional_vars, enter_val, None)
-
-        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        try_end_label = self.next_label()
-        self.try_end_labels.append(try_end_label)
-        self.emit(
-            MoltOp(
-                kind="TRY_START",
-                args=[],
-                result=MoltValue("none"),
-                metadata={"try_region_id": try_end_label},
-            )
-        )
-        self.control_flow_depth += 1
-        # async-with: see _visit_loop_body for snapshot rationale.
-        unbound_snapshot = set(self.unbound_check_names)
-        try:
-            self._visit_block(node.body)
-        finally:
-            self.unbound_check_names = unbound_snapshot
-            self.control_flow_depth -= 1
-        self.try_end_labels.pop()
-        self.emit(MoltOp(kind="LABEL", args=[try_end_label], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="TRY_END",
-                args=[],
-                result=MoltValue("none"),
-                metadata={"try_region_id": try_end_label},
-            )
-        )
-        prior_suppress = self.try_suppress_depth
-        self.try_suppress_depth = len(self.try_end_labels)
-
-        exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-        pending = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-
-        ctx_reload = MoltValue(self.next_var(), type_hint=ctx_val.type_hint)
-        self.emit(
-            MoltOp(kind="LOAD_CLOSURE", args=["self", ctx_slot], result=ctx_reload)
-        )
         aexit_fn = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
                 kind="GETATTR_SPECIAL_OBJ",
-                args=[ctx_reload, "__aexit__"],
+                args=[ctx_val, "__aexit__"],
                 result=aexit_fn,
             )
         )
+        exit_action = AsyncContextExit(self._new_scratch_cell(aexit_fn))
+        enter_val = self._emit_context_entry(exit_action, aenter_fn)
 
-        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        exc_slot = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", exc_slot, exc_val],
-                result=MoltValue("none"),
-            )
-        )
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_CONTEXT_SET",
-                args=[exc_val],
-                result=MoltValue("none"),
-            )
-        )
-        exc_type = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="TYPE_OF", args=[exc_val], result=exc_type))
-        tb_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=tb_val))
-        aexit_call = self._emit_call_bound_or_func(
-            aexit_fn, [exc_type, exc_val, tb_val]
-        )
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        aexit_res = self._emit_await_value(aexit_call, raise_pending=False)
-        self._emit_raise_if_pending()
-        not_res = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[aexit_res], result=not_res))
-        is_truthy = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[not_res], result=is_truthy))
-        self.emit(MoltOp(kind="IF", args=[is_truthy], result=MoltValue("none")))
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        exc_reload = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", exc_slot],
-                result=exc_reload,
-            )
-        )
-        self.emit(MoltOp(kind="RAISE", args=[exc_reload], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        aexit_call = self._emit_call_bound_or_func(
-            aexit_fn, [none_val, none_val, none_val]
-        )
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self._emit_await_value(aexit_call, raise_pending=False)
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        self.try_suppress_depth = prior_suppress
+        self._emit_context_body(node, enter_val, exit_action)
         return None
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
@@ -782,12 +669,11 @@ class AsyncGenVisitorMixin(_MixinBase):
         )
         self._emit_assign_target(node.target, item_val, None)
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        body_terminated = self._visit_loop_body(
-            node.body, guard_map, loop_break_flag=break_slot
-        )
-        if not body_terminated:
+        scope = self._visit_loop_body(node.body, guard_map, loop_break_flag=break_slot)
+        if scope.needs_latch:
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
+        self._emit_loop_exit(scope)
         if node.orelse:
             break_val = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
@@ -832,111 +718,7 @@ class AsyncGenVisitorMixin(_MixinBase):
             self.emit(MoltOp(kind="ASYNC_BLOCK_ON", args=[coro], result=res))
             self._emit_raise_if_pending()
             return res
-        self.state_count += 1
-        pending_state_id = self.state_count
-        self.emit(
-            MoltOp(
-                kind="STATE_LABEL", args=[pending_state_id], result=MoltValue("none")
-            )
-        )
-        pending_state_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(kind="CONST", args=[pending_state_id], result=pending_state_val)
-        )
-        awaitable_slot = None
-        if self.is_async():
-            awaitable_slot = self._new_async_internal_slot()
-            awaitable_cached = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", awaitable_slot],
-                    result=awaitable_cached,
-                )
-            )
-            none_cached = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_cached))
-            is_none_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="IS",
-                    args=[awaitable_cached, none_cached],
-                    result=is_none_cached,
-                )
-            )
-            zero_cached = MoltValue(self.next_var(), type_hint="float")
-            self.emit(MoltOp(kind="CONST_FLOAT", args=[0.0], result=zero_cached))
-            is_zero_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="IS",
-                    args=[awaitable_cached, zero_cached],
-                    result=is_zero_cached,
-                )
-            )
-            is_empty_cached = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="OR",
-                    args=[is_none_cached, is_zero_cached],
-                    result=is_empty_cached,
-                )
-            )
-            self.emit(
-                MoltOp(kind="IF", args=[is_empty_cached], result=MoltValue("none"))
-            )
-            awaitable_new = self.visit(node.value)
-            awaitable_new = self._emit_awaitable_transform(awaitable_new)
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", awaitable_slot, awaitable_new],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            coro = MoltValue(self.next_var(), type_hint="Future")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", awaitable_slot],
-                    result=coro,
-                )
-            )
-        result_slot = self._new_async_internal_slot()
-        result_slot_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[result_slot], result=result_slot_val))
-        self.state_count += 1
-        next_state_id = self.state_count
-        res_placeholder = MoltValue(self.next_var(), type_hint="Any")
-        with self._suppress_check_exception():
-            self.emit(
-                MoltOp(
-                    kind="STATE_TRANSITION",
-                    args=[coro, result_slot_val, pending_state_val, next_state_id],
-                    result=res_placeholder,
-                )
-            )
-            if awaitable_slot is not None:
-                cleared_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", awaitable_slot, cleared_val],
-                        result=MoltValue("none"),
-                    )
-                )
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", result_slot],
-                    result=res,
-                )
-            )
-            self._emit_raise_if_pending()
-        return res
+        return self._emit_await_value(self.visit(node.value))
 
     def visit_Yield(self, node: ast.Yield) -> Any:
         if not self.in_generator:
@@ -1907,9 +1689,14 @@ class AsyncGenVisitorMixin(_MixinBase):
                 result=coro,
             )
         )
-        result_slot = self._new_async_internal_slot()
+        result_slot = self._allocate_async_frame_slot(AsyncFrameSlotRole.SCRATCH)
+        result_storage = ScratchCell(
+            value=None, async_slot=result_slot, type_hint="Any"
+        )
         result_slot_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[result_slot], result=result_slot_val))
+        self.emit(
+            MoltOp(kind="CONST", args=[result_slot.offset], result=result_slot_val)
+        )
         self.state_count += 1
         next_state_id = self.state_count
         res_placeholder = MoltValue(self.next_var(), type_hint="Any")
@@ -1930,10 +1717,9 @@ class AsyncGenVisitorMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(kind="LOAD_CLOSURE", args=["self", result_slot], result=res)
-            )
+            # The transition owns this carrier only until resumption. Loading
+            # retains the result before clearing its hidden frame reference.
+            res = self._consume_scratch_cell(result_storage)
             if raise_pending:
                 self._emit_raise_if_pending()
         return res
@@ -1943,20 +1729,13 @@ class AsyncGenVisitorMixin(_MixinBase):
             return
         for scope in self.try_scopes:
             handler_label = scope.handler_label
-            if handler_label is None:
+            if handler_label is None or handler_label not in self.try_end_labels:
                 continue
-            args = [handler_label] if scope.try_start_has_handler_value else []
-            metadata = (
-                None
-                if scope.try_start_has_handler_value
-                else {"try_region_id": handler_label}
-            )
             self.emit(
                 MoltOp(
                     kind="TRY_START",
-                    args=args,
+                    args=[handler_label],
                     result=MoltValue("none"),
-                    metadata=metadata,
                 )
             )
 

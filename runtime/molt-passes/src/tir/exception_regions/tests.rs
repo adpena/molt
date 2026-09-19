@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::path_state::{
-    AnonymousHandlerDestinations, ExceptionPathState, compute_state_resume_stacks,
+    AnonymousHandlerDestinations, ExceptionPathState, ExceptionRegionCustody, ExceptionRegionPhase,
+    compute_state_resume_stacks,
 };
 use super::*;
 use crate::tir::analysis::AnalysisId;
@@ -1386,9 +1387,10 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
     assert_eq!(
         stacks.get(&7).cloned().unwrap_or_default(),
         BTreeSet::from([ExceptionPathState {
-            frames: vec![ExceptionRegionToken::Labeled(99)],
-            owners: Vec::new(),
-            normal_closures: Vec::new(),
+            regions: vec![ExceptionRegionCustody {
+                token: ExceptionRegionToken::Labeled(99),
+                phase: ExceptionRegionPhase::Active,
+            }],
             pending_must_transfer: false,
         }]),
         "state-dispatch cycles must not manufacture duplicate lexical exception frames"
@@ -1563,4 +1565,579 @@ fn anonymous_try_exception_edge_enters_owner_and_releases_match_ref() {
         }
     );
     assert!(facts.diagnostics.is_empty());
+}
+
+fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: bool) {
+    let mut func = TirFunction::new("nested_region_pop_order".into(), vec![], TirType::None);
+    let initial = func.fresh_block();
+    let outer_handler = func.fresh_block();
+    let inner_handler = func.fresh_block();
+    let before_cleanup = func.fresh_block();
+    let cleanup = func.fresh_block();
+    func.label_id_map.insert(outer_handler.0, 10);
+    if inner_phase == ExceptionRegionPhase::Handler {
+        func.label_id_map.insert(inner_handler.0, 20);
+    }
+    let observed = func.fresh_value();
+    let restored_outer = func.fresh_value();
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+        cases: if suspended {
+            vec![(7, cleanup, vec![])]
+        } else {
+            vec![]
+        },
+        default: initial,
+        default_args: vec![],
+    };
+    func.blocks.insert(
+        initial,
+        TirBlock {
+            id: initial,
+            args: vec![],
+            ops: vec![try_start(10), check_exception(10)],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    let mut nested_ops = vec![try_end(10), try_start(20)];
+    match inner_phase {
+        ExceptionRegionPhase::Active => {}
+        ExceptionRegionPhase::NormalClosure => nested_ops.push(try_end(20)),
+        ExceptionRegionPhase::Handler => {
+            nested_ops.extend([op(OpCode::Raise), check_exception(20)]);
+        }
+    }
+    func.blocks.insert(
+        outer_handler,
+        TirBlock {
+            id: outer_handler,
+            args: vec![],
+            ops: nested_ops,
+            terminator: Terminator::Branch {
+                target: before_cleanup,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        inner_handler,
+        TirBlock {
+            id: inner_handler,
+            args: vec![],
+            ops: vec![try_end(20)],
+            terminator: Terminator::Branch {
+                target: before_cleanup,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        before_cleanup,
+        TirBlock {
+            id: before_cleanup,
+            args: vec![],
+            ops: if suspended {
+                vec![state_yield(7)]
+            } else {
+                vec![]
+            },
+            terminator: if suspended {
+                Terminator::Unreachable
+            } else {
+                Terminator::Branch {
+                    target: cleanup,
+                    args: vec![],
+                }
+            },
+        },
+    );
+    func.blocks.insert(
+        cleanup,
+        TirBlock {
+            id: cleanup,
+            args: vec![],
+            ops: vec![
+                original("exception_last_pending", vec![observed]),
+                original("exception_pop", vec![]),
+                original("exception_active", vec![restored_outer]),
+                original("exception_pop", vec![]),
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let inner_pop = ExceptionOpPosition {
+        block: cleanup,
+        op_index: 1,
+    };
+    let outer_pop = ExceptionOpPosition {
+        block: cleanup,
+        op_index: 3,
+    };
+    let facts = compute_exception_region_facts(&func);
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert_eq!(
+        exception_pop_owner_states(&func, inner_pop).all,
+        BTreeSet::from([Some(ExceptionRegionToken::Labeled(20))])
+    );
+    assert_eq!(
+        exception_pop_owner_states(&func, outer_pop).all,
+        BTreeSet::from([Some(ExceptionRegionToken::Labeled(10))])
+    );
+    let (observed_owner, observed_release) = if inner_phase == ExceptionRegionPhase::Handler {
+        (20, inner_pop)
+    } else {
+        (10, outer_pop)
+    };
+    assert_eq!(facts.match_refs[&observed].releases, vec![observed_release]);
+    assert_eq!(
+        facts.match_refs[&observed].release_facts[0].owner,
+        ExceptionRegionToken::Labeled(observed_owner)
+    );
+    assert_eq!(facts.match_refs[&restored_outer].releases, vec![outer_pop]);
+    assert_eq!(
+        facts.match_refs[&restored_outer].release_facts[0].owner,
+        ExceptionRegionToken::Labeled(10)
+    );
+    assert_eq!(
+        facts.lexical_handler_before(inner_pop),
+        Ok(if inner_phase == ExceptionRegionPhase::Active {
+            ExceptionBoundaryHandler::Labeled(20)
+        } else {
+            ExceptionBoundaryHandler::DepthZero
+        })
+    );
+    assert_eq!(
+        facts.lexical_handler_before(outer_pop),
+        Ok(ExceptionBoundaryHandler::DepthZero)
+    );
+    assert_eq!(
+        facts.lexical_handler_before(ExceptionOpPosition {
+            block: cleanup,
+            op_index: 4,
+        }),
+        Ok(ExceptionBoundaryHandler::DepthZero)
+    );
+    if suspended {
+        let label_to_block = dominators::exception_label_to_block(&func)
+            .into_iter()
+            .collect();
+        let stacks = compute_state_resume_stacks(
+            &func,
+            &label_to_block,
+            &AnonymousHandlerDestinations::new(),
+        );
+        assert_eq!(
+            stacks[&7],
+            BTreeSet::from([ExceptionPathState {
+                regions: vec![
+                    ExceptionRegionCustody {
+                        token: ExceptionRegionToken::Labeled(10),
+                        phase: ExceptionRegionPhase::Handler,
+                    },
+                    ExceptionRegionCustody {
+                        token: ExceptionRegionToken::Labeled(20),
+                        phase: inner_phase,
+                    },
+                ],
+                pending_must_transfer: false,
+            }])
+        );
+    }
+}
+
+#[test]
+fn handler_nested_active_region_pops_before_outer_match_ref() {
+    assert_nested_region_pop_order(ExceptionRegionPhase::Active, false);
+}
+
+#[test]
+fn handler_nested_normal_closure_pops_before_outer_match_ref() {
+    assert_nested_region_pop_order(ExceptionRegionPhase::NormalClosure, false);
+}
+
+#[test]
+fn nested_handlers_release_inner_then_restore_outer_owner() {
+    assert_nested_region_pop_order(ExceptionRegionPhase::Handler, false);
+}
+
+#[test]
+fn state_resume_preserves_chronological_region_custody_and_match_ref_releases() {
+    for phase in [
+        ExceptionRegionPhase::Active,
+        ExceptionRegionPhase::NormalClosure,
+        ExceptionRegionPhase::Handler,
+    ] {
+        assert_nested_region_pop_order(phase, true);
+    }
+}
+
+#[test]
+fn nested_finally_join_uses_inner_custody_on_normal_and_exceptional_paths() {
+    let mut func = TirFunction::new("nested_finally_join".into(), vec![], TirType::None);
+    let outer_handler = func.fresh_block();
+    let inner_handler = func.fresh_block();
+    let cleanup = func.fresh_block();
+    let observed = func.fresh_value();
+    let restored_outer = func.fresh_value();
+    func.label_id_map.insert(outer_handler.0, 10);
+    func.label_id_map.insert(inner_handler.0, 20);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(10)];
+    func.blocks.insert(
+        outer_handler,
+        TirBlock {
+            id: outer_handler,
+            args: vec![],
+            ops: vec![try_end(10), try_start(20), try_end(20)],
+            terminator: Terminator::Branch {
+                target: cleanup,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        inner_handler,
+        TirBlock {
+            id: inner_handler,
+            args: vec![],
+            ops: vec![try_end(20)],
+            terminator: Terminator::Branch {
+                target: cleanup,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        cleanup,
+        TirBlock {
+            id: cleanup,
+            args: vec![],
+            ops: vec![
+                original("exception_last_pending", vec![observed]),
+                original("exception_pop", vec![]),
+                original("exception_current", vec![restored_outer]),
+                original("exception_pop", vec![]),
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let facts = compute_exception_region_facts(&func);
+    let inner_pop = ExceptionOpPosition {
+        block: cleanup,
+        op_index: 1,
+    };
+    let outer_pop = ExceptionOpPosition {
+        block: cleanup,
+        op_index: 3,
+    };
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert_eq!(facts.match_refs[&observed].releases, vec![inner_pop]);
+    assert_eq!(
+        facts.match_refs[&observed].release_facts[0].owner,
+        ExceptionRegionToken::Labeled(20)
+    );
+    assert_eq!(facts.match_refs[&restored_outer].releases, vec![outer_pop]);
+    assert_eq!(
+        exception_pop_owner_states(&func, inner_pop).all,
+        BTreeSet::from([Some(ExceptionRegionToken::Labeled(20))])
+    );
+    assert_eq!(
+        exception_pop_owner_states(&func, outer_pop).all,
+        BTreeSet::from([Some(ExceptionRegionToken::Labeled(10))])
+    );
+}
+
+#[test]
+fn exceptional_transfer_discards_younger_handler_and_normal_custody() {
+    let mut func = TirFunction::new("unwind_younger_custody".into(), vec![], TirType::None);
+    let outer_handler = func.fresh_block();
+    let inner_handler = func.fresh_block();
+    let observed = func.fresh_value();
+    func.label_id_map.insert(outer_handler.0, 100);
+    func.label_id_map.insert(inner_handler.0, 10);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(100), try_start(10)];
+    func.blocks.insert(
+        inner_handler,
+        TirBlock {
+            id: inner_handler,
+            args: vec![],
+            ops: vec![
+                try_end(10),
+                try_start(20),
+                try_end(20),
+                op(OpCode::Raise),
+                check_exception(100),
+            ],
+            terminator: Terminator::Unreachable,
+        },
+    );
+    func.blocks.insert(
+        outer_handler,
+        TirBlock {
+            id: outer_handler,
+            args: vec![],
+            ops: vec![
+                try_end(100),
+                original("exception_last_pending", vec![observed]),
+                original("exception_pop", vec![]),
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let facts = compute_exception_region_facts(&func);
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert_eq!(
+        facts.match_refs[&observed].releases,
+        vec![ExceptionOpPosition {
+            block: outer_handler,
+            op_index: 2
+        }]
+    );
+    assert_eq!(
+        exception_pop_owner_states(
+            &func,
+            ExceptionOpPosition {
+                block: outer_handler,
+                op_index: 3,
+            }
+        )
+        .all,
+        BTreeSet::from([None])
+    );
+}
+
+#[test]
+fn try_end_after_nonlocal_pop_does_not_recreate_region_custody() {
+    let mut func = TirFunction::new("already_popped_region".into(), vec![], TirType::None);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
+        try_start(10),
+        original("exception_pop", vec![]),
+        try_end(10),
+    ];
+    assert_eq!(
+        exception_pop_owner_states(
+            &func,
+            ExceptionOpPosition {
+                block: func.entry_block,
+                op_index: 3,
+            }
+        )
+        .all,
+        BTreeSet::from([None])
+    );
+}
+
+#[test]
+fn repoll_loop_custody_survives_target_optimization() {
+    // A resume edge enters the middle of the structured loop. Its pending-state
+    // constant must remain available on that edge, not move to a pre-loop site
+    // that resume bypasses. Exercise the real target pipeline, not facts alone.
+    let ir: crate::ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name": "repoll_loop_custody",
+        "params": ["self", "keep_running", "awaitable"],
+        "param_types": ["i64", "bool", "Any"],
+        "ops": [
+            {"kind": "state_switch"},
+            {"kind": "exception_push"},
+            {"kind": "try_start", "value": 307},
+            {"kind": "loop_start"},
+            {"kind": "loop_break_if_false", "args": ["keep_running"]},
+            {"kind": "exception_push"},
+            {"kind": "try_start", "value": 310},
+            {"kind": "state_label", "value": 313},
+            {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
+            {"kind": "check_exception", "value": 310},
+            {"kind": "const", "value": 313, "out": "pending"},
+            {"kind": "const", "value": 152, "out": "slot"},
+            {"kind": "state_transition", "value": 314,
+             "args": ["awaitable", "slot", "pending"], "out": "ready"},
+            {"kind": "check_exception", "value": 310},
+            {"kind": "try_end", "value": 310},
+            {"kind": "jump", "value": 311},
+            {"kind": "label", "value": 310},
+            {"kind": "try_end", "value": 310},
+            {"kind": "exception_clear"},
+            {"kind": "label", "value": 311},
+            {"kind": "exception_pop"},
+            {"kind": "loop_continue"},
+            {"kind": "loop_end"},
+            {"kind": "try_end", "value": 307},
+            {"kind": "jump", "value": 308},
+            {"kind": "label", "value": 307},
+            {"kind": "try_end", "value": 307},
+            {"kind": "exception_clear"},
+            {"kind": "label", "value": 308},
+            {"kind": "exception_pop"},
+            {"kind": "ret_void"}
+        ]
+    }))
+    .unwrap();
+    for target in [
+        crate::tir::target_info::TargetInfo::native_release_fast(),
+        crate::tir::target_info::TargetInfo::wasm_release_fast(),
+        crate::tir::target_info::TargetInfo::llvm_release_fast(),
+    ] {
+        let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+        crate::tir::type_refine::refine_types(&mut func);
+        crate::tir::passes::run_pipeline(&mut func, &target);
+        let facts = compute_exception_region_facts(&func);
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        let resume = func
+            .blocks
+            .values()
+            .find(|block| {
+                block
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::StateTransition)
+            })
+            .expect("suspension remains observable");
+        let position = resume
+            .ops
+            .iter()
+            .position(|op| op.opcode == OpCode::StateTransition)
+            .unwrap();
+        assert_eq!(
+            facts.lexical_handler_before(ExceptionOpPosition {
+                block: resume.id,
+                op_index: position,
+            }),
+            Ok(ExceptionBoundaryHandler::Labeled(310))
+        );
+    }
+}
+
+#[test]
+fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
+    // Structural projection of retained asyncio__staggered_race_poll:
+    // outer307 -> loop -> inner310 -> repoll313 -> end/pop310 -> loop.
+    // Both normal and exceptional inner exits must restore outer307, while
+    // state dispatch resumes inside inner310 rather than at depth zero.
+    let mut func = TirFunction::new("nested_try_repoll_loop".into(), vec![], TirType::None);
+    let initial = func.fresh_block();
+    let header = func.fresh_block();
+    let inner_entry = func.fresh_block();
+    let resume = func.fresh_block();
+    let inner_handler = func.fresh_block();
+    let inner_cleanup = func.fresh_block();
+    let outer_normal = func.fresh_block();
+    let outer_handler = func.fresh_block();
+    let outer_cleanup = func.fresh_block();
+    let condition = func.fresh_value();
+    let awaitable = func.fresh_value();
+    let slot = func.fresh_value();
+    let pending = func.fresh_value();
+    func.label_id_map.insert(resume.0, 313);
+    func.label_id_map.insert(inner_handler.0, 310);
+    func.label_id_map.insert(outer_handler.0, 307);
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+        cases: vec![(313, resume, vec![])],
+        default: initial,
+        default_args: vec![],
+    };
+    for (id, ops, terminator) in [
+        (
+            initial,
+            vec![try_start(307)],
+            Terminator::Branch {
+                target: header,
+                args: vec![],
+            },
+        ),
+        (
+            header,
+            vec![original("call", vec![])],
+            Terminator::CondBranch {
+                cond: condition,
+                then_block: inner_entry,
+                then_args: vec![],
+                else_block: outer_normal,
+                else_args: vec![],
+            },
+        ),
+        (
+            inner_entry,
+            vec![try_start(310)],
+            Terminator::Branch {
+                target: resume,
+                args: vec![],
+            },
+        ),
+        (
+            resume,
+            vec![
+                original("call", vec![]),
+                const_int(pending, 313),
+                const_int(slot, 152),
+                state_transition(awaitable, slot, pending),
+                check_exception(310),
+                try_end(310),
+            ],
+            Terminator::Branch {
+                target: inner_cleanup,
+                args: vec![],
+            },
+        ),
+        (
+            inner_handler,
+            vec![try_end(310), original("exception_clear", vec![])],
+            Terminator::Branch {
+                target: inner_cleanup,
+                args: vec![],
+            },
+        ),
+        (
+            inner_cleanup,
+            vec![original("exception_pop", vec![]), original("call", vec![])],
+            Terminator::Branch {
+                target: header,
+                args: vec![],
+            },
+        ),
+        (
+            outer_normal,
+            vec![try_end(307)],
+            Terminator::Branch {
+                target: outer_cleanup,
+                args: vec![],
+            },
+        ),
+        (
+            outer_handler,
+            vec![try_end(307)],
+            Terminator::Branch {
+                target: outer_cleanup,
+                args: vec![],
+            },
+        ),
+        (
+            outer_cleanup,
+            vec![original("exception_pop", vec![]), original("call", vec![])],
+            Terminator::Return { values: vec![] },
+        ),
+    ] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops,
+                terminator,
+            },
+        );
+    }
+    let facts = compute_exception_region_facts(&func);
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    for (block, op_index, expected) in [
+        (resume, 1, ExceptionBoundaryHandler::Labeled(310)),
+        (header, 1, ExceptionBoundaryHandler::Labeled(307)),
+        (inner_cleanup, 2, ExceptionBoundaryHandler::Labeled(307)),
+        (outer_cleanup, 2, ExceptionBoundaryHandler::DepthZero),
+    ] {
+        assert_eq!(
+            facts.lexical_handler_before(ExceptionOpPosition { block, op_index }),
+            Ok(expected)
+        );
+    }
 }

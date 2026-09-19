@@ -1,6 +1,5 @@
 use crate::repr::ScalarKind;
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::tir::effect_proof::simple_ir_has_static_module_class_binding_effect_proof;
 use crate::{FunctionIR, OpIR};
 use std::collections::BTreeMap;
 
@@ -76,10 +75,6 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 
     if op.is_async_work_poll() {
         return false;
-    }
-
-    if simple_ir_op_has_static_module_class_binding_effect_proof(op) {
-        return true;
     }
 
     if matches!(
@@ -266,10 +261,4 @@ pub(super) fn simple_ir_op_needs_scalar_plan_for_nonthrowing(op: &OpIR) -> bool 
             | "eq"
             | "ne"
     )
-}
-
-/// Returns `true` when an unused-result op can be erased without dropping
-/// Python-observable behaviour.
-fn simple_ir_op_has_static_module_class_binding_effect_proof(op: &OpIR) -> bool {
-    simple_ir_has_static_module_class_binding_effect_proof(&op.kind, op.effect_proof.as_deref())
 }

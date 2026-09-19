@@ -20,7 +20,6 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
                 || trimmed.contains("-- [try_start]")
                 || trimmed.contains("-- [try_end]")
                 || (trimmed.contains(" = nil -- [")
-                    && !trimmed.contains("-- [exception_last]")
                     && !trimmed.contains("-- [exception_message]")
                     && !trimmed.contains("-- [missing]"));
             if semantic_stub {

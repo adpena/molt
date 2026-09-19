@@ -2,6 +2,8 @@
 //!
 //! The pass families live in child modules so each authority surface has a
 //! bounded owner while existing callers continue to route through `crate::passes`.
+//! Loop-invariant motion belongs exclusively to the shared TIR pipeline, where
+//! CFG dominance, SSA operands, and exception effects govern legal movement.
 
 mod app_callable_manifest;
 mod constant_fold;
@@ -12,7 +14,6 @@ mod escape;
 mod exception_check_elision;
 mod exception_edges;
 mod guard_elision;
-mod loop_hoist;
 mod megafunction_split;
 mod method_fusion;
 mod profile_order;
@@ -40,7 +41,6 @@ pub use self::escape::escape_analysis;
 pub use self::exception_check_elision::elide_safe_exception_checks;
 pub use self::exception_edges::canonicalize_direct_raise_edges;
 pub use self::guard_elision::eliminate_redundant_guard_tags;
-pub use self::loop_hoist::hoist_loop_invariants;
 pub use self::megafunction_split::{
     split_large_function, split_megafunctions, split_megafunctions_with_filter,
 };

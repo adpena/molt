@@ -1,4 +1,7 @@
-"""MidendPipelineMixin: frontend IR midend orchestration rounds, LICM, fixed-point CSE, and entry/exit cleanup."""
+"""Frontend IR midend orchestration, fixed-point CSE, and entry/exit cleanup.
+
+Loop motion and exception-region custody belong to shared CFG/SSA TIR passes.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +21,6 @@ from molt.frontend._types import (
 
 from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
-    primitive_const_values,
 )
 
 if TYPE_CHECKING:
@@ -88,80 +90,6 @@ class MidendPipelineMixin(_MixinBase):
                 )
                 return ops
         return self._canonicalize_control_aware_ops(ops)
-
-    def _hoist_loop_invariant_pure_ops(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int]:
-        with current_unique_result_definitions(self, ops) as definitions:
-            cfg = build_cfg(ops)
-            if not cfg.blocks:
-                return ops, 0
-
-            control = cfg.control
-            target_start_by_index: dict[int, int] = {}
-            loop_ranges = sorted(
-                (
-                    (start, end)
-                    for start, end in control.loop_start_to_end.items()
-                    if end > start
-                ),
-                key=lambda item: (item[1] - item[0], item[0]),
-            )
-
-            const_by_name = primitive_const_values(definitions)
-
-            for loop_start, loop_end in loop_ranges:
-                if loop_end is None or loop_end <= loop_start:
-                    continue
-                # In generators, loops containing state_yield create resume points
-                # inside the loop body.  Hoisting definitions before the loop would
-                # leave them undefined when the generator is resumed at that point.
-                has_yield = any(
-                    ops[i].kind == "STATE_YIELD"
-                    for i in range(loop_start + 1, loop_end)
-                )
-                if has_yield:
-                    continue
-                pre_defs = self._collect_defined_value_names(ops[:loop_start])
-                hoisted_defs: set[str] = set()
-                for idx in range(loop_start + 1, loop_end):
-                    op = ops[idx]
-                    if op.result.name == "none":
-                        continue
-                    if op.kind == "PHI":
-                        continue
-                    if self._op_effect_class(op, const_by_name=const_by_name) != "pure":
-                        continue
-                    if not self._op_instance_cannot_raise(op, const_by_name):
-                        continue
-                    uses: set[str] = set()
-                    for arg in op.args:
-                        self._collect_arg_value_names(arg, uses)
-                    if uses.issubset(pre_defs.union(hoisted_defs)):
-                        target_start_by_index.setdefault(idx, loop_start)
-                        hoisted_defs.add(op.result.name)
-
-            if not target_start_by_index:
-                return ops, 0
-
-            out: list[MoltOp] = []
-            hoisted_count = 0
-            for idx, op in enumerate(ops):
-                if op.kind == "LOOP_START":
-                    hoisted_here = [
-                        ops[candidate_idx]
-                        for candidate_idx, target_start in sorted(
-                            target_start_by_index.items()
-                        )
-                        if target_start == idx
-                    ]
-                    out.extend(hoisted_here)
-                    hoisted_count += len(hoisted_here)
-                if idx in target_start_by_index:
-                    continue
-                out.append(op)
-
-            return out, hoisted_count
 
     def _run_cse_canonicalization_round(
         self,
@@ -359,7 +287,6 @@ class MidendPipelineMixin(_MixinBase):
         func_stats["edge_thread_attempted"] += 1
         func_stats["gvn_attempted"] += 1
         func_stats["cse_attempted"] += 1
-        func_stats["licm_attempted"] += 1
         func_stats["dce_attempted"] += 1
 
         policy = self._resolve_midend_function_policy(
@@ -392,7 +319,6 @@ class MidendPipelineMixin(_MixinBase):
         degraded = False
         enable_deep_edge_thread = policy.enable_deep_edge_thread
         enable_cse = policy.enable_cse
-        enable_licm = policy.enable_licm
         enable_guard_hoist = policy.enable_guard_hoist
         max_rounds = max(2, policy.max_rounds)
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
@@ -457,12 +383,6 @@ class MidendPipelineMixin(_MixinBase):
                 "policy_init",
                 "disable_guard_hoist",
             )
-        if not enable_licm:
-            add_degrade_event(
-                "policy_tier_limit",
-                "policy_init",
-                "disable_licm",
-            )
 
         def maybe_apply_budget_degrade(
             stage: str,
@@ -486,7 +406,6 @@ class MidendPipelineMixin(_MixinBase):
             nonlocal enable_deep_edge_thread
             nonlocal enable_cse
             nonlocal enable_guard_hoist
-            nonlocal enable_licm
             nonlocal max_rounds
             nonlocal sccp_iter_cap
             nonlocal cse_iter_cap
@@ -514,9 +433,6 @@ class MidendPipelineMixin(_MixinBase):
                 elif enable_guard_hoist:
                     enable_guard_hoist = False
                     action = "disable_guard_hoist"
-                elif enable_licm:
-                    enable_licm = False
-                    action = "disable_licm"
                 if action is None:
                     break
                 degraded = True
@@ -545,7 +461,6 @@ class MidendPipelineMixin(_MixinBase):
         total_label_prunes = 0
         total_jump_noops = 0
         total_try_join_threads = 0
-        total_licm_hoists = 0
         total_phi_edge_trims = 0
         total_loop_rewrite_attempts = 0
         total_loop_rewrite_accepted = 0
@@ -639,42 +554,26 @@ class MidendPipelineMixin(_MixinBase):
                     (
                         step_ops,
                         loop_rewrites,
-                        try_marker_prunes,
                         loop_marker_prunes,
-                        try_body_prunes,
                         check_exception_threads,
-                        check_exception_elisions,
-                    ) = self._rewrite_loop_try_edge_threading(
+                    ) = self._rewrite_loop_edge_threading(
                         step_ops,
                         cfg=threaded_cfg,
                         control=threaded_cfg.control,
                         executable_edges=threaded_sccp.executable_edges,
                         loop_break_choice_by_index=threaded_sccp.loop_break_choice_by_index,
-                        try_exception_possible_by_start=threaded_sccp.try_exception_possible_by_start,
-                        try_normal_possible_by_start=threaded_sccp.try_normal_possible_by_start,
-                        guard_fail_indices=threaded_sccp.guard_fail_indices,
                     )
                 else:
                     (
                         loop_rewrites,
-                        try_marker_prunes,
                         loop_marker_prunes,
-                        try_body_prunes,
                         check_exception_threads,
-                        check_exception_elisions,
-                    ) = (0, 0, 0, 0, 0, 0)
+                    ) = (0, 0, 0)
 
                 total_loop_edge_prunes += loop_rewrites
-                total_try_edge_prunes += (
-                    try_marker_prunes
-                    + try_body_prunes
-                    + check_exception_threads
-                    + check_exception_elisions
-                )
+                total_try_edge_prunes += check_exception_threads
                 total_loop_marker_prunes += loop_marker_prunes
-                total_loop_rewrite_accepted += (
-                    loop_rewrites + loop_marker_prunes + try_body_prunes
-                )
+                total_loop_rewrite_accepted += loop_rewrites + loop_marker_prunes
                 self._record_midend_pass_sample(
                     "sccp_edge_thread",
                     elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
@@ -682,10 +581,7 @@ class MidendPipelineMixin(_MixinBase):
                         branch_prunes
                         + loop_rewrites
                         + loop_marker_prunes
-                        + try_marker_prunes
-                        + try_body_prunes
                         + check_exception_threads
-                        + check_exception_elisions
                         + phi_trims
                     )
                     > 0,
@@ -775,37 +671,6 @@ class MidendPipelineMixin(_MixinBase):
                     degraded=True,
                 )
             maybe_apply_budget_degrade(
-                f"round_{round_index}_post_guard_hoist",
-                round_index - 1,
-                ops_now=len(step_ops),
-                upcoming_pass="licm",
-            )
-
-            # Auxiliary: LICM/loop hoists in same deterministic round.
-            if enable_licm:
-                pass_start = time.perf_counter()
-                step_ops, licm_hoists = self._hoist_loop_invariant_pure_ops(step_ops)
-                self._record_midend_pass_sample(
-                    "licm",
-                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
-                    accepted=licm_hoists > 0,
-                    degraded=degraded,
-                )
-            else:
-                licm_hoists = 0
-                self._record_midend_pass_sample(
-                    "licm",
-                    elapsed_ms=0.0,
-                    accepted=False,
-                    degraded=True,
-                )
-            total_licm_hoists += licm_hoists
-            maybe_apply_budget_degrade(
-                f"round_{round_index}_post_hoists",
-                round_index - 1,
-                ops_now=len(step_ops),
-            )
-            maybe_apply_budget_degrade(
                 f"round_{round_index}_pre_prune",
                 round_index - 1,
                 ops_now=len(step_ops),
@@ -869,7 +734,7 @@ class MidendPipelineMixin(_MixinBase):
             # 5) verifier
             pass_start = time.perf_counter()
             # Compute predefined from the ORIGINAL ops at round start, not the
-            # current ops.  If LICM+CSE eliminated a variable's definition,
+            # current ops. If a rewrite eliminated a variable's definition,
             # that variable is NOT predefined — it's a dangling reference that
             # must be caught.  Using step_ops here masks the bug because
             # _infer_predefined_value_names treats "used but not defined" as
@@ -1012,8 +877,6 @@ class MidendPipelineMixin(_MixinBase):
             ]
             if enable_guard_hoist:
                 round_passes_run.append("guard_hoist")
-            if enable_licm:
-                round_passes_run.append("licm")
             round_passes_run.append("prune")
             round_passes_run.append("verifier")
             if not round_failures:
@@ -1122,7 +985,6 @@ class MidendPipelineMixin(_MixinBase):
             total_loop_edge_prunes + total_loop_marker_prunes
         )
         self.midend_stats["try_edge_thread_prunes"] += total_try_edge_prunes
-        self.midend_stats["licm_hoists"] += total_licm_hoists
         self.midend_stats["unreachable_blocks_removed"] += total_unreachable_blocks
         self.midend_stats["cfg_region_prunes"] += total_region_prunes
         self.midend_stats["label_prunes"] += total_label_prunes
@@ -1140,7 +1002,6 @@ class MidendPipelineMixin(_MixinBase):
             + total_jump_noops
             + total_try_join_threads
             + total_phi_edge_trims
-            + total_licm_hoists
         )
         if sccp_applied > 0:
             func_stats["sccp_accepted"] += 1
@@ -1186,10 +1047,6 @@ class MidendPipelineMixin(_MixinBase):
         if self.midend_stats.get("gvn_hits", 0) > gvn_hits_before:
             func_stats["gvn_accepted"] += 1
             func_stats["cse_accepted"] += 1
-        if total_licm_hoists > 0:
-            func_stats["licm_accepted"] += 1
-        else:
-            func_stats["licm_rejected"] += 1
         if self.midend_stats.get("dce_removed_total", 0) > dce_removed_before:
             func_stats["dce_accepted"] += 1
 

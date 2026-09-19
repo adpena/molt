@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn retained_exception_alias_outlives_its_match_region() {
+    let mut func = TirFunction::new("retained_context_error".into(), vec![], TirType::None);
+    let handler = func.fresh_block();
+    let observed = func.fresh_value();
+    let retained = func.fresh_value();
+    func.value_types.insert(observed, TirType::DynBox);
+    func.value_types.insert(retained, TirType::DynBox);
+    func.label_id_map.insert(handler.0, 4);
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+        Terminator::Return { values: vec![] };
+    let mut capture = original_copy("binding_alias", vec![retained]);
+    capture.operands = vec![observed];
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![
+                original_copy("exception_last_pending", vec![observed]),
+                capture,
+                original_copy("exception_clear", vec![]),
+                original_copy("exception_pop", vec![]),
+                op(OpCode::Call, vec![retained], vec![]),
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    let ops = &func.blocks[&handler].ops;
+    let drop_at = |value| {
+        ops.iter()
+            .position(|op| op.opcode == OpCode::DecRef && op.operands == vec![value])
+            .expect("each independent owner is released")
+    };
+    let pop = ops.iter().position(|op| {
+        matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "exception_pop")
+    }).unwrap();
+    let callback = ops.iter().position(|op| op.opcode == OpCode::Call).unwrap();
+    assert_eq!(drop_at(observed), pop + 1);
+    assert!(drop_at(observed) < callback);
+    assert!(callback < drop_at(retained));
+    assert_eq!(count_decrefs(&func), 2);
+}
+
+#[test]
 fn zero_insertion_borrowed_param_function_still_marks_drop_inserted() {
     let mut func = TirFunction::new(
         "borrowed_param_no_owned_temps".into(),

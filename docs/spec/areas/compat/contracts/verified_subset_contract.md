@@ -125,9 +125,12 @@ the policy tool, executes all coordinates, signs every passing receipt with the
 workflow's GitHub OIDC identity, preserves each receipt as a separate artifact,
 and verifies both Sigstore provenance and the exact receipt closure. Receipt
 verification pins the signer workflow, source digest, repository, and hosted
-runner requirement. Release staging repeats that provenance verification for
+runner requirement. Release staging must repeat that provenance verification for
 every E3 receipt inside the source-addressed release-exit archive before any
-candidate build may proceed. The workflow is the execution authority; the local
+candidate build may proceed. That publication admission is not yet wired into
+the active release workflow; it is a release blocker, as recorded in the
+[packaging acceptance contract](../../../../../packaging/PACKAGING.md).
+The verified-subset workflow is the execution authority; the local
 `check` command validates policy and reports remaining expected-failure debt but
 does not claim conformance.
 

@@ -2,10 +2,7 @@ use self::ops::{DispatchOpScratch, emit_dispatch_op};
 use super::super::op_loop::WasmFunctionEmitContext;
 use super::DispatchMode;
 use super::block_layout::emit_dispatch_block_lookup;
-use super::common::{
-    emit_dispatch_trailing_return, emit_stateful_resume_prelude,
-    exception_handler_region_indices_from_label_map,
-};
+use super::common::{emit_dispatch_trailing_return, emit_stateful_resume_prelude};
 use super::plan::{NonLinearDispatchLocals, NonLinearDispatchPlan};
 use wasm_encoder::{BlockType, Function, Instruction};
 
@@ -42,10 +39,6 @@ fn emit_non_linear_dispatch(
     let dispatch_depths: Vec<u32> = (0..block_count)
         .map(|idx| (block_count - 1 - idx) as u32)
         .collect();
-    let exception_regions = exception_handler_region_indices_from_label_map(
-        &func_ir.ops,
-        &plan.control_maps.label_to_index,
-    );
 
     match mode {
         DispatchMode::Stateful => emit_stateful_resume_prelude(func, op_emitter, plan, locals),
@@ -87,7 +80,6 @@ fn emit_non_linear_dispatch(
                 op,
                 idx,
                 depth,
-                &exception_regions,
                 &mut scratch,
             );
             if block_terminated {

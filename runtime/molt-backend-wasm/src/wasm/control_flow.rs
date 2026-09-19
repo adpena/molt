@@ -11,7 +11,8 @@ pub(in crate::wasm) use self::dispatch_maps::{
 #[cfg(test)]
 mod tests {
     use super::{build_dispatch_control_maps, has_non_linear_control_flow};
-    use crate::OpIR;
+    use crate::wasm::function_frame::{WasmFrameControlMode, WasmFunctionFramePlan};
+    use crate::{FunctionIR, OpIR};
 
     fn op(kind: &str, value: Option<i64>) -> OpIR {
         OpIR {
@@ -34,6 +35,47 @@ mod tests {
         );
 
         assert_eq!(maps.label_to_index.get(&7), Some(&2));
+    }
+
+    #[test]
+    fn path_local_region_closes_route_through_dispatch_without_closing_if_or_loop() {
+        for stateful in [false, true] {
+            let mut ops = vec![
+                op("try_start", Some(7)),
+                op("loop_start", None),
+                op_with_io("if", Some(vec!["condition"]), None),
+                op("try_end", Some(7)),
+                op("loop_break", None),
+                op("end_if", None),
+                op("loop_end", None),
+                op("try_end", Some(7)),
+                op("label", Some(7)),
+                op("ret_void", None),
+            ];
+            if stateful {
+                ops.push(op("state_switch", None));
+            }
+            let function = FunctionIR {
+                name: "path_local_context_close".to_string(),
+                params: vec!["self".to_string(), "condition".to_string()],
+                ops,
+                ..FunctionIR::default()
+            };
+            let (_, frame) =
+                WasmFunctionFramePlan::for_function(&function).into_function_and_frame();
+            assert!(
+                frame.control_mode()
+                    == if stateful {
+                        WasmFrameControlMode::Stateful
+                    } else {
+                        WasmFrameControlMode::Jumpful
+                    }
+            );
+            let maps = build_dispatch_control_maps(&function.ops, stateful, &function.name);
+            assert_eq!(maps.end_for_if.get(&2), Some(&5));
+            assert_eq!(maps.loop_break_target.get(&4), Some(&6));
+            assert_eq!(maps.label_to_index.get(&7), Some(&8));
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     ScratchCell,
+    SyncContextExit,
     TryScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -195,144 +196,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             return None
 
         ctx_cell = self._new_scratch_cell(ctx_val, type_hint=ctx_val.type_hint)
-        ctx_mark = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
-        ctx_mark_offset = None
-        if self.is_async():
-            ctx_mark_offset = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", ctx_mark_offset, ctx_mark],
-                    result=MoltValue("none"),
-                )
-            )
-        scope = TryScope(
-            ctx_mark=ctx_mark,
-            finalbody=None,
-            ctx_mark_offset=ctx_mark_offset,
-            try_start_has_handler_value=False,
-        )
-        self.try_scopes.append(scope)
-        ctx_ref = self._load_scratch_cell(ctx_cell)
-        enter_hint = (
-            ctx_val.type_hint
-            if ctx_val.type_hint in {"file_text", "file_bytes"}
-            else "Any"
-        )
-        enter_val = MoltValue(self.next_var(), type_hint=enter_hint)
-        self.emit(MoltOp(kind="CONTEXT_ENTER", args=[ctx_ref], result=enter_val))
-        self._emit_raise_if_pending()
-        if item.optional_vars is not None:
-            self._emit_assign_target(item.optional_vars, enter_val, None)
-        self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
-        try_exc_label = self.next_label()
-        try_done_label = self.next_label()
-        scope.handler_label = try_exc_label
-        scope.done_label = try_done_label
-        self.try_end_labels.append(try_exc_label)
-        self.emit(
-            MoltOp(
-                kind="TRY_START",
-                args=[],
-                result=MoltValue("none"),
-                metadata={"try_region_id": try_exc_label},
-            )
-        )
-        self.context_depth += 1
-        self.control_flow_depth += 1
-        # See _visit_loop_body for the unbound-check snapshot rationale.
-        # `with` blocks may exit via exception before any assignment,
-        # so post-block code can't rely on body-internal discards.
-        unbound_snapshot = set(self.unbound_check_names)
-        try:
-            self._visit_block(node.body)
-        finally:
-            self.unbound_check_names = unbound_snapshot
-            self.control_flow_depth -= 1
-            self.context_depth -= 1
-        self.try_end_labels.pop()
-        # End the protected body region before issuing the normal __exit__ call.
-        # If __exit__ itself raises, it should propagate directly rather than
-        # re-entering the with-exception cleanup path and double-consuming context.
-        self.emit(
-            MoltOp(
-                kind="TRY_END",
-                args=[],
-                result=MoltValue("none"),
-                metadata={"try_region_id": try_exc_label},
-            )
-        )
-        none_exit = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_exit))
-        exit_ok = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_scratch_cell(ctx_cell)
-        self.emit(
-            MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_exit], result=exit_ok)
-        )
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LABEL", args=[try_exc_label], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="TRY_END",
-                args=[],
-                result=MoltValue("none"),
-                metadata={"try_region_id": try_exc_label},
-            )
-        )
-        prior_suppress = self.try_suppress_depth
-        self.try_suppress_depth = len(self.try_end_labels)
-        self.try_handler_scopes.append(scope)
-
-        exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-        pending = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-
-        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        self.emit(
-            MoltOp(
-                kind="EXCEPTION_CONTEXT_SET",
-                args=[exc_val],
-                result=MoltValue("none"),
-            )
-        )
-        exit_res = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_scratch_cell(ctx_cell)
-        self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, exc_val], result=exit_res))
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        not_res = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[exit_res], result=not_res))
-        is_truthy = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[not_res], result=is_truthy))
-        self.emit(MoltOp(kind="IF", args=[is_truthy], result=MoltValue("none")))
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        exit_ok = MoltValue(self.next_var(), type_hint="Any")
-        ctx_ref = self._load_scratch_cell(ctx_cell)
-        self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_val], result=exit_ok))
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        self.emit(MoltOp(kind="LABEL", args=[try_done_label], result=MoltValue("none")))
-        self.try_handler_scopes.pop()
-        self.try_scopes.pop()
-        self.try_suppress_depth = prior_suppress
-        self._expire_exact_class_facts()
+        action = SyncContextExit(ctx_cell)
+        enter_val = self._emit_context_entry(action, ctx_val)
+        self._emit_context_body(node, enter_val, action)
         return None
 
     @_with_module_provenance_loop_flow
@@ -813,7 +679,6 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
-            self._push_loop_static_class_refs(node.body)
             self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
             cond = self._emit_condition(node.test)
             self.emit(
@@ -825,17 +690,17 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             )
             self.control_flow_depth += 1
             try:
-                body_terminated = self._visit_loop_body(
+                loop = self._visit_loop_body(
                     node.body, None, loop_break_flag=break_name
                 )
             finally:
                 self.control_flow_depth -= 1
-            if not body_terminated:
+            if loop.needs_latch:
                 self.emit(
                     MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
                 )
             self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            self._pop_loop_static_class_refs()
+            self._emit_loop_exit(loop)
 
         if guard_map:
             guard_cond = self._emit_guard_map_condition(guard_map)
@@ -914,26 +779,8 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         # for the full rationale.
         unbound_snapshot_try = set(self.unbound_check_names)
 
-        needs_context_unwind = self._block_needs_context_unwind(node.body)
-        ctx_mark: MoltValue | None = None
-        ctx_mark_offset = None
-        if needs_context_unwind:
-            ctx_mark = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
-        if needs_context_unwind and self.is_async():
-            ctx_mark_offset = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", ctx_mark_offset, ctx_mark],
-                    result=MoltValue("none"),
-                )
-            )
         scope = TryScope(
-            ctx_mark=ctx_mark,
-            finalbody=node.finalbody,
-            ctx_mark_offset=ctx_mark_offset,
-            needs_context_unwind=needs_context_unwind,
+            finalbody=node.finalbody, lexical_loops=tuple(self.loop_scopes)
         )
         self.try_scopes.append(scope)
 
@@ -1018,7 +865,6 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
 
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        self._emit_context_unwind_to(scope, exc_val)
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -1048,6 +894,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
+                scope=scope,
                 handler_try_depth=len(self.try_end_labels),
             )
             self.active_exceptions.append(exc_entry)
@@ -1059,7 +906,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     result=MoltValue("none"),
                 )
             )
-            self._emit_guarded_body(handler.body, exc_entry)
+            self._emit_guarded_body(handler.body)
             handler_terminated = self.block_terminated
             if not handler_terminated:
                 self._emit_exception_handler_exit_cleanup(exc_entry)
@@ -1098,7 +945,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         result=MoltValue("none"),
                     )
                 )
-            final_entry = ActiveException(value=final_exc, slot=final_slot)
+            final_entry = ActiveException(value=final_exc, scope=scope, slot=final_slot)
             self.active_exceptions.append(final_entry)
             self.emit(
                 MoltOp(
@@ -1108,7 +955,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self._emit_finalbody(node.finalbody, final_entry, popped_scopes=0)
+            self._emit_finalbody(scope)
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
@@ -1175,9 +1022,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         if node.orelse:
             if node.finalbody:
                 with self._suppress_check_exception(emit_on_exit=False):
-                    self._emit_guarded_body(node.orelse, None)
+                    self._emit_guarded_body(node.orelse)
             else:
-                self._emit_guarded_body(node.orelse, None)
+                self._emit_guarded_body(node.orelse)
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
@@ -1198,7 +1045,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     )
                 )
             else_final_entry = ActiveException(
-                value=else_final_exc, slot=else_final_slot
+                value=else_final_exc, scope=scope, slot=else_final_slot
             )
             self.active_exceptions.append(else_final_entry)
             self.emit(
@@ -1209,7 +1056,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
+            self._emit_finalbody(scope)
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
@@ -1326,26 +1173,8 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         # try/except*: snapshot unbound_check_names — see visit_Try.
         unbound_snapshot_try_star = set(self.unbound_check_names)
 
-        needs_context_unwind = self._block_needs_context_unwind(node.body)
-        ctx_mark: MoltValue | None = None
-        ctx_mark_offset = None
-        if needs_context_unwind:
-            ctx_mark = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONTEXT_DEPTH", args=[], result=ctx_mark))
-        if needs_context_unwind and self.is_async():
-            ctx_mark_offset = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", ctx_mark_offset, ctx_mark],
-                    result=MoltValue("none"),
-                )
-            )
         scope = TryScope(
-            ctx_mark=ctx_mark,
-            finalbody=node.finalbody,
-            ctx_mark_offset=ctx_mark_offset,
-            needs_context_unwind=needs_context_unwind,
+            finalbody=node.finalbody, lexical_loops=tuple(self.loop_scopes)
         )
         self.try_scopes.append(scope)
 
@@ -1398,7 +1227,6 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
 
         self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
-        self._emit_context_unwind_to(scope, exc_val)
         self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
 
         rest_cell = self._emit_cell_new(exc_val)
@@ -1511,6 +1339,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     slot=exc_slot_offset,
                     handler_name=handler.name,
                     is_handler=True,
+                    scope=scope,
                     handler_try_depth=len(self.try_end_labels),
                 )
                 self.active_exceptions.append(exc_entry)
@@ -1524,7 +1353,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         result=MoltValue("none"),
                     )
                 )
-                self._emit_guarded_body(handler.body, exc_entry)
+                self._emit_guarded_body(handler.body)
                 handler_terminated = self.block_terminated
                 if not handler_terminated:
                     self._emit_exception_handler_exit_cleanup(exc_entry)
@@ -1665,7 +1494,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                         result=MoltValue("none"),
                     )
                 )
-            final_entry = ActiveException(value=final_exc, slot=final_slot)
+            final_entry = ActiveException(value=final_exc, scope=scope, slot=final_slot)
             self.active_exceptions.append(final_entry)
             self.emit(
                 MoltOp(
@@ -1675,7 +1504,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self._emit_finalbody(node.finalbody, final_entry, popped_scopes=0)
+            self._emit_finalbody(scope)
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
@@ -1742,9 +1571,9 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
         if node.orelse:
             if node.finalbody:
                 with self._suppress_check_exception(emit_on_exit=False):
-                    self._emit_guarded_body(node.orelse, None)
+                    self._emit_guarded_body(node.orelse)
             else:
-                self._emit_guarded_body(node.orelse, None)
+                self._emit_guarded_body(node.orelse)
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
@@ -1765,7 +1594,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     )
                 )
             else_final_entry = ActiveException(
-                value=else_final_exc, slot=else_final_slot
+                value=else_final_exc, scope=scope, slot=else_final_slot
             )
             self.active_exceptions.append(else_final_entry)
             self.emit(
@@ -1776,7 +1605,7 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 )
             )
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self._emit_finalbody(node.finalbody, else_final_entry, popped_scopes=0)
+            self._emit_finalbody(scope)
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
@@ -1902,44 +1731,20 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
             return exc_val
 
         if node.exc is None:
-            if self.active_exceptions:
-                if clear_handlers:
-                    self.emit(
-                        MoltOp(
-                            kind="EXCEPTION_STACK_CLEAR",
-                            args=[],
-                            result=MoltValue("none"),
-                        )
-                    )
-                exc_val = self._active_exception_value(self.active_exceptions[-1])
-                # Bare `raise` escaping `except ... as NAME` deletes NAME too
-                # (the value is already captured in `exc_val`).
-                self._emit_escaping_handler_name_deletes()
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                is_none = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-                self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-                err_val = self._emit_exception_new(
-                    "RuntimeError", "No active exception to reraise"
-                )
-                emit_raise_or_defer(err_val)
-                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                emit_raise_or_defer(exc_val)
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                if should_exit:
-                    self._emit_raise_exit()
-                return None
+            # Runtime handled state is shared with sys.exception(), including
+            # dynamically enclosing callers and finally scopes with no pending
+            # error. Saved pending-error slots are not a second active authority.
+            exc_val = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(
+                MoltOp(kind="CALL", args=["molt_exception_active"], result=exc_val)
+            )
             if clear_handlers:
                 self.emit(
                     MoltOp(
-                        kind="EXCEPTION_STACK_CLEAR",
-                        args=[],
-                        result=MoltValue("none"),
+                        kind="EXCEPTION_STACK_CLEAR", args=[], result=MoltValue("none")
                     )
                 )
-            exc_val = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=exc_val))
+            self._emit_escaping_handler_name_deletes()
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
             is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -1968,7 +1773,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                 )
             )
         if self.active_exceptions:
-            context_val = self._active_exception_value(self.active_exceptions[-1])
+            context_val = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(
+                MoltOp(kind="CALL", args=["molt_exception_active"], result=context_val)
+            )
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_OBJ",
@@ -2036,11 +1844,13 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_Break(self, node: ast.Break) -> None:
         if self.finally_depth > 0:
             self._emit_syntax_warning(node, "'break' in a 'finally' block")
-        if not self.loop_break_flags:
+        if not self.loop_scopes:
             raise SyntaxError(f"'break' outside loop (line {node.lineno})")
         del node
-        if self.loop_break_flags:
-            break_slot = self.loop_break_flags[-1]
+        loop = self.loop_scopes[-1]
+        popped_labels = self._emit_loop_unwind()
+        try:
+            break_slot = loop.break_flag
             if break_slot is not None:
                 break_val = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=break_val))
@@ -2054,10 +1864,10 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
                     )
                 else:
                     self._store_scratch_cell(break_slot, break_val)
-        self._emit_exception_handler_exit_cleanup()
-        popped_labels = self._emit_loop_unwind()
-        try:
-            self.emit(MoltOp(kind="LOOP_BREAK", args=[], result=MoltValue("none")))
+            loop.break_used = True
+            self.emit(
+                MoltOp(kind="JUMP", args=[loop.break_label], result=MoltValue("none"))
+            )
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)
         self.block_terminated = True
@@ -2066,41 +1876,18 @@ class ControlFlowStatementVisitorMixin(_MixinBase):
     def visit_Continue(self, node: ast.Continue) -> None:
         if self.finally_depth > 0:
             self._emit_syntax_warning(node, "'continue' in a 'finally' block")
-        if not self.loop_break_flags:
+        if not self.loop_scopes:
             raise SyntaxError(f"'continue' not properly in loop (line {node.lineno})")
         del node
-        self._emit_exception_handler_exit_cleanup()
+        loop = self.loop_scopes[-1]
         popped_labels = self._emit_loop_unwind()
         try:
-            if self.async_index_loop_stack:
-                idx_slot = self.async_index_loop_stack[-1]
-                idx_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", idx_slot],
-                        result=idx_val,
-                    )
+            loop.continue_used = True
+            self.emit(
+                MoltOp(
+                    kind="JUMP", args=[loop.continue_label], result=MoltValue("none")
                 )
-                one = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx_val, one], result=next_idx))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", idx_slot, next_idx],
-                        result=MoltValue("none"),
-                    )
-                )
-            elif self.range_loop_stack:
-                idx, step = self.range_loop_stack[-1]
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-                self.emit(
-                    MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=next_idx)
-                )
-            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            )
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)
         self.block_terminated = True

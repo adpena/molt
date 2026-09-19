@@ -11,37 +11,31 @@
 //! # Design
 //! Variables are universally `MoltValue` and cloned on every use. This is
 //! correct-first — type specialization and borrow elision are future passes.
-//! Phi nodes are hoisted to function-top `let mut` declarations, same
-//! strategy as the Luau backend.
+//! Labelled control flow projects the shared executable graph after canonical
+//! SSA lowering has resolved PHI inputs and loop carriers. Structured-only
+//! functions retain direct emission. Runtime capability admission is separate
+//! from this internal source-emission machinery.
 
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, SimpleIR};
-use molt_tir::target_admission::validate_target_contract;
+use molt_tir::target_admission::validate_target_contract_with_representation_plan;
 use molt_tir::tir::TargetInfo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 mod emit_helpers;
+mod flow_dispatch;
 mod lowering;
 mod op_emitter;
 mod prelude;
 mod runtime_surface;
 
-use lowering::{
-    build_phi_injection_maps, collect_phi_assignments, collect_scope_escapes, lower_early_returns,
-    lower_iter_to_for, strip_dead_after_return,
-};
+use lowering::{build_phi_injection_maps, collect_phi_assignments, collect_scope_escapes};
 
 #[derive(Clone)]
 enum AliasBinding {
     Value(String),
     Indexed { obj: String, key: String },
-}
-
-#[derive(Clone)]
-struct JumpReturnCandidate {
-    expr: String,
-    min_scope_depth: i32,
 }
 
 /// Transpiles Molt `SimpleIR` into Rust source text.
@@ -90,7 +84,11 @@ impl RustBackend {
     /// Emit source into a private buffer. Public callers must enter through
     /// `compile_checked`, which owns the Result contract and never publishes a
     /// partial program.
-    fn emit_source(&mut self, ir: &SimpleIR) -> String {
+    fn emit_source(
+        &mut self,
+        ir: &SimpleIR,
+        plans: Option<&BTreeMap<String, ScalarRepresentationPlan>>,
+    ) -> String {
         // Reset the fail-closed accumulator for this compilation so a reused
         // backend instance does not carry unsupported-op records across runs.
         self.unsupported_ops.clear();
@@ -100,7 +98,7 @@ impl RustBackend {
         std::mem::swap(&mut self.output, &mut func_body);
 
         for func in &ir.functions {
-            self.emit_function(func);
+            self.emit_function(func, plans.and_then(|plans| plans.get(&func.name)));
             self.output.push('\n');
         }
 
@@ -126,7 +124,7 @@ impl RustBackend {
 
     #[cfg(test)]
     fn compile(&mut self, ir: &SimpleIR) -> String {
-        self.emit_source(ir)
+        self.emit_source(ir, None)
     }
 
     /// Compile and reject any op the dispatch could not lower.
@@ -134,8 +132,16 @@ impl RustBackend {
     /// Dispatch records are the sole authority; unsupported operations emit no
     /// source and this Result boundary never publishes a partial program.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        validate_target_contract(ir, &TargetInfo::rust_release_fast())?;
-        let source = self.emit_source(ir);
+        let mut plans = BTreeMap::new();
+        validate_target_contract_with_representation_plan(
+            ir,
+            &TargetInfo::rust_release_fast(),
+            |func, plan| {
+                plans.insert(func.name.clone(), plan.clone());
+                Ok(())
+            },
+        )?;
+        let source = self.emit_source(ir, Some(&plans));
         if !self.unsupported_ops.is_empty() {
             return Err(format!(
                 "rust backend refuses to emit fail-open codegen for unsupported op(s): {} \
@@ -220,7 +226,11 @@ impl RustBackend {
 
     // Function emission
 
-    fn emit_function(&mut self, func: &FunctionIR) {
+    fn emit_function(
+        &mut self,
+        func: &FunctionIR,
+        admitted_plan: Option<&ScalarRepresentationPlan>,
+    ) {
         let is_main = func.name == "molt_main"
             || func.name == "__main__"
             || func.name == "molt___main__"
@@ -235,24 +245,42 @@ impl RustBackend {
 
         let name = rust_ident(&func.name);
 
-        // Pre-lower ops
-        let ops = lower_early_returns(&func.ops);
-        let ops = strip_dead_after_return(&ops);
-        let ops = lower_iter_to_for(&ops);
-        let plan_func = FunctionIR {
-            name: func.name.clone(),
-            params: func.params.clone(),
-            ops: ops.clone(),
-            param_types: func.param_types.clone(),
-            source_file: func.source_file.clone(),
-            is_extern: func.is_extern,
-            codegen_partition: func.codegen_partition,
-            execution_context: func.execution_context,
+        let dispatch = func.ops.iter().any(|op| {
+            molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_reference(&op.kind)
+                || molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_definition(
+                    &op.kind,
+                )
+        });
+        // The shared structured-PHI rewrite exposes stores before canonical SSA
+        // owns predecessor arguments and loop-index recurrence. General labelled
+        // PHIs are not supported by that rewrite and fail closed in dispatch.
+        // Labels are never interpreted as return sites or erased after a return.
+        let ops = if dispatch {
+            let mut normalized = func.clone();
+            molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut normalized.ops);
+            let tir = molt_tir::tir::lower_from_simple::lower_to_tir_for_target(
+                &normalized,
+                &TargetInfo::rust_release_fast(),
+            );
+            molt_tir::tir::lower_to_simple::lower_to_simple_ir(&tir)
+        } else {
+            func.ops.clone()
         };
-        self.current_scalar_plan = Some(ScalarRepresentationPlan::for_function_ir_for_target(
-            &plan_func,
-            &TargetInfo::rust_release_fast(),
-        ));
+        let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));
+        // An unchanged stream can reuse admission's plan. SSA normalization can
+        // rename values, so its facts must be projected from that exact stream.
+        self.current_scalar_plan = Some(if !dispatch && let Some(plan) = admitted_plan {
+            plan.clone()
+        } else {
+            let plan_func = FunctionIR {
+                ops: ops.clone(),
+                ..func.clone()
+            };
+            ScalarRepresentationPlan::for_function_ir_for_target(
+                &plan_func,
+                &TargetInfo::rust_release_fast(),
+            )
+        });
 
         // Collect loop index vars (need pre-declaration so they persist across iterations)
         let loop_idx_vars: Vec<String> = ops
@@ -293,22 +321,24 @@ impl RustBackend {
             seen
         };
 
-        // Phi hoisting — same algorithm as Luau backend
+        // Graph liveness owns cross-block storage; direct structured emission
+        // retains its lexical PHI placement.
         self.hoisted_vars.clear();
         self.phi_to_frame.clear();
-        let phi_assignments = collect_phi_assignments(&ops, &mut self.hoisted_vars);
+        let phi_assignments = if let Some(flow) = &flow {
+            self.hoisted_vars
+                .extend(flow.cross_block_values.iter().map(|name| rust_ident(name)));
+            BTreeMap::new()
+        } else {
+            collect_phi_assignments(&ops, &mut self.hoisted_vars)
+        };
         let (phi_inject_before_else, phi_inject_before_end_if) =
             build_phi_injection_maps(&ops, &phi_assignments);
 
         // Scope-escape hoisting
-        collect_scope_escapes(&ops, func, &mut self.hoisted_vars);
-
-        let mut stable_return_vars: BTreeSet<String> =
-            self.current_params.iter().cloned().collect();
-        stable_return_vars.extend(loop_idx_vars.iter().cloned());
-        stable_return_vars.extend(closure_slots.iter().cloned());
-        stable_return_vars.extend(named_storage_vars.iter().cloned());
-        stable_return_vars.extend(self.hoisted_vars.iter().cloned());
+        if flow.is_none() {
+            collect_scope_escapes(&ops, func, &mut self.hoisted_vars);
+        }
 
         if is_main {
             self.emit_line("fn molt_main() {");
@@ -352,159 +382,66 @@ impl RustBackend {
         // Save function body start for hoisted-var post-processing
         let func_body_start = self.output.len();
 
-        // Emit ops
-        // Track the most recent store result for use by `jump`.
-        // The `jump N` IR op is a forward goto used for early function returns:
-        //   store result → var/frame[slot]; jump N; ... ; label N: load var/frame[slot]; ret
-        // We emit `return <stored_expr>;` at the jump site so the early return value is
-        // correctly returned to the caller.
-        //
-        // Two patterns (tree_shake_luau decides which):
-        //   - store_local(var, val): after optimization, `var` holds the return value
-        //   - store_index(frame, slot, val): unoptimized, must molt_get_item to recover
-        let mut last_jump_return: Option<JumpReturnCandidate> = None; // the Rust expr to return at `jump`
-        let mut scope_depth: i32 = 0;
-        let mut i = 0;
-        while i < ops.len() {
-            if let Some(injects) = phi_inject_before_else.get(&i) {
-                for (var, val) in injects {
-                    self.emit_line(&format!("{var} = {val}.clone();"));
-                }
-            }
-            if let Some(injects) = phi_inject_before_end_if.get(&i) {
-                for (var, val) in injects {
-                    self.emit_line(&format!("{var} = {val}.clone();"));
-                }
-            }
-
-            // Track last store for jump early-return inference.
-            match ops[i].kind.as_str() {
-                "store_local" | "store" => {
-                    // store_local(var, val) → var holds the return value directly
-                    if let Some(ref v) = ops[i].var {
-                        let dst = rust_ident(v);
-                        let min_scope_depth = if stable_return_vars.contains(&dst) {
-                            0
-                        } else {
-                            scope_depth
-                        };
-                        last_jump_return = Some(JumpReturnCandidate {
-                            expr: format!("{dst}.clone()"),
-                            min_scope_depth,
-                        });
+        if let Some(flow) = &flow {
+            self.emit_logical_flow(&ops, flow);
+        } else {
+            let mut i = 0;
+            while i < ops.len() {
+                if let Some(injects) = phi_inject_before_else.get(&i) {
+                    for (var, val) in injects {
+                        self.emit_line(&format!("{var} = {val}.clone();"));
                     }
                 }
-                "store_index" | "set_item" | "store_subscript" => {
-                    // store_index(frame, slot, val) returns the stored source value.
-                    // Tracking frame/slot references directly leaks block-scoped
-                    // temps when the eventual jump is emitted after the scope closes.
-                    if let Some(args) = ops[i].args.as_deref()
-                        && args.len() >= 3
-                    {
-                        let src = rust_ident(&args[2]);
-                        let min_scope_depth = if stable_return_vars.contains(&src) {
-                            0
-                        } else {
-                            scope_depth
-                        };
-                        last_jump_return = Some(JumpReturnCandidate {
-                            expr: format!("{src}.clone()"),
-                            min_scope_depth,
-                        });
+                if let Some(injects) = phi_inject_before_end_if.get(&i) {
+                    for (var, val) in injects {
+                        self.emit_line(&format!("{var} = {val}.clone();"));
                     }
                 }
-                _ => {}
-            }
 
-            // Intercept `jump N`: emit early return via last stored value.
-            // This covers: store → jump → (skipped code) → label → load → ret
-            if ops[i].kind == "jump" {
-                if self.current_is_main {
-                    self.emit_param_writeback();
-                    self.emit_line("return;");
-                } else if let Some(candidate) = last_jump_return.clone() {
-                    self.emit_param_writeback();
-                    self.emit_line(&format!("return {};", candidate.expr));
+                if ops[i].kind == "loop_start"
+                    && i + 1 < ops.len()
+                    && ops[i + 1].kind == "loop_index_start"
+                {
+                    let idx_op = &ops[i + 1];
+                    if let Some(ref out_name) = idx_op.out {
+                        let out = rust_ident(out_name);
+                        let args = idx_op.args.as_deref().unwrap_or(&[]);
+                        let start = args
+                            .first()
+                            .map(|s| rust_ident(s))
+                            .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
+                        self.emit_line(&format!("{out} = {start}.clone();"));
+                    }
+                    self.emit_op(&ops[i]);
+                    i += 2;
                 } else {
-                    self.unsupported_ops.push(format!(
-                        "`jump` (rust backend): function `{}` has no structurally valid return source",
-                        func.name
-                    ));
+                    self.emit_op(&ops[i]);
+                    i += 1;
                 }
-                i += 1;
-                continue;
-            }
-
-            // `label N` is the jump target — it's a no-op in structured Rust code.
-            if ops[i].kind == "label" {
-                i += 1;
-                continue;
-            }
-
-            let processed_kind = if ops[i].kind == "loop_start"
-                && i + 1 < ops.len()
-                && ops[i + 1].kind == "loop_index_start"
-            {
-                let idx_op = &ops[i + 1];
-                if let Some(ref out_name) = idx_op.out {
-                    let out = rust_ident(out_name);
-                    let args = idx_op.args.as_deref().unwrap_or(&[]);
-                    let start = args
-                        .first()
-                        .map(|s| rust_ident(s))
-                        .unwrap_or_else(|| "MoltValue::Int(0)".to_string());
-                    self.emit_line(&format!("{out} = {start}.clone();"));
-                }
-                self.emit_op(&ops[i]);
-                i += 2;
-                "loop_start"
-            } else {
-                let kind = ops[i].kind.as_str();
-                self.emit_op(&ops[i]);
-                i += 1;
-                kind
-            };
-
-            match processed_kind {
-                "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter" => {
-                    scope_depth += 1;
-                }
-                "else" => {
-                    if last_jump_return
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.min_scope_depth >= scope_depth)
-                    {
-                        last_jump_return = None;
-                    }
-                }
-                "end_if" | "loop_end" | "while_end" | "end_for" => {
-                    scope_depth = (scope_depth - 1).max(0);
-                    if last_jump_return
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.min_scope_depth > scope_depth)
-                    {
-                        last_jump_return = None;
-                    }
-                }
-                _ => {}
             }
         }
 
-        let needs_implicit_none = ops
-            .iter()
-            .rev()
-            .find(|op| {
-                !op.is_async_work_poll()
-                    && !matches!(
+        let needs_implicit_none = flow.is_none()
+            && ops
+                .iter()
+                .rev()
+                .find(|op| {
+                    !op.is_async_work_poll()
+                        && !matches!(
+                            op.kind.as_str(),
+                            "nop"
+                                | "comment"
+                                | "debug_label"
+                                | "line"
+                                | "check_exception"
+                                | "label"
+                        )
+                })
+                .is_none_or(|op| {
+                    !molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
                         op.kind.as_str(),
-                        "nop" | "comment" | "debug_label" | "line" | "check_exception" | "label"
-                    )
-            })
-            .is_none_or(|op| {
-                !molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
-                    op.kind.as_str(),
-                ) && !matches!(op.kind.as_str(), "jump" | "raise" | "reraise")
-            });
+                    ) && !matches!(op.kind.as_str(), "jump" | "raise" | "reraise")
+                });
 
         self.indent -= 1;
         if is_main {
