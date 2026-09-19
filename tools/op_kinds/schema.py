@@ -92,6 +92,10 @@ _GVN_VALUE_KEY_KINDS = {
     "str_attr": "StrAttr",
     "bytes_attr": "BytesAttr",
 }
+_BOXED_ALLOCATION_LAYOUT_RULES = {
+    "raw_zeroed": "RawZeroed",
+    "class_missing": "ClassMissing",
+}
 _TYPE_REFINE_ATTR_RESULT_TYPE_RULES = {
     "object_type_hint": "ObjectTypeHint",
     "call_return_type": "CallReturnType",
@@ -556,6 +560,7 @@ __all__ = (
     "_TERMINATOR_OWNERSHIP_LEAVES",
     "_TERMINATOR_VARIANTS",
     "_TIR_VERIFY_ATTR_RULES",
+    "_BOXED_ALLOCATION_LAYOUT_RULES",
     "_TYPE_REFINE_ATTR_RESULT_TYPE_RULES",
     "_TYPE_REFINE_OPERAND_TYPE_RULES",
     "_TYPE_REFINE_OPERAND_RULE_ARITIES",

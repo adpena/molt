@@ -7,14 +7,24 @@ import argparse
 import json
 from pathlib import Path
 import re
+import sys
 import tomllib
 from typing import Any, Mapping
 
-from molt.file_publication import atomic_write_bytes
-from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
-
-
 ROOT = Path(__file__).resolve().parents[1]
+for _import_root in (ROOT, ROOT / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+
+from tools.generator_io import (  # noqa: E402
+    generated_file_matches,
+    write_generated_text,
+)
+from molt.target_python import (  # noqa: E402
+    SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
+)
+
+
 SOURCE = ROOT / "config" / "release_targets.toml"
 OUTPUT = ROOT / "src" / "molt" / "release_matrix.py"
 TARGET_KEYS = frozenset({"id", "runner", "platform", "arch", "rust_target", "archive"})
@@ -184,10 +194,10 @@ def main() -> int:
     args = parser.parse_args()
     rendered = render_release_matrix(load_release_target_authority())
     if args.check:
-        if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
+        if not generated_file_matches(OUTPUT, rendered):
             raise SystemExit("generated release matrix is stale")
         return 0
-    atomic_write_bytes(OUTPUT, rendered.encode("utf-8"))
+    write_generated_text(OUTPUT, rendered)
     return 0
 
 

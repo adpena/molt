@@ -990,6 +990,14 @@ alias_rc_barrier_opcodes = [
     "TryStart",
 ]
 
+# Exact fixed-boxed-layout candidates shared by typed-slot analysis and SROA.
+# Raw storage is zeroed boxed +0.0; class storage is initially missing and
+# reserves one boxed dictionary word. No other allocation shape is admitted.
+boxed_allocation_layout_rules = [
+    { opcode = "Alloc", rule = "raw_zeroed" },
+    { opcode = "ObjectNewBound", rule = "class_missing" },
+]
+
 # escape_alloc_site_opcodes: result-producing allocation roots that
 # escape_analysis.rs tracks in its lattice. This is NOT the same as refcount
 # heap exposure: it answers "does the result define a fresh root whose escape

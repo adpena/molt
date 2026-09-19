@@ -3713,6 +3713,52 @@ def test_image_heap_exposure_diagnostics_do_not_admit_rc_elision() -> None:
     assert "opcode_is_refcount_heap_exposure_table" not in fact_graph
 
 
+def test_boxed_allocation_layout_is_one_exhaustive_generated_authority() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    assert data["boxed_allocation_layout_rules"] == [
+        {"opcode": "Alloc", "rule": "raw_zeroed"},
+        {"opcode": "ObjectNewBound", "rule": "class_missing"},
+    ]
+    table_name = "opcode_boxed_allocation_layout_rule_table"
+    body = gen.render_rs(data).split(f"fn {table_name}", 1)[1].split("\n}", 1)[0]
+    expected = {"Alloc": "RawZeroed", "ObjectNewBound": "ClassMissing"}
+    for row in data["opcode"]:
+        name = row["name"]
+        assert (
+            f"OpCode::{name} => BoxedAllocationLayoutRule::{expected.get(name, 'None')}"
+            in body
+        )
+    assert "_ =>" not in body
+    consumer = tir_path("passes/typed_slot_access.rs").read_text()
+    assert f"{table_name}(op.opcode)" in consumer
+    assert "OpCode::Alloc =>" not in consumer
+    assert "OpCode::ObjectNewBound =>" not in consumer
+    sroa = _read_rs_module_cluster(tir_path("passes/sroa.rs"))
+    assert "boxed_allocation_layout(op)" in sroa
+
+
+@pytest.mark.parametrize("defect", ["unknown_opcode", "unknown_rule", "duplicate"])
+def test_boxed_allocation_layout_rule_validation_rejects_drift(defect) -> None:
+    gen = _gen()
+    data = gen.load_table()
+    rows = data["boxed_allocation_layout_rules"]
+    if defect == "unknown_opcode":
+        rows[0]["opcode"] = "NotAnOpcode"
+    elif defect == "unknown_rule":
+        rows[0]["rule"] = "guessed_layout"
+    else:
+        rows.append(dict(rows[0]))
+    with pytest.raises(gen.OpKindTableError, match="boxed_allocation_layout_rules"):
+        gen._validate_opcode_rule_rows(
+            data,
+            "boxed_allocation_layout_rules",
+            {row["name"] for row in data["opcode"]},
+            gen._BOXED_ALLOCATION_LAYOUT_RULES,
+            "boxed allocation layout rule",
+        )
+
+
 def test_escape_alloc_sites_delegate_to_generated_table() -> None:
     """Escape-analysis allocation roots have one opcode authority."""
     gen = _gen()

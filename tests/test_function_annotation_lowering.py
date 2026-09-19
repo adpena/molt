@@ -174,7 +174,10 @@ class C:
         == {child_defs[read["args"][1]]["value"] for read in reads}
         == {0, 1}
     )
-    assert all(definitions[mark["args"][2]].get("value") is True for mark in marks)
+    for mark in marks:
+        flag = definitions[mark["args"][2]]
+        assert flag["kind"] == "const_bool"
+        assert type(flag["value"]) is int and flag["value"] == 1
     assert not any(execution_map == value for value in captures)
 
 
