@@ -7,14 +7,15 @@ import pytest
 from molt.frontend import SimpleTIRGenerator
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
-from tools.check_ir_structure import verify_tir
+from tools.check_ir_structure import verify_frontend_tir
 
 
 def _compile(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))
     result = generator.to_json()
-    assert verify_tir(result).ok
+    verification = verify_frontend_tir(result)
+    assert verification.ok, verification.errors
     return result
 
 

@@ -6,6 +6,13 @@ visitor/lowering mixins (``src/molt/frontend/__init__.py`` +
 ``src/molt/frontend/visitors/*.py`` + ``src/molt/frontend/lowering/*.py``), plus
 the curated attribute-type table that already lives in the two generated files.
 
+One invocation-scoped source index resolves the actual unwrapped runtime
+functions to immutable source-file AST snapshots. Each source file is read and
+parsed once; one method-body pass collects stores and annotations. Signatures,
+decorators and imports use those same source facts without reparsing rendered
+stubs. Composition coverage shares source identity/parsing only, keeping its
+independent attribute visitor as a separate coverage oracle.
+
 Why this generator exists
 =========================
 The god-class ``SimpleTIRGenerator`` was decomposed (move-only) into a package of
@@ -47,8 +54,9 @@ Determinism / clean diffs
     two files. Their *types* come from the curated table harvested from the two
     files (the only place most attribute types are recorded - they are set via
     direct ``self.x = ...`` assignments in the assembled generator/mixin method
-    surface with no source annotation), merged with class-level
-    ``__annotations__``. A brand-new attribute introduced by a future move that
+    surface with no source annotation). Class-level ``__annotations__`` take
+    precedence over explicit ``self.x: T`` annotations, then curated types.
+    A brand-new attribute introduced by a future move that
     has no curated type defaults to ``Any`` (its NAME is still on the Protocol,
     so the superset test passes; ``--check`` then shows a diff so a human can
     refine the ``Any`` to a precise type).
@@ -69,10 +77,11 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
-import inspect
+import copy
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
 from generator_io import generated_file_matches, write_generated_text
@@ -83,6 +92,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from tools.python_source_index import (  # noqa: E402 - direct-script path bootstrap above
+    PythonFunctionSource,
+    PythonSourceError,
+    PythonSourceIndex,
+)
 
 OUT_PROTOCOL = ROOT / "src/molt/frontend/_protocol.py"
 OUT_ATTRS = ROOT / "src/molt/frontend/_protocol_attrs.py"
@@ -174,63 +189,52 @@ def _builtin_names() -> set[str]:
     return set(dir(object))
 
 
-def _unwrap(value: object) -> object:
-    """Return the underlying function for a ``staticmethod`` / ``classmethod``."""
-    if isinstance(value, (staticmethod, classmethod)):
-        return value.__func__
-    return value
-
-
 # ---------------------------------------------------------------------------
 # Method signature extraction
 # ---------------------------------------------------------------------------
 
 
-def _function_def_source(func: object) -> str | None:
-    """Return the dedented source of *func* (or ``None`` if unavailable)."""
-    try:
-        raw = inspect.getsource(func)  # type: ignore[arg-type]
-    except (OSError, TypeError):
-        return None
-    return textwrap.dedent(raw)
+@dataclass(frozen=True)
+class MethodBody:
+    attrs: frozenset[str]
+    annotations: tuple[tuple[str, str], ...]
 
 
-def _render_method_stub(name: str, value: object) -> str | None:
-    """Render a single Protocol method stub for *name* from its real source.
+@dataclass(frozen=True)
+class MethodSurface:
+    name: str
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    decorators: tuple[str, ...]
+    annotation_texts: tuple[str, ...]
+    body: MethodBody
 
-    Preserves the decorator list (``@staticmethod`` / ``@classmethod`` /
-    ``@property`` etc.) and all parameter and return annotations, replacing
-    defaults and the body with ``...``. Returns ``None`` if
-    the source cannot be parsed (the caller then skips it - never silently emits
-    a wrong signature).
-    """
-    func = _unwrap(value)
-    src = _function_def_source(func)
-    if src is None:
-        return None
-    try:
-        module = ast.parse(src)
-    except SyntaxError:
-        return None
-    func_node: ast.FunctionDef | ast.AsyncFunctionDef | None = None
-    for node in module.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            func_node = node
-            break
-    if func_node is None or func_node.name != name:
-        return None
+
+@dataclass(frozen=True)
+class ProtocolSurface:
+    methods: tuple[MethodSurface, ...]
+    attrs: tuple[tuple[str, str], ...]
+
+
+def _method_surface(
+    name: str, value: object, source: PythonFunctionSource, body: MethodBody
+) -> MethodSurface:
+    """Project one selected runtime binding without changing its source AST."""
+    func_node = source.node
+    if func_node.name != name:
+        raise ProtocolGenError(
+            f"method binding {name!r} does not match source definition "
+            f"{func_node.name!r} at {source.path}:{func_node.lineno}"
+        )
 
     # Binding decorators and contextlib wrappers change the callable contract.
     # Resolve contextlib decorators by identity, including import aliases, so a
     # generator method is not incorrectly projected as a bare Iterator.
     decorators: list[str] = []
     if isinstance(value, staticmethod):
-        decorators.append("    @staticmethod")
+        decorators.append("staticmethod")
     elif isinstance(value, classmethod):
-        decorators.append("    @classmethod")
-    elif isinstance(value, property):
-        decorators.append("    @property")
-    namespace = getattr(inspect.unwrap(func), "__globals__", {})
+        decorators.append("classmethod")
+    namespace = source.function.__globals__
     for decorator in func_node.decorator_list:
         binding = None
         if isinstance(decorator, ast.Name):
@@ -242,9 +246,30 @@ def _render_method_stub(name: str, value: object) -> str | None:
         ):
             binding = getattr(contextlib, decorator.attr, None)
         if binding is contextlib.contextmanager:
-            decorators.append("    @contextmanager")
+            decorators.append("contextmanager")
         elif binding is contextlib.asynccontextmanager:
-            decorators.append("    @asynccontextmanager")
+            decorators.append("asynccontextmanager")
+
+    args = func_node.args
+    annotations = tuple(
+        ast.unparse(arg.annotation)
+        for arg in (
+            *args.posonlyargs,
+            *args.args,
+            *args.kwonlyargs,
+            args.vararg,
+            args.kwarg,
+        )
+        if arg is not None and arg.annotation is not None
+    )
+    if func_node.returns is not None:
+        annotations += (ast.unparse(func_node.returns),)
+    return MethodSurface(name, func_node, tuple(decorators), annotations, body)
+
+
+def _render_method_stub(method: MethodSurface) -> str:
+    """Render the already-resolved signature; source nodes remain immutable."""
+    func_node = method.node
 
     # Re-render the signature deterministically with ast.unparse, then strip the
     # body to ``...``. ast.unparse normalizes whitespace, giving stable diffs
@@ -258,21 +283,20 @@ def _render_method_stub(name: str, value: object) -> str | None:
     # to the protocol, but evaluating implementation factories, sentinels or
     # enum members here would introduce a second runtime dependency authority.
     # Ellipsis preserves positional/keyword requiredness without those imports.
-    func_node.args.defaults = [
-        ast.Constant(value=Ellipsis) for _ in func_node.args.defaults
-    ]
-    func_node.args.kw_defaults = [
+    args = copy.deepcopy(func_node.args)
+    args.defaults = [ast.Constant(value=Ellipsis) for _ in args.defaults]
+    args.kw_defaults = [
         None if default is None else ast.Constant(value=Ellipsis)
-        for default in func_node.args.kw_defaults
+        for default in args.kw_defaults
     ]
     rebuilt = stripped(
         name=func_node.name,
-        args=func_node.args,
+        args=args,
         body=[ast.Expr(value=ast.Constant(value=Ellipsis))],
         decorator_list=[],
-        returns=func_node.returns,
+        returns=copy.deepcopy(func_node.returns),
         type_comment=None,
-        type_params=getattr(func_node, "type_params", []),
+        type_params=copy.deepcopy(getattr(func_node, "type_params", [])),
     )
     ast.fix_missing_locations(rebuilt)
     header = ast.unparse(rebuilt)
@@ -281,52 +305,7 @@ def _render_method_stub(name: str, value: object) -> str | None:
     if header.endswith("\n    ..."):
         header = header[: -len("\n    ...")] + " ..."
     indented = textwrap.indent(header, "    ")
-    out = "\n".join(decorators + [indented]) if decorators else indented
-    return out
-
-
-def _collect_methods(
-    surface_classes: list[type], builtins: set[str]
-) -> list[tuple[str, str]]:
-    """Collect ``(name, rendered_stub)`` for every method on the generator's
-    surface, deduplicated most-derived-wins, sorted by name.
-
-    A method defined in several MRO classes (genuine override) is rendered once,
-    from the most-derived class (first in MRO order) - the binding the runtime
-    actually resolves.
-    """
-    chosen: dict[str, object] = {}
-    for klass in surface_classes:  # MRO order == most-derived first
-        for attr_name, value in vars(klass).items():
-            if attr_name.startswith("__") and attr_name != "__init__":
-                continue
-            if (
-                klass is ast.NodeVisitor
-                and attr_name not in _NODE_VISITOR_DISPATCH_METHODS
-            ):
-                continue
-            if attr_name in builtins and attr_name != "__init__":
-                continue
-            if not callable(_unwrap(value)):
-                continue
-            chosen.setdefault(attr_name, value)
-
-    out: list[tuple[str, str]] = []
-    unresolved: list[str] = []
-    for name in sorted(chosen):
-        stub = _render_method_stub(name, chosen[name])
-        if stub is None:
-            unresolved.append(name)
-            continue
-        out.append((name, stub))
-    if unresolved:
-        raise ProtocolGenError(
-            "could not extract a real signature for these methods (source "
-            f"unavailable / unparsable): {unresolved}. A generated Protocol must "
-            "carry real signatures - fix the source or this generator before "
-            "emitting a degraded stub."
-        )
-    return out
+    return "\n".join([*(f"    @{name}" for name in method.decorators), indented])
 
 
 # ---------------------------------------------------------------------------
@@ -334,33 +313,20 @@ def _collect_methods(
 # ---------------------------------------------------------------------------
 
 
-def _direct_self_store_attrs(func: object) -> set[str]:
-    """Instance attributes assigned directly by one generator/mixin method.
+def _method_body(method: ast.FunctionDef | ast.AsyncFunctionDef) -> MethodBody:
+    """Collect stores and explicit annotations together from one root method.
 
     Nested helper classes/functions are not generator state: several lowering
     methods define local visitors whose ``self.x`` stores belong to the helper
     object, not ``SimpleTIRGenerator``. Count only stores to the root method's
     ``self`` parameter and do not descend into nested scopes.
     """
-    src = _function_def_source(func)
-    if src is None:
-        return set()
-    try:
-        module = ast.parse(src)
-    except SyntaxError:
-        return set()
-    method = next(
-        (
-            n
-            for n in module.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ),
-        None,
-    )
-    if method is None or not method.args.args or method.args.args[0].arg != "self":
-        return set()
+    positional = [*method.args.posonlyargs, *method.args.args]
+    if not positional or positional[0].arg != "self":
+        return MethodBody(frozenset(), ())
 
     attrs: set[str] = set()
+    annotations: dict[str, str] = {}
 
     class Visitor(ast.NodeVisitor):
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -386,61 +352,6 @@ def _direct_self_store_attrs(func: object) -> set[str]:
                 attrs.add(node.attr)
             self.generic_visit(node)
 
-    Visitor().visit(method)
-    return attrs
-
-
-def _surface_store_attrs(surface_classes: list[type]) -> set[str]:
-    """Instance attributes assigned by direct ``self.x = ...`` stores across
-    the assembled generator/mixin method surface.
-
-    Mirrors the AST walk in the coverage test exactly so the generated name set
-    is the same one the test computes.
-    """
-    attrs: set[str] = set()
-    for klass in surface_classes:
-        for value in vars(klass).values():
-            attrs.update(_direct_self_store_attrs(_unwrap(value)))
-    return attrs
-
-
-def _direct_self_store_attr_annotations(func: object) -> dict[str, str]:
-    """Return explicit ``self.x: T`` annotations from one root method body."""
-    src = _function_def_source(func)
-    if src is None:
-        return {}
-    try:
-        module = ast.parse(src)
-    except SyntaxError:
-        return {}
-    method = next(
-        (
-            n
-            for n in module.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ),
-        None,
-    )
-    if method is None or not method.args.args or method.args.args[0].arg != "self":
-        return {}
-
-    annotations: dict[str, str] = {}
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node is method:
-                self.generic_visit(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is method:
-                self.generic_visit(node)
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
             target = node.target
             if (
@@ -452,37 +363,7 @@ def _direct_self_store_attr_annotations(func: object) -> dict[str, str]:
             self.generic_visit(node)
 
     Visitor().visit(method)
-    return annotations
-
-
-def _self_store_annotation_table(surface_classes: list[type]) -> dict[str, str]:
-    """Current source annotations on ``self.x`` stores, most-derived wins."""
-    table: dict[str, str] = {}
-    for klass in surface_classes:
-        for value in vars(klass).values():
-            for name, annotation in _direct_self_store_attr_annotations(
-                _unwrap(value)
-            ).items():
-                table.setdefault(name, annotation)
-    return table
-
-
-def _class_annotation_table(surface_classes: list[type]) -> dict[str, str]:
-    """The class-level ``__annotations__`` across the surface (name -> type str).
-
-    ``from __future__ import annotations`` makes these values strings already.
-    Most-derived wins on conflict (MRO order).
-    """
-    table: dict[str, str] = {}
-    for klass in surface_classes:
-        for name, annotation in getattr(klass, "__annotations__", {}).items():
-            text = (
-                annotation
-                if isinstance(annotation, str)
-                else _annotation_to_text(annotation)
-            )
-            table.setdefault(name, text)
-    return table
+    return MethodBody(frozenset(attrs), tuple(annotations.items()))
 
 
 def _annotation_to_text(annotation: object) -> str:
@@ -519,34 +400,81 @@ def _harvest_curated_attr_types(paths: list[Path]) -> dict[str, str]:
     return curated
 
 
-def _collect_attrs(
-    generator: type, surface_classes: list[type], builtins: set[str]
-) -> list[tuple[str, str]]:
-    """Collect ``(name, annotation_text)`` for the full attribute surface,
-    sorted by name. Types come from (class ``__annotations__`` union curated table),
-    with ``Any`` as the explicit fallback for a name that has no recorded type.
+def _collect_surface(
+    surface_classes: list[type],
+    builtins: set[str],
+    *,
+    curated: dict[str, str],
+    source_index: PythonSourceIndex,
+) -> ProtocolSurface:
+    """Resolve the assembled MRO once and derive every protocol fact from it.
+
+    Signatures use the most-derived binding. Attribute coverage still includes
+    every contributing implementation, including overridden base methods. The
+    source index and body facts live only for this inspection/generation.
     """
-    names = _surface_store_attrs(surface_classes)
+    chosen: dict[str, MethodSurface] = {}
+    bodies: dict[object, MethodBody] = {}
+    names: set[str] = set()
+    class_table: dict[str, str] = {}
+    store_table: dict[str, str] = {}
+    unresolved: list[str] = []
     for klass in surface_classes:
-        names.update(getattr(klass, "__annotations__", {}))
-    names -= builtins
-
-    class_table = _class_annotation_table(surface_classes)
-    self_store_table = _self_store_annotation_table(surface_classes)
-    curated = _harvest_curated_attr_types([OUT_ATTRS, OUT_PROTOCOL])
-
-    out: list[tuple[str, str]] = []
-    for name in sorted(names):
-        # Source annotations are the strongest signal (they are real, current
-        # source); fall back to the curated table, then to ``Any``.
-        annotation = (
-            class_table.get(name)
-            or self_store_table.get(name)
-            or curated.get(name)
-            or "Any"
+        for name, annotation in getattr(klass, "__annotations__", {}).items():
+            names.add(name)
+            class_table.setdefault(
+                name,
+                annotation
+                if isinstance(annotation, str)
+                else _annotation_to_text(annotation),
+            )
+        for name, value in vars(klass).items():
+            selected = (
+                (not name.startswith("__") or name == "__init__")
+                and (
+                    klass is not ast.NodeVisitor
+                    or name in _NODE_VISITOR_DISPATCH_METHODS
+                )
+                and (name not in builtins or name == "__init__")
+                and (callable(value) or isinstance(value, (staticmethod, classmethod)))
+                and name not in chosen
+            )
+            try:
+                source = source_index.function(value)
+            except PythonSourceError as error:
+                unresolved.append(f"{klass.__qualname__}.{name}: {error}")
+                continue
+            if source is None:
+                if selected:
+                    unresolved.append(
+                        f"{klass.__qualname__}.{name}: no Python function source"
+                    )
+                continue
+            body = bodies.get(source.function)
+            if body is None:
+                body = _method_body(source.node)
+                bodies[source.function] = body
+            names.update(body.attrs)
+            for attr, annotation in body.annotations:
+                store_table.setdefault(attr, annotation)
+            if selected:
+                chosen[name] = _method_surface(name, value, source, body)
+    if unresolved:
+        raise ProtocolGenError(
+            "could not extract the real method/attribute surface: "
+            + "; ".join(unresolved)
         )
-        out.append((name, annotation))
-    return out
+    attrs = tuple(
+        (
+            name,
+            class_table.get(name)
+            or store_table.get(name)
+            or curated.get(name)
+            or "Any",
+        )
+        for name in sorted(names - builtins)
+    )
+    return ProtocolSurface(tuple(chosen[name] for name in sorted(chosen)), attrs)
 
 
 # ---------------------------------------------------------------------------
@@ -582,35 +510,9 @@ def _referenced_identifiers(annotation_texts: list[str]) -> set[str]:
                 # Forward-ref string inside the annotation.
                 visit_expr(node.value)
 
-    for text in annotation_texts:
+    for text in dict.fromkeys(annotation_texts):
         visit_expr(text)
     return found
-
-
-def _annotation_texts_from_methods(methods: list[tuple[str, str]]) -> list[str]:
-    """Extract annotations from stubs; defaults carry no runtime dependencies."""
-    texts: list[str] = []
-    for _name, stub in methods:
-        # Re-parse the rendered stub; collect arg/return annotations.
-        try:
-            tree = ast.parse(textwrap.dedent(stub))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                args = node.args
-                for arg in (
-                    *args.posonlyargs,
-                    *args.args,
-                    *args.kwonlyargs,
-                    args.vararg,
-                    args.kwarg,
-                ):
-                    if arg is not None and arg.annotation is not None:
-                        texts.append(ast.unparse(arg.annotation))
-                if node.returns is not None:
-                    texts.append(ast.unparse(node.returns))
-    return texts
 
 
 def _compute_imports(
@@ -729,12 +631,14 @@ def render_attrs_file(
 
 def render_protocol_file(
     attrs_second_half: list[tuple[str, str]],
-    methods: list[tuple[str, str]],
+    methods: tuple[MethodSurface, ...],
     *,
     types_module_exports: set[str],
 ) -> str:
     annotation_texts = [a for _n, a in attrs_second_half]
-    annotation_texts.extend(_annotation_texts_from_methods(methods))
+    annotation_texts.extend(
+        text for method in methods for text in method.annotation_texts
+    )
     typing_names, types_names, tc_lines, needs_ast = _compute_imports(
         annotation_texts, types_module_exports=types_module_exports
     )
@@ -751,13 +655,10 @@ def render_protocol_file(
     extra = ["from molt.frontend._protocol_attrs import _GeneratorProtocolAttrs"]
     context_decorators = sorted(
         {
-            decorator.id
-            for _, stub in methods
-            for node in ast.parse(textwrap.dedent(stub)).body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            for decorator in node.decorator_list
-            if isinstance(decorator, ast.Name)
-            and decorator.id in {"contextmanager", "asynccontextmanager"}
+            decorator
+            for method in methods
+            for decorator in method.decorators
+            if decorator in {"contextmanager", "asynccontextmanager"}
         }
     )
     if context_decorators:
@@ -771,8 +672,8 @@ def render_protocol_file(
     if attrs_second_half:
         body_parts.append(_render_attrs_block(attrs_second_half))
         body_parts.append("\n")
-    for _name, stub in methods:
-        body_parts.append(stub)
+    for method in methods:
+        body_parts.append(_render_method_stub(method))
         body_parts.append("\n\n")
     body = "".join(body_parts).rstrip("\n") + "\n"
     return _DO_NOT_EDIT + "\n" + header + imports + body
@@ -825,15 +726,19 @@ def generate() -> dict[Path, str]:
     surface_classes = _surface_classes(generator)
     builtins = _builtin_names()
 
-    methods = _collect_methods(surface_classes, builtins)
-    attrs = _collect_attrs(generator, surface_classes, builtins)
-    attrs_first, attrs_second = _split_attrs(attrs)
+    surface = _collect_surface(
+        surface_classes,
+        builtins,
+        curated=_harvest_curated_attr_types([OUT_ATTRS, OUT_PROTOCOL]),
+        source_index=PythonSourceIndex(),
+    )
+    attrs_first, attrs_second = _split_attrs(list(surface.attrs))
 
     attrs_text = render_attrs_file(
         attrs_first, types_module_exports=types_module_exports
     )
     protocol_text = render_protocol_file(
-        attrs_second, methods, types_module_exports=types_module_exports
+        attrs_second, surface.methods, types_module_exports=types_module_exports
     )
     return {
         OUT_ATTRS: _format_generated_text(OUT_ATTRS, attrs_text),

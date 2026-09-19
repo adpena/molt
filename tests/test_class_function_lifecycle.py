@@ -6,15 +6,15 @@ import pytest
 
 from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
 from molt.frontend import SimpleTIRGenerator
-from tools.check_ir_structure import verify_tir
+from tools.check_ir_structure import verify_frontend_tir
 
 
 def _compile(source, target=(3, 12)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))
     ir = generator.to_json()
-    result = verify_tir(ir)
-    assert result.ok, result
+    result = verify_frontend_tir(ir)
+    assert result.ok, result.errors
     return generator, ir
 
 

@@ -41,6 +41,7 @@ from molt.frontend.lowering.generator_state import (
     GeneratorStateMixin,
 )
 from tests.process_guard_common import run_guarded_test_process
+from tools.python_source_index import PythonSourceIndex
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "src" / "molt" / "frontend"
@@ -549,29 +550,17 @@ def _assembled_class_methods() -> set[str]:
     return names - _BUILTIN_NAMES
 
 
-def _direct_self_store_attrs(func: object) -> set[str]:
+def _direct_self_store_attrs(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
     """Direct ``self.x = ...`` stores in one generator/mixin method.
 
     Nested helper classes/functions define their own ``self`` and are not part
     of the assembled generator state surface.
     """
-    import textwrap
-
     attrs: set[str] = set()
-    try:
-        src = textwrap.dedent(inspect.getsource(func))
-    except (OSError, TypeError):
-        return attrs
-    module = ast.parse(src)
-    method = next(
-        (
-            n
-            for n in module.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ),
-        None,
-    )
-    if method is None or not method.args.args or method.args.args[0].arg != "self":
+    positional = [*method.args.posonlyargs, *method.args.args]
+    if not positional or positional[0].arg != "self":
         return attrs
 
     class Visitor(ast.NodeVisitor):
@@ -606,13 +595,16 @@ def _assembled_class_attrs() -> set[str]:
     """Instance attributes assigned by direct ``self.x = ...`` stores plus
     class-level annotated vars across the assembled class and its mixins."""
     attrs: set[str] = set()
+    sources = PythonSourceIndex()
     for klass in SimpleTIRGenerator.__mro__:
         if klass is object:
             continue
         for value in vars(klass).values():
-            if isinstance(value, (staticmethod, classmethod)):
-                value = value.__func__
-            attrs.update(_direct_self_store_attrs(value))
+            source = sources.function(value)
+            if source is not None:
+                # Share source identity/parsing, not the generator's surface
+                # classification: this remains an independent coverage oracle.
+                attrs.update(_direct_self_store_attrs(source.node))
     for klass in SimpleTIRGenerator.__mro__:
         if klass is object:
             continue
@@ -631,8 +623,11 @@ def test_function_state_snapshot_matches_reset_authority() -> None:
         GeneratorStateMixin._reset_control_flow_state,
     )
     reset_attrs: set[str] = set()
+    sources = PythonSourceIndex()
     for method in reset_methods:
-        reset_attrs.update(_direct_self_store_attrs(method))
+        source = sources.function(method)
+        assert source is not None
+        reset_attrs.update(_direct_self_store_attrs(source.node))
 
     snapshot_attrs = set(FUNCTION_STATE_SNAPSHOT_ATTRS)
     assert len(FUNCTION_STATE_SNAPSHOT_ATTRS) == len(snapshot_attrs)
