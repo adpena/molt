@@ -3,6 +3,7 @@ from __future__ import annotations
 from .primitive_effects import comparison_warning_pairs
 
 from .schema import (
+    _BOXED_ALLOCATION_LAYOUT_RULES,
     _COUNTED_LOOP_COMPARISON_ROLES,
     _LIR_VERIFY_RULES,
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
@@ -1037,6 +1038,20 @@ def _render_simple_opcode_rule_table(
 
 def _render_residual_tir_semantic_roles(opcodes: list[dict], data: dict) -> str:
     parts = [
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="boxed_allocation_layout_rules",
+            enum_name="BoxedAllocationLayoutRule",
+            fn_name="opcode_boxed_allocation_layout_rule_table",
+            variants=_BOXED_ALLOCATION_LAYOUT_RULES,
+            docs=[
+                "Fixed boxed-word allocation layout and initial slot content.",
+                "This is a storage-shape fact, not callback or lifetime admission.",
+                "typed_slot_access owns exact operand, payload and offset checks.",
+            ],
+        ),
+        "\n",
         _render_simple_opcode_rule_table(
             opcodes,
             data,

@@ -297,6 +297,14 @@ boolean decision. Dataclass field offsets obey the same authority as ordinary
 class offsets. `getattr` evaluates all arguments, including an unused default,
 before lookup; field specialization cannot elide or move those effects.
 
+Fixed boxed-allocation shape is selected by the generated op-kind layout rule,
+shared by typed-slot analysis and scalar replacement. Raw zeroed storage and
+class missing-value storage have distinct initial values and dictionary tails;
+exact operand counts, payload sizes and offsets remain required. Layout facts
+do not establish callback-free construction or lifetime. Escape analysis uses
+the terminator's canonical direct-value and edge projections, so new control
+forms cannot silently omit an ownership obligation.
+
 Callable capability requirements are independent of exact callable identity.
 Live global loads union the requirements of possible imported provenance and
 builtin fallback, without substituting a callable or stamping an exact runtime

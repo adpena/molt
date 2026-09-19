@@ -162,7 +162,10 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
         == {evaluator_defs[read["args"][1]]["value"] for read in reads}
         == {0, 1}
     )
-    assert all(definitions[mark["args"][2]].get("value") is True for mark in marks)
+    for mark in marks:
+        flag = definitions[mark["args"][2]]
+        assert flag["kind"] == "const_bool"
+        assert type(flag["value"]) is int and flag["value"] == 1
 
     # Both conditional lambda bodies receive the same enclosing value cell;
     # neither captures a snapshot nor a cell manufactured in a sibling branch.

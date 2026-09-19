@@ -53,6 +53,77 @@ fn local_only_object_new_bound_is_no_escape() {
     assert_eq!(escapes[&inst_val], EscapeState::NoEscape);
 }
 
+#[test]
+fn terminator_direct_uses_preserve_escape_obligations_without_classifying_edges() {
+    use crate::tir::blocks::{BlockId, TirBlock};
+
+    let object = ValueId(0);
+    let exit = BlockId(1);
+    for (terminator, expected) in [
+        (
+            Terminator::Return {
+                values: vec![object],
+            },
+            EscapeState::GlobalEscape,
+        ),
+        (
+            Terminator::CondBranch {
+                cond: object,
+                then_block: exit,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+            EscapeState::GlobalEscape,
+        ),
+        (
+            Terminator::Switch {
+                value: object,
+                cases: vec![(1, exit, vec![])],
+                default: exit,
+                default_args: vec![],
+            },
+            EscapeState::GlobalEscape,
+        ),
+        (
+            Terminator::Branch {
+                target: exit,
+                args: vec![],
+            },
+            EscapeState::NoEscape,
+        ),
+        (
+            Terminator::StateDispatch {
+                cases: vec![(1, exit, vec![])],
+                default: exit,
+                default_args: vec![],
+            },
+            EscapeState::NoEscape,
+        ),
+        (Terminator::Unreachable, EscapeState::NoEscape),
+    ] {
+        let mut func = TirFunction::new("direct_uses".into(), vec![], TirType::None);
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(OpCode::Alloc, vec![], vec![object]));
+        entry.terminator = terminator;
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        assert_eq!(
+            analyze(&func)[&object],
+            expected,
+            "{:?}",
+            func.blocks[&func.entry_block].terminator
+        );
+    }
+}
+
 /// Regression: a freshly-constructed object that flows into a container
 /// literal *through an SSA `Copy`* must be classified `GlobalEscape`, not
 /// `NoEscape`. The frontend lowers `[Box()]` to

@@ -19,7 +19,10 @@ CI : python3 tools/check_generator_manifest.py --check  (the same gate)
 """
 
 from __future__ import annotations
-from tests.process_guard_common import check_output_guarded_test_process, run_guarded_test_process
+from tests.process_guard_common import (
+    check_output_guarded_test_process,
+    run_guarded_test_process,
+)
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
@@ -114,6 +117,24 @@ def test_manifest_text_generators_share_canonical_output_io() -> None:
     assert violations == []
 
 
+def test_release_matrix_generator_imports_as_canonical_package() -> None:
+    code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "root = Path(sys.argv[1])\n"
+        "sys.path.insert(0, str(root))\n"
+        "from tools import gen_release_matrix\n"
+        "assert gen_release_matrix.generated_file_matches.__module__ == "
+        "'tools.generator_io'\n"
+    )
+    check_output_guarded_test_process(
+        [sys.executable, "-I", "-c", code, str(ROOT)],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+    )
+
+
 def test_live_gate_has_no_gating_violations():
     """The whole meta-gate is green on the live tree (the CI --check contract)."""
     _violations, summary, gating = CGM.run_all(ROOT)
@@ -197,7 +218,7 @@ def test_closed_domains_parse_to_live_enums():
     """Each declared closed domain resolves to a non-empty live enum (the
     discovery parser still finds the variants — drift in the enum location or a
     parser regression is caught here, not silently zeroed)."""
-    sa = CGM._load_structural_audit(ROOT)
+    sa = CGM._load_structural_audit()
     manifest = CGM.load_manifest(ROOT)
     assert manifest.closed_domains, "expected at least one declared closed domain"
     for cd in manifest.closed_domains:
@@ -261,7 +282,7 @@ def _value_producer_match(enum: str) -> str:
 
 
 def _scan(rust: str, enum: str, variants: set[str], audited: set[str] | None = None):
-    sa = CGM._load_structural_audit(ROOT)
+    sa = CGM._load_structural_audit()
     return CGM._scan_closed_domain_matches(
         sa,
         rust,
@@ -381,16 +402,14 @@ def test_exhaustive_no_wildcard_match_is_not_flagged():
 
 def _mirror_min_tree(tmp_path: Path) -> Path:
     """Build a minimal but VALID mirror of the meta-gate's inputs in tmp_path:
-    the manifest, the checker + its structural_audit dependency, the closed-domain
-    enum files, and a CI file that satisfies every ci_checkable generator's
-    --check-step requirement (so the only gating signal is whatever WE inject).
-    Returns the temp root."""
+    the manifest, closed-domain enum files, and a CI file that satisfies every
+    ci_checkable generator's --check-step requirement (so the only gating signal
+    is whatever WE inject). Executable audit code remains canonical repository
+    authority; the mirror is scan data only. Returns the temp root."""
     import shutil
 
     (tmp_path / "tools").mkdir()
     shutil.copy(ROOT / "tools" / "generator_manifest.toml", tmp_path / "tools")
-    shutil.copy(ROOT / "tools" / "structural_audit.py", tmp_path / "tools")
-    shutil.copy(ROOT / "tools" / "check_generator_manifest.py", tmp_path / "tools")
     manifest = CGM.load_manifest(ROOT)
     # Make every registered generator file exist + every output exist, so the
     # gating/orphan checks are clean in the mirror.
@@ -450,6 +469,30 @@ def _write_baseline(tmp_path: Path, counts: dict[str, int]) -> None:
     (tmp_path / "tools" / "generator_manifest_baseline.json").write_text(
         json.dumps({"closed_domain_silent_defaults": counts}) + "\n",
         encoding="utf-8",
+    )
+
+
+def test_canonical_structural_audit_scans_synthetic_root(tmp_path: Path):
+    root = _mirror_min_tree(tmp_path)
+    assert not (root / "tools" / "structural_audit.py").exists()
+    offending = root / "runtime" / "molt-passes" / "src" / "synthetic_probe.rs"
+    offending.parent.mkdir(parents=True, exist_ok=True)
+    offending.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+
+    structural_audit = CGM._load_structural_audit()
+    assert (
+        Path(structural_audit.__file__).resolve()
+        == (ROOT / "tools" / "structural_audit.py").resolve()
+    )
+    findings = CGM.audit_closed_domains(
+        root,
+        CGM.load_manifest(root),
+        structural_audit,
+    )
+    assert any(
+        finding.kind == "closed_domain"
+        and finding.location.split(":", 1)[0].endswith("synthetic_probe.rs")
+        for finding in findings
     )
 
 
