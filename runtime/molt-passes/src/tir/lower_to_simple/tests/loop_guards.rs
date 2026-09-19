@@ -406,7 +406,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
             ops: vec![],
             terminator: Terminator::Branch {
                 target: header,
-                args: vec![],
+                args: vec![ValueId(0), ValueId(1)],
             },
         },
     );

@@ -452,8 +452,8 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 end
 "#;
 
-/// Definition-time capture and lexical defaults share the ordered-dictionary
-/// authority. Emitted after dictionary helpers and the module cache exist.
+/// Definition-time namespace capture shares one callable-frame authority.
+/// Emitted after dictionary helpers and the module cache exist.
 pub(super) const CALLABLE_FRAME_RUNTIME: &str = r#"
 local function molt_frame_namespace_get(namespace: any, name: any): (boolean, any)
 	if type(namespace) ~= "table" then return false, nil end
@@ -521,5 +521,114 @@ local function molt_frame_function_new(target: any): any
 	local signature = molt_function_metadata[target]
 	if signature ~= nil then molt_function_metadata[callable] = table.clone(signature) end
 	return callable
+end
+"#;
+
+/// Packed code metadata and mutable callable defaults form a separate runtime
+/// slice from argument binding. Keeping this slice here makes callable-frame
+/// custody explicit without charging unrelated container/callargs programs for
+/// metadata publication.
+pub(super) const CALLABLE_METADATA_RUNTIME: &str = r#"local function molt_function_init_metadata_packed(func: any, metadata: any, _code: any, bind_kind: any): nil
+	if type(func) ~= "function" or type(metadata) ~= "table" or molt_sequence_len(metadata) ~= 14 then
+		error({__type="TypeError", __msg="invalid packed function metadata"})
+	end
+	local execution_kind = rawget(metadata, 12)
+	local freevars, cellvars = rawget(metadata, 13), rawget(metadata, 14)
+	local function validate_names(names: any): nil
+		if type(names) ~= "table" or rawget(names, molt_sequence_kind_key) ~= "tuple" then
+			error({__type="TypeError", __msg="code lexical names must be tuples"})
+		end
+		for index = 1, molt_sequence_len(names) do
+			if type(rawget(names, index)) ~= "string" then
+				error({__type="TypeError", __msg="code lexical names must be strings"})
+			end
+		end
+		return nil
+	end
+	validate_names(freevars)
+	validate_names(cellvars)
+	if type(execution_kind) ~= "number" or execution_kind < 0 or execution_kind > 3 or execution_kind ~= math.floor(execution_kind) then
+		error({__type="TypeError", __msg="invalid function execution kind"})
+	end
+	if type(_code) == "table" then
+		local previous = rawget(_code, "__molt_execution_kind")
+		if previous ~= nil and previous ~= execution_kind then
+			error({__type="SystemError", __msg="code execution kind cannot change"})
+		end
+		if previous ~= nil then
+			for name, names in {co_freevars=freevars, co_cellvars=cellvars} do
+				local published = rawget(_code, name)
+				if type(published) ~= "table" or molt_sequence_len(published) ~= molt_sequence_len(names) then
+					error({__type="SystemError", __msg="code lexical names cannot change"})
+				end
+				for index = 1, molt_sequence_len(names) do
+					if rawget(published, index) ~= rawget(names, index) then
+						error({__type="SystemError", __msg="code lexical names cannot change"})
+					end
+				end
+			end
+		end
+		rawset(_code, "co_freevars", freevars)
+		rawset(_code, "co_cellvars", cellvars)
+		rawset(_code, "__molt_execution_kind", execution_kind)
+	elseif execution_kind ~= 0 then
+		error({__type="SystemError", __msg="task callable requires code metadata"})
+	end
+	molt_func_attr_set(func, "__name__", rawget(metadata, 1))
+	molt_func_attr_set(func, "__qualname__", rawget(metadata, 2))
+	molt_func_attr_set(func, "__module__", rawget(metadata, 3))
+	molt_func_attr_set(func, "__defaults__", rawget(metadata, 9))
+	molt_func_attr_set(func, "__kwdefaults__", rawget(metadata, 10))
+	molt_func_attr_set(func, "__doc__", rawget(metadata, 11))
+	molt_func_attr_set(func, "__code__", _code)
+	molt_frame_function_capture(func, rawget(metadata, 3))
+	molt_func_attr_set(func, "__molt_bind_kind__", bind_kind)
+	local previous_metadata = molt_function_metadata[func]
+	molt_function_metadata[func] = {
+		arg_names = rawget(metadata, 4),
+		posonly = rawget(metadata, 5) or 0,
+		kwonly = rawget(metadata, 6) or molt_pack_tuple(),
+		vararg = rawget(metadata, 7),
+		varkw = rawget(metadata, 8),
+		defaults = rawget(metadata, 9),
+		kwdefaults = rawget(metadata, 10),
+		is_builtin = previous_metadata ~= nil and previous_metadata.is_builtin == true,
+	}
+	return nil
+end
+
+local function molt_function_attr_set(func: any, name: any, value: any): nil
+	local metadata = molt_function_metadata[func]
+	if metadata ~= nil then
+		if name == "__defaults__" then
+			if value ~= nil and (type(value) ~= "table" or rawget(value, molt_sequence_kind_key) ~= "tuple") then
+				error({__type="TypeError", __msg="__defaults__ must be set to a tuple object"})
+			end
+			metadata.defaults = value
+		elseif name == "__kwdefaults__" then
+			if value ~= nil and not molt_dict_is_ordered(value) then
+				error({__type="TypeError", __msg="__kwdefaults__ must be set to a dict object"})
+			end
+			metadata.kwdefaults = value
+		end
+	end
+	return molt_func_attr_set(func, name, value)
+end
+
+local function molt_function_attr_del(func: any, name: any): nil
+	local metadata = molt_function_metadata[func]
+	if metadata ~= nil then
+		if name == "__defaults__" then metadata.defaults = nil
+		elseif name == "__kwdefaults__" then metadata.kwdefaults = nil end
+	end
+	return molt_func_attr_del(func, name)
+end
+
+local function molt_function_set_defaults(func: any, defaults: any, kwdefaults: any): nil
+	local metadata = molt_function_metadata[func]
+	if metadata == nil then error({__type="TypeError", __msg="expected function metadata"}) end
+	molt_function_attr_set(func, "__defaults__", defaults)
+	molt_function_attr_set(func, "__kwdefaults__", kwdefaults)
+	return nil
 end
 "#;

@@ -162,55 +162,74 @@ impl LuauBackend {
             .push_str("local molt_call_checked: (any, ...any) -> any\n");
         self.output
             .push_str("local molt_equal: (any, any, any?) -> boolean\n");
+        // Runtime entry points may appear either in call position or as values
+        // passed through `molt_call_checked`. Select fragments by whole Luau
+        // identifier so both emitted forms share one dependency authority.
+        let used_identifier = |name: &str| {
+            func_body.match_indices(name).any(|(start, _)| {
+                let end = start + name.len();
+                let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+                (start == 0 || !is_ident(func_body.as_bytes()[start - 1]))
+                    && (end == func_body.len() || !is_ident(func_body.as_bytes()[end]))
+            })
+        };
+        let used = |name: &str| func_body.contains(name);
+        let needs_callable_metadata_runtime = [
+            "molt_function_init_metadata_packed",
+            "molt_function_set_defaults",
+            "molt_function_attr_set",
+            "molt_function_attr_del",
+        ]
+        .into_iter()
+        .any(|name| used_identifier(name));
         let needs_callargs_runtime = func_body.contains("molt_callargs_")
-            || func_body.contains("molt_function_init_metadata_packed(")
-            || func_body.contains("molt_function_set_defaults(")
-            || func_body.contains("molt_call_checked(")
-            || func_body.contains("molt_bound_method_new(")
+            || used_identifier("molt_call_checked")
+            || used_identifier("molt_bound_method_new")
             || func_body.contains("molt_get_attr")
-            || func_body.contains("molt_set_attr(")
-            || func_body.contains("molt_del_attr(")
-            || func_body.contains("molt_class_apply_set_name(");
-        let needs_frame_runtime = needs_callargs_runtime
+            || used_identifier("molt_set_attr")
+            || used_identifier("molt_del_attr")
+            || used_identifier("molt_class_apply_set_name");
+        let needs_frame_runtime = needs_callable_metadata_runtime
+            || needs_callargs_runtime
             || func_body.contains("molt_frame_")
-            || func_body.contains("molt_coroutine_execution_wrap(")
-            || func_body.contains("molt_exception_attach_traceback(")
+            || used_identifier("molt_coroutine_execution_wrap")
+            || used_identifier("molt_exception_attach_traceback")
             || func_body.contains("molt_exception_")
-            || func_body.contains("molt_module_get_global(")
-            || func_body.contains("molt_module_get_name(")
-            || func_body.contains("molt_globals_builtin(")
-            || func_body.contains("molt_module_del_global(");
+            || used_identifier("molt_module_get_global")
+            || used_identifier("molt_module_get_name")
+            || used_identifier("molt_globals_builtin")
+            || used_identifier("molt_module_del_global");
         self.output
             .push_str("local molt_sequence_length_key = {}\nlocal molt_sequence_kind_key = {}\nlocal function molt_sequence_len(sequence: {any}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {any}\n\tlocal sequence = table.pack(...)\n\trawset(sequence, molt_sequence_length_key, sequence.n)\n\trawset(sequence, molt_sequence_kind_key, kind)\n\trawset(sequence, \"n\", nil)\n\treturn sequence\nend\nlocal function molt_pack_list(...): {any} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {any} return molt_pack_sequence_kind(\"tuple\", ...) end\nlocal function molt_function_register_signature(func: any, arg_names: {any}): nil\n\tmolt_function_metadata[func] = {arg_names = arg_names, posonly = 0, kwonly = molt_pack_tuple(), vararg = nil, varkw = nil, defaults = nil, kwdefaults = nil}\n\treturn nil\nend\n");
         if needs_frame_runtime {
             self.output.push_str(frame_runtime::FRAME_RUNTIME);
             self.output.push('\n');
         }
-        if func_body.contains("molt_function_set_builtin") {
+        if used_identifier("molt_function_set_builtin") {
             self.output.push_str("local function molt_function_set_builtin(func: any): any\n\tlocal metadata = molt_function_metadata[func]\n\tif metadata == nil then metadata = {}; molt_function_metadata[func] = metadata end\n\tmetadata.is_builtin = true\n\treturn func\nend\n\n");
         }
-        let needs_equality_repr_runtime = func_body.contains("molt_equal(")
+        let needs_equality_repr_runtime = used_identifier("molt_equal")
             || func_body.contains("molt_set_")
             || func_body.contains("molt_frozenset_")
-            || func_body.contains("molt_dict_view_contains(")
-            || func_body.contains("molt_str(")
-            || func_body.contains("molt_repr(")
-            || func_body.contains("molt_print(");
+            || used_identifier("molt_dict_view_contains")
+            || used_identifier("molt_str")
+            || used_identifier("molt_repr")
+            || used_identifier("molt_print");
         let needs_dict_runtime = func_body.contains("molt_dict_")
             || needs_frame_runtime
             || needs_equality_repr_runtime
-            || func_body.contains("molt_len(")
-            || func_body.contains("molt_bool(")
-            || func_body.contains("molt_unpack_sequence(")
-            || func_body.contains("molt_module_get_global(")
-            || func_body.contains("molt_module_get_name(")
-            || func_body.contains("molt_module_del_global(")
-            || func_body.contains("molt_json_dumps(")
+            || used_identifier("molt_len")
+            || used_identifier("molt_bool")
+            || used_identifier("molt_unpack_sequence")
+            || used_identifier("molt_module_get_global")
+            || used_identifier("molt_module_get_name")
+            || used_identifier("molt_module_del_global")
+            || used_identifier("molt_json_dumps")
             || func_body.contains("\"json\"")
             || needs_callargs_runtime;
-        let needs_dict_runtime = needs_dict_runtime || func_body.contains("molt_iterator_new(");
+        let needs_dict_runtime = needs_dict_runtime || used_identifier("molt_iterator_new");
         let needs_binary_runtime =
-            func_body.contains("molt_binary_new(") || func_body.contains("molt_binary_metadata");
+            used_identifier("molt_binary_new") || func_body.contains("molt_binary_metadata");
         if needs_dict_runtime || needs_binary_runtime {
             self.output.push_str("local molt_binary_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})\nlocal function molt_binary_new(kind: string, value: string): any local result = {}; molt_binary_metadata[result] = {kind=kind, value=value}; return result end\n");
         }
@@ -226,12 +245,17 @@ impl LuauBackend {
             self.output.push_str(frame_runtime::CALLABLE_FRAME_RUNTIME);
             self.output.push('\n');
         }
+        if needs_callable_metadata_runtime {
+            self.output
+                .push_str(frame_runtime::CALLABLE_METADATA_RUNTIME);
+            self.output.push('\n');
+        }
         if needs_callargs_runtime {
             self.output.push_str(dict_runtime::CALLARGS_RUNTIME);
             self.output.push('\n');
         }
 
-        let needs_sys_bootstrap = func_body.contains("molt_sys_set_version_info");
+        let needs_sys_bootstrap = used_identifier("molt_sys_set_version_info");
         if needs_sys_bootstrap {
             self.output.push_str(concat!(
                 "local molt_sys_version_info = {3, 12, 0, \"final\", 0}\n",
@@ -288,25 +312,15 @@ impl LuauBackend {
             "molt_runtime_shutdown",
             "molt_runtime_init",
         ] {
-            if func_body.contains(stub) {
+            if used_identifier(stub) {
                 self.output
                     .push_str(&format!("local function {stub}(...) end\n"));
             }
         }
 
-        // Helper to check if a name is used in the function body.
-        // We search for "name(" to match call sites, avoiding false positives
-        // like "molt_mod" matching inside "molt_module_cache".
-        let used_call = |name: &str| {
-            let pattern = format!("{name}(");
-            func_body.contains(&pattern)
-        };
-        // For non-function names (modules, variables), use plain contains.
-        let used = |name: &str| func_body.contains(name);
-
-        if used_call("molt_module_get_global")
-            || used_call("molt_module_get_name")
-            || used_call("molt_module_del_global")
+        if used_identifier("molt_module_get_global")
+            || used_identifier("molt_module_get_name")
+            || used_identifier("molt_module_del_global")
         {
             self.output.push_str(concat!(
                 "local function molt_module_type_error(action: string): any\n",
@@ -622,25 +636,27 @@ end
 
         // Dict/list rendering is part of the canonical container runtime above.
         // molt_print still needs that runtime because it calls molt_str.
-        let needs_print = used_call("molt_print");
-        let needs_ord_group = used_call("molt_ord")
-            || used_call("molt_ord_at")
-            || used_call("molt_str_codepoint_len")
-            || used_call("molt_str_byte_offset");
-        let needs_builtin_type = used_call("molt_builtin_type")
-            || used_call("molt_type_of")
-            || used_call("molt_isinstance");
-        let needs_type_of = used_call("molt_type_of") || used_call("molt_isinstance");
-        let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
-        let needs_matmul_group = used_call("molt_matmul") || used_call("molt_inplace_matmul");
+        let needs_print = used_identifier("molt_print");
+        let needs_ord_group = used_identifier("molt_ord")
+            || used_identifier("molt_ord_at")
+            || used_identifier("molt_str_codepoint_len")
+            || used_identifier("molt_str_byte_offset");
+        let needs_builtin_type = used_identifier("molt_builtin_type")
+            || used_identifier("molt_type_of")
+            || used_identifier("molt_isinstance");
+        let needs_type_of = used_identifier("molt_type_of") || used_identifier("molt_isinstance");
+        let needs_issubclass =
+            used_identifier("molt_issubclass") || used_identifier("molt_isinstance");
+        let needs_matmul_group =
+            used_identifier("molt_matmul") || used_identifier("molt_inplace_matmul");
         let needs_not_implemented = used("molt_not_implemented") || needs_matmul_group;
-        let needs_get_attr = used_call("molt_get_attr")
-            || used_call("molt_get_attr_checked")
-            || used_call("molt_get_attr_default")
-            || used_call("molt_has_attr")
-            || used_call("molt_set_attr")
-            || used_call("molt_del_attr")
-            || used_call("molt_class_apply_set_name")
+        let needs_get_attr = used_identifier("molt_get_attr")
+            || used_identifier("molt_get_attr_checked")
+            || used_identifier("molt_get_attr_default")
+            || used_identifier("molt_has_attr")
+            || used_identifier("molt_set_attr")
+            || used_identifier("molt_del_attr")
+            || used_identifier("molt_class_apply_set_name")
             || needs_matmul_group;
         if needs_not_implemented {
             self.output
@@ -659,17 +675,17 @@ end
             } else if *name == "molt_issubclass" {
                 needs_issubclass
             } else if *name == "molt_isinstance" {
-                used_call("molt_isinstance")
+                used_identifier("molt_isinstance")
             } else if *name == "molt_get_attr" {
                 needs_get_attr
             } else if *name == "molt_matmul" {
                 needs_matmul_group
             } else if *name == "molt_inplace_matmul" {
-                used_call("molt_inplace_matmul")
+                used_identifier("molt_inplace_matmul")
             } else if *name == "molt_print" {
                 needs_print
             } else {
-                used_call(name)
+                used_identifier(name)
             };
             if emit {
                 self.output.push_str(source);
@@ -677,7 +693,7 @@ end
             }
         }
         // Exception handling helpers — only emit if pcall-based try/except is used.
-        if used_call("molt_exception_kind") || used_call("molt_exception_match") {
+        if used_identifier("molt_exception_kind") || used_identifier("molt_exception_match") {
             self.output.push_str(concat!(
                 "local molt_exception_hierarchy = {\n",
                 "\tZeroDivisionError = \"ArithmeticError\",\n",
@@ -756,8 +772,8 @@ end
 
         // Infrastructure used by JSON serializer and math/bitwise ops.
         // math_floor is needed by the JSON prelude (serialize checks integer-ness).
-        let needs_json = used("molt_json_dumps") || used("\"json\"");
-        if used("math_floor") || needs_json {
+        let needs_json = used_identifier("molt_json_dumps") || used("\"json\"");
+        if used_identifier("math_floor") || needs_json {
             self.output.push_str("local math_floor = math.floor\n");
         }
         if used("bit32") || used("bit.") {
@@ -787,7 +803,7 @@ end
         }
 
         // JSON serializer — emit if any function references json module.
-        if used("molt_json_dumps") || used("\"json\"") {
+        if used_identifier("molt_json_dumps") || used("\"json\"") {
             self.output
                 .push_str(include_str!("../luau_json_prelude.luau"));
             self.output.push('\n');

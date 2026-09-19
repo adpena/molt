@@ -161,7 +161,8 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
         }
 
         if is_luau_end_line(trimmed) {
-            let closing_function_expression = trimmed.starts_with("end)");
+            let closing_function_expression =
+                trimmed.starts_with("end)") || trimmed.starts_with("end,");
             match stack.pop() {
                 Some((LuauBlockKind::Function, _)) if closing_function_expression => {}
                 Some((LuauBlockKind::Function, opened_line)) if trimmed != "end" => {
@@ -172,7 +173,7 @@ fn validate_luau_block_structure(source: &str) -> Result<(), String> {
                 Some((_kind, _opened_line)) if !closing_function_expression => {}
                 Some((kind, opened_line)) => {
                     return Err(format!(
-                        "luau block structure error at line {line_number}: `end)` closes function expression, but top block is {} opened at line {opened_line}",
+                        "luau block structure error at line {line_number}: `{trimmed}` closes function expression, but top block is {} opened at line {opened_line}",
                         luau_block_kind_name(kind)
                     ));
                 }
@@ -368,6 +369,21 @@ mod tests {
         ]
         .join("\n");
         assert!(validate_luau_source(&source).is_ok());
+    }
+
+    #[test]
+    fn function_expression_may_close_before_later_call_arguments() {
+        let source = [
+            "local function invoke()",
+            "\treturn call_with_context(function()",
+            "\t\treturn 42",
+            "\tend, globals, builtins)",
+            "end",
+            "",
+        ]
+        .join("\n");
+        validate_luau_source(&source)
+            .expect("a function expression may be followed by sibling call arguments");
     }
 
     #[test]

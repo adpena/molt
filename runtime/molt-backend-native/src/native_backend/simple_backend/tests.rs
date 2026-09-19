@@ -10,9 +10,10 @@ use super::{
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
 use crate::{GENERATOR_CONTROL_BYTES, TrampolineKind};
 use cranelift_codegen::flowgraph::ControlFlowGraph;
+use cranelift_codegen::ir::condcodes::{CondCode, IntCC};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{
-    Block, BlockArg, ExternalName, Function, Inst, InstructionData, Value, ValueDef,
+    Block, BlockArg, ExternalName, Function, Inst, InstructionData, Opcode, Value, ValueDef,
 };
 use cranelift_module::{FuncId, Module};
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,6 +126,104 @@ fn compile_function_to_clif(
 struct CompiledFunctionClif {
     function: Function,
     import_ids: BTreeMap<&'static str, FuncId>,
+}
+
+fn definition(func: &Function, value: Value) -> Option<Inst> {
+    match func.dfg.value_def(func.dfg.resolve_aliases(value)) {
+        ValueDef::Result(inst, _) => Some(inst),
+        ValueDef::Param(_, _) | ValueDef::Union(_, _) => None,
+    }
+}
+
+fn constant(func: &Function, value: Value) -> Option<i64> {
+    match func.dfg.insts[definition(func, value)?] {
+        InstructionData::UnaryImm {
+            opcode: Opcode::Iconst,
+            imm,
+        } => Some(imm.bits()),
+        _ => None,
+    }
+}
+
+/// Find the nonconstant operand of `operand code immediate`, independent of
+/// value numbering, aliases, printed CLIF spelling, and comparison orientation.
+fn comparison_operand(
+    func: &Function,
+    condition: Value,
+    code: IntCC,
+    immediate: i64,
+) -> Option<Value> {
+    let inst = definition(func, condition)?;
+    let actual_code = func.dfg.insts[inst].cond_code()?;
+    let [left, right] = func.dfg.inst_args(inst) else {
+        return None;
+    };
+    if actual_code == code && constant(func, *right) == Some(immediate) {
+        Some(*left)
+    } else if actual_code == code.swap_args() && constant(func, *left) == Some(immediate) {
+        Some(*right)
+    } else {
+        None
+    }
+}
+
+/// Both ordinary task producers and callable trampolines must branch on the
+/// allocator's exact result before any payload or completion side effects.
+/// Return the allocation value and semantic success/failure destinations.
+fn assert_task_allocation_admission(compiled: &CompiledFunctionClif) -> (Value, Block, Block) {
+    let function = &compiled.function;
+    let calls = call_sites_for_import(
+        function,
+        compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
+    );
+    assert_eq!(calls.len(), 1, "{}", function.display());
+    let (block, call) = calls[0];
+    let task = function.dfg.first_result(call);
+    let branch = function
+        .layout
+        .last_inst(block)
+        .expect("allocation block terminator");
+    let InstructionData::Brif { blocks, .. } = &function.dfg.insts[branch] else {
+        panic!(
+            "allocation must branch before initialization:\n{}",
+            function.display()
+        );
+    };
+    let condition = function.dfg.inst_args(branch)[0];
+    let code = [IntCC::Equal, IntCC::NotEqual]
+        .into_iter()
+        .find(|&code| {
+            comparison_operand(function, condition, code, molt_codegen_abi::box_none_bits())
+                .is_some_and(|operand| value_originates_only_from(function, operand, task))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "guard must compare task_new's exact result with boxed None:\n{}",
+                function.display()
+            )
+        });
+    for inst in function
+        .layout
+        .block_insts(block)
+        .skip_while(|&inst| inst != call)
+        .skip(1)
+    {
+        let opcode = function.dfg.insts[inst].opcode();
+        assert!(
+            !opcode.can_load() && !opcode.can_store() && !opcode.is_call(),
+            "allocation must branch before payload access, RC, registration, or wrapping:\n{}",
+            function.display()
+        );
+    }
+    let success_index = usize::from(code == IntCC::Equal);
+    let success = blocks[success_index].block(&function.dfg.value_lists);
+    let failure = blocks[1 - success_index].block(&function.dfg.value_lists);
+    assert_ne!(success, failure, "{}", function.display());
+    let cfg = ControlFlowGraph::with_function(function);
+    let predecessors: Vec<_> = cfg.pred_iter(success).collect();
+    assert_eq!(predecessors.len(), 1, "{}", function.display());
+    assert_eq!(predecessors[0].inst, branch, "{}", function.display());
+    (task, success, failure)
 }
 
 fn compile_function_to_clif_with_imports(

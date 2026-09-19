@@ -1,5 +1,6 @@
 use super::*;
 use crate::TrampolineSpec;
+use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
 use cranelift_module::Linkage;
 use molt_tir::trampolines::TrampolineTaskKind;
 
@@ -30,13 +31,16 @@ impl TaskPayloadCase {
     }
 }
 
-fn task_trampoline_clif(task_kind: TrampolineTaskKind, payload: TaskPayloadCase) -> String {
+fn task_trampoline_clif(
+    task_kind: TrampolineTaskKind,
+    payload: TaskPayloadCase,
+) -> CompiledFunctionClif {
     let mut backend = SimpleBackend::new();
     let SimpleBackend {
         module, import_ids, ..
     } = &mut backend;
     let layout = task_kind.constructor_layout();
-    SimpleBackend::task_trampoline_clif_for_test(
+    let function = SimpleBackend::task_trampoline_clif_for_test(
         module,
         import_ids,
         "allocation_probe",
@@ -48,79 +52,68 @@ fn task_trampoline_clif(task_kind: TrampolineTaskKind, payload: TaskPayloadCase)
                 + (payload.slot_count() as i64) * 8,
             target_has_ret: true,
         },
-    )
+    );
+    CompiledFunctionClif {
+        function,
+        import_ids: import_ids
+            .iter()
+            .map(|(name, (id, _))| (*name, *id))
+            .collect(),
+    }
 }
 
 fn assert_task_allocation_guard(
-    clif: &str,
+    compiled: &CompiledFunctionClif,
     task_kind: TrampolineTaskKind,
     payload: TaskPayloadCase,
 ) {
-    let lines: Vec<&str> = clif.lines().map(str::trim).collect();
-    let task_call_index = lines
-        .iter()
-        .position(|line| line.contains(" = call "))
-        .unwrap_or_else(|| panic!("missing task_new call for {task_kind:?}:\n{clif}"));
-    let task_value = lines[task_call_index]
-        .split_once(" = call ")
-        .map(|(result, _)| result.trim())
-        .expect("task_new call must return the task value");
-    let none_bits =
-        cranelift_codegen::ir::immediates::Imm64::new(molt_codegen_abi::box_none_bits())
-            .to_string();
-    let guard_index = lines
-        .iter()
-        .enumerate()
-        .skip(task_call_index + 1)
-        .find_map(|(index, line)| {
-            (line.contains("icmp_imm eq") && line.contains(task_value) && line.contains(&none_bits))
-                .then_some(index)
-        })
-        .unwrap_or_else(|| {
-            panic!("{task_kind:?} must compare task_new's exact result with boxed None:\n{clif}")
-        });
-    let branch_index = lines
-        .iter()
-        .enumerate()
-        .skip(guard_index + 1)
-        .find_map(|(index, line)| line.starts_with("brif ").then_some(index))
-        .unwrap_or_else(|| panic!("{task_kind:?} allocation guard must branch:\n{clif}"));
-
-    assert!(
-        lines[(task_call_index + 1)..branch_index]
-            .iter()
-            .all(|line| !line.contains("load")
-                && !line.contains("store")
-                && !line.contains("call ")),
-        "{task_kind:?} must branch before payload access, RC, token registration, or wrapping:\n{clif}"
-    );
-    let failure_block = lines[branch_index]
-        .split(',')
-        .nth(1)
-        .map(str::trim)
-        .expect("allocation branch must name a failure block");
-    let failure_label = format!("{failure_block}:");
-    let failure_label_index = lines
-        .iter()
-        .position(|line| *line == failure_label)
-        .expect("allocation failure block must be present");
-    let failure_instruction = lines[(failure_label_index + 1)..]
-        .iter()
-        .find(|line| !line.is_empty())
-        .expect("allocation failure block must return");
+    let function = &compiled.function;
+    let clif = function.display();
+    let (task_value, success, failure) = assert_task_allocation_admission(compiled);
+    let failure_insts: Vec<_> = function.layout.block_insts(failure).collect();
+    assert_eq!(failure_insts.len(), 1, "{clif}");
     assert_eq!(
-        *failure_instruction,
-        format!("return {task_value}"),
+        function.dfg.insts[failure_insts[0]].opcode(),
+        Opcode::Return,
+        "{clif}"
+    );
+    assert_eq!(
+        function.dfg.inst_args(failure_insts[0]),
+        &[task_value],
         "{task_kind:?} failure edge must immediately return task_new's exact boxed result:\n{clif}"
     );
-
-    let store_count = lines
-        .iter()
-        .filter(|line| line.starts_with("store "))
-        .count();
+    let stores: Vec<_> = function
+        .layout
+        .blocks()
+        .flat_map(|block| {
+            function.layout.block_insts(block).filter_map(move |inst| {
+                function.dfg.insts[inst]
+                    .opcode()
+                    .can_store()
+                    .then_some((block, inst))
+            })
+        })
+        .collect();
+    assert!(stores.iter().all(|(block, _)| *block == success), "{clif}");
+    let store_count = stores.len();
     assert_eq!(store_count, payload.slot_count(), "{clif}");
-
-    let call_count = lines.iter().filter(|line| line.contains("call ")).count();
+    let calls: Vec<_> = function
+        .layout
+        .blocks()
+        .flat_map(|block| {
+            function.layout.block_insts(block).filter_map(move |inst| {
+                function.dfg.insts[inst]
+                    .opcode()
+                    .is_call()
+                    .then_some((block, inst))
+            })
+        })
+        .collect();
+    assert!(
+        calls.iter().skip(1).all(|(block, _)| *block == success),
+        "{clif}"
+    );
+    let call_count = calls.len();
     let completion_calls = match task_kind {
         TrampolineTaskKind::Generator => 0,
         TrampolineTaskKind::Coroutine | TrampolineTaskKind::AsyncGen => 2,
@@ -132,26 +125,32 @@ fn assert_task_allocation_guard(
     );
 
     if task_kind == TrampolineTaskKind::AsyncGen {
-        let calls: Vec<&str> = lines
-            .iter()
-            .copied()
-            .filter(|line| line.contains("call "))
-            .collect();
-        let wrap_call = calls[calls.len() - 2];
-        let release_call = calls[calls.len() - 1];
+        let wrap_calls =
+            call_sites_for_import(function, compiled.import_ids[MOLT_ASYNCGEN_NEW.name]);
+        let release_calls =
+            call_sites_for_import(function, compiled.import_ids[MOLT_DEC_REF_OBJ.name]);
+        assert_eq!(wrap_calls.len(), 1, "{clif}");
+        assert_eq!(release_calls.len(), 1, "{clif}");
+        assert_eq!(calls[calls.len() - 2], wrap_calls[0], "{clif}");
+        assert_eq!(calls[calls.len() - 1], release_calls[0], "{clif}");
+        for (_, inst) in [wrap_calls[0], release_calls[0]] {
+            assert_eq!(function.dfg.inst_args(inst), &[task_value], "{clif}");
+        }
         assert!(
-            wrap_call.contains(" = call ") && !release_call.contains(" = call "),
-            "async-generator completion must preserve its result then release the task:\n{clif}"
+            function.dfg.inst_results(release_calls[0].1).is_empty(),
+            "{clif}"
         );
-        let wrapper_value = wrap_call
-            .split_once(" = call ")
-            .map(|(result, _)| result.trim())
-            .unwrap();
-        assert!(
-            lines
-                .iter()
-                .any(|line| *line == format!("return {wrapper_value}")),
-            "async-generator completion must return the exact wrapper/error result:\n{clif}"
+        let wrapper_value = function.dfg.first_result(wrap_calls[0].1);
+        let return_inst = function.layout.last_inst(success).unwrap();
+        assert_eq!(
+            function.dfg.insts[return_inst].opcode(),
+            Opcode::Return,
+            "{clif}"
+        );
+        assert_eq!(
+            function.dfg.inst_args(return_inst),
+            &[wrapper_value],
+            "{clif}"
         );
     }
 }
