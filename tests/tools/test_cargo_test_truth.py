@@ -653,6 +653,71 @@ def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
     assert any("structural attribution only" in problem for problem in problems)
 
 
+@pytest.mark.parametrize(
+    "location", ["status", "diagnosis", "execution", "malformed", "missing"]
+)
+def test_truth_excludes_entire_infrastructure_receipt_from_semantic_evidence(location):
+    runner = _load_tool(
+        "run_cargo_test_truth_infrastructure", "run_cargo_test_truth.py"
+    )
+    executable = str((ROOT / "target" / "deps" / "runtime-test").resolve())
+    expected = {
+        runner._executable_key(executable): {
+            "package": "molt-runtime@0.1.0",
+            "target_name": "molt_runtime",
+            "target_kind": "lib",
+            "executable": executable,
+        }
+    }
+    failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["receipt unavailable"],
+    }
+    receipt = {
+        "executable_resolved": executable,
+        "status": "success",
+        "failure_identities": ["tests::red"],
+        "test_results": [
+            {"identity": "tests::green", "status": "pass"},
+            {"identity": "tests::red", "status": "fail"},
+        ],
+    }
+    if location in {"status", "missing"}:
+        receipt["status"] = "infrastructure_error"
+    if location in {"status", "diagnosis"}:
+        receipt["diagnosis"] = {
+            "kind": "infrastructure-error",
+            "child_returncode": 0,
+            "infrastructure_failure": failure,
+        }
+    if location in {"execution", "malformed"}:
+        receipt["executions"] = [
+            {"infrastructure_failure": failure if location == "execution" else {}}
+        ]
+
+    rows, problems = runner.receipt_test_rows(
+        [receipt], expected, {"platform": "windows", "target": "default"}
+    )
+    assert rows == []
+    assert len(problems) == 1
+    assert "not semantic or known-red evidence" in problems[0]
+    assert "infrastructure" in problems[0]
+
+
+def test_truth_does_not_infer_infrastructure_from_exit_125():
+    runner = _load_tool("run_cargo_test_truth_exit125", "run_cargo_test_truth.py")
+    assert (
+        runner._receipt_infrastructure_problem(
+            {
+                "status": "failed",
+                "returncode": 125,
+                "executions": [{"returncode": 125, "infrastructure_failure": None}],
+            }
+        )
+        is None
+    )
+
+
 def test_truth_runner_retains_explicit_run_identity_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1442,6 +1507,209 @@ def test_binary_runner_reduces_abort_to_exact_test_and_writes_receipt(
     assert "stderr" not in receipt["executions"][0]
 
 
+@pytest.mark.parametrize(
+    "stage", ["baseline", "discovery", "partition", "serial", "exact", "resource"]
+)
+def test_binary_runner_stops_every_diagnostic_phase_on_guard_infrastructure(
+    tmp_path, monkeypatch, capsys, stage
+):
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+    from tools.proof_queue_pkg import diagnostic_engine
+
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_infrastructure", "cargo_test_binary_runner.py"
+    )
+    failure = GuardInfrastructureFailure(
+        "temporary_artifact_custody", ("receipt unavailable",)
+    )
+    observed = []
+    injected = False
+
+    def execute(argv, _timeout):
+        nonlocal injected
+        assert not injected, (
+            "infrastructure failure must stop diagnosis without another execution"
+        )
+        if "--list" in argv:
+            current = "discovery"
+            stdout = "first: test\n" + ("second: test\n" if stage != "exact" else "")
+        elif "--exact" in argv:
+            current = "resource" if stage == "resource" else "exact"
+            stdout = "test first ... FAILED\n"
+        elif "--skip" in argv:
+            current = "partition"
+            stdout = ""
+        elif observed:
+            current = "serial"
+            stdout = "test first ...\n"
+        else:
+            current = "baseline"
+            stdout = ""
+        observed.append(current)
+        injected = current == stage
+        return binary_runner.BinaryExecution(
+            argv=tuple(argv),
+            returncode=125 if injected else 0 if current == "discovery" else -6,
+            stdout=stdout,
+            stderr="",
+            elapsed_seconds=0.01,
+            timed_out=False,
+            peak_process_rss_kb=1,
+            peak_tree_rss_kb=1,
+            child_returncode=0 if injected else None,
+            infrastructure_failure=failure if injected else None,
+        )
+
+    monkeypatch.setattr(binary_runner, "execute_binary", execute)
+    if stage == "serial":
+        monkeypatch.setattr(binary_runner, "_subset_argv", lambda *_args: None)
+    executable = (
+        "resource_enforcement-hash" if stage == "resource" else "molt_runtime-hash"
+    )
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(tmp_path),
+                "--",
+                executable,
+            ]
+        )
+        == 2
+    )
+    assert injected and observed[-1] == stage
+    [path] = list(tmp_path.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "infrastructure_error"
+    assert receipt["diagnosis"]["kind"] == "infrastructure-error"
+    assert receipt["reported_failures"] == receipt["failure_identities"] == []
+    assert receipt["executions"][-1]["child_returncode"] == 0
+    assert receipt["executions"][-1]["infrastructure_failure"] == failure.json_payload()
+    output = capsys.readouterr().out
+    prefix = "cargo-test-binary-runner: infrastructure-outcome="
+    reports = [
+        line[len(prefix) :] for line in output.splitlines() if line.startswith(prefix)
+    ]
+    assert len(reports) == 1
+    assert json.loads(reports[0]) == receipt["diagnosis"]
+    if stage == "resource":
+        assert "test first ... FAILED" in output
+    log = tmp_path / "queue.log"
+    log.write_text(
+        output + "error: test failed, to rerun pass `--lib`\n", encoding="utf-8"
+    )
+    summary = tmp_path / "healthy-outer-guard.json"
+    summary.write_text(json.dumps({"infrastructure_failure": None}), encoding="utf-8")
+    diagnostics = diagnostic_engine._run_diagnostics(
+        {
+            "status": "failed",
+            "summary_json": str(summary) if stage == "baseline" else None,
+            "log_path": str(log),
+        }
+    )
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["signal_id"] == "guard-infrastructure-error"
+    assert diagnostics[0]["observation_state"] == "reported"
+    assert "reported" in diagnostics[0]["summary"]
+    assert "not authenticated" in diagnostics[0]["next_action"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "exit_code=125\n",
+        "memory_guard: infrastructure_error during temporary_artifact_custody\n",
+        '{"kind":"infrastructure-error","child_returncode":0}\n',
+    ],
+)
+def test_queue_never_infers_nested_infrastructure_from_generic_output(tmp_path, output):
+    from tools.proof_queue_pkg.diagnostic_evidence import (
+        _guard_infrastructure_diagnostic,
+    )
+
+    log = tmp_path / "queue.log"
+    log.write_text(output, encoding="utf-8")
+    assert (
+        _guard_infrastructure_diagnostic(
+            {"status": "failed", "summary_json": None, "log_path": str(log)},
+            output,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("invalid", ["phase", "child", "duplicate", "missing"])
+def test_queue_rejects_malformed_typed_nested_infrastructure_reports(tmp_path, invalid):
+    from tools.proof_queue_pkg.diagnostic_evidence import (
+        _guard_infrastructure_diagnostic,
+    )
+
+    payload = {
+        "kind": "infrastructure-error",
+        "child_returncode": 0,
+        "infrastructure_failure": {
+            "phase": "temporary_artifact_custody",
+            "details": ["receipt unavailable"],
+        },
+    }
+    if invalid == "phase":
+        payload["infrastructure_failure"]["phase"] = "unknown"
+    elif invalid == "child":
+        payload["child_returncode"] = True
+    elif invalid == "missing":
+        payload["infrastructure_failure"] = None
+    encoded = json.dumps(payload)
+    if invalid == "duplicate":
+        encoded = encoded[:-1] + ', "child_returncode": 7}'
+    log = tmp_path / "queue.log"
+    log.write_text(
+        "cargo-test-binary-runner: infrastructure-outcome=" + encoded + "\n",
+        encoding="utf-8",
+    )
+    diagnostic = _guard_infrastructure_diagnostic(
+        {"status": "failed", "summary_json": None, "log_path": str(log)},
+        log.read_text(encoding="utf-8"),
+    )
+    assert diagnostic is not None
+    assert diagnostic["observation_state"] == "reported"
+    assert "Malformed reported Cargo infrastructure outcome" in diagnostic["evidence"]
+
+
+def test_binary_runner_preserves_guard_result_without_reclassifying_child(
+    tmp_path, monkeypatch
+):
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+    from types import SimpleNamespace
+
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_guard_fields", "cargo_test_binary_runner.py"
+    )
+    failure = GuardInfrastructureFailure(
+        "temporary_artifact_custody", ("receipt unavailable",)
+    )
+    monkeypatch.setattr(binary_runner, "_ACTIVE_EVIDENCE_DIR", tmp_path)
+    monkeypatch.setattr(
+        binary_runner,
+        "_COMMANDS",
+        SimpleNamespace(
+            run=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=125,
+                stdout="ok",
+                stderr="",
+                child_returncode=0,
+                infrastructure_failure=failure,
+            )
+        ),
+    )
+    result = binary_runner.execute_binary(["fixture"], 1)
+    assert result.child_returncode == 0
+    assert result.infrastructure_failure is failure
+    assert not result.succeeded
+    assert result.receipt()["infrastructure_failure"] == failure.json_payload()
+
+
 def test_binary_runner_uses_bounded_serial_attribution_when_skip_argv_is_too_long(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1664,6 +1932,19 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
 
     receipt.write_text(json.dumps({"schema": "wrong"}), encoding="utf-8")
     with pytest.raises(RuntimeError, match="invalid Cargo test binary receipt schema"):
+        runner.load_binary_receipts(tmp_path)
+
+
+def test_truth_runner_cannot_erase_infrastructure_status_with_duplicate_json_keys(
+    tmp_path,
+):
+    runner = _load_tool("run_cargo_test_truth_exact_outcome", "run_cargo_test_truth.py")
+    (tmp_path / "one.json").write_text(
+        '{"schema":"molt.cargo-test-binary.v1","invocation_id":"one",'
+        '"status":"infrastructure_error","status":"success"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key"):
         runner.load_binary_receipts(tmp_path)
 
 

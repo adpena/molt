@@ -3603,7 +3603,7 @@ def test_admitted_sum_generator_expr_lowers_as_full_consumption_reducer() -> Non
     assert any(op.kind == "ADD" for op in ops)
     assert not any(
         op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
-        or op.metadata.get("task_kind") == "generator"
+        or (op.metadata or {}).get("task_kind") == "generator"
         for op in ops
     )
 
@@ -3625,7 +3625,7 @@ def test_admitted_sum_listcomp_lowers_as_full_consumption_reducer() -> None:
             "CALL_FUNC",
             "CALL_BIND",
         }
-        or op.metadata.get("task_kind") == "generator"
+        or (op.metadata or {}).get("task_kind") == "generator"
         for op in ops
     )
 
@@ -3639,7 +3639,7 @@ def test_admitted_sum_generator_expr_tuple_target_lowers_inline() -> None:
     assert any(op.kind == "ADD" for op in ops)
     assert not any(
         op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
-        or op.metadata.get("task_kind") == "generator"
+        or (op.metadata or {}).get("task_kind") == "generator"
         for op in ops
     )
 
@@ -3720,7 +3720,7 @@ def test_admitted_sum_generator_expr_target_shadow_does_not_leak() -> None:
     assert gen.locals["v"] is outer
     assert not any(
         op.kind in {"ALLOC_TASK", "FUNC_NEW", "BUILTIN_FUNC", "CALL_FUNC", "CALL_BIND"}
-        or op.metadata.get("task_kind") == "generator"
+        or (op.metadata or {}).get("task_kind") == "generator"
         for op in gen.current_ops
     )
 

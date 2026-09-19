@@ -222,3 +222,44 @@ def test_guarded_timeout_preserves_terminal_telemetry() -> None:
         )
 
     assert getattr(raised.value, "guarded_result") is guarded_result
+
+
+def test_guarded_check_failure_preserves_terminal_telemetry() -> None:
+    guarded_result = type(
+        "GuardedResult",
+        (),
+        {
+            "timed_out": False,
+            "stdout": "child completed",
+            "stderr": "scratch retention failed",
+            "returncode": 125,
+            "child_returncode": 0,
+            "infrastructure_failure": object(),
+        },
+    )()
+
+    class FakeContext:
+        @classmethod
+        def from_env(cls, *_args: object, **_kwargs: object) -> "FakeContext":
+            return cls()
+
+        def run(self, command: list[str], **_kwargs: object) -> object:
+            return guarded_result
+
+    harness = type(
+        "FakeHarness",
+        (),
+        {"HarnessExecutionContext": FakeContext},
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        process_guard.run_completed_command(
+            ["compiler", "input.py"],
+            memory_guard_prefix="MOLT_TEST",
+            capture_output=True,
+            check=True,
+            guard_loader=lambda _cwd: harness,
+        )
+
+    assert raised.value.returncode == 125
+    assert getattr(raised.value, "guarded_result") is guarded_result

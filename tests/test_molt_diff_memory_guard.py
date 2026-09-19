@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,43 @@ def _load_diff_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("child_returncode", [0, 137])
+def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
+    tmp_path, monkeypatch, child_returncode
+):
+    module = _load_diff_module()
+    failure = module.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("invalid retained index",)
+    )
+    guarded = module.harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        child_returncode or module.memory_guard.INFRASTRUCTURE_RETURN_CODE,
+        "partial",
+        "custody incomplete",
+        elapsed_s=0.1,
+        child_returncode=child_returncode,
+        infrastructure_failure=failure,
+    )
+    monkeypatch.setattr(module, "_memory_guard_trip_message", lambda: None)
+    monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            run=lambda *_args, **_kwargs: guarded
+        ),
+    )
+    events = []
+    monkeypatch.setattr(module, "_record_memory_guard_event", events.append)
+    result = module._run_subprocess(["fixture"], env={}, timeout=5)
+    assert result is guarded
+    assert result.child_returncode == child_returncode
+    assert result.infrastructure_failure is failure
+    assert result.stdout == "partial" and result.stderr == "custody incomplete"
+    assert events == []
 
 
 def _configure_guard(

@@ -162,6 +162,22 @@ class RunMeasurement:
     stdout: str
     stderr: str
     timed_out: bool = False
+    child_returncode: int | None = None
+    infrastructure_failure: (
+        harness_memory_guard.memory_guard.GuardInfrastructureFailure | None
+    ) = None
+
+    @property
+    def status(self) -> str:
+        if self.infrastructure_failure is not None:
+            return "infrastructure_error"
+        if self.timed_out:
+            return "timeout"
+        return "pass" if self.returncode == 0 else "failed"
+
+    @property
+    def evidence_eligible(self) -> bool:
+        return self.infrastructure_failure is None
 
 
 def run_and_measure(
@@ -217,13 +233,15 @@ def run_and_measure(
     out = decode_output(result.stdout)
     err = decode_output(result.stderr)
     return RunMeasurement(
-        result.returncode,
-        result.elapsed_s,
-        peak_rss_bytes,
-        result.peak_job_commit_bytes,
-        out,
-        err,
-        result.timed_out,
+        returncode=result.returncode,
+        elapsed_s=result.elapsed_s,
+        peak_rss_bytes=peak_rss_bytes,
+        peak_job_commit_bytes=result.peak_job_commit_bytes,
+        stdout=out,
+        stderr=err,
+        timed_out=result.timed_out,
+        child_returncode=getattr(result, "child_returncode", None),
+        infrastructure_failure=getattr(result, "infrastructure_failure", None),
     )
 
 
@@ -437,6 +455,29 @@ def calibrate_cold_budget(
     rss: list[int] = []
     for _ in range(max(1, runs)):
         m = run_and_measure(run_argv, env=env, cwd=cwd)
+        if not m.evidence_eligible:
+            fp = host_fingerprint()
+            return {
+                "kind": "cold_budget_calibration",
+                "status": "infrastructure_error",
+                "runs": runs,
+                "evidence_runs": 0,
+                "measured_p50_ms": None,
+                "measured_p90_ms": None,
+                "measured_max_ms": None,
+                "budget_ms": None,
+                "margin_frac": margin_frac,
+                "peak_rss_bytes_max": None,
+                "guard_returncode": m.returncode,
+                "child_returncode": m.child_returncode,
+                "infrastructure_failure": (
+                    harness_memory_guard.memory_guard.infrastructure_failure_payload(
+                        m.infrastructure_failure
+                    )
+                ),
+                "host_arch": fp.arch,
+                "host_os": fp.os,
+            }
         samples_ms.append(m.elapsed_s * 1000.0)
         if m.peak_rss_bytes:
             rss.append(m.peak_rss_bytes)
@@ -454,7 +495,9 @@ def calibrate_cold_budget(
     fp = host_fingerprint()
     return {
         "kind": "cold_budget_calibration",
+        "status": "ok",
         "runs": runs,
+        "evidence_runs": len(samples_ms),
         "measured_p50_ms": round(p50, 2) if p50 is not None else None,
         "measured_p90_ms": round(p90, 2) if p90 is not None else None,
         "measured_max_ms": round(mx, 2) if mx else None,
@@ -495,7 +538,12 @@ def _selftest() -> int:
     print(
         f"[adaptive] n={s.n} median={s.median:.4f} cv={s.cv:.4f} converged={s.converged}"
     )
-    ok = bool(self_rss) and m.returncode == 0 and (m.peak_rss_bytes or 0) > 10_000_000
+    ok = (
+        bool(self_rss)
+        and m.evidence_eligible
+        and m.returncode == 0
+        and (m.peak_rss_bytes or 0) > 10_000_000
+    )
     print(f"[selftest] {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

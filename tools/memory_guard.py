@@ -182,6 +182,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     _terminate_single_pid as _terminate_single_pid,
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
+    GuardInfrastructureFailure as GuardInfrastructureFailure,
     GuardResult as GuardResult,
     GuardSamplingTelemetry as GuardSamplingTelemetry,
     GuardTerminationAction as GuardTerminationAction,
@@ -249,6 +250,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
 
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
+INFRASTRUCTURE_RETURN_CODE = 125
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
 INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
 ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
@@ -2045,8 +2047,15 @@ def run_guarded(
                 "temporary artifact retention sweep reported errors: "
                 + json.dumps(list(retention_errors), sort_keys=True)
             )
-        scratch_infrastructure_failure = bool(scratch_failure_details)
-        if scratch_infrastructure_failure:
+        infrastructure_failure = (
+            GuardInfrastructureFailure(
+                phase="temporary_artifact_custody",
+                details=tuple(scratch_failure_details),
+            )
+            if scratch_failure_details
+            else None
+        )
+        if infrastructure_failure is not None:
             stderr = _append_guard_message(
                 stderr,
                 "memory_guard: temporary artifact custody incomplete: "
@@ -2055,7 +2064,7 @@ def run_guarded(
                 text=text,
             )
             if final_returncode == 0:
-                final_returncode = GUARD_RETURN_CODE
+                final_returncode = INFRASTRUCTURE_RETURN_CODE
         result = GuardResult(
             returncode=final_returncode,
             violation=violation,
@@ -2075,12 +2084,18 @@ def run_guarded(
             peak_job_commit_bytes=peak_job_commit_bytes,
             windows_job_cleanup=windows_job_cleanup,
             temporary_artifacts=temporary_artifacts,
+            child_returncode=proc.returncode,
+            infrastructure_failure=infrastructure_failure,
         )
         _update_active_guard_marker(
             guard_marker,
             guard_token,
             status="completed",
             returncode=result.returncode,
+            child_returncode=result.child_returncode,
+            infrastructure_failure=infrastructure_failure_payload(
+                result.infrastructure_failure
+            ),
             timed_out=result.timed_out,
             elapsed_s=result.elapsed_s,
             violation=_rss_record_payload(result.violation),
@@ -2428,6 +2443,7 @@ def exit_signal_payload(returncode: int) -> dict[str, object] | None:
 
 
 _exit_signal_payload = exit_signal_payload
+infrastructure_failure_payload = _reporting.infrastructure_failure_payload
 
 
 def _incident_payload(result: GuardResult) -> dict[str, object] | None:

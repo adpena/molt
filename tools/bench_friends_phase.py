@@ -87,7 +87,10 @@ def _guard_status(
     violation: Any | None,
     timed_out: bool,
     orphaned_process_groups: list[int],
+    infrastructure_failure: Any | None,
 ) -> str:
+    if infrastructure_failure is not None:
+        return "infrastructure_error"
     if violation is not None:
         return "rss_limit_exceeded"
     if timed_out:
@@ -111,12 +114,22 @@ def _guarded_phase_diagnostics(
     timed_out = bool(getattr(res, "timed_out", False))
     limit_at_violation = getattr(res, "limit_at_violation", None)
     cargo_quarantine = getattr(res, "cargo_incremental_quarantine", None)
+    infrastructure_failure = getattr(res, "infrastructure_failure", None)
     return {
         "guard_status": _guard_status(
             returncode=res.returncode,
             violation=violation,
             timed_out=timed_out,
             orphaned_process_groups=orphaned_process_groups,
+            infrastructure_failure=infrastructure_failure,
+        ),
+        "child_returncode": getattr(res, "child_returncode", None),
+        "infrastructure_failure": (
+            None
+            if infrastructure_failure is None
+            else harness_memory_guard.memory_guard.infrastructure_failure_payload(
+                infrastructure_failure
+            )
         ),
         "guard_violation": _rss_record_payload(violation),
         "guard_limit_at_violation": (
@@ -129,7 +142,7 @@ def _guarded_phase_diagnostics(
         "guard_orphaned_process_groups": orphaned_process_groups,
         "guard_exit_signal": (
             None
-            if violation is not None or timed_out
+            if violation is not None or timed_out or infrastructure_failure is not None
             else harness_memory_guard.memory_guard.exit_signal_payload(res.returncode)
         ),
         "guard_cargo_incremental_quarantine": (
@@ -226,6 +239,8 @@ def _run_command(
     guard_elapsed_s: float | None = None
     diagnostics: dict[str, Any] = {}
     res: subprocess.CompletedProcess[str] | None = None
+    guarded_outcome: Any | None = None
+    infrastructure_failure: Any | None = None
     try:
         res = harness_memory_guard.guarded_completed_process(
             cmd,
@@ -237,28 +252,41 @@ def _run_command(
             timeout=timeout_sec,
             limits=limits,
         )
+        guarded_outcome = res
         guard_elapsed_s = res.elapsed_s
-        timed_out = (
-            res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-        )
+        timed_out = bool(getattr(res, "timed_out", False))
         rc = -9 if timed_out else res.returncode
         stdout = res.stdout or ""
         stderr = res.stderr or ""
+        infrastructure_failure = getattr(res, "infrastructure_failure", None)
         diagnostics = _guarded_phase_diagnostics(res)
     except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        rc = -9
+        guarded_result = getattr(exc, "guarded_result", None)
+        guarded_outcome = guarded_result
+        infrastructure_failure = getattr(guarded_result, "infrastructure_failure", None)
+        timed_out = (
+            True
+            if guarded_result is None
+            else bool(getattr(guarded_result, "timed_out", False))
+        )
+        rc = -9 if timed_out else getattr(guarded_result, "returncode", -9)
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
         stderr = f"{stderr}\n[timeout] command exceeded {timeout_sec}s\n"
-        diagnostics = {
-            "guard_status": "timeout",
-            "guard_violation": None,
-            "guard_limit_at_violation": None,
-            "guard_orphaned_process_groups": [],
-            "guard_exit_signal": None,
-            "guard_cargo_incremental_quarantine": None,
-        }
+        if guarded_result is not None:
+            guard_elapsed_s = getattr(guarded_result, "elapsed_s", None)
+            diagnostics = _guarded_phase_diagnostics(guarded_result)
+        else:
+            diagnostics = {
+                "guard_status": "timeout",
+                "guard_violation": None,
+                "guard_limit_at_violation": None,
+                "guard_orphaned_process_groups": [],
+                "guard_exit_signal": None,
+                "guard_cargo_incremental_quarantine": None,
+                "child_returncode": None,
+                "infrastructure_failure": None,
+            }
     end = dt.datetime.now(dt.timezone.utc)
     elapsed = (
         guard_elapsed_s
@@ -277,6 +305,7 @@ def _run_command(
         or timed_out
         or diagnostics.get("guard_violation") is not None
         or diagnostics.get("guard_orphaned_process_groups")
+        or diagnostics.get("infrastructure_failure") is not None
     ):
         failure = bench_tool.classify_molt_process_failure(
             phase=molt_failure_phase,
@@ -285,7 +314,9 @@ def _run_command(
             stderr=stderr,
             elapsed_s=elapsed,
             timed_out=timed_out,
-            violation=getattr(res, "violation", None) if res is not None else None,
+            violation=getattr(guarded_outcome, "violation", None),
+            child_returncode=diagnostics.get("child_returncode"),
+            infrastructure_failure=infrastructure_failure,
             orphaned_process_groups=tuple(
                 int(pgid)
                 for pgid in diagnostics.get("guard_orphaned_process_groups", []) or []
@@ -309,7 +340,7 @@ def _run_command(
         **diagnostics,
     )
     if progress_label is not None:
-        status = "ok" if phase_result.ok else "failed"
+        status = "ok" if phase_result.ok else (phase_result.guard_status or "failed")
         timeout_suffix = " timed_out=true" if timed_out else ""
         _emit_progress(
             f"finish {progress_label} status={status} rc={rc} "

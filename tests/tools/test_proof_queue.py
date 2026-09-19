@@ -174,6 +174,98 @@ def test_finalization_rejects_malformed_outcome_before_publication(
     assert not (tmp_path / "execution.json").exists()
 
 
+@pytest.mark.parametrize("child_returncode", [0, 7])
+def test_finalization_keeps_guard_failure_separate_from_command(
+    tmp_path, monkeypatch, child_returncode
+):
+    failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["receipt unavailable"],
+    }
+    monkeypatch.setattr(
+        runner, "_record_cargo_generation_terminal", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        supervisor_custody,
+        "terminal_evidence_sha256",
+        lambda *_args, **_kwargs: "a" * 64,
+    )
+    record = {"command_returncode": child_returncode}
+    outcome, context = runner._finalize_execution_receipt(
+        execution_record=record,
+        execution_path=tmp_path / "execution.json",
+        run_id="infrastructure",
+        execution_nonce="fixture",
+        receipt_context={
+            "source_custody": {"evidence_eligible": True},
+            "guard_receipt": {
+                "child_returncode": child_returncode,
+                "infrastructure_failure": failure,
+            },
+        },
+        process_cleanup_safe=True,
+        status="failed",
+        returncode=125 if child_returncode == 0 else child_returncode,
+        execution_error=None,
+        guard_infrastructure_failure=runner.GuardInfrastructureFailure.from_payload(
+            failure
+        ),
+    )
+    assert outcome["status"] == ("non-evidence" if child_returncode == 0 else "failed")
+    assert outcome["returncode"] == 2
+    assert outcome["command_returncode"] == child_returncode
+    assert "infrastructure error" in outcome["execution_error"]
+    assert context["guard_receipt"]["infrastructure_failure"] == failure
+    assert record["command_returncode"] == child_returncode
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_guard_infrastructure_diagnostic_precedes_product_log_patterns(
+    tmp_path, malformed
+):
+    from tools.proof_queue_pkg import diagnostic_audit
+
+    summary = tmp_path / "guard.json"
+    failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["receipt unavailable"],
+    }
+    if malformed:
+        failure["phase"] = "unknown"
+    summary.write_text(
+        json.dumps(
+            {
+                "returncode": 125,
+                "child_returncode": 0,
+                "infrastructure_failure": failure,
+            }
+        ),
+        encoding="utf-8",
+    )
+    log = tmp_path / "run.log"
+    log.write_text(
+        "error: could not compile `molt-runtime`\ntest result: FAILED\n",
+        encoding="utf-8",
+    )
+    diagnostics = diagnostics_module._run_diagnostics(
+        {
+            "status": "failed",
+            "summary_json": str(summary),
+            "log_path": str(log),
+        }
+    )
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["signal_id"] == "guard-infrastructure-error"
+    assert diagnostics[0]["severity"] == "infra"
+    assert (
+        diagnostic_audit._audit_severity_for_diagnostic(
+            {"status": "failed"}, "guard-infrastructure-error"
+        )
+        == "error"
+    )
+    assert diagnostic_audit._frontier_failure({"status": "failed"}, diagnostics) is None
+
+
 def test_finalization_publication_failure_is_not_rebound_or_retried(
     tmp_path, monkeypatch
 ):
@@ -490,6 +582,8 @@ def _write_synthetic_guarded_execution(
             {
                 "command": guarded_command,
                 "returncode": returncode,
+                "child_returncode": returncode,
+                "infrastructure_failure": None,
                 "violation": None,
                 "timed_out": False,
                 "exit_signal": None,
@@ -506,6 +600,14 @@ def _write_synthetic_guarded_execution(
                     "successes": 1,
                     "transient_failures": 0,
                     "enforcement_complete": True,
+                },
+                "temporary_artifacts": {
+                    "closure": {
+                        "schema": "molt.guard-scratch-closure.v1",
+                        "authority": "windows-job-accounting",
+                        "closed": True,
+                        "direct_child_reaped": True,
+                    },
                 },
             }
         ),
@@ -2606,6 +2708,8 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
     base = {
         "command": guarded_command,
         "returncode": 0,
+        "child_returncode": 0,
+        "infrastructure_failure": None,
         "violation": None,
         "timed_out": False,
         "exit_signal": None,
@@ -2623,12 +2727,21 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
             "transient_failures": 0,
             "enforcement_complete": True,
         },
+        "temporary_artifacts": {
+            "closure": {
+                "schema": "molt.guard-scratch-closure.v1",
+                "authority": "posix-sampled-process-group",
+                "closed": True,
+                "direct_child_reaped": True,
+            },
+        },
     }
     summary.write_text(json.dumps(base), encoding="utf-8")
     receipt = runner._validated_guard_receipt(
         summary,
         guarded_command=guarded_command,
         returncode=0,
+        child_returncode=0,
         run_id="run-one",
         execution_nonce="a" * 64,
         guard_pid=123,
@@ -2637,6 +2750,8 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
     for mutation, message in [
         ({"command": ["substituted"]}, "command substitution"),
         ({"returncode": 1}, "return-code substitution"),
+        ({"child_returncode": 1}, "child return-code substitution"),
+        ({"child_returncode": True}, "child return-code substitution"),
         ({"timed_out": True}, "clean terminal outcome"),
         ({"exit_signal": 9}, "clean terminal outcome"),
         ({"orphaned_process_groups": [42]}, "clean terminal outcome"),
@@ -2669,6 +2784,77 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
                 summary,
                 guarded_command=guarded_command,
                 returncode=0,
+                child_returncode=0,
+                run_id="run-one",
+                execution_nonce="a" * 64,
+                guard_pid=123,
+            )
+
+    failure = {
+        "phase": "temporary_artifact_custody",
+        "details": ["receipt unavailable"],
+    }
+    infrastructure = {
+        **base,
+        "returncode": 125,
+        "infrastructure_failure": failure,
+        "incident": {
+            "reason": "infrastructure_error",
+            "child_returncode": 0,
+            "infrastructure_failure": failure,
+        },
+    }
+    summary.write_text(json.dumps(infrastructure), encoding="utf-8")
+    receipt = runner._validated_guard_receipt(
+        summary,
+        guarded_command=guarded_command,
+        returncode=125,
+        child_returncode=0,
+        run_id="run-one",
+        execution_nonce="a" * 64,
+        guard_pid=123,
+    )
+    assert receipt["child_returncode"] == 0
+    assert receipt["infrastructure_failure"] == failure
+    for outcome in (base, infrastructure):
+        for closure in (
+            None,
+            {},
+            {**base["temporary_artifacts"]["closure"], "closed": False},
+            {**base["temporary_artifacts"]["closure"], "closed": 1},
+            {**base["temporary_artifacts"]["closure"], "schema": "unknown"},
+            {**base["temporary_artifacts"]["closure"], "direct_child_reaped": False},
+        ):
+            summary.write_text(
+                json.dumps({**outcome, "temporary_artifacts": {"closure": closure}}),
+                encoding="utf-8",
+            )
+            with pytest.raises(ValueError, match="descendant closure is incomplete"):
+                runner._validated_guard_receipt(
+                    summary,
+                    guarded_command=guarded_command,
+                    returncode=outcome["returncode"],
+                    child_returncode=0,
+                    run_id="run-one",
+                    execution_nonce="a" * 64,
+                    guard_pid=123,
+                )
+    for mutation, message in [
+        (
+            {"infrastructure_failure": {"phase": "unknown", "details": ["error"]}},
+            "infrastructure",
+        ),
+        ({"incident": None}, "clean terminal outcome"),
+        ({"child_returncode": 125}, "child return-code substitution"),
+        ({"sampling_telemetry": {}}, "sampling enforcement"),
+    ]:
+        summary.write_text(json.dumps({**infrastructure, **mutation}), encoding="utf-8")
+        with pytest.raises(ValueError, match=message):
+            runner._validated_guard_receipt(
+                summary,
+                guarded_command=guarded_command,
+                returncode=125,
+                child_returncode=0,
                 run_id="run-one",
                 execution_nonce="a" * 64,
                 guard_pid=123,
@@ -6852,11 +7038,25 @@ def test_queue_process_fake_is_scoped_to_custody_constructor(
     assert subprocess.Popen is global_constructor
 
 
+@pytest.mark.parametrize(
+    ("child_rc", "infrastructure", "bad_sampling", "unclosed"),
+    [
+        (0, False, False, False),
+        (0, True, False, False),
+        (137, True, False, False),
+        (0, True, True, False),
+        (0, True, False, True),
+    ],
+)
 def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     synthetic_receipt_custody: ReceiptCustodyFactory,
+    child_rc: int,
+    infrastructure: bool,
+    bad_sampling: bool,
+    unclosed: bool,
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
@@ -6901,10 +7101,40 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             self.wait_count += 1
             if self.wait_count == 1:
                 raise subprocess.TimeoutExpired(self.command, timeout)
-            self.returncode = 0
+            self.returncode = 125 if infrastructure and child_rc == 0 else child_rc
             _write_synthetic_guarded_execution(
-                self.command, returncode=0, custody_factory=synthetic_receipt_custody
+                self.command,
+                returncode=child_rc,
+                custody_factory=synthetic_receipt_custody,
             )
+            if infrastructure:
+                path = Path(self.command[self.command.index("--summary-json") + 1])
+                summary = json.loads(path.read_text(encoding="utf-8"))
+                failure = {
+                    "phase": "temporary_artifact_custody",
+                    "details": ["receipt unavailable"],
+                }
+                summary.update(
+                    returncode=self.returncode,
+                    infrastructure_failure=failure,
+                    exit_signal={"signal": 9, "name": "SIGKILL"}
+                    if child_rc == 137
+                    else None,
+                    incident={
+                        "reason": "infrastructure_error",
+                        "child_returncode": child_rc,
+                        "infrastructure_failure": failure,
+                    },
+                )
+                if bad_sampling:
+                    summary["sampling_telemetry"]["enforcement_complete"] = False
+                if unclosed:
+                    summary["temporary_artifacts"]["closure"].update(
+                        authority="posix-sampled-process-group",
+                        closed=False,
+                        final_sample_error="process table unavailable",
+                    )
+                path.write_text(json.dumps(summary), encoding="utf-8")
             return self.returncode
 
         def poll(self) -> int | None:
@@ -6957,12 +7187,22 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
         ]
     )
 
-    assert rc == 0
+    assert rc == (2 if infrastructure else 0)
     out = capsys.readouterr().out
-    assert "passed " in out
+    expected_status = (
+        ("non-evidence" if child_rc == 0 else "failed") if infrastructure else "passed"
+    )
+    assert expected_status + " " in out
     rows = _rows(db)
-    assert rows[0]["status"] == "passed"
-    assert rows[0]["returncode"] == 0
+    assert rows[0]["status"] == expected_status
+    assert rows[0]["returncode"] == rc
+    context = json.loads(rows[0]["receipt_context_json"])
+    assert context["queue_terminal"]["command_returncode"] == child_rc
+    if infrastructure:
+        assert "infrastructure error" in context["queue_terminal"]["execution_error"]
+    if bad_sampling or unclosed or child_rc == 137:
+        assert "guard_receipt" not in context
+        assert "terminal_evidence_sha256" not in context
     assert popen_instances
     fake_proc = popen_instances[0]
     assert fake_proc.wait_count == 2
@@ -6970,7 +7210,8 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
     assert "proof_queue stale-running terminalization" not in log_text
     assert "running-proof-windows-child-runner-missing" not in log_text
-    assert "proof_queue finished status=passed exit_code=0" in log_text
+    if not infrastructure:
+        assert "proof_queue finished status=passed exit_code=0" in log_text
 
 
 def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(

@@ -119,6 +119,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         peak_job_commit_bytes: int | None = None,
         windows_job_cleanup: memory_guard.WindowsJobCleanup | None = None,
         temporary_artifacts: Mapping[str, object] | None = None,
+        child_returncode: int | None = None,
+        infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -137,6 +139,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.peak_job_commit_bytes = peak_job_commit_bytes
         self.windows_job_cleanup = windows_job_cleanup
         self.temporary_artifacts = temporary_artifacts
+        self.child_returncode = child_returncode
+        self.infrastructure_failure = infrastructure_failure
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -882,6 +886,8 @@ def _append_guarded_command_profile(
     peak_job_commit_bytes: int | None = None,
     windows_job_cleanup: memory_guard.WindowsJobCleanup | None = None,
     temporary_artifacts: Mapping[str, object] | None = None,
+    child_returncode: int | None = None,
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
     operation_role: str | None = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
@@ -909,6 +915,7 @@ def _append_guarded_command_profile(
         timed_out=timed_out,
         orphaned_process_groups=orphaned_process_groups,
         guard_signal=guard_signal,
+        infrastructure_failure=infrastructure_failure,
     )
     mode = _command_profile_mode(source)
     if mode == "off" or (mode == "incident" and status == "pass"):
@@ -922,6 +929,10 @@ def _append_guarded_command_profile(
         "cwd": str(Path(cwd).expanduser() if cwd is not None else Path.cwd()),
         "command": list(command),
         "returncode": returncode,
+        "child_returncode": child_returncode,
+        "infrastructure_failure": memory_guard.infrastructure_failure_payload(
+            infrastructure_failure
+        ),
         "status": status,
         "elapsed_s": None if elapsed_s is None else round(elapsed_s, 6),
         "memory_guard": limits_summary(limits),
@@ -1393,6 +1404,7 @@ def guarded_completed_process(
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
         or guarded.guard_signal is not None
+        or guarded.infrastructure_failure is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
     ):
         stderr = memory_guard._append_guard_message(
@@ -1430,6 +1442,8 @@ def guarded_completed_process(
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
         windows_job_cleanup=guarded.windows_job_cleanup,
         temporary_artifacts=guarded.temporary_artifacts,
+        child_returncode=guarded.child_returncode,
+        infrastructure_failure=guarded.infrastructure_failure,
         operation_role=operation_role,
     )
     if profile_error:
@@ -1453,6 +1467,8 @@ def guarded_completed_process(
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
         windows_job_cleanup=guarded.windows_job_cleanup,
         temporary_artifacts=guarded.temporary_artifacts,
+        child_returncode=guarded.child_returncode,
+        infrastructure_failure=guarded.infrastructure_failure,
     )
 
 
@@ -1642,6 +1658,7 @@ def guarded_completed_process_to_tempfiles(
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
         or guarded.guard_signal is not None
+        or guarded.infrastructure_failure is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
     ):
         stderr = _append_guard_bytes(
@@ -1677,6 +1694,8 @@ def guarded_completed_process_to_tempfiles(
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
         windows_job_cleanup=guarded.windows_job_cleanup,
         temporary_artifacts=guarded.temporary_artifacts,
+        child_returncode=guarded.child_returncode,
+        infrastructure_failure=guarded.infrastructure_failure,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1699,6 +1718,8 @@ def guarded_completed_process_to_tempfiles(
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
         windows_job_cleanup=guarded.windows_job_cleanup,
         temporary_artifacts=guarded.temporary_artifacts,
+        child_returncode=guarded.child_returncode,
+        infrastructure_failure=guarded.infrastructure_failure,
     )
 
 

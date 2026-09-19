@@ -56,12 +56,34 @@ def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
             yield payload
 
 
+def _normalized_profile_event(payload: dict[str, Any]) -> dict[str, Any]:
+    infrastructure_payload = payload.get("infrastructure_failure")
+    if infrastructure_payload is None:
+        return payload
+    event = dict(payload)
+    try:
+        failure = (
+            harness_memory_guard.memory_guard.GuardInfrastructureFailure.from_payload(
+                infrastructure_payload
+            )
+        )
+    except ValueError as exc:
+        # Malformed telemetry is not product evidence. Preserve the raw value so
+        # the receipt corruption remains diagnosable while failing closed.
+        event["infrastructure_failure_decode_error"] = str(exc)
+    else:
+        assert failure is not None
+        event["infrastructure_failure"] = failure.json_payload()
+    event["status"] = "infrastructure_error"
+    return event
+
+
 def load_events(paths: Sequence[Path]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for path in paths:
         for payload in _read_jsonl(path):
             if payload.get("event") == "guarded_command_profile":
-                events.append(payload)
+                events.append(_normalized_profile_event(payload))
     return events
 
 
@@ -137,6 +159,11 @@ def summarize_events(
             {
                 "elapsed_s": event.get("elapsed_s"),
                 "returncode": event.get("returncode"),
+                "child_returncode": event.get("child_returncode"),
+                "infrastructure_failure": event.get("infrastructure_failure"),
+                "infrastructure_failure_decode_error": event.get(
+                    "infrastructure_failure_decode_error"
+                ),
                 "status": event.get("status"),
                 "prefix": event.get("prefix"),
                 "recorded_at": event.get("recorded_at"),

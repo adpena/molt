@@ -9,6 +9,7 @@ import importlib.util
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,6 +74,44 @@ def test_run_and_measure_timeout():
     )
     assert m.timed_out
     assert m.elapsed_s < 5  # killed well before the 10s sleep
+
+
+def test_run_and_measure_preserves_infrastructure_outcome(monkeypatch):
+    infrastructure_failure = (
+        pc.harness_memory_guard.memory_guard.GuardInfrastructureFailure(
+            phase="temporary_artifact_custody",
+            details=("scratch receipt retention failed",),
+        )
+    )
+    guarded_result = SimpleNamespace(
+        returncode=125,
+        child_returncode=0,
+        infrastructure_failure=infrastructure_failure,
+        elapsed_s=0.25,
+        peak_total=None,
+        peak_job_commit_bytes=None,
+        stdout=b"child completed\n",
+        stderr=b"guard failed\n",
+        timed_out=False,
+    )
+    context = SimpleNamespace(
+        limits=SimpleNamespace(poll_interval=0.1),
+        run=lambda *_args, **_kwargs: guarded_result,
+    )
+    monkeypatch.setattr(pc, "replace", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        pc.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *_args, **_kwargs: context,
+    )
+
+    measurement = pc.run_and_measure(["successful-child"])
+
+    assert measurement.returncode == 125
+    assert measurement.child_returncode == 0
+    assert measurement.infrastructure_failure is infrastructure_failure
+    assert measurement.status == "infrastructure_error"
+    assert measurement.evidence_eligible is False
 
 
 def test_run_and_measure_closes_child_when_spawn_observer_fails():
@@ -157,6 +196,39 @@ def test_cold_budget_calibration():
     assert r["budget_ms"] is not None
     # budget is the measured max plus the margin -> strictly above the max.
     assert r["budget_ms"] >= r["measured_max_ms"]
+
+
+def test_cold_budget_rejects_infrastructure_measurements(monkeypatch):
+    infrastructure_failure = (
+        pc.harness_memory_guard.memory_guard.GuardInfrastructureFailure(
+            phase="temporary_artifact_custody",
+            details=("scratch receipt retention failed",),
+        )
+    )
+    measurement = pc.RunMeasurement(
+        returncode=125,
+        child_returncode=0,
+        infrastructure_failure=infrastructure_failure,
+        elapsed_s=0.25,
+        peak_rss_bytes=4096,
+        peak_job_commit_bytes=None,
+        stdout="child completed\n",
+        stderr="guard failed\n",
+    )
+    monkeypatch.setattr(pc, "run_and_measure", lambda *_args, **_kwargs: measurement)
+
+    result = pc.calibrate_cold_budget(["successful-child"], runs=5)
+
+    assert result["status"] == "infrastructure_error"
+    assert result["evidence_runs"] == 0
+    assert result["budget_ms"] is None
+    assert result["measured_max_ms"] is None
+    assert result["guard_returncode"] == 125
+    assert result["child_returncode"] == 0
+    assert result["infrastructure_failure"] == {
+        "phase": "temporary_artifact_custody",
+        "details": ["scratch receipt retention failed"],
+    }
 
 
 def test_cold_budget_cli_uses_remainder_command(monkeypatch, capsys):

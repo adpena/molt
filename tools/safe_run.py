@@ -17,6 +17,11 @@ import subprocess
 import sys
 import time
 
+try:
+    from tools import memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import memory_guard
+
 EXIT_TIMEOUT = 124
 EXIT_OOM = 137
 EXIT_SPAWN = 125
@@ -95,17 +100,34 @@ def _rss_mib(record: object) -> float:
 
 
 def _status(returncode: int, summary: dict[str, object]) -> str:
+    if summary.get("infrastructure_failure") is not None:
+        return "infrastructure_error"
     if summary.get("timed_out"):
         return "timeout"
     if summary.get("violation") is not None:
         return "oom"
     if "returncode" in summary:
         return "ok"
-    if returncode == EXIT_TIMEOUT:
-        return "timeout"
-    if returncode == EXIT_OOM:
-        return "oom"
-    return "ok"
+    # Without a terminal guard summary, numeric exit values alone cannot prove
+    # timeout or RSS enforcement; 124/137 may be intentional child exits.
+    return "ok" if returncode == 0 else "failed"
+
+
+def _infrastructure_diagnostics(
+    summary: dict[str, object],
+) -> tuple[dict[str, object] | object | None, str | None]:
+    payload = summary.get("infrastructure_failure")
+    if payload is None:
+        return None, None
+    try:
+        failure = memory_guard.GuardInfrastructureFailure.from_payload(payload)
+    except ValueError as exc:
+        # A malformed terminal receipt is itself an infrastructure failure. Keep
+        # the original value for diagnosis instead of silently treating the run
+        # as product evidence.
+        return payload, str(exc)
+    assert failure is not None
+    return failure.json_payload(), None
 
 
 def _guard_command(
@@ -161,6 +183,9 @@ def main(argv: list[str]) -> int:
     elapsed = float(summary.get("elapsed_s") or (time.monotonic() - start))
     peak_mib = max(_rss_mib(summary.get("peak")), _rss_mib(summary.get("peak_total")))
     status = _status(rc, summary)
+    infrastructure_failure, infrastructure_failure_decode_error = (
+        _infrastructure_diagnostics(summary)
+    )
     if ns.json:
         print(
             "SAFE_RUN "
@@ -169,6 +194,11 @@ def main(argv: list[str]) -> int:
                     "label": label,
                     "status": status,
                     "exit": rc,
+                    "child_returncode": summary.get("child_returncode"),
+                    "infrastructure_failure": infrastructure_failure,
+                    "infrastructure_failure_decode_error": (
+                        infrastructure_failure_decode_error
+                    ),
                     "peak_rss_mib": round(peak_mib),
                     "elapsed_s": round(elapsed, 3),
                     "rss_limit_mib": ns.rss_mb,

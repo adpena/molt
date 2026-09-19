@@ -2546,7 +2546,10 @@ def _run_subprocess(
     )
     stdout = "" if result.stdout is None else result.stdout
     stderr = "" if result.stderr is None else result.stderr
-    if getattr(result, "timed_out", False):
+    if (
+        getattr(result, "timed_out", False)
+        and getattr(result, "infrastructure_failure", None) is None
+    ):
         raise subprocess.TimeoutExpired(
             cmd=cmd,
             timeout=timeout,
@@ -2559,7 +2562,7 @@ def _run_subprocess(
         returncode = _DIFF_MEMORY_GUARD_RETURN_CODE
         if trip_message not in stderr:
             stderr = f"{stderr}{trip_message}\n"
-    elif returncode == _DIFF_MEMORY_GUARD_RETURN_CODE:
+    elif getattr(result, "violation", None) is not None:
         guard_message = (
             "molt_diff memory guard: RSS limit exceeded under shared harness "
             "subprocess guard; inspect preceding memory_guard diagnostic for "
@@ -2574,7 +2577,12 @@ def _run_subprocess(
             }
         )
         stderr = f"{stderr}{guard_message}\n"
-    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+    # Preserve the shared guard's typed outcome; flattening this to a plain
+    # CompletedProcess turns custody failures into compiler/runtime evidence.
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
 
 
 def _run_with_optional_time(
@@ -2995,9 +3003,7 @@ _molt_diff_execute_script()
         )
     except subprocess.TimeoutExpired as exc:
         return compat_backends.BackendResult.from_timeout(exc)
-    return compat_backends.BackendResult(
-        result.stdout, result.stderr, result.returncode
-    )
+    return compat_backends.BackendResult.from_process(result)
 
 
 def run_molt(
@@ -3216,14 +3222,19 @@ def _run_molt(
                     f"{exc}"
                 )
             else:
-                if batch_result.timed_out:
+                if (
+                    batch_result.timed_out
+                    or batch_result.infrastructure_failure is not None
+                ):
                     _record_rss_metrics(
                         file_path,
                         build_metrics=None,
                         run_metrics=None,
                         build_rc=batch_result.returncode,
                         run_rc=None,
-                        status="build_timeout",
+                        status="build_infrastructure_error"
+                        if batch_result.infrastructure_failure is not None
+                        else "build_timeout",
                     )
                     return batch_result
                 build_via_batch_server = True
@@ -3292,6 +3303,13 @@ def _run_molt(
                 )
             if build_time_path is not None:
                 build_metrics = _parse_time_metrics(build_time_path)
+            if getattr(build_res, "infrastructure_failure", None) is not None:
+                return compat_backends.BackendResult.from_process(
+                    build_res
+                ).as_build_failure(
+                    detail="build guard infrastructure failed",
+                    fallback="guard infrastructure failed",
+                )
             build_rc = build_res.returncode
             build_stdout = build_res.stdout
             build_stderr = build_res.stderr
@@ -3370,6 +3388,8 @@ def _run_molt(
             return compat_backends.BackendResult.from_timeout(exc)
         if run_time_path is not None:
             run_metrics = _parse_time_metrics(run_time_path)
+        if getattr(run_res, "infrastructure_failure", None) is not None:
+            return compat_backends.BackendResult.from_process(run_res)
         exceeded, detail = _rss_exceeded(run_metrics, rss_limit_kb)
         if exceeded:
             message = f"Run RSS limit exceeded: {detail}"
@@ -3391,9 +3411,7 @@ def _run_molt(
             run_rc=run_res.returncode,
             status=run_status,
         )
-        return compat_backends.BackendResult(
-            run_res.stdout, run_res.stderr, run_res.returncode
-        )
+        return compat_backends.BackendResult.from_process(run_res)
     finally:
         if not _diff_keep_artifacts():
             shutil.rmtree(output_root, ignore_errors=True)
@@ -3779,7 +3797,7 @@ def _run_native_backend(
         context.build_profile,
         execution_context=context,
     )
-    if outcome.timed_out:
+    if outcome.timed_out or outcome.infrastructure_failure is not None:
         return outcome
     saw_dyld_retry = False
     if _diff_retry_dyld_default() and _is_dyld_unknown_imports(outcome.stderr):
@@ -3797,7 +3815,11 @@ def _run_native_backend(
             no_cache=False,
             execution_context=context,
         )
-        if not outcome.timed_out and _is_dyld_unknown_imports(outcome.stderr):
+        if (
+            not outcome.timed_out
+            and outcome.infrastructure_failure is None
+            and _is_dyld_unknown_imports(outcome.stderr)
+        ):
             print(
                 "[RETRY] "
                 f"{file_path} persistent dyld failure; retrying with "
@@ -3812,6 +3834,7 @@ def _run_native_backend(
             )
         if (
             not outcome.timed_out
+            and outcome.infrastructure_failure is None
             and _is_dyld_unknown_imports(outcome.stderr)
             and _diff_force_rebuild_on_dyld()
         ):
@@ -3830,6 +3853,7 @@ def _run_native_backend(
             )
         if (
             not outcome.timed_out
+            and outcome.infrastructure_failure is None
             and _is_dyld_unknown_imports(outcome.stderr)
             and _diff_retry_isolated_default()
         ):
@@ -3850,6 +3874,8 @@ def _run_native_backend(
                     extra_env=isolated_env,
                     execution_context=context,
                 )
+    if outcome.infrastructure_failure is not None:
+        return outcome
     if saw_dyld_retry and _diff_disable_daemon_on_dyld():
         os.environ["MOLT_BACKEND_DAEMON"] = "0"
         os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
@@ -3875,6 +3901,7 @@ def _run_native_backend(
             )
     if (
         not outcome.timed_out
+        and outcome.infrastructure_failure is None
         and outcome.stdout is None
         and _is_backend_daemon_build_error(outcome.stderr)
     ):
@@ -3892,6 +3919,7 @@ def _run_native_backend(
         )
         if (
             not outcome.timed_out
+            and outcome.infrastructure_failure is None
             and outcome.stdout is None
             and _is_backend_daemon_build_error(outcome.stderr)
             and _diff_retry_isolated_default()
@@ -3910,7 +3938,11 @@ def _run_native_backend(
                     extra_env=isolated_env,
                     execution_context=context,
                 )
-        if outcome.stdout is None and _is_backend_daemon_build_error(outcome.stderr):
+        if (
+            outcome.infrastructure_failure is None
+            and outcome.stdout is None
+            and _is_backend_daemon_build_error(outcome.stderr)
+        ):
             os.environ["MOLT_BACKEND_DAEMON"] = "0"
             print(
                 "[WARN] Persistent backend daemon/cache failure detected; "
@@ -3967,7 +3999,9 @@ def _cross_backend_divergence(
     ran = {
         name: outcome
         for name, outcome in per_backend.items()
-        if outcome.stdout is not None and not outcome.timed_out
+        if outcome.stdout is not None
+        and not outcome.timed_out
+        and outcome.infrastructure_failure is None
     }
     if len(ran) < 2:
         return None
@@ -4046,6 +4080,10 @@ def _record_backend_result(
     if isinstance(outcome, compat_backends.BackendResult):
         facts = {
             "returncode": outcome.returncode,
+            "child_returncode": outcome.child_returncode,
+            "infrastructure_failure": memory_guard.infrastructure_failure_payload(
+                outcome.infrastructure_failure
+            ),
             "build_failed": outcome.build_failed,
             "timed_out": outcome.timed_out,
             "detail": outcome.detail,
@@ -4054,6 +4092,8 @@ def _record_backend_result(
     else:
         facts = {
             "returncode": None,
+            "child_returncode": None,
+            "infrastructure_failure": None,
             "build_failed": False,
             "timed_out": False,
             "detail": outcome.reason,
@@ -4173,6 +4213,10 @@ def diff_test(
             cpython.returncode,
         )
         record["cpython_returncode"] = cp_ret
+        record["cpython_child_returncode"] = cpython.child_returncode
+        record["cpython_infrastructure_failure"] = (
+            memory_guard.infrastructure_failure_payload(cpython.infrastructure_failure)
+        )
 
         def _finalize_status(raw_status: str) -> str:
             resolved_status, reason_tag = test_policy.resolve_expected_failure_status(
@@ -4191,6 +4235,12 @@ def diff_test(
                 print(f"[XPASS] {file_path} ({reason_text})")
             return resolved_status
 
+        if cpython.infrastructure_failure is not None:
+            print(f"[UNCALIBRATED] {file_path} (cpython guard infrastructure failed)")
+            print(cp_err)
+            record["raw_status"] = record["resolved_status"] = "uncalibrated"
+            record["reason_tag"] = "infrastructure_error"
+            return "uncalibrated"
         if cpython.timed_out:
             print(f"[FAIL] {file_path} (cpython timed out)")
             print(cp_err)
@@ -4254,6 +4304,7 @@ def diff_test(
         any_cpython_fail = False
         any_timeout = False
         any_unavailable = False
+        any_infrastructure_failure = False
         per_backend: dict[str, compat_backends.BackendResult] = {}
         for backend in eligible_targets:
             outcome = _run_backend_for_diff(
@@ -4272,6 +4323,22 @@ def diff_test(
                     outcome,
                     execution_context,
                 )
+                continue
+            if outcome.infrastructure_failure is not None:
+                any_infrastructure_failure = True
+                _record_backend_result(
+                    record,
+                    file_path,
+                    backend,
+                    "uncalibrated",
+                    expect_molt_fail,
+                    outcome,
+                    execution_context,
+                )
+                print(
+                    f"[UNCALIBRATED] {file_path} ({backend}: guard infrastructure failed)"
+                )
+                print(outcome.stderr)
                 continue
             # Record and diagnose each completed backend immediately. A later
             # resource failure must never discard already observed results.
@@ -4316,6 +4383,10 @@ def diff_test(
 
         # Infrastructure failures are not expected language divergences. Resolve
         # them before any semantic/xfail overlay, including cross-backend checks.
+        if any_infrastructure_failure:
+            record["raw_status"] = record["resolved_status"] = "uncalibrated"
+            record["reason_tag"] = "infrastructure_error"
+            return "uncalibrated"
         if any_timeout:
             record["raw_status"] = "fail"
             record["resolved_status"] = "fail"

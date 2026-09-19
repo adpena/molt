@@ -26,6 +26,68 @@ def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> Non
     )
 
     assert result.temporary_artifacts is None
+    assert result.child_returncode is None
+    assert result.infrastructure_failure is None
+
+
+@pytest.mark.parametrize("tempfiles", [False, True])
+@pytest.mark.parametrize("child_returncode", [0, 7, 137])
+def test_guarded_result_transports_child_and_infrastructure_outcomes(
+    tmp_path, monkeypatch, tempfiles, child_returncode
+):
+    guard = harness_memory_guard.memory_guard
+    failure = guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody",
+        details=("fixture invalid retained index",),
+    )
+    final_returncode = child_returncode or guard.INFRASTRUCTURE_RETURN_CODE
+    child_output = b"retained output\n" if tempfiles else "retained output\n"
+    child_error = b"custody incomplete\n" if tempfiles else "custody incomplete\n"
+    guarded = guard.GuardResult(
+        returncode=final_returncode,
+        child_returncode=child_returncode,
+        infrastructure_failure=failure,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout=child_output,
+        stderr=child_error,
+    )
+    monkeypatch.setattr(guard, "run_guarded", lambda *_args, **_kwargs: guarded)
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_guard_repro_message", lambda **_: "fixture-repro\n"
+    )
+    profile = tmp_path / "commands.jsonl"
+    run = (
+        harness_memory_guard.guarded_completed_process_to_tempfiles
+        if tempfiles
+        else harness_memory_guard.guarded_completed_process
+    )
+    result = run(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        env={"MOLT_GUARD_PROFILE_LOG": str(profile)},
+    )
+    assert result.returncode == final_returncode
+    assert result.child_returncode == child_returncode
+    assert result.infrastructure_failure is failure
+    assert result.stdout == child_output
+    stderr = result.stderr.decode() if tempfiles else result.stderr
+    assert "fixture-repro" in stderr
+    assert ("SIGKILL" in stderr) is (child_returncode == 137)
+    event = json.loads(profile.read_text())
+    assert event["status"] == "infrastructure_error"
+    assert event["returncode"] == final_returncode
+    assert event["child_returncode"] == child_returncode
+    assert event["infrastructure_failure"] == guard.infrastructure_failure_payload(
+        failure
+    )
+    assert event["exit_signal"] == guard.exit_signal_payload(child_returncode)
 
 
 @pytest.mark.parametrize("root_kind", ["repo", "external", "external_forest", "queue"])

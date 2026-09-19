@@ -435,6 +435,178 @@ def test_bench_run_cmd_routes_tty_through_guard_without_raw_pty(monkeypatch) -> 
     assert calls[0]["limits"] is limits
 
 
+def test_bench_run_cmd_preserves_guard_infrastructure_metadata(monkeypatch) -> None:
+    failure = bench_tool.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody",
+        details=("scratch receipt retention failed",),
+    )
+    completed = subprocess.CompletedProcess(["tool"], 125, "out", "err")
+    completed.child_returncode = 0
+    completed.infrastructure_failure = failure
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: completed,
+    )
+
+    result = bench_tool._run_cmd(["tool"], env={}, capture=True, tty=False)
+
+    assert result.returncode == 125
+    assert result.child_returncode == 0
+    assert result.infrastructure_failure is failure
+
+
+def test_prepare_molt_binary_classifies_infrastructure_without_retry(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    infrastructure_failure = bench_tool.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody",
+        details=("scratch receipt retention failed",),
+    )
+    calls = 0
+
+    def fake_guard(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        completed = subprocess.CompletedProcess(
+            command, 125, "child ok", "guard failed"
+        )
+        completed.child_returncode = 0
+        completed.infrastructure_failure = infrastructure_failure
+        completed.timed_out = False
+        completed.violation = None
+        completed.orphaned_process_groups = ()
+        return completed
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", fake_guard
+    )
+
+    failure = bench_tool.prepare_molt_binary(str(script), env={})
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert calls == 1
+    assert failure.phase == "build"
+    assert failure.status == "infrastructure_error"
+    assert failure.returncode == 125
+    assert failure.child_returncode == 0
+    assert failure.infrastructure_failure is infrastructure_failure
+    assert failure.signal is None
+    assert bench_tool.molt_failure_payload(failure)["infrastructure_failure"] == {
+        "phase": "temporary_artifact_custody",
+        "details": ["scratch receipt retention failed"],
+    }
+
+
+def test_measure_molt_run_classifies_infrastructure_as_non_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    infrastructure_failure = bench_tool.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody",
+        details=("scratch receipt retention failed",),
+    )
+    completed = subprocess.CompletedProcess(
+        ["molt-bin"], 125, "child ok", "guard failed"
+    )
+    completed.child_returncode = 0
+    completed.infrastructure_failure = infrastructure_failure
+    completed.timed_out = False
+    completed.violation = None
+    completed.orphaned_process_groups = ()
+    completed.elapsed_s = 0.125
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: completed,
+    )
+
+    failure = bench_tool.measure_molt_run(tmp_path / "molt-bin")
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.phase == "run"
+    assert failure.status == "infrastructure_error"
+    assert failure.returncode == 125
+    assert failure.child_returncode == 0
+    assert failure.infrastructure_failure is infrastructure_failure
+    assert failure.signal is None
+
+
+@pytest.mark.parametrize(
+    (
+        "returncode",
+        "child_returncode",
+        "timed_out",
+        "has_infrastructure_failure",
+        "expected_status",
+    ),
+    [
+        (124, None, True, False, "timeout"),
+        (124, 124, False, False, "runtime_failed"),
+        (125, 0, False, True, "infrastructure_error"),
+        (7, 7, False, True, "infrastructure_error"),
+    ],
+)
+def test_measure_molt_run_exception_uses_typed_guard_outcome(
+    monkeypatch,
+    tmp_path: Path,
+    returncode: int,
+    child_returncode: int | None,
+    timed_out: bool,
+    has_infrastructure_failure: bool,
+    expected_status: str,
+) -> None:
+    binary = tmp_path / "molt-bin"
+    infrastructure_failure = (
+        bench_tool.memory_guard.GuardInfrastructureFailure(
+            phase="temporary_artifact_custody",
+            details=("scratch receipt retention failed",),
+        )
+        if has_infrastructure_failure
+        else None
+    )
+    guarded_result = subprocess.CompletedProcess(
+        [str(binary)],
+        returncode,
+        "child stdout",
+        "guard stderr",
+    )
+    guarded_result.child_returncode = child_returncode
+    guarded_result.infrastructure_failure = infrastructure_failure
+    guarded_result.timed_out = timed_out
+    guarded_result.elapsed_s = 0.375
+    guarded_result.violation = None
+    guarded_result.orphaned_process_groups = ()
+    timeout_error = subprocess.TimeoutExpired(
+        [str(binary)],
+        30.0,
+        output="exception stdout",
+        stderr="exception stderr",
+    )
+    timeout_error.guarded_result = guarded_result
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(timeout_error),
+    )
+
+    failure = bench_tool.measure_molt_run(binary, label="typed outcome")
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.status == expected_status
+    assert failure.returncode == returncode
+    assert failure.child_returncode == child_returncode
+    assert failure.timed_out is timed_out
+    assert failure.elapsed_s == 0.375
+    assert failure.stdout == "child stdout"
+    assert failure.stderr == "guard stderr"
+    assert failure.infrastructure_failure is infrastructure_failure
+    assert failure.signal is None
+
+
 def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
     completed = subprocess.CompletedProcess(["tool"], 0, "out", "")
     completed.elapsed_s = 0.0125

@@ -13,6 +13,7 @@ from tools.proof_queue_pkg import (
     diagnostic_runtime_rules,
 )
 from tools.proof_queue_pkg.diagnostic_evidence import (
+    _guard_infrastructure_diagnostic,
     _first_log_line_containing,
     _last_nonempty_log_line,
     _live_command_evidence,
@@ -48,6 +49,9 @@ SOURCE_BUILD_CONSOLE_SCRIPT_PATH_CUSTODY_RE = re.compile(
 
 def _run_diagnostics(row: sqlite3.Row) -> list[dict[str, object]]:
     log_tail = _read_log_tail(Path(row["log_path"]))
+    infrastructure = _guard_infrastructure_diagnostic(row, log_tail)
+    if infrastructure is not None:
+        return [infrastructure]
     diagnostics: list[dict[str, object]] = []
     live = _live_command_evidence(row)
     if live.unavailable_reason is not None:

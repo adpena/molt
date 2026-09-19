@@ -207,7 +207,7 @@ def test_generator_family_parallel_checks_preserve_source_state() -> None:
         for tool, returncode, output in results
         if returncode != 0
     ]
-    assert failures == []
+    assert failures == [], "\n".join(failures)
     assert transient_states == [], (
         "parallel generator checks transiently changed source state:\n"
         + "\n".join(repr(state) for state in transient_states[:5])
