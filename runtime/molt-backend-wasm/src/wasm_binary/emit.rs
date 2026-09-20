@@ -39,21 +39,6 @@ pub(crate) fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u3
     }
 }
 
-/// Emit a simple N-arg import call: push args, call, store result.
-pub(crate) fn emit_simple_call(
-    func: &mut Function,
-    reloc_enabled: bool,
-    import_id: u32,
-    arg_locals: &[u32],
-    out_local: u32,
-) {
-    for &arg in arg_locals {
-        func.instruction(&Instruction::LocalGet(arg));
-    }
-    emit_call(func, reloc_enabled, import_id);
-    func.instruction(&Instruction::LocalSet(out_local));
-}
-
 /// Emit a `return_call` instruction (WASM tail calls proposal).
 /// The callee's return value becomes the caller's return value without growing the stack.
 pub(crate) fn emit_return_call(func: &mut Function, reloc_enabled: bool, func_index: u32) {
