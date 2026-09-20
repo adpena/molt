@@ -132,6 +132,9 @@ require one unambiguous producer; parameter names, repeated definitions and
 rebinding cannot inherit a first-definition constant. Native literal dispatch,
 preanalysis and scalarized tuple indexing share those authorities rather than
 maintaining a backward constant scanner.
+Field-role knowledge alone does not admit an operation or a raw carrier:
+unsupported binding spellings retain their backend rejection, and only
+registered checked-arithmetic operations authorize value/overflow result pairs.
 
 Rust-source labelled flow preserves the canonical separation between ABI
 parameter names and mutable local storage. Storage declarations live outside

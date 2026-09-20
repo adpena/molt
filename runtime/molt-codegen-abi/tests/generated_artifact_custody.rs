@@ -41,6 +41,33 @@ fn generated_output_labels_cannot_escape_the_owned_directory() {
 }
 
 #[test]
+fn descriptive_labels_are_retained_without_inflating_compiler_output_paths() {
+    for label in [
+        "native-parser-object-input".to_string(),
+        "native-value-tracking-cleanup-oracle".to_string(),
+        "long-descriptive-fixture-purpose-".repeat(64),
+    ] {
+        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new(&label).unwrap();
+        let owner = artifacts.path().to_path_buf();
+        let component = owner.file_name().unwrap().to_str().unwrap();
+        // A u32 process id and u64 exclusive sequence need at most 25 hex
+        // characters including their separator, regardless of label length.
+        assert!(component.len() <= 8 + 1 + 16, "{component}");
+        assert!(!component.contains(&label));
+        let image = std::env::current_exe().unwrap().canonicalize().unwrap();
+        assert_eq!(
+            owner.parent().unwrap(),
+            image.parent().unwrap().join("molt-test-artifacts")
+        );
+        drop(artifacts);
+        assert_eq!(
+            std::fs::read_to_string(owner.join("artifact-label.txt")).unwrap(),
+            label
+        );
+    }
+}
+
+#[test]
 fn generated_tool_transport_is_owner_relative_without_changing_custody() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("tool-transport").unwrap();
     let owner = artifacts.path();

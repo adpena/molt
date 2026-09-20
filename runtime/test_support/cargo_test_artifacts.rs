@@ -67,9 +67,17 @@ impl CargoTestArtifacts {
                     value.checked_add(1)
                 })
                 .map_err(|_| io::Error::other("Cargo test artifact sequence exhausted"))?;
-            let path = root.join(format!("{label}-{}-{sequence}", std::process::id()));
+            // Descriptive labels are retained as metadata, not directory names.
+            // rustc appends crate/codegen-unit suffixes to its intermediate
+            // objects, and relative linker arguments still consume the full
+            // Windows path budget. Keep every caller's owner identity compact
+            // without moving outputs outside the Cargo image's custody.
+            let path = root.join(format!("{:x}-{sequence:x}", std::process::id()));
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    std::fs::write(path.join("artifact-label.txt"), label)?;
+                    return Ok(Self { path });
+                }
                 // Another module or preserved prior run owns this name.
                 // Exclusive creation never reuses or erases its contents.
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
