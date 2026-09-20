@@ -8,14 +8,13 @@ this roadmap does not duplicate their implementation history.
 
 ## First Release Milestone
 
-The immediate P0 is an evidence-backed `v0.0.1` initial release; the next major
-release objective is the stable `v1.0` contract. Rank work by release-blocker
-closure and measured reduction of the release critical path. Broader expansion
-must not displace either objective. The exact version and tag follow the existing
+The highest priority is a stable `v1.0` contract and release, with an
+evidence-backed `v0.0.1` as the initial milestone. Release-blocking correctness
+and integration work takes precedence over broader feature expansion.
+The exact version and tag follow the existing
 [packaging authority](packaging/PACKAGING.md), not a separate roadmap version.
-Consolidate and land the owned compiler work on `origin/main` first, preserving
-unique WIP and retiring replaced authorities. Close known correctness failures
-in the advertised subset before promoting release artifacts.
+Consolidate shared compiler/runtime semantics and close known correctness
+failures in the advertised subset before promoting release artifacts.
 
 Use the existing [packaging acceptance contract](packaging/PACKAGING.md) and
 [support indexes](docs/spec/areas/compat/README.md) as the release authorities:
@@ -50,9 +49,9 @@ those receipts.
 
 ## Current Priorities
 
-1. Consolidate before expanding. Land the current compiler/runtime authority
-   work, preserve unrelated donor WIP, and delete replaced classifiers,
-   compatibility lanes, and backend-local semantic copies. Generated tables and
+1. Consolidate before expanding. Unify compiler/runtime authorities and delete
+   replaced classifiers, compatibility lanes, and backend-local semantic copies.
+   Generated tables and
    shared typed facts must be the only authorities after migration.
 2. Close ownership and exception correctness through the complete shared
    `DropInsertion`, `ExceptionRegions`, `HandlerState`, and finalizer boundary.

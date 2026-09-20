@@ -97,6 +97,9 @@ tests, measurements, and explicit user direction over stale prose.
   subsystem tutorials out of this always-loaded file. Put durable detail in the
   relevant design, spec, runbook, skill, test, or live board and retrieve it
   when needed.
+- Keep per-run logs, scratch plans and worker handoffs out of tracked source;
+  follow the public source boundary in `docs/ROOT_LAYOUT.md`. Preserve private
+  evidence locally and fold durable conclusions into the owning public contract.
 
 ## Delegate deliberately
 

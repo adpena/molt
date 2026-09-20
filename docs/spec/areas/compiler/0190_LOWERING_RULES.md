@@ -342,6 +342,16 @@ snapshots cannot be conflated by a static alias map. Candidate liveness lists
 schedule cleanup but do not constitute a second release-state authority. Raw
 scalar carriers remain outside boxed-object cleanup.
 
+An absent result binding does not erase an operation's effects. BoxVal/UnboxVal
+retain their canonical operation identity across SimpleIR, TIR and LIR;
+full-width integer boxing still materializes and retires its temporary owner
+when discarded, preserving allocation failure. Pure representation extraction
+does not create an owner for an absent result. Consumers must distinguish
+semantic result arity from the presence of an observable result binding.
+Rust-source and Luau use their existing value carriers for the same conversions;
+their shared representation handlers preserve reserved `none`, omit discarded
+bindings, and reject malformed operand counts even when no result is bound.
+
 No-result explicit retains are credits for the current binding epoch. Rebinding
 starts a new epoch and cannot spend the previous object's explicit credit
 against its replacement. The old credit remains an explicit IR obligation,
@@ -366,6 +376,10 @@ sink, rather than published. Discarded internal calls cannot become tail
 returns of their unobserved result. Physical-slot constant facts are invalidated
 by every canonical definition before emitter dispatch and at generated control
 boundaries; early-returning handlers cannot preserve stale facts across writes.
+Frame planning consumes the same semantic read/definition visitors as liveness:
+iterator results carried by `var` and unpack results carried by trailing `args`
+are not reads merely because of their wire field. Unknown-operation transport
+metadata becomes an SSA read only when it resolves to an actual SSA name.
 
 Numeric op-loop emitters carry the selected typed runtime import through to the
 shared result sink, including guarded inline branches and in-place variants.
@@ -385,7 +399,9 @@ channel/network calls declare the same protocol without acquiring a table slot.
 Raw status flags, invocation-depth tokens and GPU primitive handles are excluded
 from Python-callable admission even when their machine signatures use i64.
 Object-facing send wrappers box ready success at that boundary and preserve
-Pending and raised errors; the underlying raw transport ABI is unchanged.
+Pending and raised errors; the underlying raw transport ABI is unchanged. Its
+signed zero exception sentinel is not success while an exception is pending:
+conversion checks the current error state before boxing a ready zero.
 Unpublished allocations, sized scratch storage and execution tokens require
 their specific publication/free/leave protocol, never the generic object sink.
 Actual emitted reference operations determine import roots.

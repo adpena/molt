@@ -21,8 +21,9 @@ use super::*;
 
 impl<'a> SsaContext<'a> {
     /// Reserved singleton reads and ordinary names have one resolution path
-    /// across argument, var, and terminator fields. Reserved `none` is never a
-    /// mutable stack entry or a textual string literal.
+    /// across semantic argument, var, and terminator reads. Unresolved fields
+    /// on unknown passthrough operations remain transport metadata instead.
+    /// Reserved `none` is never a mutable stack entry or a textual string literal.
     pub(super) fn resolve_known_or_reserved_operand(
         &mut self,
         op_idx: usize,
@@ -75,6 +76,7 @@ impl<'a> SsaContext<'a> {
         var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> TirOp {
         let opcode = kind_to_opcode(&op.kind);
+        let mapped_kind = kind_to_opcode_table(op.kind.as_str()).is_some();
         // Resolve operands from args.
         // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
@@ -96,7 +98,15 @@ impl<'a> SsaContext<'a> {
         let mut var_operand_index = None;
         if simple_var_field_is_value_operand(op)
             && let Some(v) = &op.var
-            && let Some(vid) = self.resolve_known_or_reserved_operand(op_idx, v, var_stacks)
+            && let Some(vid) = if mapped_kind {
+                self.resolve_known_or_reserved_operand(op_idx, v, var_stacks)
+            } else if is_variable(v) {
+                // An unknown wire operation carries unresolved `var` verbatim;
+                // only an actual SSA name proves that this field is a read.
+                self.resolve_known_var(v, var_stacks)
+            } else {
+                None
+            }
         {
             var_operand_index = Some(operands.len());
             operands.push(vid);
@@ -313,7 +323,6 @@ impl<'a> SsaContext<'a> {
         // round-trip/backends. The generated predicate owns the mapped spelling
         // set; unknown fallback preservation stays here because SSA is the
         // backstop for kinds with no first-class opcode.
-        let mapped_kind = kind_to_opcode_table(op.kind.as_str()).is_some();
         if (opcode == OpCode::Copy && !mapped_kind)
             || simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())
         {

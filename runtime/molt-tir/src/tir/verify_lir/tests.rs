@@ -18,6 +18,37 @@ fn value(id: u32, ty: TirType, repr: LirRepr) -> LirValue {
 }
 
 #[test]
+fn discarded_representation_bindings_share_tir_and_lir_shape_admission() {
+    use crate::tir::op_kinds_generated::{opcode_accepts_shape, opcode_fixed_result_count_table};
+    for opcode in [OpCode::BoxVal, OpCode::UnboxVal] {
+        assert_eq!(opcode_fixed_result_count_table(opcode), Some(1));
+        assert!(opcode_accepts_shape(opcode, 1, 0));
+        assert!(opcode_accepts_shape(opcode, 1, 1));
+        assert!(!opcode_accepts_shape(opcode, 0, 0));
+        assert!(!opcode_accepts_shape(opcode, 1, 2));
+        let mut function = crate::tir::function::TirFunction::new(
+            "discarded_representation".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let block = function.blocks.get_mut(&function.entry_block).unwrap();
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![ValueId(0)],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        block.terminator = crate::tir::blocks::Terminator::Return { values: vec![] };
+        crate::tir::verify::verify_function(&function).unwrap();
+        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&function);
+        verify_lir_function(&lir).unwrap();
+    }
+    assert!(!opcode_accepts_shape(OpCode::Add, 2, 0));
+}
+
+#[test]
 fn semantic_unbox_preserves_the_shared_boxed_carrier_plan() {
     let mut function = crate::tir::function::TirFunction::new(
         "boxed_unbox".into(),

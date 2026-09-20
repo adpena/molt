@@ -78,6 +78,8 @@ bench/results/*
 !bench/results/docs_manifest.json
 !bench/results/profile_analysis_*.md
 !bench/results/profiles_*
+bench/results/**/*.log
+bench/results/**/memory_guard/
 !bench/results/full_native_baseline_*.json
 !bench/results/benchmark_triage_*.md
 bench/cython/
@@ -97,6 +99,7 @@ runtime/molt-backend/fuzz/corpus/
 packaging/out/
 .claude/worktrees/
 .claude/projects/
+.claude/settings.local.json
 
 # Agent worktrees — Claude Code, Codex, Gemini
 .claude/worktrees/

@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn dead_box_bindings_do_not_erase_materialization_failure() {
+    for out in [None, Some("none"), Some("unused")] {
+        let mut ir = SimpleIR {
+            functions: vec![manifest_func(vec![
+                make_const_int("raw", i64::MAX),
+                OpIR {
+                    kind: "box".into(),
+                    args: Some(vec!["raw".into()]),
+                    out: out.map(str::to_string),
+                    ..OpIR::default()
+                },
+            ])],
+            profile: None,
+        };
+        eliminate_dead_ops(&mut ir);
+        assert!(
+            ir.functions[0].ops.iter().any(|op| op.kind == "box"),
+            "{out:?}"
+        );
+    }
+}
+
+#[test]
 fn exception_elision_requires_clean_fallthrough_and_generated_nothrow_facts() {
     let check = || OpIR {
         kind: "check_exception".into(),

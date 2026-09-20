@@ -198,7 +198,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_box(&mut self, op: &crate::tir::ops::TirOp) {
-        let result_id = op.results[0];
         let operand_id = op.operands[0];
         let operand = self.resolve(operand_id);
         let operand_ty = self
@@ -206,6 +205,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .get(&operand_id)
             .cloned()
             .unwrap_or(TirType::DynBox);
+
+        let Some(&result_id) = op.results.first() else {
+            if operand_ty == TirType::I64 {
+                // Boxing can allocate even without a result binding. Preserve
+                // that failure, then retire only the newly materialized owner.
+                let boxed = self.materialize_dynbox_bits(operand, &operand_ty);
+                let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+                self.backend
+                    .builder
+                    .build_call(release, &[boxed.into()], "")
+                    .unwrap();
+            }
+            return;
+        };
 
         let boxed: BasicValueEnum<'ctx> = self.materialize_dynbox_bits(operand, &operand_ty).into();
         // BoxVal's borrowed operand never donates its owner. Scalar boxing
@@ -223,7 +236,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_unbox(&mut self, op: &crate::tir::ops::TirOp) {
-        let result_id = op.results[0];
+        let Some(&result_id) = op.results.first() else {
+            return;
+        };
         let operand_id = op.operands[0];
         let operand = self.resolve(operand_id);
 

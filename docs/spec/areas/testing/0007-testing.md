@@ -123,3 +123,18 @@ To test Tier 1:
 - **Python**: `uv run --python 3.12 pytest` (unit and integration tests under `tests/`).
 - **Differential**: run `uv run --python 3.12 python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
 - **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.
+
+### Execution acceptance and deadline controls
+
+An execution with incomplete process custody or guard infrastructure failure
+provides diagnostic observations, not semantic acceptance. Queue audits retain
+product errors from its transcript but must not promote them into the semantic
+frontier; the infrastructure failure remains an actionable audit error.
+
+WASM execution tests distinguish guest-VM deadlines from native child-process
+deadlines. The guest control executes a nonterminating WASM loop in Node and
+requires the VM timeout diagnostic. The process control re-executes the native
+test binary, confirms child readiness, then exercises the same retained-Child
+termination, reap and captured-output path used by execution tests. It does not
+depend on Node availability or require a forcibly terminated language runtime
+to deliver a graceful custody handshake. Neither control relaxes proof custody.

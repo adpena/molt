@@ -315,10 +315,10 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     out.append(
-        "/// Fixed result count for opcodes whose arity is statically known.\n"
+        "/// Fixed semantic result count for opcodes whose arity is statically known.\n"
         "/// `None` means the opcode has a variable/context-dependent result count.\n"
-        "/// EXHAUSTIVE over OpCode so verifier result-count policy cannot drift\n"
-        "/// behind newly added opcodes.\n"
+        "/// SSA binding admission uses `opcode_accepts_result_count`, which also\n"
+        "/// accounts for explicitly declared discarded result bindings.\n"
         "#[inline]\n"
         "pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {\n"
         "    match opcode {\n"

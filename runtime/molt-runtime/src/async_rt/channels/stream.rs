@@ -609,19 +609,10 @@ pub unsafe extern "C" fn molt_stream_send_obj(stream_bits: u64, data_bits: u64) 
         };
         let _owned_guard = owned;
         // SAFETY: pointer/length pair comes from validated bytes-like object.
-        send_result_into_object(unsafe { molt_stream_send(stream_bits, data_ptr, data_len as u64) })
+        super::send_result_into_object(_py, unsafe {
+            molt_stream_send(stream_bits, data_ptr, data_len as u64)
+        })
     })
-}
-
-/// Raw byte-send ABIs and their hooks use zero for ready success. Python-facing
-/// wrappers instead return an integer object, or preserve Pending/error bits.
-#[inline]
-pub(super) fn send_result_into_object(result: i64) -> u64 {
-    if result == 0 {
-        MoltObject::from_int(0).bits()
-    } else {
-        result as u64
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -767,16 +758,6 @@ mod stream_tests {
 
     #[test]
     fn stream_send_object_preserves_hook_closed_and_exception_results() {
-        extern "C" fn send_hook(ctx: *mut u8, _data: *const u8, _len: usize) -> i64 {
-            if ctx.is_null() {
-                MoltObject::none().bits() as i64
-            } else {
-                crate::with_gil_entry_nopanic!(_py, {
-                    crate::raise_exception::<i64>(_py, "OSError", "send failed")
-                })
-            }
-        }
-
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let payload = crate::alloc_bytes(_py, b"payload");
@@ -784,13 +765,25 @@ mod stream_tests {
             let payload_bits = MoltObject::from_ptr(payload).bits();
             let mut marker = 0u8;
             for ctx in [std::ptr::null_mut(), &mut marker as *mut u8] {
-                let stream =
-                    super::molt_stream_new_with_hooks(send_hook as *const () as usize, 0, ctx);
+                let hook_addr = super::super::send_hook_result_fixture as *const () as usize;
+                assert_ne!(hook_addr, 0);
+                let stream = super::molt_stream_new_with_hooks(hook_addr, 0, ctx);
+                assert!(!stream.is_null());
                 let stream_bits = crate::opaque_handle_bits(stream);
-                let result = unsafe { molt_stream_send_obj(stream_bits, payload_bits) };
-                assert_eq!(result, MoltObject::none().bits());
-                assert_eq!(crate::exception_pending(_py), !ctx.is_null());
-                crate::clear_exception(_py);
+                assert_eq!(crate::ptr_from_bits(stream_bits), stream);
+                let configured = unsafe { &*(stream as *mut MoltStream) };
+                assert_eq!(
+                    configured.send_hook.map(|hook| hook as usize),
+                    Some(hook_addr)
+                );
+                assert_eq!(configured.hook_ctx, ctx);
+
+                super::super::assert_send_hook_result_paths(
+                    _py,
+                    ctx,
+                    || unsafe { molt_stream_send(stream_bits, b"raw".as_ptr(), 3) },
+                    || unsafe { molt_stream_send_obj(stream_bits, payload_bits) },
+                );
                 unsafe { molt_stream_drop(stream_bits) };
             }
             dec_ref_bits(_py, payload_bits);

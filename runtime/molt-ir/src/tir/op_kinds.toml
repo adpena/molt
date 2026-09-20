@@ -2698,10 +2698,13 @@ operand = "all"
 #                     MemorySSA. Defaults true for impure opcodes and false for
 #                     exact pure classes; only positive runtime evidence may
 #                     clear it on an impure opcode.
-#   result_arity    : fixed verifier result count ("zero" / "one" / "two") or
+#   result_arity    : fixed semantic result count ("zero" / "one" / "two") or
 #                     "variable" when the result count is context-dependent.
-#                     This drives opcode_fixed_result_count_table and replaces
-#                     verify.rs's hand-maintained result-count match.
+#                     This drives opcode_fixed_result_count_table for inference
+#                     and generation of bound results.
+#   result_may_be_discarded : explicit one-result operation whose SSA binding
+#                     may be absent. Effects still execute; this only admits
+#                     zero bindings through opcode_accepts_result_count.
 # ===========================================================================
 
 [[opcode]]
@@ -3282,6 +3285,8 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 result_arity = "one"
+result_may_be_discarded = true
+result_mints_owned_selected_operand = true
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -3292,6 +3297,8 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+result_may_be_discarded = true
+result_mints_owned_selected_operand = true
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

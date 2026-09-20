@@ -177,6 +177,90 @@ fn compile_checked_keeps_ordinary_programs_available() {
 }
 
 #[test]
+fn representation_conversions_preserve_only_declared_results() {
+    for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+        for input in ["source_value", "none"] {
+            for output in [None, Some("none"), Some("converted")] {
+                let ir = SimpleIR {
+                    functions: vec![FunctionIR {
+                        name: "molt_main".to_string(),
+                        ops: vec![
+                            OpIR {
+                                kind: "const_bool".to_string(),
+                                value: Some(1),
+                                out: Some("source_value".to_string()),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: kind.to_string(),
+                                args: Some(vec![input.to_string()]),
+                                out: output.map(str::to_string),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            },
+                        ],
+                        ..FunctionIR::default()
+                    }],
+                    profile: None,
+                };
+                let source = RustBackend::new()
+                    .compile_checked(&ir)
+                    .unwrap_or_else(|error| {
+                        panic!("{kind} input={input} output={output:?}: {error}")
+                    });
+                if output == Some("converted") {
+                    let value = if input == "none" {
+                        "MoltValue::None"
+                    } else {
+                        "source_value.clone()"
+                    };
+                    assert!(
+                        source.contains(&format!("let mut converted: MoltValue = {value};")),
+                        "{kind} input={input}: {source}"
+                    );
+                } else {
+                    assert!(!source.contains("source_value.clone()"), "{kind}: {source}");
+                    assert!(!source.contains("let mut converted"), "{kind}: {source}");
+                }
+                assert!(!source.contains("let mut none:"), "{kind}: {source}");
+                assert!(!source.contains("let mut _:"), "{kind}: {source}");
+            }
+        }
+    }
+}
+
+#[test]
+fn representation_conversions_reject_malformed_operands_even_without_results() {
+    for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+        for args in [
+            None,
+            Some(vec![]),
+            Some(vec!["source".into(), "extra".into()]),
+        ] {
+            for output in [None, Some("none"), Some("converted")] {
+                let mut backend = RustBackend::new();
+                backend.emit_op(&OpIR {
+                    kind: kind.to_string(),
+                    args: args.clone(),
+                    out: output.map(str::to_string),
+                    ..OpIR::default()
+                });
+                assert!(backend.output.is_empty(), "{kind} {args:?} {output:?}");
+                assert_eq!(
+                    backend.unsupported_ops.len(),
+                    1,
+                    "{kind} {args:?} {output:?}"
+                );
+                assert!(backend.unsupported_ops[0].contains("requires exactly one operand"));
+            }
+        }
+    }
+}
+
+#[test]
 fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary() {
     use molt_tir::tir::op_kinds_generated::EXCEPTION_REQUIREMENT_REASON;
 

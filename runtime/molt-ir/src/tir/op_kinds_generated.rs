@@ -2859,10 +2859,10 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
     }
 }
 
-/// Fixed result count for opcodes whose arity is statically known.
+/// Fixed semantic result count for opcodes whose arity is statically known.
 /// `None` means the opcode has a variable/context-dependent result count.
-/// EXHAUSTIVE over OpCode so verifier result-count policy cannot drift
-/// behind newly added opcodes.
+/// SSA binding admission uses `opcode_accepts_result_count`, which also
+/// accounts for explicitly declared discarded result bindings.
 #[inline]
 pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
     match opcode {
@@ -3769,11 +3769,21 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
     }
 }
 
+/// Binding-count admission, distinct from semantic result arity.
+/// Only declared discardable results may omit their SSA binding.
+#[inline]
+pub fn opcode_accepts_result_count(opcode: OpCode, count: usize) -> bool {
+    match opcode {
+        OpCode::BoxVal => count <= 1,
+        OpCode::UnboxVal => count <= 1,
+        _ => opcode_fixed_result_count_table(opcode).is_none_or(|expected| count == expected),
+    }
+}
+
 /// One instance-shape gate for result inference and every TIR consumer.
 #[inline]
 pub fn opcode_accepts_shape(opcode: OpCode, operands: usize, results: usize) -> bool {
-    opcode_accepts_operand_count(opcode, operands)
-        && opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)
+    opcode_accepts_operand_count(opcode, operands) && opcode_accepts_result_count(opcode, results)
 }
 
 /// Result-indexed intrinsic types, independent of effect/scheduling purity.
@@ -12807,14 +12817,17 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
     }
 }
 
-/// Result-side selected-alias ownership fact. These opcodes return one
-/// borrowed operand's bits as their result, so backend lowering must
+/// Result-side selected-alias ownership fact. These opcodes may forward
+/// a borrowed operand's bits as their result, so backend lowering must
 /// retain the selected object when an owned boxed result is produced.
 /// Raw scalar lanes remain refcount-free. The table is keyed by explicit
 /// `result_mints_owned_selected_operand` rows in op_kinds.toml.
 #[inline]
 pub fn opcode_result_mints_owned_selected_operand_table(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::And | OpCode::Or)
+    matches!(
+        opcode,
+        OpCode::And | OpCode::BoxVal | OpCode::Or | OpCode::UnboxVal
+    )
 }
 
 /// Same selected-alias result ownership fact keyed by SimpleIR kind spelling.

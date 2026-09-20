@@ -7,7 +7,6 @@ import sqlite3
 from typing import Sequence
 
 from tools.proof_queue_pkg import state
-from tools.proof_queue_pkg.diagnostic_model import _diagnostics_have_signal
 
 AUDIT_ERROR_DIAGNOSTICS = frozenset(
     {
@@ -15,7 +14,9 @@ AUDIT_ERROR_DIAGNOSTICS = frozenset(
         "memory-guard-summary-incomplete",
         "memory-guard-timeout",
         "native-call-lane-memory-guard-timeout",
+        "native-process-image-unadmitted",
         "proof-log-missing",
+        "queue-execution-custody-failure",
         "queue-preexecution-failure",
     }
 )
@@ -74,7 +75,13 @@ def _audit_severity_for_diagnostic(row: sqlite3.Row, signal_id: str) -> str | No
 def _frontier_failure(
     row: sqlite3.Row, diagnostics: list[dict[str, object]]
 ) -> dict[str, object] | None:
-    if _diagnostics_have_signal(diagnostics, "memory-guard-summary-incomplete"):
+    # Product log patterns remain useful observations, but an inadmissible
+    # execution cannot advance the semantic frontier, regardless of ordering.
+    if any(
+        item.get("severity") == "infra"
+        or item.get("signal_id") in AUDIT_ERROR_DIAGNOSTICS
+        for item in diagnostics
+    ):
         return None
     for item in diagnostics:
         if str(item["severity"]) != "error":
