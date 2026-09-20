@@ -42,6 +42,152 @@ fn const_float(out: &str, value: f64) -> OpIR {
 }
 
 #[test]
+fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
+    for kind in ["store_var", "store_fast"] {
+        let func = function(
+            "binding_snapshot_facts",
+            &[],
+            None,
+            vec![
+                const_int("lhs", 1_i64 << 31),
+                const_int("rhs", 1_i64 << 31),
+                op(
+                    "checked_mul",
+                    Some("overflow"),
+                    Some("wide"),
+                    &["lhs", "rhs"],
+                ),
+                const_float("float", 1.25),
+                const_bool("bool", true),
+                op(kind, Some("wide_snapshot"), Some("mixed"), &["wide"]),
+                op(kind, Some("float_snapshot"), Some("mixed"), &["float"]),
+                op(kind, Some("bool_snapshot"), Some("mixed"), &["bool"]),
+                op(kind, None, Some("wide_copy"), &["wide_snapshot"]),
+                op("list_int_new", Some("items"), None, &[]),
+                op(kind, Some("items_snapshot"), Some("items_slot"), &["items"]),
+                op("missing", Some("missing_value"), None, &[]),
+                op(
+                    "delete_var",
+                    Some("delete_metadata"),
+                    Some("items_slot"),
+                    &["missing_value", "items_snapshot"],
+                ),
+            ],
+        );
+        let plan = native_representation_plan(&func);
+        assert!(plan.is_full_deopt_int_name("wide"), "{kind}");
+        assert!(plan.is_full_deopt_int_name("wide_snapshot"), "{kind}");
+        assert!(plan.is_full_deopt_int_name("wide_copy"), "{kind}");
+        assert!(plan.is_float_unboxed("float_snapshot"), "{kind}");
+        assert!(plan.is_bool_unboxed("bool_snapshot"), "{kind}");
+        assert!(!plan.is_raw_int_carrier_name("mixed"), "{kind}");
+        assert!(!plan.is_float_unboxed("mixed"), "{kind}");
+        assert!(!plan.is_bool_unboxed("mixed"), "{kind}");
+        assert_eq!(
+            plan.name_container_kind("items_snapshot"),
+            Some(ContainerKind::List)
+        );
+        assert_eq!(plan.name_container_kind("delete_metadata"), None);
+        assert!(plan.integer_family_names().contains("wide_snapshot"));
+        assert!(
+            plan.scalar_store_targets(ScalarKind::Int)
+                .contains("wide_copy")
+        );
+    }
+}
+
+#[test]
+fn alias_facts_follow_argument_before_transport_var_metadata() {
+    for kind in [
+        "copy",
+        "copy_var",
+        "load_var",
+        "identity_alias",
+        "binding_alias",
+    ] {
+        let func = function(
+            "alias_source_precedence",
+            &[],
+            None,
+            vec![
+                const_int("integer", 7),
+                const_float("float_metadata", 1.25),
+                op(kind, Some("snapshot"), Some("float_metadata"), &["integer"]),
+                op("store_var", None, Some("slot"), &["snapshot"]),
+            ],
+        );
+        let index = FunctionFactIndex::for_function(&func);
+        assert_eq!(
+            index.alias_edges().collect::<Vec<_>>(),
+            [("snapshot", "integer")]
+        );
+        let plan = native_representation_plan(&func);
+        assert_eq!(
+            plan.op_scalar_lane(&func.ops[2]),
+            Some(ScalarKind::Int),
+            "{kind}"
+        );
+        assert!(
+            plan.scalar_store_targets(ScalarKind::Int).contains("slot"),
+            "{kind}"
+        );
+        assert!(
+            !plan
+                .scalar_store_targets(ScalarKind::Float)
+                .contains("slot"),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn reserved_none_operands_remain_singletons_through_lift_and_roundtrip() {
+    for ops in [
+        vec![
+            op("copy_var", Some("snapshot"), None, &["none"]),
+            op("ret", None, None, &["snapshot"]),
+        ],
+        vec![
+            op("load_var", Some("snapshot"), Some("none"), &[]),
+            op("ret", None, None, &["snapshot"]),
+        ],
+        vec![
+            op("store_var", Some("snapshot"), Some("local"), &["none"]),
+            op("ret", None, None, &["snapshot"]),
+        ],
+        vec![op("ret", None, None, &["none"])],
+    ] {
+        let mut source = function("reserved_none_roundtrip", &[], None, ops);
+        for _ in 0..2 {
+            let tir =
+                lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+            assert!(
+                !tir.blocks.values().flat_map(|block| &block.ops).any(|op| {
+                    op.opcode == OpCode::ConstStr
+                        && op.attrs.get("s_value") == Some(&AttrValue::Str("none".into()))
+                }),
+                "reserved singleton must never become a string"
+            );
+            let returned = tir
+                .blocks
+                .values()
+                .find_map(|block| match &block.terminator {
+                    crate::tir::blocks::Terminator::Return { values } => Some(values),
+                    _ => None,
+                })
+                .expect("value-returning function");
+            assert_eq!(
+                returned.len(),
+                1,
+                "explicit None retains value-return shape"
+            );
+            assert_eq!(tir.value_types.get(&returned[0]), Some(&TirType::None));
+            source.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
+        }
+    }
+}
+
+#[test]
 fn dynbox_i64_fact_is_not_a_scalar_integer() {
     let mut plan = ScalarRepresentationPlan::default();
     plan.insert_fact(

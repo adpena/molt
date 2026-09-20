@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_result_or_drop;
+use super::super::super::result_sink::store_runtime_result;
 use super::operands::{BinaryOperands, binary_operands, ternary_operands, unary_operand};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
@@ -58,7 +58,7 @@ pub(in crate::wasm::op_loop::numeric_ops) fn emit_boxed_unary_result(
         import,
         reloc_enabled,
     );
-    store_numeric_result(func, op, locals);
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
 }
 
 pub(in crate::wasm::op_loop::numeric_ops) fn emit_boxed_binary_result(
@@ -76,7 +76,7 @@ pub(in crate::wasm::op_loop::numeric_ops) fn emit_boxed_binary_result(
         import,
         reloc_enabled,
     );
-    store_numeric_result(func, op, locals);
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
 }
 
 pub(in crate::wasm::op_loop::numeric_ops) fn emit_boxed_ternary_result(
@@ -94,13 +94,5 @@ pub(in crate::wasm::op_loop::numeric_ops) fn emit_boxed_ternary_result(
         import,
         reloc_enabled,
     );
-    store_numeric_result(func, op, locals);
-}
-
-pub(in crate::wasm::op_loop::numeric_ops) fn store_numeric_result(
-    func: &mut Function,
-    op: &OpIR,
-    locals: &WasmFrameLocals,
-) {
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
 }

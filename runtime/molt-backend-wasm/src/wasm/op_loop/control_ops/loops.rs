@@ -31,9 +31,11 @@ fn emit_loop_start(context: &mut ControlOpContext<'_>, func: &mut Function) {
 }
 
 fn emit_loop_index_move(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
+    let Some(out) = context.locals.bound_op_result_slot(op) else {
+        return;
+    };
     let args = op.args.as_ref().unwrap();
     let source = context.locals[&args[0]];
-    let out = context.locals[op.out.as_ref().unwrap()];
     func.instruction(&Instruction::LocalGet(source));
     func.instruction(&Instruction::LocalSet(out));
 }

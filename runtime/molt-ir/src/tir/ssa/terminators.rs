@@ -1,4 +1,3 @@
-use super::variables::is_variable;
 use super::*;
 use std::collections::HashMap;
 impl<'a> SsaContext<'a> {
@@ -35,12 +34,13 @@ impl<'a> SsaContext<'a> {
         {
             let mut values = Vec::new();
             crate::tir::simple_def_use::visit_simple_ir_return_values(op, |a| {
-                if is_variable(a)
-                    && let Some(vid) = self.resolve_known_var(a, var_stacks)
+                if let Some(vid) =
+                    self.resolve_known_or_reserved_operand(last_op_idx, a, var_stacks)
                 {
                     values.push(vid);
                 }
             });
+            block_ops.append(&mut self.pending_inline_consts);
             return Terminator::Return { values };
         }
 
@@ -62,11 +62,7 @@ impl<'a> SsaContext<'a> {
                 let cond = last_op
                     .and_then(|op| {
                         op.args.as_ref().and_then(|a| a.first()).and_then(|a| {
-                            if is_variable(a) {
-                                self.resolve_known_var(a, var_stacks)
-                            } else {
-                                None
-                            }
+                            self.resolve_known_or_reserved_operand(last_op_idx, a, var_stacks)
                         })
                     })
                     .or(self.undef_value)
@@ -74,6 +70,7 @@ impl<'a> SsaContext<'a> {
                         self.undef_value
                             .expect("SSA undef value must be initialized")
                     });
+                block_ops.append(&mut self.pending_inline_consts);
 
                 if succs.len() >= 2 {
                     // Successor ordering is preserved from cfg.rs:
@@ -329,5 +326,56 @@ impl<'a> SsaContext<'a> {
                     .expect("SSA undef value must be initialized")
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_none_branch_operand_materializes_in_its_block() {
+        let ops = vec![
+            OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["none".into()]),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(10),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ];
+        let cfg = CFG::build(&ops);
+        let output = super::super::convert_to_ssa(&cfg, &ops);
+        let (block, condition) = output
+            .blocks
+            .iter()
+            .find_map(|block| match &block.terminator {
+                Terminator::CondBranch { cond, .. } => Some((block, *cond)),
+                _ => None,
+            })
+            .expect("conditional branch");
+        let constant = block
+            .ops
+            .iter()
+            .find(|op| op.results.contains(&condition))
+            .expect("branch operand defined in its own block");
+        assert_eq!(constant.opcode, OpCode::ConstNone);
+        assert_eq!(
+            constant.source_op_index(),
+            Some(0),
+            "explicit None is not the shared undef"
+        );
     }
 }

@@ -36,10 +36,11 @@ impl WasmFunctionFrame {
                 .into_iter()
                 .filter_map(|name| self.locals.get(&name).map(|slot| format!("{name}->{slot}")))
                 .collect();
+            let result_slot = op.out.as_deref().map(|name| self.locals.result_slot(name));
             let _ = writeln!(
                 dump,
-                "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?}",
-                idx, op.kind, op.var, op.out, op.args, mapped
+                "WASM_DEBUG_OP {} kind={} var={:?} out={:?} args={:?} locals={:?} out_slot={:?}",
+                idx, op.kind, op.var, op.out, op.args, mapped, result_slot
             );
         }
         eprint!("{dump}");

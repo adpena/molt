@@ -1,6 +1,8 @@
+use super::super::result_sink::store_runtime_result;
 use super::LocalStateOpContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
@@ -33,11 +35,14 @@ pub(super) fn emit_closure_local_state_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureLoad],
             );
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::ClosureLoad,
+            );
         }
         "closure_store" => {
             let args = op.args.as_ref().unwrap();
@@ -59,11 +64,14 @@ pub(super) fn emit_closure_local_state_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureStore],
             );
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalSet(locals[out]));
-            } else {
-                func.instruction(&Instruction::Drop);
-            }
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::ClosureStore,
+            );
         }
         _ => return false,
     }

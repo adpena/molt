@@ -93,7 +93,7 @@ const reservedRuntimeCallables = [
   { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
 ];
 
-const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
+const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const runtimeLifetimes = new WeakMap();
 const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
   let lifetime = runtimeLifetimes.get(runtimeInstance);
@@ -1659,7 +1659,7 @@ const createBrowserDbHost = (state, options) => {
     if ((!Number.isFinite(reqAddr) || reqAddr === 0) && len !== 0) return 1;
     const payload =
       len > 0 ? new Uint8Array(memory.buffer, reqAddr, len).slice() : new Uint8Array(0);
-    const streamHandle = runtime.exports.molt_stream_new(0n);
+    const streamHandle = createRuntimeStream(runtime, 0n);
     if (!streamHandle || streamHandle === 0n) {
       return 7;
     }

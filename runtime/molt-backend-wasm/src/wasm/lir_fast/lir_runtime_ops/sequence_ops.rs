@@ -1,7 +1,9 @@
 use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::LirRuntimeCall;
-use super::call_abi::{emit_lir_boxed_operands_runtime_call, emit_lir_runtime_result};
+use super::call_abi::{
+    emit_lir_boxed_operands_runtime_call, emit_lir_runtime_discard, emit_lir_runtime_result,
+};
 use crate::wasm::body::WasmLirFallbackReason;
 use crate::wasm::container_runtime_select::selected_lir_container_runtime_call;
 use crate::wasm_abi_generated::WasmContainerRuntimeOp;
@@ -38,7 +40,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unpack_sequence(ctx: &mut LirLowerCtx,
         ctx.instructions.push(Instruction::I64Const(0));
         ctx.instructions.push(Instruction::I64Const(0));
         ctx.emit_runtime_call(LirRuntimeCall::UnpackSequence);
-        ctx.instructions.push(Instruction::Drop);
+        emit_lir_runtime_discard(ctx, LirRuntimeCall::UnpackSequence);
         return;
     }
 
@@ -75,7 +77,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unpack_sequence(ctx: &mut LirLowerCtx,
         .push(Instruction::I64Const(expected as i64));
     ctx.instructions.push(Instruction::LocalGet(scratch));
     ctx.emit_runtime_call(LirRuntimeCall::UnpackSequence);
-    ctx.instructions.push(Instruction::Drop);
+    emit_lir_runtime_discard(ctx, LirRuntimeCall::UnpackSequence);
     for (index, result) in op.result_values.iter().enumerate() {
         ctx.instructions.push(Instruction::LocalGet(scratch));
         ctx.instructions.push(Instruction::I32WrapI64);
@@ -138,7 +140,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_slice(ctx: &mut LirLowerCtx, op:
         }
     }
     ctx.emit_runtime_call(LirRuntimeCall::SliceNew);
-    emit_lir_runtime_result(ctx, op);
+    emit_lir_runtime_result(ctx, op, LirRuntimeCall::SliceNew);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_membership(
@@ -159,29 +161,30 @@ pub(in crate::wasm::lir_fast) fn emit_lir_membership(
     )
     .unwrap_or(LirRuntimeCall::Contains);
     ctx.emit_runtime_call(runtime_call);
+    emit_lir_runtime_result(ctx, op, runtime_call);
     if !invert {
-        emit_lir_runtime_result(ctx, op);
         return;
     }
     let Some(result) = op.result_values.first() else {
-        ctx.instructions.push(Instruction::Drop);
         return;
     };
     match result.repr {
         LirRepr::Bool1 => {
-            ctx.instructions.push(Instruction::I64Const(1));
-            ctx.instructions.push(Instruction::I64And);
-            ctx.instructions.push(Instruction::I32WrapI64);
+            ctx.emit_get(result.id);
             ctx.instructions.push(Instruction::I32Eqz);
             ctx.emit_set(result.id);
         }
         LirRepr::DynBox | LirRepr::Ref64 => {
+            ctx.emit_get(result.id);
             ctx.emit_runtime_call(LirRuntimeCall::Not);
-            emit_lir_runtime_result(ctx, op);
+            // The first sink established an independent owner for the source
+            // predicate. Retire it after Not has read it, before rebinding.
+            ctx.emit_get(result.id);
+            ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
+            emit_lir_runtime_result(ctx, op, LirRuntimeCall::Not);
         }
         LirRepr::I64 | LirRepr::F64 => {
             ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
-            ctx.emit_set(result.id);
         }
     }
 }

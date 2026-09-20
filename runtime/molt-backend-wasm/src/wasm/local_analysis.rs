@@ -182,7 +182,9 @@ mod tests {
                     Some("__tmp_slot"),
                     None,
                 ),
-                op("ret", Some(vec!["__tmp_live"]), None, None),
+                // This pure allocation test intentionally has no split barrier:
+                // a return would bypass coalescing before examining ranges.
+                op("inc_ref", Some(vec!["__tmp_live"]), None, None),
             ],
             ..crate::FunctionIR::default()
         };

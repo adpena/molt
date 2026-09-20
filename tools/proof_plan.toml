@@ -2029,7 +2029,7 @@ dependencies = ["rust.test.default-truth"]
 # target; its tir:: namespace keeps the same family filter and proof custody.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "node", "wasm-ld"]
 
 [[command]]
@@ -2078,7 +2078,7 @@ timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 # Libtests belong to the implementation crate, not its re-exporting driver.
-argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "--features", "native-backend llvm", "--lib", "llvm_backend::lowering", "--no-fail-fast"]
+argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "--features", "native-backend llvm", "--lib", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]

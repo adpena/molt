@@ -79,26 +79,23 @@ fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
 
 #[test]
 fn const_policy_classifies_runtime_seed_and_literal_scratch() {
-    for (kind, payload, import, parse_scalar, lir_policy) in [
+    for (kind, payload, import, lir_policy) in [
         (
             "const_str",
             WasmConstLiteralPayload::String,
             WasmRuntimeImport::StringFromBytes,
-            true,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
             "const_bigint",
             WasmConstLiteralPayload::BigintDecimal,
             WasmRuntimeImport::BigintFromStr,
-            false,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
             "const_bytes",
             WasmConstLiteralPayload::Bytes,
             WasmRuntimeImport::BytesFromBytes,
-            true,
             WasmConstLirFastPolicy::Materialize,
         ),
     ] {
@@ -109,7 +106,6 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
         );
         assert_eq!(policy.literal_payload(), payload);
         assert_eq!(policy.materializer_import(), Some(import));
-        assert_eq!(policy.parse_scalar_literal(), parse_scalar);
         assert_eq!(policy.lir_fast_policy(), lir_policy);
         assert!(
             policy.needs_runtime_anchor(),

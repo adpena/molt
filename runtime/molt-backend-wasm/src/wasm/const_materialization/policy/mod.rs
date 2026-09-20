@@ -38,10 +38,6 @@ impl WasmConstOpPolicy {
         self.0.literal_payload
     }
 
-    pub(in crate::wasm) fn parse_scalar_literal(self) -> bool {
-        self.0.parse_scalar_literal
-    }
-
     pub(in crate::wasm) fn materializer_import(self) -> Option<WasmRuntimeImport> {
         self.0.materializer_import
     }

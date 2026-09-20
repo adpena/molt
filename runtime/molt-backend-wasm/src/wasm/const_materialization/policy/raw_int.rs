@@ -14,7 +14,7 @@ impl WasmConstOpPolicy {
         match self.raw_int_effect() {
             WasmConstRawIntEffect::SetInt => {
                 let out = op.out.as_ref().expect("raw-int const out");
-                let local_idx = locals[out];
+                let local_idx = locals.result_slot(out);
                 let val = op.value.expect("raw-int const value");
                 known_raw_ints.insert(local_idx, val);
             }
@@ -38,9 +38,7 @@ fn forget_output_raw_int(
     locals: &WasmFrameLocals,
     known_raw_ints: &mut BTreeMap<u32, i64>,
 ) {
-    if let Some(out) = op.out.as_ref()
-        && let Some(local_idx) = locals.get(out)
-    {
-        known_raw_ints.remove(local_idx);
+    if let Some(out) = op.out.as_ref() {
+        known_raw_ints.remove(&locals.result_slot(out));
     }
 }

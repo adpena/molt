@@ -5,6 +5,80 @@ use std::fs;
 use std::path::PathBuf;
 
 #[test]
+fn iterator_result_roles_survive_absent_and_discarded_siblings() {
+    for value in [None, Some("none"), Some("unused_value"), Some("value")] {
+        for done in [None, Some("none"), Some("unused_done"), Some("done")] {
+            let mut next = wasm_test_op("iter_next_unboxed", done, vec!["iterator"]);
+            next.var = value.map(str::to_string);
+            let ir = SimpleIR {
+                functions: vec![wasm_test_function(
+                    "molt_main",
+                    vec!["iterator"],
+                    None,
+                    vec![
+                        next,
+                        wasm_test_op(
+                            "ret",
+                            None,
+                            vec![if done == Some("done") {
+                                "done"
+                            } else if value == Some("value") {
+                                "value"
+                            } else {
+                                "none"
+                            }],
+                        ),
+                    ],
+                )],
+                profile: None,
+            };
+            crate::validate_simple_ir(&ir).expect("discarded iterator results are admitted");
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+            wasmparser::Validator::new()
+                .validate_all(&output.wasm)
+                .unwrap();
+            let imports = wasm_function_import_indices(&output.wasm);
+            let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
+            let mut expected = Vec::new();
+            if done == Some("done") {
+                expected.push(1);
+            }
+            if value == Some("value") && done != Some("done") {
+                expected.push(0);
+            }
+            let actual: Vec<_> = imports
+                .get("index")
+                .into_iter()
+                .flat_map(|index| {
+                    let call = format!("Call {{ function_index: {index} }}");
+                    operators
+                        .iter()
+                        .enumerate()
+                        .filter_map(move |(i, instruction)| (instruction == &call).then_some(i))
+                })
+                .map(|i| operators[i - 1].clone())
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|index| {
+                    format!(
+                        "I64Const {{ value: {} }}",
+                        crate::wasm_values::box_int(index)
+                    )
+                })
+                .collect();
+            assert_eq!(actual, expected, "value={value:?}, done={done:?}");
+            let release = format!("Call {{ function_index: {} }}", imports["dec_ref_obj"]);
+            assert_eq!(
+                operators.iter().filter(|op| *op == &release).count(),
+                1,
+                "the intermediate pair owns both unselected results"
+            );
+        }
+    }
+}
+
+#[test]
 fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
     let node = real_execution_tool(
         PathBuf::from("node"),
@@ -46,6 +120,46 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
             ),
             ("discard", Some("slot"), Some("none"), "slot", false, false),
             (
+                "source_result",
+                Some("slot"),
+                Some("source"),
+                "slot",
+                false,
+                false,
+            ),
+            (
+                "discard_internal_call",
+                Some("slot"),
+                Some("none"),
+                "none",
+                false,
+                true,
+            ),
+            (
+                "none_input",
+                Some("slot"),
+                Some("snapshot"),
+                "snapshot",
+                true,
+                true,
+            ),
+            (
+                "metadata_copy",
+                Some("slot"),
+                Some("snapshot"),
+                "copied",
+                true,
+                false,
+            ),
+            (
+                "discard_float",
+                Some("slot"),
+                Some("none"),
+                "none",
+                false,
+                true,
+            ),
+            (
                 "discard_keeps_none",
                 Some("slot"),
                 Some("none"),
@@ -62,7 +176,12 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
                     ops.push(marker);
                 }
             }
-            let mut store = wasm_test_op("store_var", result, vec!["source"]);
+            let input = if name == "none_input" {
+                "none"
+            } else {
+                "source"
+            };
+            let mut store = wasm_test_op("store_var", result, vec![input]);
             store.var = destination.map(str::to_string);
             ops.push(store);
             if rebind {
@@ -70,14 +189,38 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
                 store.var = destination.map(str::to_string);
                 ops.push(store);
             }
+            if name == "metadata_copy" {
+                let mut copy = wasm_test_op("copy_var", Some("copied"), vec!["snapshot"]);
+                copy.var = Some("replacement".into()); // Authored metadata is not an operand.
+                ops.push(copy);
+            }
+            if name == "discard_float" {
+                let mut discarded = wasm_test_op("const_float", Some("none"), vec![]);
+                discarded.f_value = Some(9.5);
+                ops.push(discarded);
+            }
+            if name == "discard_internal_call" {
+                let mut call = wasm_test_op("call_internal", Some("none"), vec!["source"]);
+                call.s_value = Some("identity_target".into());
+                ops.push(call);
+            }
             ops.push(wasm_test_op("ret", None, vec![returned]));
-            let ir = SimpleIR {
-                functions: vec![wasm_test_function(
-                    "molt_main",
-                    vec!["source", "replacement"],
+            let mut functions = vec![wasm_test_function(
+                "molt_main",
+                vec!["source", "replacement"],
+                None,
+                ops,
+            )];
+            if name == "discard_internal_call" {
+                functions.push(wasm_test_function(
+                    "identity_target",
+                    vec!["value"],
                     None,
-                    ops,
-                )],
+                    vec![wasm_test_op("ret", None, vec!["value"])],
+                ));
+            }
+            let ir = SimpleIR {
+                functions,
                 profile: None,
             };
             crate::validate_simple_ir(&ir).expect("binding fixture is admitted SimpleIR");
@@ -85,17 +228,9 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
             // that can normalize the missing-result bug away first.
             let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir).wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
-            for payload in Parser::new(0).parse_all(&wasm) {
-                if let Payload::ImportSection(reader) = payload.unwrap() {
-                    for import in reader.into_imports() {
-                        match import.unwrap().ty {
-                            TypeRef::Memory(ty) => memory_pages = memory_pages.max(ty.initial),
-                            TypeRef::Table(ty) => table_entries = table_entries.max(ty.initial),
-                            _ => {}
-                        }
-                    }
-                }
-            }
+            let (pages, entries) = wasm_import_minimums(&wasm);
+            memory_pages = memory_pages.max(pages);
+            table_entries = table_entries.max(entries);
             let path = temp.join(format!("binding_{name}_{labelled}.wasm"));
             fs::write(&path, wasm).unwrap();
             cases.push(json!({"name": format!("{name}/{labelled}"), "path": path, "returns_none": returns_none}));

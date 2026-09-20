@@ -25,7 +25,7 @@ from wasm_abi_gen.manifest import (
     METHOD_IC_MAX_EXTRA_ARGS,
     METHOD_IC_SELECTOR_FAMILIES,
     NUMERIC_OP_LOOP_VARIANTS,
-    OP_LOOP_RUNTIME_SINKS,
+    RUNTIME_RETURN_CONTRACTS,
     WASM_BULK_MEMORY_INSTRUCTIONS,
     WASM_VAL_TYPES,
     WasmAbiManifestError,
@@ -36,6 +36,7 @@ from wasm_abi_gen.manifest import (
     generator_runtime_export_signature_rows,
     load_manifest,
     runtime_boxed_call_specs,
+    runtime_import_return_specs,
     runtime_export_name,
 )
 from wasm_abi_gen.paths import (
@@ -457,10 +458,10 @@ def _render_rs_mod() -> str:
             "    RuntimeImportSpec,\n",
             "};\n",
             "pub(crate) use import_tokens::WasmRuntimeImport;\n",
+            "pub(crate) use import_metadata::WasmRuntimeReturn;\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
-            "    OpLoopRuntimeSinkSpec,\n",
             "};\n",
             "pub(crate) use method_ic_selector::{\n",
             "    wasm_method_ic_selection, WasmMethodIcFamily, WasmMethodIcSelection,\n",
@@ -615,7 +616,6 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
             "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
             "    pub(crate) dispatch_runtime_seed: bool,\n",
-            "    pub(crate) parse_scalar_literal: bool,\n",
             "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
             "    pub(crate) lir_fast: WasmConstLirFastPolicy,\n",
             "}\n\n",
@@ -629,7 +629,6 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
         raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
         lir_fast = _rust_pascal_variant(entry["lir_fast"])
         dispatch_seed = "true" if entry["dispatch_runtime_seed"] else "false"
-        parse_scalar = "true" if entry["parse_scalar_literal"] else "false"
         lines.extend(
             [
                 "    WasmConstOpPolicySpec {\n",
@@ -645,7 +644,6 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
                 f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
                 f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
                 f"        dispatch_runtime_seed: {dispatch_seed},\n",
-                f"        parse_scalar_literal: {parse_scalar},\n",
                 f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",
                 f"        lir_fast: WasmConstLirFastPolicy::{lir_fast},\n",
                 "    },\n",
@@ -779,6 +777,15 @@ def _render_rs_import_tokens(data: dict, import_variants: Mapping[str, str]) -> 
 
 def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_header("//")]
+    contracts = runtime_import_return_specs(data)
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub(crate) enum WasmRuntimeReturn {\n",
+            *(f"    {variant},\n" for variant in RUNTIME_RETURN_CONTRACTS.values()),
+            "}\n\n",
+        ]
+    )
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
@@ -815,6 +822,19 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
     for entry in data["import"]:
         lines.append(
             f"            Self::{import_variants[entry['name']]} => {entry['type']},\n"
+        )
+    lines.extend(
+        [
+            "        }\n",
+            "    }\n\n",
+            "    pub(crate) const fn return_contract(self) -> WasmRuntimeReturn {\n",
+            "        match self {\n",
+        ]
+    )
+    for entry in data["import"]:
+        variant = RUNTIME_RETURN_CONTRACTS[contracts[entry["name"]]]
+        lines.append(
+            f"            Self::{import_variants[entry['name']]} => WasmRuntimeReturn::{variant},\n"
         )
     lines.extend(
         [
@@ -1061,19 +1081,11 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             "    OpValueI64(&'static str),\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum OpLoopRuntimeSinkSpec {\n",
-            "    ResultOrDrop,\n",
-            "    OwnedResultOrRelease,\n",
-            "    NonNoneResultOrDrop,\n",
-            "    Drop,\n",
-            "    None,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct OpLoopRuntimeCallSpec {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
             "    pub(crate) required_imports: &'static [WasmRuntimeImport],\n",
-            "    pub(crate) sink: OpLoopRuntimeSinkSpec,\n",
+            "    pub(crate) discard_result: bool,\n",
             "}\n\n",
             "#[inline]\n",
             "pub(crate) fn op_loop_runtime_call(\n",
@@ -1116,8 +1128,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             lines.extend(
                 [
                     "            ],\n",
-                    "            sink: OpLoopRuntimeSinkSpec::"
-                    f"{OP_LOOP_RUNTIME_SINKS[entry['sink']]},\n",
+                    f"            discard_result: {str(entry.get('discard_result', False)).lower()},\n",
                     "        }),\n",
                 ]
             )
@@ -1595,10 +1606,10 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
     lines = [
         _header("//"),
         "//! Target-neutral direct runtime calls whose operands are object values.\n",
-        "//! Results transfer an object owner; borrowed/raw entrypoints are excluded.\n",
+        "//! Returns carry owned, borrowed, or pending-or-owned semantics; raw entrypoints are excluded.\n",
         "//! Machine i64 signatures alone never authorize this contract.\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-        "pub enum RuntimeBoxedReturn { OwnedValue, Void }\n\n",
+        "pub enum RuntimeBoxedReturn { OwnedValue, BorrowedValue, PollValue, Void }\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub struct RuntimeBoxedAbi {\n",
         "    pub symbol: &'static str,\n",
@@ -1608,7 +1619,15 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
         "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
     ]
     for spec in runtime_boxed_call_specs(data):
-        result = "OwnedValue" if spec["result"] == "i64" else "Void"
+        result = (
+            "Void"
+            if spec["result"] == "void"
+            else "BorrowedValue"
+            if spec.get("ownership") == "borrowed_object"
+            else "PollValue"
+            if spec.get("ownership") == "poll_result"
+            else "OwnedValue"
+        )
         lines.append(
             "    RuntimeBoxedAbi { "
             f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}, '

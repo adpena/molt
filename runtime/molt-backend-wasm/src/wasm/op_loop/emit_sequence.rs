@@ -10,7 +10,8 @@ use super::numeric_ops::emit_numeric_op;
 use super::object_attr_ops::emit_object_attr_op;
 use super::runtime_service_ops::{RuntimeServiceOpContext, emit_runtime_service_op};
 use crate::OpIR;
-use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_dispatch_block_terminator;
+use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_split_barrier;
+use molt_tir::tir::simple_def_use::visit_simple_ir_defined_names;
 use std::collections::BTreeMap;
 use wasm_encoder::Function;
 
@@ -58,6 +59,14 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 skip_next = false;
                 continue;
             }
+
+            // These facts describe physical slot contents, not immutable SSA
+            // names. Every emitter can write a slot, including binding-only
+            // operations and multi-result operations. Invalidate before dispatch
+            // so an early handled return cannot leave a stale constant behind.
+            // A read/write alias may lose a constant shortcut for this one op,
+            // but it still reads the actual incoming value from its local.
+            invalidate_raw_int_facts(op, locals, &mut known_raw_ints);
 
             if emit_numeric_op(
                 func,
@@ -209,15 +218,71 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func,
                 op,
             );
+        }
+    }
+}
 
-            if simpleir_kind_is_wasm_dispatch_block_terminator(op.kind.as_str()) {
-                known_raw_ints.clear();
-            } else if op.kind != "const"
-                && let Some(ref out) = op.out
-                && let Some(&out_idx) = locals.get(out.as_str())
-            {
-                known_raw_ints.remove(&out_idx);
-            }
+fn invalidate_raw_int_facts(
+    op: &OpIR,
+    locals: &crate::wasm::WasmFrameLocals,
+    facts: &mut BTreeMap<u32, i64>,
+) {
+    if simpleir_kind_is_wasm_split_barrier(&op.kind) {
+        facts.clear();
+    } else {
+        visit_simple_ir_defined_names(op, |name| {
+            facts.remove(&locals.result_slot(name));
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wasm::WasmFrameLocals;
+
+    #[test]
+    fn raw_int_facts_follow_canonical_writes_and_control_boundaries() {
+        let locals = WasmFrameLocals::from(BTreeMap::from([
+            ("source".into(), 0),
+            ("slot".into(), 1),
+            ("result".into(), 2),
+        ]));
+        for op in [
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("slot".into()),
+                out: Some("result".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "iter_next_unboxed".into(),
+                var: Some("slot".into()),
+                out: Some("result".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "unpack_sequence".into(),
+                args: Some(vec!["source".into(), "slot".into(), "result".into()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+        ] {
+            let mut facts = BTreeMap::from([(0, 7), (1, 8), (2, 9)]);
+            invalidate_raw_int_facts(&op, &locals, &mut facts);
+            assert_eq!(facts, BTreeMap::from([(0, 7)]), "{}", op.kind);
+        }
+        for kind in ["if", "else", "end_if", "label", "loop_start", "loop_end"] {
+            let mut facts = BTreeMap::from([(0, 7)]);
+            invalidate_raw_int_facts(
+                &OpIR {
+                    kind: kind.into(),
+                    ..OpIR::default()
+                },
+                &locals,
+                &mut facts,
+            );
+            assert!(facts.is_empty(), "{kind}");
         }
     }
 }

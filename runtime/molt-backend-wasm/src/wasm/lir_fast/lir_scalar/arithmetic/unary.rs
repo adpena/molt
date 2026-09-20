@@ -66,5 +66,5 @@ pub(in crate::wasm::lir_fast) fn emit_lir_unary_pos(
 fn emit_boxed_unary(ctx: &mut LirLowerCtx, op: &LirOp, selection: WasmNumericRuntimeSelection) {
     emit_get_boxed_for_repr(ctx, op.tir_op.operands[0]);
     ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
-    emit_lir_runtime_result(ctx, op);
+    emit_lir_runtime_result(ctx, op, numeric_lir_runtime_call(selection));
 }

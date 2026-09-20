@@ -31,6 +31,74 @@ def _run_node(script: str, tmp_path: Path) -> None:
     assert run.returncode == 0, run.stderr
 
 
+def test_host_stream_constructors_box_capacity_and_retire_unpublished_handles(
+    tmp_path: Path,
+) -> None:
+    node_source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
+    browser_source = (ROOT / "wasm/browser_host.js").read_text(encoding="utf-8")
+    assert node_source.count("createRuntimeStream(runtimeInstance, 0n)") == 3
+    assert browser_source.count("createRuntimeStream(runtime, 0n)") == 1
+    for source in (node_source, browser_source):
+        assert ".molt_stream_new(0n)" not in source
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const {createRuntimeStream} = require(lifecyclePath);
+for (const failure of ['none', 'integer', 'stream', 'cleanup', 'stream-cleanup']) {
+  const integers = new Map(), streams = new Set(), events = [];
+  let pending = false;
+  const instance = {exports: {
+    molt_exception_pending_fast: () => pending ? 1n : 0n,
+    molt_int_from_i64(value) {
+      assert.equal(value, 0n);
+      integers.set(123n, value);
+      events.push('box');
+      if (failure === 'integer') pending = true;
+      return 123n;
+    },
+    molt_dec_ref_obj(bits) {
+      assert(integers.delete(bits), 'only the boxed capacity is refcounted');
+      events.push('release-capacity');
+      if (failure.includes('cleanup')) throw new Error('capacity cleanup failed');
+    },
+    molt_stream_new(bits) {
+      assert.equal(integers.get(bits), 0n);
+      assert.notEqual(bits, 0n, 'raw zero must not cross the boxed constructor ABI');
+      events.push('construct');
+      if (failure.startsWith('stream')) { pending = true; return 999n; }
+      streams.add(456n);
+      return 456n;
+    },
+    molt_stream_drop(bits) {
+      assert(streams.delete(bits), 'unpublished opaque handles need stream drop');
+      events.push('drop-stream');
+    },
+  }};
+  if (failure === 'none') {
+    assert.equal(createRuntimeStream(instance, 0n), 456n);
+    assert.deepEqual(events, ['box', 'construct', 'release-capacity']);
+    instance.exports.molt_stream_drop(456n);
+  } else {
+    assert.throws(() => createRuntimeStream(instance, 0n), error => {
+      if (failure === 'stream-cleanup') {
+        assert(error instanceof AggregateError);
+        assert.match(error.errors[0].message, /stream allocation failed/);
+      }
+      return true;
+    });
+    assert.equal(events.includes('drop-stream'), failure === 'cleanup');
+  }
+  assert.equal(integers.size, 0);
+  assert.equal(streams.size, 0);
+}
+""",
+        tmp_path,
+    )
+
+
 def test_host_list_builders_share_consuming_failure_transaction(tmp_path: Path) -> None:
     for host in ("run_wasm.js", "browser_host.js", "browser_embed.js"):
         source = (ROOT / "wasm" / host).read_text(encoding="utf-8")

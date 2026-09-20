@@ -271,9 +271,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
         let bits = box_float_value(builder, val, &nbc);
         Some(VarValue(bits))
     } else {
-        let var = *vars.get(name)?;
-        let val = builder.use_var(var);
-        Some(VarValue(val))
+        var_get(builder, vars, name)
     }
 }
 
@@ -544,6 +542,168 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_default_value(
     }
 }
 
+/// A captured incoming value, independent of subsequent writes to its name.
+/// All consumers of one transfer share its lazy boxed materialization. Raw
+/// transfers never allocate; an escaping raw integer supplies one owned box.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct CapturedScalarTransport {
+    value: Value,
+    storage: MergeRebindStorageKind,
+    boxed: Option<Value>,
+    boxed_owner_available: bool,
+}
+
+#[cfg(feature = "native-backend")]
+impl CapturedScalarTransport {
+    pub(super) fn new(value: Value, storage: MergeRebindStorageKind) -> Self {
+        Self {
+            value,
+            storage,
+            boxed: (storage == MergeRebindStorageKind::BoxedI64).then_some(value),
+            boxed_owner_available: storage != MergeRebindStorageKind::BoxedI64,
+        }
+    }
+
+    pub(super) fn read_named(
+        builder: &mut FunctionBuilder<'_>,
+        vars: &BTreeMap<String, Variable>,
+        representation_plan: &ScalarRepresentationPlan,
+        name: &str,
+    ) -> Self {
+        let storage = merge_rebind_storage_for_name(name, representation_plan);
+        let value = *var_get(builder, vars, name).expect("scalar transport source not found");
+        Self::new(value, storage)
+    }
+
+    pub(super) fn read_local(
+        builder: &mut FunctionBuilder<'_>,
+        vars: &BTreeMap<String, Variable>,
+        representation_plan: &ScalarRepresentationPlan,
+        slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
+        raw_slots: &BTreeSet<String>,
+        name: &str,
+    ) -> Self {
+        if let Some(&slot) = slots.get(name) {
+            let storage = if raw_slots.contains(name) {
+                merge_rebind_storage_for_name(name, representation_plan)
+            } else {
+                MergeRebindStorageKind::BoxedI64
+            };
+            let value = builder
+                .ins()
+                .stack_load(merge_rebind_storage_clif_type(storage), slot, 0);
+            Self::new(value, storage)
+        } else {
+            Self::read_named(builder, vars, representation_plan, name)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn value_for_home(
+        &mut self,
+        module: &mut ObjectModule,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        builder: &mut FunctionBuilder<'_>,
+        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        sealed_blocks: &mut BTreeSet<Block>,
+        representation_plan: &ScalarRepresentationPlan,
+        nbc: &crate::NanBoxConsts,
+        name: &str,
+        storage: MergeRebindStorageKind,
+    ) -> Value {
+        assert!(
+            storage != MergeRebindStorageKind::RawI64
+                || !representation_plan.is_full_deopt_int_name(name)
+                || matches!(
+                    self.storage,
+                    MergeRebindStorageKind::RawI64 | MergeRebindStorageKind::RawBool
+                ),
+            "boxed transport cannot define full-deopt raw-int home `{name}`; use a raw i64 producer or checked raw runtime ABI"
+        );
+        self.value_for_storage(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            nbc,
+            storage,
+        )
+    }
+
+    /// Consume the materialization's existing credit before retaining another
+    /// independent boxed owner. Inline scalars make either operation a no-op.
+    pub(super) fn take_boxed_owner(&mut self) -> bool {
+        assert!(
+            self.boxed.is_some(),
+            "boxed ownership requires materialization"
+        );
+        std::mem::replace(&mut self.boxed_owner_available, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn value_for_storage(
+        &mut self,
+        module: &mut ObjectModule,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        builder: &mut FunctionBuilder<'_>,
+        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+        sealed_blocks: &mut BTreeSet<Block>,
+        nbc: &crate::NanBoxConsts,
+        storage: MergeRebindStorageKind,
+    ) -> Value {
+        if self.storage == storage
+            || matches!(
+                (self.storage, storage),
+                (
+                    MergeRebindStorageKind::RawI64,
+                    MergeRebindStorageKind::RawBool
+                ) | (
+                    MergeRebindStorageKind::RawBool,
+                    MergeRebindStorageKind::RawI64
+                )
+            )
+        {
+            return self.value;
+        }
+        if storage == MergeRebindStorageKind::RawF64
+            && matches!(
+                self.storage,
+                MergeRebindStorageKind::RawI64 | MergeRebindStorageKind::RawBool
+            )
+        {
+            return builder.ins().fcvt_from_sint(types::F64, self.value);
+        }
+        let boxed = if let Some(boxed) = self.boxed {
+            boxed
+        } else {
+            let boxed = match self.storage {
+                MergeRebindStorageKind::RawI64 => box_raw_i64_value_overflow_safe(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    self.value,
+                ),
+                MergeRebindStorageKind::RawF64 => box_float_value(builder, self.value, nbc),
+                MergeRebindStorageKind::RawBool => box_raw_bool_value(builder, self.value, nbc),
+                MergeRebindStorageKind::BoxedI64 => unreachable!(),
+            };
+            self.boxed = Some(boxed);
+            boxed
+        };
+        match storage {
+            MergeRebindStorageKind::BoxedI64 => boxed,
+            MergeRebindStorageKind::RawF64 => {
+                float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed)
+            }
+            MergeRebindStorageKind::RawI64 => unbox_int_or_bool(builder, boxed, nbc),
+            MergeRebindStorageKind::RawBool => builder.ins().band_imm(boxed, 1),
+        }
+    }
+}
+
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_storage(
@@ -558,69 +718,15 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
     name: &str,
     storage: MergeRebindStorageKind,
 ) -> Value {
-    match storage {
-        MergeRebindStorageKind::RawF64 => float_value_for(builder, vars, representation_plan, name)
-            .unwrap_or_else(|| {
-                let boxed = ensure_boxed_primitive_safe(
-                    module,
-                    import_ids,
-                    builder,
-                    import_refs,
-                    sealed_blocks,
-                    vars,
-                    nbc,
-                    representation_plan,
-                    name,
-                );
-                float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed)
-            }),
-        MergeRebindStorageKind::RawI64 => int_raw_value(builder, vars, representation_plan, name)
-            .or_else(|| bool_raw_value(builder, vars, representation_plan, name))
-            .unwrap_or_else(|| {
-                let boxed = ensure_boxed_primitive_safe(
-                    module,
-                    import_ids,
-                    builder,
-                    import_refs,
-                    sealed_blocks,
-                    vars,
-                    nbc,
-                    representation_plan,
-                    name,
-                );
-                unbox_int_or_bool(builder, boxed, nbc)
-            }),
-        MergeRebindStorageKind::RawBool => bool_raw_value(builder, vars, representation_plan, name)
-            .or_else(|| int_raw_value(builder, vars, representation_plan, name))
-            .unwrap_or_else(|| {
-                let boxed = ensure_boxed_bool_safe(builder, vars, representation_plan, nbc, name)
-                    .unwrap_or_else(|| {
-                        ensure_boxed_primitive_safe(
-                            module,
-                            import_ids,
-                            builder,
-                            import_refs,
-                            sealed_blocks,
-                            vars,
-                            nbc,
-                            representation_plan,
-                            name,
-                        )
-                    });
-                builder.ins().band_imm(boxed, 1)
-            }),
-        MergeRebindStorageKind::BoxedI64 => ensure_boxed_primitive_safe(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            nbc,
-            representation_plan,
-            name,
-        ),
-    }
+    CapturedScalarTransport::read_named(builder, vars, representation_plan, name).value_for_storage(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        nbc,
+        storage,
+    )
 }
 
 #[cfg(feature = "native-backend")]

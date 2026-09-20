@@ -1,3 +1,4 @@
+use super::super::result_sink::store_result_or_drop;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
@@ -46,12 +47,7 @@ fn emit_exception_pending(
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
     emit_box_bool_from_i32(func);
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_result_or_drop(func, op, locals);
 }
 
 fn emit_print(

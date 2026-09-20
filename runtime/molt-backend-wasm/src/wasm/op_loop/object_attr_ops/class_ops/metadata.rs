@@ -1,4 +1,4 @@
-use super::super::super::result_sink::{store_non_none_result_or_drop, store_result_or_drop};
+use super::super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
@@ -22,7 +22,14 @@ pub(super) fn emit_super_new(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SuperNew],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::SuperNew,
+    );
 }
 
 pub(super) fn emit_builtin_type(
@@ -40,7 +47,14 @@ pub(super) fn emit_builtin_type(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::BuiltinType],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::BuiltinType,
+    );
 }
 
 pub(super) fn emit_type_of(
@@ -58,7 +72,14 @@ pub(super) fn emit_type_of(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TypeOf],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::TypeOf,
+    );
 }
 
 pub(super) fn emit_class_layout_version(
@@ -76,7 +97,14 @@ pub(super) fn emit_class_layout_version(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassLayoutVersion],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassLayoutVersion,
+    );
 }
 
 pub(super) fn emit_class_set_layout_version(
@@ -96,7 +124,14 @@ pub(super) fn emit_class_set_layout_version(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetLayoutVersion],
     );
-    store_non_none_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassSetLayoutVersion,
+    );
 }
 
 pub(super) fn emit_class_merge_layout(
@@ -118,5 +153,12 @@ pub(super) fn emit_class_merge_layout(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassMergeLayout],
     );
-    store_non_none_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassMergeLayout,
+    );
 }

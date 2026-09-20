@@ -1,4 +1,5 @@
 use super::super::super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::super::super::result_sink::finish_owned_local_result;
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use wasm_encoder::Function;
@@ -10,7 +11,7 @@ pub(super) fn emit_list_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntim
 
     let empty_args_ln: Vec<String> = Vec::new();
     let args = op.args.as_ref().unwrap_or(&empty_args_ln);
-    let out = locals[op.out.as_ref().unwrap()];
+    let out = locals.op_result_or_sink_slot(op);
     emit_sequence_builder_from_args(
         func,
         args,
@@ -20,4 +21,5 @@ pub(super) fn emit_list_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntim
         reloc_enabled,
         BuilderFinish::List,
     );
+    finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
 }

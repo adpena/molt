@@ -1,6 +1,6 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm::op_loop::result_sink::store_result_or_drop;
+use crate::wasm::op_loop::result_sink::store_runtime_result;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -40,7 +40,14 @@ fn emit_get_attr_name(
         reloc_enabled,
         import_ids[WasmRuntimeImport::GetAttrName],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GetAttrName,
+    );
 }
 
 fn emit_get_attr_name_default(
@@ -58,7 +65,14 @@ fn emit_get_attr_name_default(
         reloc_enabled,
         import_ids[WasmRuntimeImport::GetAttrNameDefault],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GetAttrNameDefault,
+    );
 }
 
 fn emit_has_attr_name(
@@ -75,7 +89,14 @@ fn emit_has_attr_name(
         reloc_enabled,
         import_ids[WasmRuntimeImport::HasAttrName],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::HasAttrName,
+    );
 }
 
 fn emit_set_attr_name(
@@ -93,7 +114,14 @@ fn emit_set_attr_name(
         reloc_enabled,
         import_ids[WasmRuntimeImport::SetAttrName],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::SetAttrName,
+    );
 }
 
 fn emit_del_attr_name(
@@ -110,7 +138,14 @@ fn emit_del_attr_name(
         reloc_enabled,
         import_ids[WasmRuntimeImport::DelAttrName],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::DelAttrName,
+    );
 }
 
 fn emit_named_receiver(

@@ -475,18 +475,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_exception_pending",
-        import: WasmRuntimeImport::ExceptionPending,
-        arity: 0,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_async_work_poll_and_exception_pending",
-        import: WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
-        arity: 0,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_exceptiongroup_combine",
         import: WasmRuntimeImport::ExceptiongroupCombine,
         arity: 1,
@@ -753,18 +741,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_code_slots_init",
         import: WasmRuntimeImport::CodeSlotsInit,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_frame_invocation_enter",
-        import: WasmRuntimeImport::FrameInvocationEnter,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_frame_invocation_exit",
-        import: WasmRuntimeImport::FrameInvocationExit,
         arity: 1,
         result: RuntimeCallableResult::I64,
     },
@@ -2127,6 +2103,18 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_stream_new",
         import: WasmRuntimeImport::StreamNew,
+        arity: 1,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_stream_reader_read",
+        import: WasmRuntimeImport::StreamReaderRead,
+        arity: 2,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_stream_reader_readline",
+        import: WasmRuntimeImport::StreamReaderReadline,
         arity: 1,
         result: RuntimeCallableResult::I64,
     },
@@ -3892,42 +3880,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_gpu_squared_relu_gate_interleaved_contiguous",
         import: WasmRuntimeImport::GpuSquaredReluGateInterleavedContiguous,
         arity: 4,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_realize",
-        import: WasmRuntimeImport::GpuPrimRealize,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_dtype",
-        import: WasmRuntimeImport::GpuPrimDtype,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_nbytes",
-        import: WasmRuntimeImport::GpuPrimNbytes,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_free",
-        import: WasmRuntimeImport::GpuPrimFree,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_contiguous",
-        import: WasmRuntimeImport::GpuPrimContiguous,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_gpu_prim_numel",
-        import: WasmRuntimeImport::GpuPrimNumel,
-        arity: 1,
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
@@ -7989,18 +7941,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_stream_reader_new",
         import: WasmRuntimeImport::StreamReaderNew,
-        arity: 1,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_stream_reader_read",
-        import: WasmRuntimeImport::StreamReaderRead,
-        arity: 2,
-        result: RuntimeCallableResult::I64,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_stream_reader_readline",
-        import: WasmRuntimeImport::StreamReaderReadline,
         arity: 1,
         result: RuntimeCallableResult::I64,
     },
@@ -15985,10 +15925,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_async_work_poll_and_exception_last_pending" => {
             Some(WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending)
         }
-        "molt_exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
-        "molt_async_work_poll_and_exception_pending" => {
-            Some(WasmRuntimeImport::AsyncWorkPollAndExceptionPending)
-        }
         "molt_exceptiongroup_combine" => Some(WasmRuntimeImport::ExceptiongroupCombine),
         "molt_exceptiongroup_match" => Some(WasmRuntimeImport::ExceptiongroupMatch),
         "molt_class_apply_set_name" => Some(WasmRuntimeImport::ClassApplySetName),
@@ -16034,8 +15970,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_code_new" => Some(WasmRuntimeImport::CodeNew),
         "molt_code_slot_set" => Some(WasmRuntimeImport::CodeSlotSet),
         "molt_code_slots_init" => Some(WasmRuntimeImport::CodeSlotsInit),
-        "molt_frame_invocation_enter" => Some(WasmRuntimeImport::FrameInvocationEnter),
-        "molt_frame_invocation_exit" => Some(WasmRuntimeImport::FrameInvocationExit),
         "molt_trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
         "molt_trace_exit" => Some(WasmRuntimeImport::TraceExit),
         "molt_trace_set_line" => Some(WasmRuntimeImport::TraceSetLine),
@@ -16373,6 +16307,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_stream_close" => Some(WasmRuntimeImport::StreamClose),
         "molt_stream_drop" => Some(WasmRuntimeImport::StreamDrop),
         "molt_stream_new" => Some(WasmRuntimeImport::StreamNew),
+        "molt_stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
+        "molt_stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
         "molt_stream_recv" => Some(WasmRuntimeImport::StreamRecv),
         "molt_stream_send_obj" => Some(WasmRuntimeImport::StreamSendObj),
         "molt_json_parse_scalar_obj" => Some(WasmRuntimeImport::JsonParseScalarObj),
@@ -16707,12 +16643,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_gpu_squared_relu_gate_interleaved_contiguous" => {
             Some(WasmRuntimeImport::GpuSquaredReluGateInterleavedContiguous)
         }
-        "molt_gpu_prim_realize" => Some(WasmRuntimeImport::GpuPrimRealize),
-        "molt_gpu_prim_dtype" => Some(WasmRuntimeImport::GpuPrimDtype),
-        "molt_gpu_prim_nbytes" => Some(WasmRuntimeImport::GpuPrimNbytes),
-        "molt_gpu_prim_free" => Some(WasmRuntimeImport::GpuPrimFree),
-        "molt_gpu_prim_contiguous" => Some(WasmRuntimeImport::GpuPrimContiguous),
-        "molt_gpu_prim_numel" => Some(WasmRuntimeImport::GpuPrimNumel),
         "molt_enum_init_member" => Some(WasmRuntimeImport::EnumInitMember),
         "molt_re_literal_matches" => Some(WasmRuntimeImport::ReLiteralMatches),
         "molt_re_literal_advance" => Some(WasmRuntimeImport::ReLiteralAdvance),
@@ -17540,8 +17470,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_multiprocessing_codec_dumps" => Some(WasmRuntimeImport::MultiprocessingCodecDumps),
         "molt_multiprocessing_codec_loads" => Some(WasmRuntimeImport::MultiprocessingCodecLoads),
         "molt_stream_reader_new" => Some(WasmRuntimeImport::StreamReaderNew),
-        "molt_stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
-        "molt_stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
         "molt_stream_reader_at_eof" => Some(WasmRuntimeImport::StreamReaderAtEof),
         "molt_stream_reader_drop" => Some(WasmRuntimeImport::StreamReaderDrop),
         "molt_socket_reader_new" => Some(WasmRuntimeImport::SocketReaderNew),
@@ -19030,8 +18958,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_exception_last" => Some(0),
         "molt_exception_last_pending" => Some(0),
         "molt_async_work_poll_and_exception_last_pending" => Some(0),
-        "molt_exception_pending" => Some(0),
-        "molt_async_work_poll_and_exception_pending" => Some(0),
         "molt_exceptiongroup_combine" => Some(1),
         "molt_exceptiongroup_match" => Some(2),
         "molt_class_apply_set_name" => Some(1),
@@ -19077,8 +19003,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_code_new" => Some(9),
         "molt_code_slot_set" => Some(3),
         "molt_code_slots_init" => Some(1),
-        "molt_frame_invocation_enter" => Some(1),
-        "molt_frame_invocation_exit" => Some(1),
         "molt_trace_enter_slot" => Some(1),
         "molt_trace_exit" => Some(0),
         "molt_trace_set_line" => Some(1),
@@ -19306,6 +19230,8 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_stream_close" => Some(1),
         "molt_stream_drop" => Some(1),
         "molt_stream_new" => Some(1),
+        "molt_stream_reader_read" => Some(2),
+        "molt_stream_reader_readline" => Some(1),
         "molt_stream_recv" => Some(1),
         "molt_stream_send_obj" => Some(2),
         "molt_json_parse_scalar_obj" => Some(1),
@@ -19600,12 +19526,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_gpu_softmax_last_axis_contiguous" => Some(4),
         "molt_gpu_rms_norm_last_axis_contiguous" => Some(5),
         "molt_gpu_squared_relu_gate_interleaved_contiguous" => Some(4),
-        "molt_gpu_prim_realize" => Some(1),
-        "molt_gpu_prim_dtype" => Some(1),
-        "molt_gpu_prim_nbytes" => Some(1),
-        "molt_gpu_prim_free" => Some(1),
-        "molt_gpu_prim_contiguous" => Some(1),
-        "molt_gpu_prim_numel" => Some(1),
         "molt_enum_init_member" => Some(3),
         "molt_re_literal_matches" => Some(3),
         "molt_re_literal_advance" => Some(5),
@@ -20283,8 +20203,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_multiprocessing_codec_dumps" => Some(1),
         "molt_multiprocessing_codec_loads" => Some(1),
         "molt_stream_reader_new" => Some(1),
-        "molt_stream_reader_read" => Some(2),
-        "molt_stream_reader_readline" => Some(1),
         "molt_stream_reader_at_eof" => Some(1),
         "molt_stream_reader_drop" => Some(1),
         "molt_socket_reader_new" => Some(1),

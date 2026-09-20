@@ -1,7 +1,10 @@
 use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::LirRuntimeCall;
-use super::call_abi::{LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_result};
+use super::call_abi::{
+    LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_discard,
+    emit_lir_runtime_result,
+};
 use molt_codegen_abi::box_int_bits;
 use molt_tir::tir::lir::LirOp;
 use wasm_encoder::{Instruction, ValType};
@@ -68,7 +71,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_sequence_builder(
     ctx.emit_runtime_call(finish.finish_call());
     // Finish consumes the builder on both success and failure.
     ctx.forget_operation_owner(owner);
-    emit_lir_runtime_result(ctx, op);
+    emit_lir_runtime_result(ctx, op, finish.finish_call());
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: &LirOp) {
@@ -98,7 +101,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: 
         ctx.emit_runtime_call(LirRuntimeCall::DictSet);
         // DictSet borrows the dictionary and can return None on failure.
         // Never overwrite the only owner with its status/result word.
-        ctx.instructions.push(Instruction::Drop);
+        emit_lir_runtime_discard(ctx, LirRuntimeCall::DictSet);
         ctx.guard_operation_exception();
     }
     ctx.instructions.push(Instruction::LocalGet(owner));
@@ -125,7 +128,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &
         ctx.instructions.push(Instruction::LocalGet(owner));
         ctx.instructions.push(Instruction::LocalGet(operand));
         ctx.emit_runtime_call(LirRuntimeCall::SetAdd);
-        ctx.instructions.push(Instruction::Drop);
+        emit_lir_runtime_discard(ctx, LirRuntimeCall::SetAdd);
         ctx.guard_operation_exception();
     }
     ctx.instructions.push(Instruction::LocalGet(owner));

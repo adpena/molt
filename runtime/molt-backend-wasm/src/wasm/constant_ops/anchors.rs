@@ -79,7 +79,7 @@ pub(in crate::wasm) fn emit_const_anchor_result(
         .out
         .as_ref()
         .unwrap_or_else(|| panic!("anchored const op {} requires an output", op.kind));
-    let out_local = locals[out_name];
+    let out_local = locals.result_slot(out_name);
     func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
     emit_call(
         func,
@@ -89,12 +89,14 @@ pub(in crate::wasm) fn emit_const_anchor_result(
     func.instruction(&wasm_encoder::Instruction::LocalGet(anchor_local));
     func.instruction(&wasm_encoder::Instruction::LocalSet(out_local));
 
-    if matches!(
-        locals.local_kind(out_name),
-        Some(WasmFrameLocalKind::FixedSynthetic(
-            WasmFrameSyntheticLocal::DeadSink
-        ))
-    ) {
+    if locals.bound_result_slot(Some(out_name)).is_none()
+        || matches!(
+            locals.local_kind(out_name),
+            Some(WasmFrameLocalKind::FixedSynthetic(
+                WasmFrameSyntheticLocal::DeadSink
+            ))
+        )
+    {
         func.instruction(&wasm_encoder::Instruction::LocalGet(out_local));
         emit_call(
             func,

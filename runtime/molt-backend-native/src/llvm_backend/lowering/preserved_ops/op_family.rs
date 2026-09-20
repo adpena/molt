@@ -116,4 +116,67 @@ mod tests {
             Some(LlvmPreservedOpFamily::Callable),
         );
     }
+
+    #[test]
+    fn fixed_boxed_container_calls_bypass_dedicated_family_routing() {
+        for (kind, arity) in [
+            ("list_from_range", 3),
+            ("list_fill_new", 2),
+            ("list_append", 2),
+            ("list_extend", 2),
+            ("tuple_from_list", 1),
+            ("set_add", 2),
+            ("set_add_probe", 2),
+            ("frozenset_add", 2),
+            ("dict_set", 3),
+            ("dict_setdefault", 3),
+            ("dict_setdefault_empty_list", 2),
+            ("dict_get", 3),
+            ("dict_update", 2),
+            ("dict_update_missing", 3),
+            ("dict_update_kwstar", 2),
+            ("dict_clear", 1),
+            ("dict_copy", 1),
+            ("dict_popitem", 1),
+            ("slice", 3),
+            ("slice_new", 3),
+            ("dict_keys", 1),
+            ("dict_values", 1),
+            ("dict_items", 1),
+            ("enumerate", 3),
+            ("dict_from_obj", 1),
+        ] {
+            assert_eq!(
+                llvm_preserved_op_family(kind),
+                None,
+                "fixed boxed call `{kind}` must reach generated runtime ABI dispatch",
+            );
+            assert!(
+                molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(
+                    &format!("molt_{kind}"),
+                    arity,
+                )
+                .is_some(),
+                "deleted handler `{kind}` must have an exact generated boxed ABI",
+            );
+        }
+
+        for kind in [
+            "iter_next_unboxed",
+            "len",
+            "list_new",
+            "dict_new",
+            "tuple_new",
+            "set_new",
+            "frozenset_new",
+            "iter",
+            "unpack_sequence",
+        ] {
+            assert_eq!(
+                llvm_preserved_op_family(kind),
+                Some(LlvmPreservedOpFamily::Container),
+                "custom container protocol `{kind}` must keep dedicated lowering",
+            );
+        }
+    }
 }

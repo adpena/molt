@@ -32,6 +32,9 @@ impl WasmFrameLocals {
             local_types,
             local_count,
         ));
+        // The reserved input name is the existing initialized constant-cache
+        // slot, not another uninitialized local or a discarded-result sink.
+        self.insert(Self::NONE_NAME.to_string(), cache.none_bits.unwrap());
         cache.qnan_tag_mask = Some(self.allocate_anonymous(
             WasmFrameAnonymousLocal::ConstQnanTagMask,
             local_types,

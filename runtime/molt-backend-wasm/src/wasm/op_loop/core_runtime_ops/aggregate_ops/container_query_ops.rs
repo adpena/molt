@@ -1,9 +1,8 @@
-use super::super::super::call_emit::emit_op_loop_local_prefix_call_id;
+use super::super::super::call_emit::emit_op_loop_local_prefix_call;
 use super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
-use crate::wasm_abi_generated::{OpLoopRuntimeSinkSpec, WasmRuntimeImport};
-use crate::wasm_import_tracking::selected_import_id;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use wasm_encoder::Function;
 
 pub(super) fn emit_container_query_op(
@@ -11,7 +10,6 @@ pub(super) fn emit_container_query_op(
     op: &OpIR,
     ctx: &AggregateRuntimeContext<'_>,
 ) -> bool {
-    let import_ids = ctx.import_ids;
     let call_context = ctx.op_loop_call_context();
 
     match op.kind.as_str() {
@@ -19,15 +17,13 @@ pub(super) fn emit_container_query_op(
             let import_key =
                 selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "contains", op)
                     .unwrap_or(WasmRuntimeImport::Contains);
-            let import_id =
-                selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
-            emit_op_loop_local_prefix_call_id(
+            emit_op_loop_local_prefix_call(
                 &call_context,
                 func,
                 op,
-                import_id,
+                import_key,
                 2,
-                OpLoopRuntimeSinkSpec::ResultOrDrop,
+                &ctx.func_ir.name,
             );
         }
         "len" => {
@@ -36,15 +32,13 @@ pub(super) fn emit_container_query_op(
             let import_key =
                 selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "len", op)
                     .unwrap_or(WasmRuntimeImport::Len);
-            let import_id =
-                selected_import_id(import_ids, import_key, &ctx.func_ir.name, op.kind.as_str());
-            emit_op_loop_local_prefix_call_id(
+            emit_op_loop_local_prefix_call(
                 &call_context,
                 func,
                 op,
-                import_id,
+                import_key,
                 1,
-                OpLoopRuntimeSinkSpec::ResultOrDrop,
+                &ctx.func_ir.name,
             );
         }
         _ => return false,

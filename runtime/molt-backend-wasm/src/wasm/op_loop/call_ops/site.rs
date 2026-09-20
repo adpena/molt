@@ -166,7 +166,12 @@ pub(super) fn build_positional_callargs(
             reloc_enabled,
             import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallargsPushPos],
         );
-        func.instruction(&Instruction::Drop);
+        super::super::result_sink::discard_runtime_result(
+            func,
+            import_ids,
+            reloc_enabled,
+            crate::wasm_abi_generated::WasmRuntimeImport::CallargsPushPos,
+        );
     }
 }
 
@@ -245,7 +250,6 @@ mod tests {
         locals.ensure_literal_scratch(
             "payload",
             WasmConstLiteralPayload::String,
-            true,
             &mut local_types,
             &mut local_count,
         );

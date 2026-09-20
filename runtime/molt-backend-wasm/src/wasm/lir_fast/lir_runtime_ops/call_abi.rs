@@ -2,11 +2,12 @@ use super::super::lir_context::LirLowerCtx;
 use super::super::lir_scalar::emit_get_boxed_for_repr;
 use super::super::runtime_calls::{LirFixedRuntimeCall, LirRuntimeCall};
 use crate::wasm::body::WasmLirFallbackReason;
+use crate::wasm_abi_generated::{STATIC_FUNC_TYPES, WasmRuntimeReturn};
 use molt_tir::tir::lir::{LirOp, LirRepr};
 use molt_tir::tir::ops::AttrValue;
 use molt_tir::tir::values::ValueId;
 use std::sync::Arc;
-use wasm_encoder::Instruction;
+use wasm_encoder::{Instruction, ValType};
 
 #[derive(Clone)]
 pub(in crate::wasm::lir_fast::lir_runtime_ops) enum LirRuntimeArg {
@@ -111,7 +112,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn emit_lir_runtime_call_with_res
     runtime_call: LirRuntimeCall,
 ) {
     ctx.emit_runtime_call(runtime_call);
-    emit_lir_runtime_result(ctx, op);
+    emit_lir_runtime_result(ctx, op, runtime_call);
 }
 
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_i64_attr(
@@ -156,22 +157,96 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_source_op_index(
         .unwrap_or_else(|| panic!("{op_name} requires source op index"))
 }
 
-pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(ctx: &mut LirLowerCtx, op: &LirOp) {
+/// Discard the import's actual result, not merely its machine carrier.
+pub(in crate::wasm::lir_fast) fn emit_lir_runtime_discard(
+    ctx: &mut LirLowerCtx,
+    call: LirRuntimeCall,
+) {
+    match call.import().return_contract() {
+        WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => {
+            ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
+        }
+        WasmRuntimeReturn::BorrowedObject | WasmRuntimeReturn::RawBits => {
+            ctx.instructions.push(Instruction::Drop);
+        }
+        WasmRuntimeReturn::Void => {}
+        contract => panic!(
+            "WASM LIR import {:?} requires dedicated {contract:?} lifetime custody",
+            call.import()
+        ),
+    }
+}
+
+pub(in crate::wasm::lir_fast) fn emit_lir_runtime_result(
+    ctx: &mut LirLowerCtx,
+    op: &LirOp,
+    call: LirRuntimeCall,
+) {
+    assert!(
+        op.result_values.len() <= 1,
+        "runtime import result is not a multi-result unpack"
+    );
+    let contract = call.import().return_contract();
     let Some(result) = op.result_values.first() else {
-        ctx.instructions.push(Instruction::Drop);
+        emit_lir_runtime_discard(ctx, call);
         return;
     };
+    if contract == WasmRuntimeReturn::RawBits {
+        let signature = &STATIC_FUNC_TYPES[call.import().type_idx() as usize];
+        let raw_type = match result.repr {
+            LirRepr::I64 => Some(ValType::I64),
+            LirRepr::F64 => Some(ValType::F64),
+            LirRepr::Bool1 => Some(ValType::I32),
+            LirRepr::DynBox | LirRepr::Ref64 => None,
+        };
+        if raw_type.is_some_and(|ty| signature.results == [ty]) {
+            ctx.emit_set(result.id);
+        } else {
+            ctx.instructions.push(Instruction::Drop);
+            ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
+        }
+        return;
+    }
+    let owned = match contract {
+        WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => true,
+        WasmRuntimeReturn::BorrowedObject => false,
+        WasmRuntimeReturn::Void => panic!(
+            "void WASM LIR import {:?} cannot bind a result",
+            call.import()
+        ),
+        contract => panic!(
+            "WASM LIR import {:?} requires dedicated {contract:?} lifetime custody",
+            call.import()
+        ),
+    };
     match result.repr {
-        LirRepr::DynBox | LirRepr::Ref64 => ctx.emit_set(result.id),
+        LirRepr::DynBox | LirRepr::Ref64 => {
+            ctx.emit_set(result.id);
+            if !owned {
+                // Retain before operation-owner cleanup can release a boxed
+                // operand that aliases this borrowed result.
+                ctx.emit_get(result.id);
+                ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+            }
+        }
         LirRepr::Bool1 => {
+            let owner = owned.then(|| {
+                let local = ctx.alloc_scratch_local(ValType::I64);
+                ctx.instructions.push(Instruction::LocalTee(local));
+                local
+            });
             ctx.instructions.push(Instruction::I64Const(1));
             ctx.instructions.push(Instruction::I64And);
             ctx.instructions.push(Instruction::I32WrapI64);
             ctx.emit_set(result.id);
+            if let Some(owner) = owner {
+                ctx.instructions.push(Instruction::LocalGet(owner));
+                ctx.emit_runtime_call(LirRuntimeCall::DecRefObj);
+            }
         }
         LirRepr::I64 | LirRepr::F64 => {
+            emit_lir_runtime_discard(ctx, call);
             ctx.emit_bail_to_generic_path(WasmLirFallbackReason::UnsupportedOperation);
-            ctx.emit_set(result.id);
         }
     }
 }

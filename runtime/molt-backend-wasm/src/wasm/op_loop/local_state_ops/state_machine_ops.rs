@@ -1,6 +1,8 @@
+use super::super::result_sink::{discard_runtime_result, finish_owned_local_result};
 use super::LocalStateOpContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::{INT_MASK, box_pending};
 use wasm_encoder::{BlockType, Function, Instruction};
@@ -20,7 +22,7 @@ pub(super) fn emit_state_machine_local_state_op(
             let args = op.args.as_ref().unwrap();
             let future = locals[&args[0]];
             let slot_bits = args.get(1).map(|name| locals[name]);
-            let out = locals[op.out.as_ref().unwrap()];
+            let out = locals.op_result_or_sink_slot(op);
             let self_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
             func.instruction(&Instruction::LocalGet(0));
             emit_call(
@@ -55,7 +57,12 @@ pub(super) fn emit_state_machine_local_state_op(
                     reloc_enabled,
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClosureStore],
                 );
-                func.instruction(&Instruction::Drop);
+                discard_runtime_result(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    WasmRuntimeImport::ClosureStore,
+                );
             }
             func.instruction(&Instruction::LocalGet(out));
             func.instruction(&Instruction::I64Const(box_pending()));
@@ -74,13 +81,19 @@ pub(super) fn emit_state_machine_local_state_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::SleepRegister],
             );
-            func.instruction(&Instruction::Drop);
+            discard_runtime_result(
+                func,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::SleepRegister,
+            );
             func.instruction(&Instruction::I64Const(box_pending()));
             context
                 .frame
                 .emit_const_anchor_releases(func, import_ids, reloc_enabled);
             func.instruction(&Instruction::Return);
             func.instruction(&Instruction::End);
+            finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
         _ => return false,
     }

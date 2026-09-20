@@ -1,3 +1,4 @@
+use super::super::result_sink::finish_owned_local_result;
 use super::RuntimeServiceOpContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
@@ -42,11 +43,7 @@ pub(super) fn emit_async_task_runtime_op(
                 &table_target,
                 total,
             );
-            let out = op
-                .out
-                .as_ref()
-                .expect("alloc_task requires an owned result");
-            let res = locals[out];
+            let res = locals.op_result_or_sink_slot(op);
             func.instruction(&Instruction::LocalSet(res));
             func.instruction(&Instruction::LocalGet(res));
             emit_boxed_none(func);
@@ -80,6 +77,7 @@ pub(super) fn emit_async_task_runtime_op(
                 emit_register_cancel_token(func, import_ids, reloc_enabled, res);
             }
             func.instruction(&Instruction::End);
+            finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, res);
         }
         "state_yield" => {
             let args = op.args.as_ref().unwrap();
@@ -97,12 +95,9 @@ pub(super) fn emit_async_task_runtime_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
             );
-            if let Some(out) = op.out.as_ref() {
-                func.instruction(&Instruction::LocalGet(pair));
-                func.instruction(&Instruction::LocalSet(locals[out]));
-                func.instruction(&Instruction::LocalGet(locals[out]));
-            } else {
-                func.instruction(&Instruction::LocalGet(pair));
+            func.instruction(&Instruction::LocalGet(pair));
+            if let Some(out) = locals.bound_op_result_slot(op) {
+                func.instruction(&Instruction::LocalTee(out));
             }
             context
                 .frame

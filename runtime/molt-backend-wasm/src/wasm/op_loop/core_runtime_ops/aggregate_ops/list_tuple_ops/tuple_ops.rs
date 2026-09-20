@@ -1,4 +1,5 @@
 use super::super::super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::super::super::result_sink::{finish_owned_local_result, store_runtime_result};
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm_binary::emit_call;
@@ -19,8 +20,7 @@ fn emit_tuple_new(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<
 
     let empty_args: Vec<String> = Vec::new();
     let args = op.args.as_ref().unwrap_or(&empty_args);
-    let out_name = op.out.as_ref().unwrap();
-    let out = locals[out_name];
+    let out = locals.op_result_or_sink_slot(op);
     emit_sequence_builder_from_args(
         func,
         args,
@@ -30,6 +30,7 @@ fn emit_tuple_new(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<
         reloc_enabled,
         BuilderFinish::Tuple,
     );
+    finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
 }
 
 fn emit_tuple_index(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<'_>) {
@@ -39,7 +40,6 @@ fn emit_tuple_index(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContex
 
     let args = op.args.as_ref().unwrap();
     let tuple_var = &args[0];
-    let res = locals[op.out.as_ref().unwrap()];
     let tuple = locals[tuple_var];
     let val = locals[&args[1]];
     func.instruction(&Instruction::LocalGet(tuple));
@@ -49,5 +49,12 @@ fn emit_tuple_index(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContex
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::TupleIndex],
     );
-    func.instruction(&Instruction::LocalSet(res));
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::TupleIndex,
+    );
 }

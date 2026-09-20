@@ -1252,21 +1252,64 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_c_api_intrinsics_cannot_be_materialized_as_python_callables() {
+    fn non_callable_intrinsics_cannot_be_materialized_through_runtime_lookup() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
+            let registry_before = runtime_state(_py)
+                .intrinsic_registry_module
+                .load(Ordering::Acquire);
             for name in [
                 "molt_type_of_borrowed",
                 "molt_dict_getitem_borrowed",
                 "molt_list_getitem_borrowed",
                 "molt_tuple_getitem_borrowed",
+                "molt_exception_pending",
+                "molt_async_work_poll_and_exception_pending",
+                "molt_frame_invocation_enter",
+                "molt_frame_invocation_exit",
+                "molt_gpu_prim_realize",
+                "molt_gpu_prim_dtype",
+                "molt_gpu_prim_nbytes",
+                "molt_gpu_prim_free",
+                "molt_gpu_prim_contiguous",
+                "molt_gpu_prim_numel",
             ] {
-                assert_eq!(
-                    resolve_intrinsic_func(_py, name, false),
-                    Err(IntrinsicResolveError::NotCallable),
-                    "{name} must remain a compiler/C-ABI-only borrow"
-                );
+                let alias = alias_name(name).expect("intrinsic alias");
+                for requested in [name, alias.as_str()] {
+                    assert_eq!(
+                        resolve_intrinsic_func(_py, requested, false),
+                        Err(IntrinsicResolveError::NotCallable),
+                        "{requested} must remain a compiler/C-ABI-only primitive"
+                    );
+                    let name_ptr = alloc_string(_py, requested.as_bytes());
+                    assert!(!name_ptr.is_null());
+                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                    let required =
+                        molt_require_intrinsic_runtime(name_bits, MoltObject::none().bits());
+                    assert_eq!(required, MoltObject::none().bits());
+                    assert!(exception_pending(_py));
+                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        _py,
+                        error,
+                        "RuntimeError"
+                    ));
+                    crate::clear_exception(_py);
+                    dec_ref_bits(_py, error);
+
+                    let loaded = molt_load_intrinsic_runtime(name_bits, MoltObject::none().bits());
+                    assert_eq!(loaded, MoltObject::none().bits());
+                    assert!(!exception_pending(_py));
+                    dec_ref_bits(_py, name_bits);
+                }
             }
+            assert_eq!(
+                runtime_state(_py)
+                    .intrinsic_registry_module
+                    .load(Ordering::Acquire),
+                registry_before,
+                "rejected lookups must not publish an intrinsic registry"
+            );
         });
     }
 
