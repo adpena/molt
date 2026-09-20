@@ -6,6 +6,12 @@ repos:
         entry: "Keep logs, scratch outputs, and machine-local settings outside tracked source; see docs/ROOT_LAYOUT.md."
         language: fail
         files: '^(?:logs/|tmp/|\.claude/settings\.local\.json$|bench/(?:results|scoreboard)/.*\.log$|bench/results/.*/memory_guard/)'
+      - id: proof-plan-freshness
+        name: generated proof-plan freshness
+        entry: uv run python tools/gen_proof_plan.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ruff
         name: ruff
         entry: uv run ruff check

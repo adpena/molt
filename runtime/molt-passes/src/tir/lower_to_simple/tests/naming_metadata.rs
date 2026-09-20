@@ -612,7 +612,14 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
 #[test]
 fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() {
     for raw in ["none", "True", "False", "", "external_symbol"] {
-        for args in [vec![], vec!["arg".to_string()], vec!["arg".to_string(); 2]] {
+        for args in [
+            None,
+            Some(vec![]),
+            Some(vec!["arg".to_string()]),
+            Some(vec!["arg".to_string(); 2]),
+            Some(vec!["none".to_string()]),
+            Some(vec!["arg".to_string(), "none".to_string()]),
+        ] {
             let source = FunctionIR {
                 name: "var_metadata_identity".into(),
                 params: vec!["arg".into()],
@@ -620,7 +627,8 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
                     OpIR {
                         kind: "transport_probe".into(),
                         var: Some(raw.into()),
-                        args: Some(args.clone()),
+                        args: args.clone(),
+                        source_op_idx: Some(701),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -630,48 +638,113 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
                 ],
                 ..FunctionIR::default()
             };
-            let tir = lower_to_tir(&source);
-            let probe = tir
-                .blocks
-                .values()
-                .flat_map(|block| &block.ops)
-                .find(|op| {
-                    op.attrs.get("_original_kind")
-                        == Some(&AttrValue::Str("transport_probe".into()))
-                })
-                .unwrap();
-            assert!(
-                !probe.attrs.contains_key("_simple_var_operand"),
-                "{raw:?} did not become an SSA read"
-            );
-            assert_eq!(probe.operands.len(), args.len());
-            let lowered = lower_to_simple_ir(&tir);
-            let probe = lowered
-                .iter()
-                .find(|op| op.kind == "transport_probe")
-                .unwrap();
-            assert_eq!(probe.var.as_deref(), Some(raw));
-            assert_eq!(
-                probe.args.as_deref().unwrap_or_default(),
-                args.as_slice(),
-                "unresolved var cannot steal args[0]"
-            );
+            let mut tir = lower_to_tir(&source);
+            for roundtrip in 0..3 {
+                let case = format!("var={raw:?} args={args:?} pass={roundtrip}");
+                let probe = tir
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .find(|op| {
+                        op.attrs.get("_original_kind")
+                            == Some(&AttrValue::Str("transport_probe".into()))
+                    })
+                    .unwrap();
+                assert!(
+                    !probe.attrs.contains_key("_simple_var_operand"),
+                    "unresolved metadata became an SSA read: {case}"
+                );
+                assert_eq!(probe.source_op_index(), Some(701), "{case}");
+                let expected_args = args.as_deref().unwrap_or_default();
+                assert_eq!(probe.operands.len(), expected_args.len(), "{case}");
+                for (&operand, expected) in probe.operands.iter().zip(expected_args) {
+                    if expected == "none" {
+                        assert_authored_none_definition(&tir, operand, 701, &case);
+                    } else {
+                        assert_eq!(operand, tir.blocks[&tir.entry_block].args[0].id, "{case}");
+                    }
+                }
+                let names = SimpleValueNames::for_function(&tir);
+                let expected_names: Vec<_> = probe
+                    .operands
+                    .iter()
+                    .map(|&operand| names.value_name(operand))
+                    .collect();
+                let lowered = lower_to_simple_ir(&tir);
+                let probe = lowered
+                    .iter()
+                    .find(|op| op.kind == "transport_probe")
+                    .unwrap();
+                assert_eq!(probe.var.as_deref(), Some(raw), "{case}");
+                assert_eq!(
+                    probe.args.as_deref().unwrap_or_default(),
+                    expected_names.as_slice(),
+                    "unresolved var cannot steal a positional argument: {case}"
+                );
+                tir = lower_to_tir(&FunctionIR {
+                    ops: lowered,
+                    ..source.clone()
+                });
+            }
         }
     }
+}
+
+fn assert_authored_none_definition(
+    tir: &TirFunction,
+    operand: ValueId,
+    source_op_index: usize,
+    case: &str,
+) {
+    let definition = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.results.contains(&operand))
+        .unwrap_or_else(|| panic!("None operand has no defining operation: {case}"));
+    assert_eq!(definition.opcode, OpCode::ConstNone, "{case}");
+    // SSA also emits a shared undef ConstNone. Follow the consumed definition
+    // and its durable authored site, not constant order or a numeric ValueId.
+    assert_eq!(
+        definition.source_op_index(),
+        Some(source_op_index),
+        "{case}"
+    );
 }
 
 #[test]
 fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
     for kind in ["copy_var", "load_var"] {
-        for in_args in [false, true] {
+        let mut cases = vec![(None, Some("none")), (Some(vec![]), Some("none"))];
+        for metadata in [
+            None,
+            Some("none"),
+            Some("True"),
+            Some("False"),
+            Some(""),
+            Some("transport_only"),
+            Some("transport_collision"),
+            Some("result"),
+        ] {
+            cases.push((Some(vec!["none".to_string()]), metadata));
+        }
+        for (args, var) in cases {
             let source = FunctionIR {
                 name: "reserved_binding_source".into(),
+                params: vec!["transport_collision".into()],
                 ops: vec![
                     OpIR {
+                        kind: "const_none".into(),
+                        out: Some("unrelated_none".into()),
+                        source_op_idx: Some(601),
+                        ..OpIR::default()
+                    },
+                    OpIR {
                         kind: kind.into(),
-                        var: Some(if in_args { "transport_only" } else { "none" }.into()),
-                        args: in_args.then(|| vec!["none".into()]),
+                        var: var.map(str::to_string),
+                        args: args.clone(),
                         out: Some("result".into()),
+                        source_op_idx: Some(701),
                         ..OpIR::default()
                     },
                     OpIR {
@@ -683,25 +756,28 @@ fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
                 ..FunctionIR::default()
             };
             let mut tir = lower_to_tir(&source);
-            for roundtrip in 0..2 {
-                let none = tir
-                    .blocks
-                    .values()
-                    .flat_map(|block| &block.ops)
-                    .find(|op| op.opcode == OpCode::ConstNone)
-                    .unwrap()
-                    .results[0];
+            for roundtrip in 0..3 {
+                let case = format!("{kind} var={var:?} args={args:?} pass={roundtrip}");
                 let copy = tir
                     .blocks
                     .values()
                     .flat_map(|block| &block.ops)
                     .find(|op| op.opcode == OpCode::Copy)
                     .unwrap();
-                assert_eq!(
-                    copy.operands,
-                    [none],
-                    "{kind} args={in_args} pass={roundtrip}"
-                );
+                assert_eq!(copy.source_op_index(), Some(701), "{case}");
+                let [operand] = copy.operands.as_slice() else {
+                    panic!("semantic copy must consume exactly one operand: {case}");
+                };
+                assert_authored_none_definition(&tir, *operand, 701, &case);
+                let returned = tir
+                    .blocks
+                    .values()
+                    .find_map(|block| match &block.terminator {
+                        Terminator::Return { values } => Some(values),
+                        _ => None,
+                    })
+                    .expect("copy result must reach a return");
+                assert_eq!(returned, &copy.results, "{case}");
                 let lowered = lower_to_simple_ir(&tir);
                 tir = lower_to_tir(&FunctionIR {
                     ops: lowered,
