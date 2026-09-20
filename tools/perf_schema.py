@@ -426,6 +426,7 @@ def output_parity_evidence(
         "mismatch_observation_sha256": mismatch_observation_sha256,
     }
 
+
 _ALL_VERDICTS = frozenset(
     {
         VERDICT_GREEN,
@@ -637,9 +638,7 @@ def output_parity_evidence_problems(
     if value.get("reference_runtime") != "cpython":
         problems.append("reference_runtime must be 'cpython'")
     if value.get("comparison_law_version") != OUTPUT_PARITY_COMPARISON_LAW_VERSION:
-        problems.append(
-            "comparison_law_version must name the canonical comparison law"
-        )
+        problems.append("comparison_law_version must name the canonical comparison law")
     for field, expected in (
         ("mode", "exact"),
         ("stderr_mode", "exact"),
@@ -734,14 +733,14 @@ def output_parity_evidence_problems(
         mismatch_hash = value.get("mismatch_observation_sha256")
         if ok is True:
             if mismatch_observation is not None or mismatch_hash is not None:
-                problems.append("matching evidence must not name a mismatch observation")
+                problems.append(
+                    "matching evidence must not name a mismatch observation"
+                )
         else:
             if not isinstance(mismatch_observation, str) or not mismatch_observation:
                 problems.append("failed evidence must name a mismatch observation")
             if not _is_sha256(mismatch_hash):
-                problems.append(
-                    "failed evidence must hash the mismatch observation"
-                )
+                problems.append("failed evidence must hash the mismatch observation")
     elif checked is False:
         if ok is not None:
             problems.append("ok must be null when checked=false")

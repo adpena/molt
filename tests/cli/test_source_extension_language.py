@@ -40,7 +40,9 @@ def test_original_input_language_is_resolved_once(
 
 
 @pytest.mark.parametrize("language", list(SourceExtensionLanguage))
-def test_declared_language_survives_digest_addressing(language: SourceExtensionLanguage) -> None:
+def test_declared_language_survives_digest_addressing(
+    language: SourceExtensionLanguage,
+) -> None:
     resolved, args = resolve_source_extension_compile_language(
         source_path=Path("provenance/compiled-inputs/sha256/aa/" + "a" * 64),
         language=language,
@@ -130,11 +132,21 @@ def test_command_cannot_contradict_persisted_language() -> None:
 
 
 @pytest.mark.parametrize("language", list(SourceExtensionLanguage))
-def test_command_language_is_explicit_at_its_source(language: SourceExtensionLanguage) -> None:
+def test_command_language_is_explicit_at_its_source(
+    language: SourceExtensionLanguage,
+) -> None:
     validate_source_extension_language_command(
         language,
-        ("clang", "--target=wasm32-wasip1", "-x", language.driver_language,
-         "-c", "@source/original.c", "-o", "@object-root/output.o"),
+        (
+            "clang",
+            "--target=wasm32-wasip1",
+            "-x",
+            language.driver_language,
+            "-c",
+            "@source/original.c",
+            "-o",
+            "@object-root/output.o",
+        ),
     )
 
 

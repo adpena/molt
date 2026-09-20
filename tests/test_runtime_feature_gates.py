@@ -101,9 +101,7 @@ def test_exact_builtin_authority_precedes_stdlib_prefix_gates() -> None:
         (RUNTIME_CRATE / "src" / "intrinsics" / "categories.toml").read_text()
     )
     expected_builtins = {
-        symbol
-        for symbols in categories["builtin"].values()
-        for symbol in symbols
+        symbol for symbols in categories["builtin"].values() for symbol in symbols
     }
 
     assert RUNTIME_BUILTIN_SYMBOLS == expected_builtins

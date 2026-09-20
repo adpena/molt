@@ -569,9 +569,7 @@ def test_measure_cell_includes_existing_warmups_in_output_parity(
     monkeypatch.setattr(
         measure.bench,
         "prepare_molt_binary",
-        lambda *args, **kwargs: measure.bench.MoltBinary(
-            binary_path, None, 0.1, 1.0
-        ),
+        lambda *args, **kwargs: measure.bench.MoltBinary(binary_path, None, 0.1, 1.0),
     )
 
     def fake_run(*args, label: str, capture_output: bool = False, **kwargs):
@@ -1754,10 +1752,7 @@ def test_parse_safe_run_stderr_removes_only_terminal_receipt() -> None:
 
 
 def test_parse_safe_run_stderr_does_not_fall_back_before_malformed_terminal() -> None:
-    stderr = (
-        'child SAFE_RUN {"status":"ok","exit":0}\n'
-        "SAFE_RUN {malformed}\n"
-    )
+    stderr = 'child SAFE_RUN {"status":"ok","exit":0}\nSAFE_RUN {malformed}\n'
 
     payload, child_stderr = ps._parse_safe_run_stderr(stderr)
 

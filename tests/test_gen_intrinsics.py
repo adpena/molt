@@ -47,7 +47,9 @@ def test_all_stdlib_literal_intrinsic_requests_are_manifested() -> None:
         if (required := intrinsic_names_from_source(path.read_text(encoding="utf-8")))
         - declared
     }
-    assert missing == {}, f"stdlib intrinsic requests lack canonical declarations: {missing}"
+    assert missing == {}, (
+        f"stdlib intrinsic requests lack canonical declarations: {missing}"
+    )
 
 
 def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
@@ -66,7 +68,10 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     assert "defaults: &[IntrinsicDefaultValue::Int(0)]," in generated
 
     registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text()
-    assert "let defaults = materialize_intrinsic_defaults(_py, default_values)?;" in registry
+    assert (
+        "let defaults = materialize_intrinsic_defaults(_py, default_values)?;"
+        in registry
+    )
     assert "build_runtime_function(_py, fn_ptr, arity, &defaults)" in registry
     assert "crate::builtins::methods::alloc_builtin_function_with_defaults(" in registry
     assert "fn attach_function_defaults" not in registry

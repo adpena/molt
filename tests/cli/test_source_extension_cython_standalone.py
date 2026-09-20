@@ -209,9 +209,9 @@ def test_regenerated_cython_safe_cpython_profile_is_fail_closed(
         "CYTHON_ASSUME_SAFE_SIZE",
         "CYTHON_UNPACK_METHODS",
     ):
-        assert re.search(
-            rf"^#define {macro} 0$", macro_dump.stdout, re.MULTILINE
-        ), macro
+        assert re.search(rf"^#define {macro} 0$", macro_dump.stdout, re.MULTILINE), (
+            macro
+        )
     assert re.search(
         r"^#define CYTHON_AVOID_BORROWED_REFS 1$",
         macro_dump.stdout,
@@ -245,9 +245,9 @@ def test_parse_cimported_packages_derives_from_source(tmp_path: Path) -> None:
         "cimport numpy as np\n"
         "cimport scipy.special as sc, pandas._libs as pdlibs\n"
         "from widgetlib.tensor cimport Tensor\n"
-        "from libc.stdlib cimport malloc\n"      # bundled -> excluded
-        "cimport cython\n"                        # bundled -> excluded
-        "from . cimport _helpers\n"               # relative -> excluded
+        "from libc.stdlib cimport malloc\n"  # bundled -> excluded
+        "cimport cython\n"  # bundled -> excluded
+        "from . cimport _helpers\n"  # relative -> excluded
         "from scipy.ndimage cimport _ni_support\n"  # top-level 'scipy'
         "cdef int x = 0\n",
         encoding="utf-8",
@@ -372,8 +372,7 @@ def test_cimport_header_include_dirs_resolve_package_get_include(
     pxd_package = site_root / "pxdpackage"
     pxd_package.mkdir(parents=True)
     (pxd_package / "__init__.py").write_text(
-        "def get_include():\n"
-        f"    return {str(include_root)!r}\n",
+        f"def get_include():\n    return {str(include_root)!r}\n",
         encoding="utf-8",
     )
     no_hook = site_root / "nohook"
@@ -425,7 +424,11 @@ def test_pair_generated_c_with_pyx_matches_by_stem() -> None:
 
 
 @pytest.mark.parametrize(
-    "language", [cython_authority.SourceExtensionLanguage.C, cython_authority.SourceExtensionLanguage.CPP]
+    "language",
+    [
+        cython_authority.SourceExtensionLanguage.C,
+        cython_authority.SourceExtensionLanguage.CPP,
+    ],
 )
 @pytest.mark.parametrize("upstream_cpp", [False, True])
 def test_regeneration_replays_real_ninja_cython_directives(

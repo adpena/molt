@@ -216,7 +216,9 @@ def test_schema_rejects_unknown_verdict_and_classification() -> None:
 
 def test_schema_rejects_legacy_or_missing_parity_on_measured_cells() -> None:
     legacy = _cell(output_parity=True)
-    assert any("output_parity must be an object" in p for p in schema.validate_cell(legacy))
+    assert any(
+        "output_parity must be an object" in p for p in schema.validate_cell(legacy)
+    )
 
     missing = _cell(output_parity=None)
     assert any("output_parity is missing" in p for p in schema.validate_cell(missing))
