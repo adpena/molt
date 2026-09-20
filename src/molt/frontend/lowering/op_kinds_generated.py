@@ -752,9 +752,7 @@ SIMPLEIR_OUT_METADATA_KINDS: frozenset[str] = frozenset(
         "set_attr_name",
         "store",
         "store_attr",
-        "store_fast",
         "store_index",
-        "store_var",
     }
 )
 

@@ -18,7 +18,6 @@ use crate::ir::OpIR;
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::cfg::CFG;
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite, TirOp};
-use super::simple_def_use::visit_simple_ir_defined_names;
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
 
@@ -30,6 +29,8 @@ mod placement;
 mod terminators;
 #[path = "ssa/variables.rs"]
 mod variables;
+
+use self::variables::visit_simple_ir_ssa_definitions;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -114,13 +115,16 @@ struct SsaContext<'a> {
     /// Source-site fact active at each SimpleIR op index, derived once from
     /// frontend `line` markers plus per-op source fields.
     source_sites: Vec<Option<SourceSite>>,
-    /// Augmented predecessors: regular predecessors ∪ exception edges. Used
-    /// for SSA-correct dominance analysis. Exception handler blocks are
-    /// reached only via implicit exception edges; without folding those into
-    /// the predecessor relation, the dominator tree treats them as
-    /// unreachable and any post-handler join block (where handler exit
-    /// merges back into normal flow) is not recognized as a true join.
+    /// Augmented predecessors: regular predecessors plus exception and state
+    /// resume edges. Used for SSA-correct dominance analysis. Handler/resume
+    /// blocks can be reached only through implicit edges; without folding those
+    /// into the predecessor relation, the dominator tree treats them as
+    /// unreachable and misses their later join points.
     aug_predecessors: Vec<Vec<usize>>,
+    /// Augmented successors paired with `aug_predecessors`. Iterator result
+    /// validity consumes this executable graph directly so exception/resume
+    /// routes cannot be mistaken for an ordinary not-done edge.
+    aug_successors: Vec<Vec<usize>>,
     /// Augmented immediate dominators computed from `aug_predecessors`.
     /// Indexed by block id; entry block's idom is `None`.
     aug_dominators: Vec<Option<usize>>,
@@ -145,6 +149,7 @@ impl<'a> SsaContext<'a> {
             undef_value: None,
             source_sites: Self::build_source_sites(ops),
             aug_predecessors: vec![Vec::new(); n],
+            aug_successors: vec![Vec::new(); n],
             aug_dominators: vec![None; n],
         }
     }
@@ -332,17 +337,12 @@ impl<'a> SsaContext<'a> {
 
                 let tir_op = self.translate_op(op_idx, op, &var_stacks);
 
-                let mut result_idx = 0;
-                visit_simple_ir_defined_names(op, |var| {
-                    if !variables::is_variable(var) {
-                        return;
-                    }
+                visit_simple_ir_ssa_definitions(op, |var, result_idx| {
                     let vid = tir_op
                         .results
                         .get(result_idx)
                         .copied()
-                        .unwrap_or_else(|| self.fresh_value_typed());
-                    result_idx += 1;
+                        .expect("translated SimpleIR definition must have an SSA result");
                     var_stacks.entry(var.to_string()).or_default().push(vid);
                     let entry = block_pushed.iter_mut().find(|(v, _)| v == var);
                     if let Some((_, c)) = entry {
@@ -493,17 +493,12 @@ impl<'a> SsaContext<'a> {
                     let op = &self.ops[op_idx];
                     let tir_op = self.translate_op(op_idx, op, &local_stacks);
 
-                    let mut result_idx = 0;
-                    visit_simple_ir_defined_names(op, |var| {
-                        if !variables::is_variable(var) {
-                            return;
-                        }
+                    visit_simple_ir_ssa_definitions(op, |var, result_idx| {
                         let vid = tir_op
                             .results
                             .get(result_idx)
                             .copied()
-                            .unwrap_or_else(|| self.fresh_value_typed());
-                        result_idx += 1;
+                            .expect("translated SimpleIR definition must have an SSA result");
                         local_stacks.entry(var.to_string()).or_default().push(vid);
                     });
 
@@ -624,20 +619,108 @@ mod tests {
             assert_eq!(opcode_count(output, OpCode::Index), 2);
         }
 
-        fn basic_projection_ops() -> Vec<OpIR> {
+        fn direct_guarded_blocks() -> Vec<TirBlock> {
+            let mut idx1_attrs = AttrDict::new();
+            idx1_attrs.insert("value".into(), AttrValue::Int(1));
+            let mut idx0_attrs = AttrDict::new();
+            idx0_attrs.insert("value".into(), AttrValue::Int(0));
+            let mut pair_attrs = AttrDict::new();
+            pair_attrs.insert("_simple_out".into(), AttrValue::Str("pair".into()));
+            let mut done_attrs = AttrDict::new();
+            done_attrs.insert("_simple_out".into(), AttrValue::Str("done".into()));
+            let mut value_attrs = AttrDict::new();
+            value_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
+
+            vec![
+                TirBlock {
+                    id: BlockId(0),
+                    args: vec![],
+                    ops: vec![
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::ConstInt,
+                            operands: vec![],
+                            results: vec![ValueId(1)],
+                            attrs: idx1_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::ConstInt,
+                            operands: vec![],
+                            results: vec![ValueId(2)],
+                            attrs: idx0_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::IterNext,
+                            operands: vec![ValueId(0)],
+                            results: vec![ValueId(3)],
+                            attrs: pair_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Index,
+                            operands: vec![ValueId(3), ValueId(1)],
+                            results: vec![ValueId(4)],
+                            attrs: done_attrs,
+                            source_span: None,
+                        },
+                    ],
+                    terminator: Terminator::CondBranch {
+                        cond: ValueId(4),
+                        then_block: BlockId(2),
+                        then_args: vec![],
+                        else_block: BlockId(1),
+                        else_args: vec![],
+                    },
+                },
+                TirBlock {
+                    id: BlockId(1),
+                    args: vec![],
+                    ops: vec![TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Index,
+                        operands: vec![ValueId(3), ValueId(2)],
+                        results: vec![ValueId(5)],
+                        attrs: value_attrs,
+                        source_span: None,
+                    }],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+                TirBlock {
+                    id: BlockId(2),
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            ]
+        }
+
+        fn guarded_projection_ops() -> Vec<OpIR> {
             vec![
                 op_val_out("const", 1, "idx1"),
                 op_val_out("const", 0, "idx0"),
                 op_args_out("iter_next", &["iter"], "pair"),
                 op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
                 op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+                op_val("label", 10),
                 op("ret_void"),
             ]
         }
 
         #[test]
         fn exact_ordered_pair_projections_fuse() {
-            let ops = basic_projection_ops();
+            let ops = guarded_projection_ops();
             let output = lower(&ops, &["iter"]);
             assert_fused(&output);
             let fused = output
@@ -663,8 +746,16 @@ mod tests {
                 op_val_out("const", 0, "idx0"),
                 op_args_out("iter_next", &["iter"], "pair"),
                 op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
                 op_args_out("module_cache_set", &["done", "iter"], "none"),
                 op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+                op_val("label", 10),
                 op("ret_void"),
             ];
             let output = lower(&ops, &["iter"]);
@@ -674,47 +765,184 @@ mod tests {
         }
 
         #[test]
-        fn fused_result_name_becomes_visible_only_at_projection_site() {
+        fn pre_guard_effect_rejects_exhaustion_finalizer_reordering() {
             let ops = vec![
                 op_val_out("const", 1, "idx1"),
                 op_val_out("const", 0, "idx0"),
-                op_val_out("const", 7, "done"),
                 op_args_out("iter_next", &["iter"], "pair"),
-                op_args_out("module_cache_set", &["done", "iter"], "none"),
+                op_args_out("module_cache_set", &["prior", "iter"], "none"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+                op_val("label", 10),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter", "prior"]));
+        }
+
+        #[test]
+        fn bare_projections_without_done_guard_reject_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
                 op_args_out("index", &["pair", "idx1"], "done"),
                 op_args_out("index", &["pair", "idx0"], "value"),
                 op("ret_void"),
             ];
-            let output = lower(&ops, &["iter"]);
-            assert_fused(&output);
 
-            let old_done = output
-                .blocks
-                .iter()
-                .flat_map(|block| block.ops.iter())
-                .find(|op| op.opcode == OpCode::ConstInt && op.source_op_index() == Some(2))
-                .and_then(|op| op.results.first())
-                .copied()
-                .expect("the prior done definition must remain materialized");
-            let fused_done = output
-                .blocks
-                .iter()
-                .flat_map(|block| block.ops.iter())
-                .find(|op| op.opcode == OpCode::IterNextUnboxed)
-                .and_then(|op| op.results.get(1))
-                .copied()
-                .expect("fused done result");
-            let effect_done = output
-                .blocks
-                .iter()
-                .flat_map(|block| block.ops.iter())
-                .find(|op| op.opcode == OpCode::ModuleCacheSet)
-                .and_then(|op| op.operands.first())
-                .copied()
-                .expect("effect must read the old done binding");
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
 
-            assert_eq!(effect_done, old_done);
-            assert_ne!(effect_done, fused_done);
+        #[test]
+        fn done_true_item_projection_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op("ret_void"),
+                op_val("label", 10),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
+
+        #[test]
+        fn done_paths_rejoining_before_item_reject_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_val("jump", 20),
+                op_val("label", 10),
+                op_val("jump", 20),
+                op_val("label", 20),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
+
+        #[test]
+        fn same_target_done_branch_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_val("label", 10),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
+
+        #[test]
+        fn pre_guard_cycle_rejects_stale_step_validity() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_val("jump", 10),
+                op_val("label", 10),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["spin".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_val("label", 20),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(30),
+                    ..OpIR::default()
+                },
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+                op_val("label", 30),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter", "spin"]));
+        }
+
+        #[test]
+        fn augmented_exception_and_resume_edges_reject_fusion() {
+            let cfg_ops = vec![
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["cond".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op("ret_void"),
+                op_val("label", 10),
+                op("ret_void"),
+            ];
+
+            for resume_edge in [false, true] {
+                let mut cfg = CFG::build(&cfg_ops);
+                if resume_edge {
+                    cfg.state_resume_edges.push((0, 1, 1));
+                } else {
+                    cfg.exception_edges.push((0, 1));
+                }
+                let mut context = SsaContext::new("augmented_bypass", &cfg, &cfg_ops, &[]);
+                context.build_augmented_cfg();
+                let mut blocks = direct_guarded_blocks();
+
+                context.fuse_iter_next_projections(&mut blocks);
+
+                assert_eq!(
+                    blocks
+                        .iter()
+                        .flat_map(|block| block.ops.iter())
+                        .filter(|op| op.opcode == OpCode::IterNext)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    blocks
+                        .iter()
+                        .flat_map(|block| block.ops.iter())
+                        .filter(|op| op.opcode == OpCode::IterNextUnboxed)
+                        .count(),
+                    0
+                );
+            }
         }
 
         #[test]
@@ -929,7 +1157,15 @@ mod tests {
             }
             ops.extend([
                 op_args_out("index", &["pair", "idx1"], "done"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["done".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
                 op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+                op_val("label", 10),
                 op("ret_void"),
             ]);
             let output = lower(&ops, &["iter"]);

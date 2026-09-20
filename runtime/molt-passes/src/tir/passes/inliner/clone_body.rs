@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    SimpleIrVarFieldRole, opcode_canonical_kind_table, simpleir_var_field_role_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
@@ -28,16 +31,14 @@ pub(super) struct ClonedCallee {
 }
 
 /// Clone an op's attribute dict while dropping the SimpleIR value-name
-/// annotations (`_simple_out` and `_simple_result_N`).
+/// provenance annotations (`_simple_out` and `_simple_result_N`).
 ///
 /// Cloning a callee body remaps every `ValueId`/`BlockId` to a fresh id, but
-/// these annotations are *function-local name strings* (a Python local like `x`
-/// or `i`) with no id to remap - a verbatim copy carries the callee's names into
-/// the caller. If a callee name collides with a caller value of a different
-/// container kind, any surviving name-keyed SimpleIR consumer would resolve the
-/// inlined value to the *caller's* kind - a wrong specialization, i.e. a
-/// miscompile. It would likewise alias two values onto one SimpleIR slot in the
-/// native TIR->SimpleIR lowering.
+/// these annotations identify producers in the callee's input stream, not the
+/// caller's. SimpleValueNames now guarantees injective emitted transports even
+/// if these spellings collide. Stripping is still required here for provenance:
+/// a caller representation plan must not attribute a cloned value's facts to
+/// an unrelated original caller producer with the same spelling.
 ///
 /// Dropping the names lets each inlined value fall to its unique canonical
 /// (`ValueId`-derived) name, so it is classified by the authoritative
@@ -56,13 +57,21 @@ pub(super) fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
 }
 
 fn clone_attrs_for_inlined_body(
-    attrs: &AttrDict,
+    op: &TirOp,
     var_remap: &mut HashMap<String, String>,
     occupied_vars: &mut HashSet<String>,
     inline_var_namespace: &str,
 ) -> AttrDict {
-    let mut cloned = clone_attrs_without_simple_names(attrs);
-    if let Some(AttrValue::Str(var)) = cloned.get("_var").cloned() {
+    let mut cloned = clone_attrs_without_simple_names(&op.attrs);
+    let kind = original_kind(op).unwrap_or_else(|| opcode_canonical_kind_table(op.opcode));
+    // A read's value is remapped in operands, at the preserved transport index.
+    // Its raw spelling may instead be an unresolved literal/sentinel. Only
+    // generated local-storage/metadata roles belong to the inline slot namespace.
+    if matches!(
+        simpleir_var_field_role_table(kind),
+        SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::MetadataWhenArgs
+    ) && let Some(AttrValue::Str(var)) = cloned.get("_var").cloned()
+    {
         let private = private_inline_var_name(&var, var_remap, occupied_vars, inline_var_namespace);
         cloned.insert("_var".into(), AttrValue::Str(private));
     }
@@ -321,10 +330,9 @@ pub(super) fn clone_function_body_with_fresh_ids(
 
         // Cloned ops with operands/results remapped. The SimpleIR value-name
         // annotations are dropped (see `clone_attrs_without_simple_names`): they
-        // are function-local name strings with no id to remap, so a verbatim copy
-        // would carry the callee's names into the caller and collide with caller
-        // values of the same name. `_var` local-slot names are remapped into a
-        // private per-inline namespace for the same reason: store_var/load_var/
+        // describe callee producers, not original caller producers with the
+        // same spelling. `_var` local-slot names are remapped into a
+        // private per-inline namespace because store_var/load_var/
         // copy_var/delete_var carry Python local identity through round-trips,
         // and a callee `i` must not become the caller's `i` after splicing.
         // Exception ops additionally have their handler
@@ -341,7 +349,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
                     return None;
                 }
                 let mut attrs = clone_attrs_for_inlined_body(
-                    &op.attrs,
+                    op,
                     &mut var_remap,
                     &mut occupied_vars,
                     &inline_var_namespace,
@@ -467,4 +475,38 @@ fn clone_loop_role(role: &LoopRole) -> LoopRole {
 
 fn clone_loop_break_kind(kind: &LoopBreakKind) -> LoopBreakKind {
     *kind
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::tir::ops::{Dialect, OpCode};
+
+    #[test]
+    fn inline_namespace_only_renames_generated_local_storage_roles() {
+        for (kind, raw, expected) in [
+            ("store_var", "local", "inline_local"),
+            ("load_var", "local", "inline_local"),
+            ("transport_probe", "none", "none"),
+        ] {
+            let mut attrs = AttrDict::new();
+            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            attrs.insert("_var".into(), AttrValue::Str(raw.into()));
+            let op = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs,
+                source_span: None,
+            };
+            let cloned = clone_attrs_for_inlined_body(
+                &op,
+                &mut HashMap::new(),
+                &mut HashSet::new(),
+                "inline_",
+            );
+            assert_eq!(cloned.get("_var"), Some(&AttrValue::Str(expected.into())));
+        }
+    }
 }

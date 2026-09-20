@@ -327,7 +327,7 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
 
 #[test]
 fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
-    let clif = compile_function_to_clif_text(
+    let function = compile_function_to_clif(
         vec![FunctionIR {
             name: "molt_main".to_string(),
             params: vec![],
@@ -427,17 +427,27 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
         "molt_main",
     );
 
-    let suspicious: Vec<&str> = clif
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("jump block") && line.contains(" = 0"))
-        .collect();
+    // Inspect the actual integer payload, not a printed prefix: boxed None
+    // legitimately starts with `0x` and is the empty ownership-token value.
+    let mut suspicious = Vec::new();
+    for block in function.layout.blocks() {
+        for inst in function.layout.block_insts(block) {
+            if let InstructionData::Jump { destination, .. } = function.dfg.insts[inst] {
+                for argument in destination.args(&function.dfg.value_lists) {
+                    if let Some(value) = argument.as_value()
+                        && constant(&function, value) == Some(0)
+                    {
+                        suspicious.push((inst, value));
+                    }
+                }
+            }
+        }
+    }
 
     assert!(
         suspicious.is_empty(),
-        "nested exception raise CFG synthesized zero-valued predecessors:\n{}\n\nCLIF:\n{}",
-        suspicious.join("\n"),
-        clif
+        "nested exception raise CFG synthesized zero-valued predecessors: {suspicious:?}\n{}",
+        function.display()
     );
 }
 

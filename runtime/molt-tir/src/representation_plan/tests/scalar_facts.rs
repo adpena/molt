@@ -5,6 +5,7 @@
 
 use super::super::test_fixtures::{function, op};
 use super::super::*;
+use crate::tir::ops::OpCode;
 
 fn native_representation_plan(func_ir: &FunctionIR) -> ScalarRepresentationPlan {
     ScalarRepresentationPlan::for_function_ir_for_target(
@@ -454,12 +455,17 @@ fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
         None,
         vec![
             op("iter", Some("iter_obj"), None, &["items"]),
+            op("loop_start", None, None, &[]),
             op("iter_next", Some("pair"), None, &["iter_obj"]),
             done_index,
             done.clone(),
+            op("loop_break_if_true", None, None, &["done_flag"]),
             value_index,
             value,
-            op("loop_break_if_true", None, None, &["done_flag"]),
+            op("module_cache_set", None, None, &["next_value", "items"]),
+            op("loop_continue", None, None, &[]),
+            op("loop_end", None, None, &[]),
+            op("ret_void", None, None, &[]),
         ],
     );
     let plan = native_representation_plan(&func);
@@ -478,6 +484,85 @@ fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
     assert!(
         !primary.int.contains("done_flag"),
         "done flag must never be routed through raw-int primary storage"
+    );
+}
+
+#[test]
+fn input_producer_identity_is_separate_from_injective_lowered_names() {
+    let source = function(
+        "shadowed_source_identity",
+        &["value"],
+        None,
+        vec![const_bool("value", true), op("ret", None, None, &["value"])],
+    );
+    let tir = lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+    let names = SimpleValueNames::for_function(&tir);
+    let produced = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ConstBool)
+        .unwrap()
+        .results[0];
+    assert_eq!(names.source_value_name(produced), Some("value"));
+    assert_ne!(names.value_name(produced), "value");
+    let source_plan = native_representation_plan(&source);
+    assert!(
+        !source_plan.is_bool_unboxed("value"),
+        "one source spelling cannot select one of two SSA producers"
+    );
+    assert!(
+        !source_plan.is_bool_unboxed(&names.value_name(produced)),
+        "the input plan must not fabricate a fact under a future emitted suffix"
+    );
+
+    let lowered = function(
+        "lowered_unique_identity",
+        &["value"],
+        None,
+        crate::tir::lower_to_simple::lower_to_simple_ir(&tir),
+    );
+    let lowered_plan = native_representation_plan(&lowered);
+    assert!(!lowered_plan.is_bool_unboxed("value"));
+    assert!(
+        lowered_plan.is_bool_unboxed(&names.value_name(produced)),
+        "after emission the new transport is a genuine, independently typed producer"
+    );
+}
+
+#[test]
+fn constructor_fact_repair_cannot_override_ambiguous_source_identity() {
+    let source = function(
+        "shadowed_container_identity",
+        &["value"],
+        None,
+        vec![
+            op("list_new", Some("value"), None, &[]),
+            op("ret", None, None, &["value"]),
+        ],
+    );
+    let source_plan = native_representation_plan(&source);
+    assert_eq!(
+        source_plan.name_container_kind("value"),
+        None,
+        "the constructor fact cannot type the earlier opaque ABI parameter"
+    );
+    let tir = lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+    let lowered_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
+    let produced = lowered_ops
+        .iter()
+        .find(|op| op.kind == "list_new")
+        .unwrap()
+        .out
+        .clone()
+        .unwrap();
+    assert_ne!(produced, "value");
+    let lowered = function("lowered_container_identity", &["value"], None, lowered_ops);
+    let lowered_plan = native_representation_plan(&lowered);
+    assert_eq!(lowered_plan.name_container_kind("value"), None);
+    assert_eq!(
+        lowered_plan.name_container_kind(&produced),
+        Some(ContainerKind::List)
     );
 }
 

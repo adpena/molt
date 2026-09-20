@@ -44,6 +44,8 @@ pub fn visit_simple_ir_result_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a 
     if !simpleir_out_field_is_metadata(op.kind.as_str())
         && let Some(out) = op.out.as_deref()
         && out != "none"
+        && (simpleir_var_field_role_table(op.kind.as_str()) != SimpleIrVarFieldRole::Definition
+            || op.var.as_deref().is_some_and(|binding| binding != out))
     {
         visit(out);
     }
@@ -188,6 +190,37 @@ mod tests {
                 vec!["_bb1_arg0".to_string()]
             );
         }
+    }
+
+    #[test]
+    fn local_stores_distinguish_binding_destinations_from_optional_value_results() {
+        for kind in ["store_var", "store_fast"] {
+            for (binding, output, results, definitions) in [
+                (None, Some("local"), vec![], vec!["local"]),
+                (Some("local"), None, vec![], vec!["local"]),
+                (Some("local"), Some("local"), vec![], vec!["local"]),
+                (Some("local"), Some("none"), vec![], vec!["local"]),
+                (
+                    Some("local"),
+                    Some("result"),
+                    vec!["result"],
+                    vec!["result", "local"],
+                ),
+            ] {
+                let mut store = op(kind);
+                store.var = binding.map(str::to_string);
+                store.out = output.map(str::to_string);
+                store.args = Some(vec!["source".into()]);
+                assert_eq!(simple_ir_result_names(&store), results, "{store:?}");
+                assert_eq!(simple_ir_defined_names(&store), definitions, "{store:?}");
+                assert_eq!(simple_ir_read_names(&store), vec!["source"], "{store:?}");
+            }
+        }
+        let mut delete = op("delete_var");
+        delete.var = Some("local".into());
+        delete.out = Some("diagnostic_metadata".into());
+        assert!(simple_ir_result_names(&delete).is_empty());
+        assert_eq!(simple_ir_defined_names(&delete), vec!["local"]);
     }
 
     #[test]
