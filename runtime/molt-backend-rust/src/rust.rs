@@ -52,6 +52,10 @@ pub struct RustBackend {
     aliases: BTreeMap<String, AliasBinding>,
     /// Current function params (as Rust identifiers) for call-by-object writeback.
     current_params: Vec<String>,
+    /// Canonical storage transports written back for each current parameter.
+    /// Labelled-flow SSA normalization may separate an ABI parameter spelling
+    /// from its mutable local slot, so authored names are not sufficient here.
+    current_param_writebacks: Vec<String>,
     current_is_main: bool,
     current_scalar_plan: Option<ScalarRepresentationPlan>,
     /// Dispatch failures accumulated during private source assembly. The only
@@ -75,6 +79,7 @@ impl RustBackend {
             phi_to_frame: BTreeMap::new(),
             aliases: BTreeMap::new(),
             current_params: Vec::new(),
+            current_param_writebacks: Vec::new(),
             current_is_main: false,
             current_scalar_plan: None,
             unsupported_ops: Vec::new(),
@@ -214,13 +219,13 @@ impl RustBackend {
         if self.current_is_main || self.current_params.is_empty() {
             return;
         }
-        let params = self.current_params.clone();
-        for (i, param) in params.iter().enumerate() {
+        let writebacks = self.current_param_writebacks.clone();
+        for (i, value) in writebacks.iter().enumerate() {
             self.emit_line(&format!(
                 "if args___.len() <= {i} {{ args___.resize({len}, MoltValue::None); }}",
                 len = i + 1
             ));
-            self.emit_line(&format!("args___[{i}] = {param}.clone();"));
+            self.emit_line(&format!("args___[{i}] = {value}.clone();"));
         }
     }
 
@@ -241,6 +246,7 @@ impl RustBackend {
         } else {
             func.params.iter().map(|p| rust_ident(p)).collect()
         };
+        self.current_param_writebacks = self.current_params.clone();
         self.aliases.clear();
 
         let name = rust_ident(&func.name);
@@ -262,6 +268,15 @@ impl RustBackend {
                 &normalized,
                 &TargetInfo::rust_release_fast(),
             );
+            let names = molt_tir::tir::simple_value_names::SimpleValueNames::for_function(&tir);
+            self.current_param_writebacks = if is_main {
+                Vec::new()
+            } else {
+                func.params
+                    .iter()
+                    .map(|param| rust_ident(&names.local_slot(param)))
+                    .collect()
+            };
             molt_tir::tir::lower_to_simple::lower_to_simple_ir(&tir)
         } else {
             func.ops.clone()
@@ -341,6 +356,10 @@ impl RustBackend {
         if flow.is_none() {
             collect_scope_escapes(&ops, func, &mut self.hoisted_vars);
         }
+        // Named storage is function-owned state. In labelled flow it must not
+        // be redeclared in individual match arms, and parameter-backed slots
+        // must begin with the incoming ABI value for paths that do not mutate.
+        self.hoisted_vars.extend(named_storage_vars.iter().cloned());
 
         if is_main {
             self.emit_line("fn molt_main() {");
@@ -368,7 +387,13 @@ impl RustBackend {
             self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
         }
         for v in &named_storage_vars {
-            self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
+            let initial = self
+                .current_param_writebacks
+                .iter()
+                .position(|writeback| writeback == v)
+                .map(|index| format!("{}.clone()", self.current_params[index]))
+                .unwrap_or_else(|| "MoltValue::None".to_string());
+            self.emit_line(&format!("let mut {v}: MoltValue = {initial};"));
         }
         let mut sorted_hoisted: Vec<String> = self.hoisted_vars.iter().cloned().collect();
         sorted_hoisted.sort();
@@ -500,6 +525,7 @@ impl RustBackend {
         self.phi_to_frame.clear();
         self.aliases.clear();
         self.current_params.clear();
+        self.current_param_writebacks.clear();
         self.current_is_main = false;
         self.current_scalar_plan = None;
     }

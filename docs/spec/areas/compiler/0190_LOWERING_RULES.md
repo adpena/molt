@@ -123,6 +123,21 @@ roles. Alias elimination requires exactly one source and immutable names;
 mutable bindings and repeated definitions retain their load points. Object
 identity alone does not authorize erasing guards or owned-reference operations.
 
+Scalar store-target sets are projections of the completed representation facts
+and canonical all-source binding edges, not a second opcode-driven fixed point.
+Checked arithmetic's value and overflow results retain independent types through
+result-carrying bindings. A semantic integer fact does not prove a bounded raw
+carrier. Function-wide integer constants use generated opcode membership and
+require one unambiguous producer; parameter names, repeated definitions and
+rebinding cannot inherit a first-definition constant. Native literal dispatch,
+preanalysis and scalarized tuple indexing share those authorities rather than
+maintaining a backward constant scanner.
+
+Rust-source labelled flow preserves the canonical separation between ABI
+parameter names and mutable local storage. Storage declarations live outside
+dispatch arms, parameter-backed slots start with their incoming values, and the
+existing source-backend writeback protocol uses the canonical slot mapping.
+
 Native list-buffer caching consumes the same typed operation effects and
 executable CFG dominance facts. Ordinary and indexed loops share one preheader
 producer for scope publication and storage/layout loads. Nested loop effects

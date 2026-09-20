@@ -1,11 +1,15 @@
 use super::super::*;
 use super::OpFlow;
+use crate::tir::simple_def_use::simple_ir_out_result;
 
 /// Single-source kind authority for [`handle_const_literal_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+/// `op_family::FAMILY_DISPATCH_TABLE`. Integer aliases use the same generated
+/// ConstInt classification throughout the handler and its planning helpers.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
     "const",
+    "const_int",
+    "load_const",
     "const_bigint",
     "const_bool",
     "const_none",
@@ -15,6 +19,19 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "const_str",
     "const_bytes",
 ];
+
+/// Integer literal spellings share the registry's exact ConstInt authority.
+/// Do not canonicalize unrelated original-kind metadata during native dispatch.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn literal_kind(kind: &str) -> &str {
+    if crate::tir::op_kinds_generated::kind_to_opcode_table(kind)
+        == Some(crate::tir::ops::OpCode::ConstInt)
+    {
+        "const"
+    } else {
+        kind
+    }
+}
 
 #[cfg(feature = "native-backend")]
 #[inline]
@@ -43,7 +60,10 @@ pub(in crate::native_backend::function_compiler) fn require_const_str_payload(op
 pub(in crate::native_backend::function_compiler) fn op_uses_heap_literal_data_segment(
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
+    if simple_ir_out_result(op).is_none() {
+        return false;
+    }
+    match literal_kind(&op.kind) {
         "const_str" | "const_bytes" | "const_bigint" => true,
         "const" => op
             .value
@@ -56,30 +76,30 @@ pub(in crate::native_backend::function_compiler) fn op_uses_heap_literal_data_se
 pub(in crate::native_backend::function_compiler) fn collect_loop_entry_const_defs(
     func_ir: &FunctionIR,
     representation_plan: &ScalarRepresentationPlan,
+    const_int_map: &BTreeMap<String, i64>,
 ) -> BTreeMap<String, i64> {
     func_ir
         .ops
         .iter()
-        .filter(|op| op.kind == "const" || op.kind == "const_bool" || op.kind == "const_none")
         .filter_map(|op| {
-            let out = op.out.as_ref()?;
-            match op.kind.as_str() {
+            let out = simple_ir_out_result(op)?;
+            match literal_kind(&op.kind) {
                 "const" => {
-                    let val = op.value.unwrap_or(0);
+                    let val = *const_int_map.get(out)?;
                     if representation_plan.is_raw_int_carrier_name(out) {
-                        return Some((out.clone(), val));
+                        return Some((out.to_string(), val));
                     }
                     if native_int_literal_fits_inline(val) {
-                        Some((out.clone(), box_int(val)))
+                        Some((out.to_string(), box_int(val)))
                     } else {
                         None
                     }
                 }
                 "const_bool" => {
                     let val = op.value.unwrap_or(0);
-                    Some((out.clone(), box_bool(val)))
+                    Some((out.to_string(), box_bool(val)))
                 }
-                "const_none" => Some((out.clone(), box_none())),
+                "const_none" => Some((out.to_string(), box_none())),
                 _ => None,
             }
         })
@@ -271,11 +291,11 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
         std::collections::HashSet::new();
 
     for op in &func_ir.ops {
-        match op.kind.as_str() {
+        match literal_kind(&op.kind) {
             "const_str" => {
                 let bytes = require_const_str_payload(op).to_vec();
-                let out_name = match &op.out {
-                    Some(n) => n.clone(),
+                let out_name = match simple_ir_out_result(op) {
+                    Some(n) => n.to_string(),
                     None => continue,
                 };
                 if seen_str_bytes.insert(bytes.clone()) {
@@ -284,8 +304,8 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             }
             "const_bytes" => {
                 let bytes = op.bytes.as_ref().expect("Bytes not found").clone();
-                let out_name = match &op.out {
-                    Some(n) => n.clone(),
+                let out_name = match simple_ir_out_result(op) {
+                    Some(n) => n.to_string(),
                     None => continue,
                 };
                 if seen_bytes_bytes.insert(bytes.clone()) {
@@ -299,8 +319,8 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
                     .expect("BigInt string not found")
                     .as_bytes()
                     .to_vec();
-                let out_name = match &op.out {
-                    Some(n) => n.clone(),
+                let out_name = match simple_ir_out_result(op) {
+                    Some(n) => n.to_string(),
                     None => continue,
                 };
                 if seen_bigint_bytes.insert(bytes.clone()) {
@@ -309,8 +329,8 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
             }
             "const" => {
                 let val = op.value.unwrap_or(0);
-                let out_name = match &op.out {
-                    Some(n) if !representation_plan.is_raw_int_carrier_name(n) => n.clone(),
+                let out_name = match simple_ir_out_result(op) {
+                    Some(n) if !representation_plan.is_raw_int_carrier_name(n) => n.to_string(),
                     _ => continue,
                 };
                 if native_int_literal_fits_inline(val) {
@@ -419,13 +439,13 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     hoists: &HeapLiteralHoists,
     local_inc_ref_obj: FuncRef,
 ) -> OpFlow {
-    match op.kind.as_str() {
+    match literal_kind(&op.kind) {
         "const" => {
             let val = op.value.unwrap_or(0);
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
-            if representation_plan.is_raw_int_carrier_name(out_name.as_str()) {
+            if representation_plan.is_raw_int_carrier_name(out_name) {
                 let raw_val = builder.ins().iconst(types::I64, val);
                 def_var_named(builder, vars, out_name, raw_val);
             } else if native_int_literal_fits_inline(val) {
@@ -451,7 +471,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
         }
         "const_bigint" => {
             let s = op.s_value.as_ref().expect("BigInt string not found");
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             let bytes = s.as_bytes();
@@ -522,7 +542,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
         }
         "const_str" => {
             let bytes = require_const_str_payload(op);
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             let slot = hoists
@@ -535,7 +555,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
         }
         "const_bytes" => {
             let bytes = op.bytes.as_ref().expect("Bytes not found");
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             let slot = hoists

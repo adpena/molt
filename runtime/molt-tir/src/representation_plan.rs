@@ -7,9 +7,10 @@ use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir_for_target;
 use crate::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
 use crate::tir::op_kinds_generated::{
-    SimpleIrReturnShape, simpleir_integer_semantics_table, simpleir_return_shape,
+    SimpleIrReturnShape, kind_to_opcode_table, simpleir_integer_semantics_table,
+    simpleir_return_shape,
 };
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::passes::typed_slot_access::{self, TypedSlotStoreMode};
 use crate::tir::simple_def_use::simple_ir_binding;
 use crate::tir::simple_value_names::SimpleValueNames;
@@ -62,8 +63,8 @@ mod indexed_facts;
 use indexed_facts::{
     FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
     container_constructor_result_ty, is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
-    propagate_store_var_targets_in, simple_op_produces_non_scalar_value,
-    store_var_targets_all_sources_in, tir_container_storage_facts,
+    simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
+    tir_container_storage_facts,
 };
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1064,36 +1065,17 @@ impl ScalarRepresentationPlan {
             ScalarKind::Float,
             ScalarKind::Str,
         ] {
-            targets.insert(kind, self.scalar_lane_store_target_names(fact_index, kind));
+            // The value-fact authority has already resolved aliases, multi-result
+            // producers and storage joins. Re-inferring op.out here loses checked
+            // arithmetic's value result in `var` and creates a second type solver.
+            targets.insert(
+                kind,
+                store_var_targets_all_sources_where(fact_index, |source| {
+                    self.name_has_scalar_kind(source, kind)
+                }),
+            );
         }
         targets
-    }
-
-    fn scalar_lane_store_target_names(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        lane: ScalarKind,
-    ) -> BTreeSet<String> {
-        let mut lane_outputs = BTreeSet::new();
-        let mut changed = true;
-        while changed {
-            changed = propagate_store_var_targets_in(fact_index, &mut lane_outputs);
-            for (out, source) in fact_index.alias_edges() {
-                if lane_outputs.contains(source) && lane_outputs.insert(out.to_string()) {
-                    changed = true;
-                }
-            }
-            for op in &fact_index.data_ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                let inferred_lane = self.infer_scalar_lane_with_overrides(op, lane, &lane_outputs);
-                if inferred_lane == Some(lane) && lane_outputs.insert(out.clone()) {
-                    changed = true;
-                }
-            }
-        }
-        store_var_targets_all_sources_in(fact_index, &lane_outputs)
     }
 
     fn compute_primary_name_sets(
@@ -1555,15 +1537,6 @@ impl ScalarRepresentationPlan {
     }
 
     fn infer_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
-        self.infer_scalar_lane_with_overrides(op, ScalarKind::NoneValue, &BTreeSet::new())
-    }
-
-    fn infer_scalar_lane_with_overrides(
-        &self,
-        op: &OpIR,
-        override_kind: ScalarKind,
-        override_names: &BTreeSet<String>,
-    ) -> Option<ScalarKind> {
         let first_source = || {
             op.var.as_deref().or_else(|| {
                 op.args
@@ -1576,16 +1549,16 @@ impl ScalarRepresentationPlan {
         let args_all =
             |pred: &dyn Fn(&str) -> bool| !args.is_empty() && args.iter().all(|arg| pred(arg));
         let args_any = |pred: &dyn Fn(&str) -> bool| args.iter().any(|arg| pred(arg));
-        let has_kind = |name: &str, kind| {
-            self.name_has_scalar_kind(name, kind)
-                || (override_kind == kind && override_names.contains(name))
-        };
+        let has_kind = |name: &str, kind| self.name_has_scalar_kind(name, kind);
         let is_float = |name: &str| has_kind(name, ScalarKind::Float);
         let is_str = |name: &str| has_kind(name, ScalarKind::Str);
         let is_int =
             |name: &str| has_kind(name, ScalarKind::Int) || has_kind(name, ScalarKind::Bool);
+        if kind_to_opcode_table(&op.kind) == Some(OpCode::ConstInt) {
+            return Some(ScalarKind::Int);
+        }
         match op.kind.as_str() {
-            "const" | "loop_index_start" | "loop_index_next" | "len" => Some(ScalarKind::Int),
+            "loop_index_start" | "loop_index_next" | "len" => Some(ScalarKind::Int),
             "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
                 Some(ScalarKind::Int)
             }

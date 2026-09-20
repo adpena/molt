@@ -160,7 +160,7 @@ pub(in crate::native_backend::function_compiler) fn loop_start_has_index_prelude
         if kind == "loop_index_start" {
             return true;
         }
-        if kind.starts_with("const") {
+        if super::const_literals::literal_kind(kind).starts_with("const") {
             scan_idx += 1;
             continue;
         }
@@ -293,7 +293,7 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     representation_plan: &ScalarRepresentationPlan,
     fast_paths: &mut ListIndexFastPathState,
     preheader: Block,
-    cleanup: Option<&NativeCleanupRoots>,
+    cleanup: &NativeCleanupRoots,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     fast_paths.publishing_loop = None;
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
@@ -318,9 +318,8 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
             body_definitions.insert(name.to_string());
             // Native owner replacement may run last iteration's finalizer even
             // when this opcode itself is pure. TIR-owned drops stay explicit.
-            // Without concrete custody, a heap result may own a finalizer.
-            may_finalize |= cleanup.is_none_or(|roots| roots.contains(name))
-                && !representation_plan.name_is_non_heap_scalar(name);
+            may_finalize |=
+                cleanup.contains(name) && !representation_plan.name_is_non_heap_scalar(name);
         });
         if may_finalize {
             return (BTreeSet::new(), BTreeSet::new());
@@ -477,7 +476,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
         representation_plan,
         fast_paths,
         builder.current_block().expect("list hoist has a preheader"),
-        Some(cleanup_roots),
+        cleanup_roots,
     );
     for (names, layout) in [
         (flat, ListIndexLayout::FlatInt),
@@ -689,7 +688,7 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_int_sum_reduction(
 
     for i in (loop_index_start_idx + 1)..loop_end_idx {
         let op = &ops[i];
-        match op.kind.as_str() {
+        match super::const_literals::literal_kind(&op.kind) {
             "loop_start" | "loop_index_start" => {
                 has_nested_loop = true;
                 break;

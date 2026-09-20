@@ -1,30 +1,40 @@
+use crate::tir::op_kinds_generated::kind_to_opcode_table;
+use crate::tir::ops::OpCode;
+use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 use crate::{FunctionIR, OpIR};
 use std::collections::{BTreeMap, HashSet};
 
 // ---------------------------------------------------------------------------
-// Pre-built constant integer map for O(1) lookups during compilation.
+// Pre-built constant integer map for O(log n) lookups during compilation.
 //
-// Scans all ops once and records the first `const` definition for each
-// variable name. This replaces any backward scan pattern (O(n) per lookup)
-// with a single O(n) build step + O(log n) BTreeMap lookups.
-//
-// Only the first definition is stored, which is correct for SSA-like
-// variable naming where each name is defined exactly once.
+// Record only unambiguous generated ConstInt producers. Authored SimpleIR
+// names are not necessarily SSA: parameters, rebinding and multi-result
+// definitions must never acquire a function-wide constant from one producer.
 // ---------------------------------------------------------------------------
 
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
-pub fn build_const_int_map(ops: &[OpIR]) -> BTreeMap<String, i64> {
+pub fn build_const_int_map(function: &FunctionIR) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
-    for op in ops {
-        if op.kind == "const"
-            && let (Some(out), Some(val)) = (op.out.as_ref(), op.value)
-        {
-            // Only store the first definition (SSA correctness).
-            map.entry(out.clone()).or_insert(val);
-        }
+    let mut defined: HashSet<&str> = function.params.iter().map(String::as_str).collect();
+    for op in &function.ops {
+        let constant = (kind_to_opcode_table(&op.kind) == Some(OpCode::ConstInt))
+            .then_some(op.value)
+            .flatten();
+        visit_simple_ir_defined_names(op, |name| {
+            // The field-role visitor is not a name validator. Malformed empty
+            // transports cannot establish a usable constant fact.
+            if name.is_empty() {
+                return;
+            }
+            if !defined.insert(name) {
+                map.remove(name);
+            } else if let Some(value) = constant {
+                map.insert(name.to_string(), value);
+            }
+        });
     }
     map
 }

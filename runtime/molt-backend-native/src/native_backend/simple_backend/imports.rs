@@ -41,26 +41,6 @@ impl SimpleBackend {
         data_id
     }
 
-    /// Walk backwards from `before_idx` to find a `"const"` op whose `out`
-    /// matches `var_name` and return its integer value.  Used by the
-    /// iter_next peephole to resolve constant index arguments.
-    pub(crate) fn resolve_const_int(
-        ops: &[OpIR],
-        before_idx: usize,
-        var_name: &str,
-    ) -> Option<i64> {
-        for i in (0..before_idx).rev() {
-            let op = &ops[i];
-            if op.kind == "const"
-                && let Some(ref out) = op.out
-                && out == var_name
-            {
-                return op.value;
-            }
-        }
-        None
-    }
-
     /// Cached version of `module.declare_function(name, Linkage::Import, &sig)`.
     /// Returns the `FuncId` for the given runtime import, reusing a previous
     /// declaration when the same name has already been declared.  The signature
