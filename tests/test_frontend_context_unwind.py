@@ -431,8 +431,10 @@ def test_bare_raise_reads_runtime_handled_state_not_saved_pending_slot() -> None
     assert any(op.kind == "CALL" and op.args == ["molt_exception_active"] for op in ops)
 
 
+@pytest.mark.parametrize("mode", ["sync", "coroutine", "generator"])
 def test_exit_failure_inside_handler_has_live_cleanup_continuation(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     original = SimpleTIRGenerator._emit_context_exit
     continuation_labels: list[int] = []
@@ -453,14 +455,44 @@ def test_exit_failure_inside_handler_has_live_cleanup_continuation(
         original(self, action, exception=exception, abandon_on_error=abandon_on_error)
 
     monkeypatch.setattr(SimpleTIRGenerator, "_emit_context_exit", emit_exit)
+    prefix = "async " if mode == "coroutine" else ""
+    suspend = "    yield None\n" if mode == "generator" else ""
     compile_to_tir(
-        "async def f(cm, record):\n"
+        f"{prefix}def f(cm, record):\n"
+        f"{suspend}"
         "    try:\n        raise ValueError()\n"
         "    except ValueError:\n"
-        "        async with cm:\n            return 1\n"
+        f"        {prefix}with cm:\n            return 1\n"
         "    finally:\n        record()\n"
     )
-    assert continuation_labels
+    # The return's inlined finalbody must not reopen source fallthrough and
+    # emit a second ordinary exit (and an unreachable async resume island).
+    assert len(continuation_labels) == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("cleanup", ["except", "finally", "except_finally"])
+def test_terminated_try_body_has_no_normal_close_edge(
+    asynchronous: bool,
+    cleanup: str,
+) -> None:
+    prefix = "async " if asynchronous else ""
+    tail = ""
+    if "except" in cleanup:
+        tail += "    except ValueError:\n        record()\n"
+    if "finally" in cleanup:
+        tail += "    finally:\n        record()\n"
+    ops = _function_ops(
+        f"{prefix}def f(value, record):\n    try:\n        return value\n{tail}",
+        "__f_poll" if asynchronous else "__f",
+    )
+    owner = next(op.args for op in ops if op.kind == "TRY_START")
+    handler = next(
+        i for i, op in enumerate(ops) if op.kind == "LABEL" and op.args == owner
+    )
+    # _visit_block restores the enclosing flag. Its returned completion is
+    # the authority for both sync-split and suspended/finally try emitters.
+    assert not any(op.kind == "TRY_END" and op.args == owner for op in ops[:handler])
 
 
 def test_async_context_capsule_cpython_reference(

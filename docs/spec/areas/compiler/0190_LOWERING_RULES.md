@@ -46,6 +46,12 @@ overrides the original transfer. Pending-error save/restore slots are distinct
 from handled-exception state: bare raise consults the existing runtime authority
 used by `sys.exception()`, including dynamically enclosing callers.
 
+Source `return`, `break` and `continue` publish block termination after their
+cleanup emitters finish. A cleanup's exceptional continuation does not reopen
+ordinary fallthrough after that transfer. Scoped block visitors return their
+own completion while restoring the enclosing flag; try emitters consume that
+result instead of rereading the enclosing state.
+
 Each source loop has one `LoopScope` containing its lexical break destination,
 continue destination, cleanup depth and else-suppression flag. A try captures its
 lexical loop scopes; inlined finalbodies restore those scopes even when emitted
@@ -68,6 +74,10 @@ must preserve those branches and every labeled close; it must not pair a start
 with the first textual end or discard later closes. Frontend CFG/SCCP preserves
 explicit pending-error transfers and conservative handler reachability; shared
 TIR exception analysis owns region facts after control-flow construction.
+Suspension resumes inherit custody only from reachable saved-state producers.
+An absent state after the resume fixpoint is unreachable, not a depth-zero
+entry; producer, lexical-handler, release and pop-owner queries all use this
+same rule. Reachable unresolved saved states are explicit analysis errors.
 LLVM emits only explicit exception-stack operations, not implicit frames for
 TRY markers. WASM dispatch uses pending-state checks; native EH is selected only
 for a structured, non-relocatable frame that actually emits an EH region. Luau
