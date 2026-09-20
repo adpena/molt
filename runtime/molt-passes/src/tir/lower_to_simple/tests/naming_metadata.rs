@@ -172,6 +172,514 @@ fn canonical_name_collision_with_override_is_resolved() {
     );
 }
 
+#[test]
+fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
+    let mut func = TirFunction::new(
+        "identity_names".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    func.param_names = vec!["value".into()];
+    let parameter = func.blocks[&func.entry_block].args[0].id;
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    let third = func.fresh_value();
+    let slot_value = func.fresh_value();
+    let join = func.fresh_block();
+    let joined = func.fresh_value();
+    let mut single_attrs = AttrDict::new();
+    single_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
+    let mut multi_attrs = AttrDict::new();
+    multi_attrs.insert("_simple_result_0".into(), AttrValue::Str("value".into()));
+    multi_attrs.insert(
+        "_simple_result_1".into(),
+        AttrValue::Str("_bb1_arg0".into()),
+    );
+    let mut store_attrs = AttrDict::new();
+    store_attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+    store_attrs.insert("_var".into(), AttrValue::Str("value".into()));
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstNone,
+            operands: vec![],
+            results: vec![first],
+            attrs: single_attrs,
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckedAdd,
+            operands: vec![first, first],
+            results: vec![second, third],
+            attrs: multi_attrs,
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![first],
+            results: vec![slot_value],
+            attrs: store_attrs,
+            source_span: None,
+        },
+    ];
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: joined,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![joined],
+            },
+        },
+    );
+    let names = SimpleValueNames::for_function(&func);
+    let values = [parameter, first, second, third, slot_value, joined];
+    let transports: std::collections::HashSet<_> =
+        values.iter().map(|id| names.value_name(*id)).collect();
+    assert_eq!(
+        transports.len(),
+        values.len(),
+        "every distinct ValueId has its own transport"
+    );
+    assert_eq!(
+        names.value_name(parameter),
+        "value",
+        "the ABI parameter spelling stays fixed"
+    );
+    assert_eq!(names.source_value_name(first), Some("value"));
+    assert_eq!(names.source_value_name(second), Some("value"));
+    assert_eq!(
+        names.source_value_name(slot_value),
+        None,
+        "synthetic names are not authored identities"
+    );
+    assert!(names.ambiguous_source_names().any(|name| name == "value"));
+    assert!(!transports.contains(&names.local_slot("value")));
+    assert!(!transports.contains(&names.block_arg_slot(join, 0)));
+    assert_ne!(names.local_slot("value"), names.block_arg_slot(join, 0));
+
+    // Definition movement does not change allocation priority or consumer
+    // identity: names are allocated from ValueIds, not current textual order.
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .swap(0, 1);
+    assert_eq!(SimpleValueNames::for_function(&func), names);
+}
+
+#[test]
+fn fused_item_shadowing_preserves_the_opaque_parameter_at_lowering_consumer() {
+    let func = FunctionIR {
+        name: "guarded_iter_item_shadow".into(),
+        params: vec!["iter".into(), "value".into()],
+        ops: vec![
+            OpIR {
+                kind: "const".into(),
+                value: Some(1),
+                out: Some("idx1".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".into(),
+                value: Some(0),
+                out: Some("idx0".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "iter_next".into(),
+                args: Some(vec!["iter".into()]),
+                out: Some("pair".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".into(),
+                args: Some(vec!["pair".into(), "idx1".into()]),
+                out: Some("done".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["done".into()]),
+                value: Some(90),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_set".into(),
+                args: Some(vec!["value".into(), "iter".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".into(),
+                args: Some(vec!["pair".into(), "idx0".into()]),
+                out: Some("value".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["value".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(90),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let tir = lower_to_tir(&func);
+    let lowered = lower_to_simple_ir(&tir);
+    let fused = lowered
+        .iter()
+        .find(|op| op.kind == "iter_next_unboxed")
+        .expect("the not-done guarded item path stays fusible");
+    let effect = lowered
+        .iter()
+        .find(|op| op.kind == "module_cache_set")
+        .unwrap();
+    assert_eq!(effect.args.as_ref().unwrap()[0], "value");
+    assert_ne!(
+        fused.var.as_deref(),
+        Some("value"),
+        "the moved item must not replace the ABI parameter"
+    );
+    assert!(lowered.iter().any(|op| {
+        op.kind == "ret"
+            && op
+                .args
+                .as_ref()
+                .is_some_and(|args| args.first() == fused.var.as_ref())
+    }));
+
+    let relifted = lower_to_tir(&FunctionIR {
+        ops: lowered,
+        ..func
+    });
+    let parameter = relifted.blocks[&relifted.entry_block].args[1].id;
+    let effect = relifted
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ModuleCacheSet)
+        .unwrap();
+    assert_eq!(
+        effect.operands[0], parameter,
+        "the real lowering roundtrip preserves the old binding"
+    );
+}
+
+#[test]
+fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
+    let mut func = TirFunction::new(
+        "local_storage_identity".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+    );
+    func.param_names = vec!["value".into(), "replacement".into()];
+    let old = func.blocks[&func.entry_block].args[0].id;
+    let replacement = func.blocks[&func.entry_block].args[1].id;
+    let stored = func.fresh_value();
+    let missing = func.fresh_value();
+    let mut store_attrs = AttrDict::new();
+    store_attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+    store_attrs.insert("_var".into(), AttrValue::Str("value".into()));
+    let mut delete_attrs = AttrDict::new();
+    delete_attrs.insert("_var".into(), AttrValue::Str("value".into()));
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops = vec![
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![replacement],
+            results: vec![stored],
+            attrs: store_attrs,
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstNone,
+            operands: vec![],
+            results: vec![missing],
+            attrs: AttrDict::new(),
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::DeleteVar,
+            operands: vec![missing, stored],
+            results: vec![],
+            attrs: delete_attrs,
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ModuleCacheSet,
+            operands: vec![old, replacement],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        },
+    ];
+    entry.terminator = Terminator::Return { values: vec![old] };
+    let lowered = lower_to_simple_ir(&func);
+    let store = lowered.iter().find(|op| op.kind == "store_var").unwrap();
+    let delete = lowered.iter().find(|op| op.kind == "delete_var").unwrap();
+    assert_ne!(store.var.as_deref(), Some("value"));
+    assert_eq!(delete.var, store.var);
+    let effect = lowered
+        .iter()
+        .find(|op| op.kind == "module_cache_set")
+        .unwrap();
+    assert_eq!(effect.args.as_ref().unwrap()[0], "value");
+    assert_eq!(
+        func.blocks[&func.entry_block].ops[0].attrs.get("_var"),
+        Some(&AttrValue::Str("value".into())),
+        "authored binding metadata is not rewritten in TIR"
+    );
+}
+
+#[test]
+fn result_carrying_local_store_lifts_and_lowers_one_stable_snapshot() {
+    let source = FunctionIR {
+        name: "store_snapshot_identity".into(),
+        params: vec!["value".into(), "replacement".into()],
+        ops: vec![
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("value".into()),
+                out: Some("snapshot".into()),
+                args: Some(vec!["value".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("value".into()),
+                args: Some(vec!["replacement".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_set".into(),
+                args: Some(vec!["snapshot".into(), "value".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["snapshot".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let tir = lower_to_tir(&source);
+    let stores: Vec<_> = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("store_var".into())))
+        .collect();
+    assert_eq!(stores.len(), 2);
+    assert!(
+        stores.iter().all(|op| op.results.len() == 1),
+        "destination and optional snapshot share the assignment's one SSA result"
+    );
+    let first_result = stores[0].results[0];
+    let second_result = stores[1].results[0];
+    let effect = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ModuleCacheSet)
+        .unwrap();
+    assert_eq!(effect.operands, vec![first_result, second_result]);
+
+    let lowered = lower_to_simple_ir(&tir);
+    let names = SimpleValueNames::for_function(&tir);
+    let stores: Vec<_> = lowered.iter().filter(|op| op.kind == "store_var").collect();
+    assert_eq!(stores.len(), 2);
+    assert_eq!(stores[0].var, stores[1].var);
+    assert_ne!(stores[0].var.as_deref(), Some("value"));
+    let effect = lowered
+        .iter()
+        .find(|op| op.kind == "module_cache_set")
+        .unwrap();
+    assert_eq!(
+        effect.args,
+        Some(vec![
+            names.value_name(first_result),
+            names.value_name(second_result)
+        ])
+    );
+    assert!(lowered.iter().any(|op| op.kind == "copy_var"
+        && op.out.as_deref() == Some("snapshot")
+        && op.var.as_deref() == Some("value")));
+    let relifted = lower_to_tir(&FunctionIR {
+        ops: lowered,
+        ..source
+    });
+    crate::tir::verify::verify_function(&relifted)
+        .expect("local assignment snapshots must remain valid SSA after the consumer roundtrip");
+}
+
+#[test]
+fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
+    let source = FunctionIR {
+        name: "var_read_identity".into(),
+        params: vec!["value".into(), "arg".into()],
+        ops: vec![
+            OpIR {
+                kind: "const_bool".into(),
+                value: Some(1),
+                out: Some("value".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "transport_probe".into(),
+                var: Some("value".into()),
+                args: Some(vec!["arg".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let tir = lower_to_tir(&source);
+    let names = SimpleValueNames::for_function(&tir);
+    let produced = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ConstBool)
+        .unwrap()
+        .results[0];
+    let probe = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| {
+            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
+        })
+        .unwrap();
+    assert_eq!(
+        probe.attrs.get("_simple_var_operand"),
+        Some(&AttrValue::Int(1))
+    );
+    assert_eq!(probe.operands[1], produced);
+    let lowered = lower_to_simple_ir(&tir);
+    let probe = lowered
+        .iter()
+        .find(|op| op.kind == "transport_probe")
+        .unwrap();
+    assert_eq!(probe.args, Some(vec!["arg".into()]));
+    assert_eq!(probe.var, Some(names.value_name(produced)));
+    assert_ne!(probe.var.as_deref(), Some("value"));
+    let relifted = lower_to_tir(&FunctionIR {
+        ops: lowered,
+        ..source
+    });
+    let produced = relifted
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::ConstBool)
+        .unwrap()
+        .results[0];
+    let probe = relifted
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| {
+            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
+        })
+        .unwrap();
+    assert_eq!(probe.operands.len(), 2);
+    assert_eq!(probe.operands[1], produced);
+}
+
+#[test]
+fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() {
+    for raw in ["none", "True", "False", "", "external_symbol"] {
+        let source = FunctionIR {
+            name: "var_metadata_identity".into(),
+            params: vec!["arg".into()],
+            ops: vec![
+                OpIR {
+                    kind: "transport_probe".into(),
+                    var: Some(raw.into()),
+                    args: Some(vec!["arg".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        let tir = lower_to_tir(&source);
+        let probe = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| {
+                op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
+            })
+            .unwrap();
+        assert!(
+            !probe.attrs.contains_key("_simple_var_operand"),
+            "{raw:?} did not become an SSA read"
+        );
+        assert_eq!(probe.operands.len(), 1);
+        let lowered = lower_to_simple_ir(&tir);
+        let probe = lowered
+            .iter()
+            .find(|op| op.kind == "transport_probe")
+            .unwrap();
+        assert_eq!(probe.var.as_deref(), Some(raw));
+        assert_eq!(
+            probe.args,
+            Some(vec!["arg".into()]),
+            "unresolved var cannot steal args[0]"
+        );
+    }
+}
+
+#[test]
+fn synthesized_return_values_share_the_collision_free_transport_namespace() {
+    let mut func = TirFunction::new(
+        "empty_return_transport".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+    );
+    func.param_names = vec!["_ret_value_0".into()];
+    let mut names = SimpleValueNames::for_function(&func);
+    assert_ne!(names.fresh_temporary("_ret_value_0"), "_ret_value_0");
+    assert_ne!(
+        names.fresh_temporary("_ret_value_0"),
+        names.fresh_temporary("_ret_value_0")
+    );
+    crate::tir::simple_value_names::set_value_names(names);
+    let mut out = Vec::new();
+    super::super::structured::emit_return_ops(&[], true, &mut out);
+    crate::tir::simple_value_names::reset_value_names();
+    let produced = out[0].out.as_ref().unwrap();
+    assert_ne!(produced, "_ret_value_0");
+    assert_eq!(out[1].args.as_ref().unwrap(), &vec![produced.clone()]);
+}
+
 /// Verify that typed TIR does not re-emit integer transport hints.
 #[test]
 fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
@@ -770,6 +1278,12 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
                 ..OpIR::default()
             },
             OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["done_flag".into()]),
+                value: Some(80),
+                ..OpIR::default()
+            },
+            OpIR {
                 kind: "const".into(),
                 value: Some(0),
                 out: Some("value_index".into()),
@@ -780,6 +1294,20 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
                 args: Some(vec!["pair".into(), "value_index".into()]),
                 out: Some("next_value".into()),
                 fast_int: Some(true),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["next_value".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(80),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
                 ..OpIR::default()
             },
         ],

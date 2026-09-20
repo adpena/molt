@@ -283,6 +283,13 @@ impl ScalarRepresentationPlan {
         let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
 
         let mut plan = Self::with_capacity(func_ir.ops.len());
+        // This plan describes the input SimpleIR stream, not the renamed stream
+        // a future lowering could emit. Distinct SSA producers sharing an input
+        // spelling cannot donate one producer's representation to that binding.
+        plan.conflicted_names
+            .extend(names.ambiguous_source_names().map(str::to_string));
+        plan.container_storage_conflicted_names
+            .extend(names.ambiguous_source_names().map(str::to_string));
         plan.typed_slot_store_modes = typed_slot_store_modes;
         plan.seed_container_storage_from_tir(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
@@ -295,7 +302,7 @@ impl ScalarRepresentationPlan {
                 // an explicit stream name carried by a `_simple_out` /
                 // `_simple_result_N` override must win over a colliding
                 // canonical name, not be conflicted out by it.
-                plan.insert_lir_value_weak(names.value_name(arg.id), arg);
+                plan.insert_lir_value_weak(names.source_or_value_name(arg.id), arg);
                 plan.insert_lir_value_weak(names.block_arg_slot(block.id, index), arg);
             }
             for op in &block.ops {
@@ -305,32 +312,24 @@ impl ScalarRepresentationPlan {
                 );
                 for (index, result) in op.result_values.iter().enumerate() {
                     if checked_i64_arithmetic && index == 0 {
-                        // The checked-overflow result's repr is loop-carried-
-                        // ambiguous; register it WEAK under the canonical
-                        // `_v{id}` name so it never displaces or conflicts out
-                        // the strong `_simple_out` fact inserted below (a weak
-                        // insert under the override name would collide with the
-                        // block-arg weak insert above and blacklist the carrier).
-                        // The collision resolver in `SimpleValueNames` keeps a
-                        // checked-overflow result's emitted name equal to this
-                        // canonical name whenever it is free, so the int-carrier
-                        // lookup still resolves; on the rare collision the strong
-                        // `_simple_out` fact (keyed on the emitted name) carries it.
+                        // A synthetic re-lift name is only a weak projection.
+                        // The authored producer identity below is independent
+                        // of the injective name a later emission might allocate.
                         plan.insert_lir_value_weak(
                             SimpleValueNames::canonical_value_name(result.id),
                             result,
                         );
-                    } else if names.has_override(result.id) {
-                        plan.insert_lir_value(names.value_name(result.id), result);
+                    } else if let Some(source) = names.source_value_name(result.id) {
+                        plan.insert_lir_value(source.to_string(), result);
                     } else {
                         plan.insert_lir_value_weak(names.value_name(result.id), result);
                     }
                 }
-                if op.result_values.len() == 1
-                    && let Some(AttrValue::Str(simple_out)) = op.tir_op.attrs.get("_simple_out")
+                if checked_i64_arithmetic
                     && let Some(result) = op.result_values.first()
+                    && let Some(source) = names.source_value_name(result.id)
                 {
-                    plan.insert_lir_value(simple_out.clone(), result);
+                    plan.insert_lir_value(source.to_string(), result);
                 }
             }
         }
@@ -338,7 +337,7 @@ impl ScalarRepresentationPlan {
         // propagation, so a `set`/`dict`/`list`/`tuple` built by `set_new`/etc.
         // (lifted to a type-aliasing `OpCode::Copy` passthrough) is not mistyped
         // as its first element — the root of the membership-dispatch miscompile.
-        plan.seed_container_constructor_facts(func_ir);
+        plan.seed_container_constructor_facts(func_ir, &names);
         if fact_index.has_scalar_alias_or_store_edges()
             && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
         {
@@ -711,7 +710,10 @@ impl ScalarRepresentationPlan {
             let block = &tir_func.blocks[&block_id];
             for (index, arg) in block.args.iter().enumerate() {
                 if let Some(fact) = storage_by_value.get(&arg.id) {
-                    self.insert_container_storage_fact(names.value_name(arg.id), fact.clone());
+                    self.insert_container_storage_fact(
+                        names.source_or_value_name(arg.id),
+                        fact.clone(),
+                    );
                     self.insert_container_storage_fact(
                         names.block_arg_slot(block.id, index),
                         fact.clone(),
@@ -721,15 +723,11 @@ impl ScalarRepresentationPlan {
             for op in &block.ops {
                 for result in &op.results {
                     if let Some(fact) = storage_by_value.get(result) {
-                        self.insert_container_storage_fact(names.value_name(*result), fact.clone());
+                        self.insert_container_storage_fact(
+                            names.source_or_value_name(*result),
+                            fact.clone(),
+                        );
                     }
-                }
-                if op.results.len() == 1
-                    && let Some(AttrValue::Str(simple_out)) = op.attrs.get("_simple_out")
-                    && let Some(result) = op.results.first()
-                    && let Some(fact) = storage_by_value.get(result)
-                {
-                    self.insert_container_storage_fact(simple_out.clone(), fact.clone());
                 }
             }
         }
@@ -758,15 +756,18 @@ impl ScalarRepresentationPlan {
     /// `frozenset` correctly probes through the shared set hash path
     /// (`molt_set_contains` reads set/frozenset by the same layout) and an
     /// unknown-arity tuple is the right "is a tuple" answer.
-    fn seed_container_constructor_facts(&mut self, func_ir: &FunctionIR) {
+    fn seed_container_constructor_facts(&mut self, func_ir: &FunctionIR, names: &SimpleValueNames) {
         for op in &func_ir.ops {
             let Some(out) = op.out.as_deref() else {
                 continue;
             };
+            if names.source_name_is_ambiguous(out) {
+                continue;
+            }
             let Some(ty) = container_constructor_result_ty(op.kind.as_str()) else {
                 continue;
             };
-            // The constructor's container kind is authoritative; force it over
+            // An unambiguous constructor's container kind is authoritative; force it over
             // any (mistyped) LIR-derived fact and clear the conflict/weak markers
             // so a later alias/weak insert cannot blacklist or displace it.
             self.conflicted_names.remove(out);
@@ -1183,21 +1184,12 @@ impl ScalarRepresentationPlan {
         for block_id in block_ids {
             let block = &tir_func.blocks[&block_id];
             for (index, arg) in block.args.iter().enumerate() {
-                push_value(names.value_name(arg.id), arg.id);
+                push_value(names.source_or_value_name(arg.id), arg.id);
                 push_value(names.block_arg_slot(block.id, index), arg.id);
             }
             for op in &block.ops {
-                let simple_out = op.attrs.get("_simple_out").and_then(|attr| match attr {
-                    AttrValue::Str(name) => Some(name.as_str()),
-                    _ => None,
-                });
-                for (result_index, &result) in op.results.iter().enumerate() {
-                    push_value(names.value_name(result), result);
-                    if result_index == 0
-                        && let Some(simple_out) = simple_out
-                    {
-                        push_value(simple_out.to_string(), result);
-                    }
+                for &result in &op.results {
+                    push_value(names.source_or_value_name(result), result);
                 }
             }
         }
@@ -1234,7 +1226,7 @@ impl ScalarRepresentationPlan {
                     let [result] = op.results.as_slice() else {
                         continue;
                     };
-                    let Some(output) = names.explicit_value_name(*result) else {
+                    let Some(output) = names.source_value_name(*result) else {
                         continue;
                     };
                     let Some(&Some(op_index)) = current_ops_by_output.get(output) else {
@@ -1380,6 +1372,9 @@ impl ScalarRepresentationPlan {
         repr: Repr,
     ) -> bool {
         if fact_index.sentinel_outputs.contains(name) || fact_index.delete_targets.contains(name) {
+            return false;
+        }
+        if self.conflicted_names.contains(name) {
             return false;
         }
         match repr {

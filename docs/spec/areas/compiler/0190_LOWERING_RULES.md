@@ -101,6 +101,17 @@ backedge. Named-store destinations remain destinations; they are not an
 alternative source-value authority when projecting copies back to SimpleIR.
 Named stores and deletes without their explicit destination fail at that
 boundary; lowering must not invent a local slot from an SSA result name.
+`SimpleValueNames` allocates injective value, local-slot and block-argument
+transport names. Authored spellings remain provenance, not permission for
+distinct SSA values to overwrite one another. ABI parameter names remain fixed;
+mutable storage with the same authored spelling gets distinct transport.
+Representation facts must follow the corresponding value or authored producer,
+not be recovered from a renamed transport string.
+For generic operations whose `var` field is a read, SSA lifting records the
+exact resolved operand index. Lowering reconstructs that field from the indexed
+SSA operand, never from its old spelling or an assumed last argument; unresolved
+transport-only spellings do not consume an operand. Emission-only temporaries
+share the same collision-safe namespace as values and storage.
 
 Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow
 and SSA construction. Optimization loops require executable backedges; retained
@@ -337,6 +348,10 @@ against its replacement. The old credit remains an explicit IR obligation,
 balanced through a surviving handle; native tracking does not invent or release
 external ownership. Result-carrying stores publish their destination and result
 exactly once, including when the destination is a raw or stack-backed carrier.
+The canonical def/use visitor distinguishes a binding-only `out` destination
+from an optional value result with a distinct explicit `var` destination.
+Store-family results are not metadata, and a destination cannot be counted
+twice as both a binding and an independent result.
 
 Iterator fusion has one shared SSA authority. Native lowering consumes the
 declared iterator, value/done and unpack operations; it must not scan a later
@@ -344,6 +359,16 @@ source window, skip consumers, or replace an observable tuple with a key or
 done flag. A multi-result operation publishes every generated result field,
 including trailing unpack outputs, through the same ownership path as ordinary
 single-result operations.
+Eligibility also proves the generated conditional-result contract: an item read
+must follow a not-done edge for that same dynamic iterator step. A prior loop
+guard, bypass, exception or resume path cannot establish validity. Fusion must
+preserve exhaustion-payload lifetime across intervening effects; preserving the
+effect instruction alone is not enough. Invalid candidates remain materialized.
+
+Luau coroutine wrappers retire their exact execution-context lookup on terminal
+completion, failure or explicit close through the shared frame authority.
+Weak indexing handles abandonment; terminal retirement does not depend on GC
+pressure, collection timing or eventual disappearance of retained wrappers.
 
 Callable capability requirements are independent of exact callable identity.
 Live global loads union the requirements of possible imported provenance and

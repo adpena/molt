@@ -1681,9 +1681,11 @@ local done_second, final_second = coroutine.resume(second)
 assert(done_first and done_second and final_first.depth == 0 and final_second.depth == 0)
 
 local failing_context: any = nil
+local failing_owner: any = nil
 local failing = molt_coroutine_execution_wrap(function(code)
-	local context, _depth, _identity, _owner = molt_frame_enter(code)
+	local context, _depth, _identity, owner = molt_frame_enter(code)
 	failing_context = context
+	failing_owner = owner
 	molt_frame_set_line(context, 57, 6, 14)
 	coroutine.yield("suspended")
 	error({__type="ValueError", __msg="inside coroutine"}, 0)
@@ -1696,6 +1698,7 @@ assert(#failing_error.__molt_traceback_locations == 1)
 assert(failing_error.__molt_traceback_locations[1].name == "inner")
 assert(failing_error.__molt_traceback_locations[1].line == 57)
 assert(failing_context.depth == 0)
+assert(molt_frame_contexts[failing_owner] == nil)
 
 local attachment_failure_context: any = nil
 local attachment_failure = molt_coroutine_execution_wrap(function(code)
@@ -1763,15 +1766,18 @@ assert(completing(outer_slot) == "complete")
 assert(completing_context.depth == 0)
 
 local close_context: any = nil
+local close_owner: any = nil
 local abandoned, close_abandoned = molt_coroutine_execution_wrap(function(code)
-	local context = molt_frame_enter(code)
+	local context, _depth, _identity, owner = molt_frame_enter(code)
 	close_context = context
+	close_owner = owner
 	coroutine.yield("open")
 end)
 assert(abandoned(outer_slot) == "open" and close_context.depth == 1)
 close_abandoned()
 close_abandoned()
 assert(close_context.depth == 0)
+assert(molt_frame_contexts[close_owner] == nil)
 
 local function context_count(): number
 	local count = 0
@@ -1811,21 +1817,17 @@ assert(
 local completed_wrappers = table.create(2000)
 local completed_closers = table.create(2000)
 for index = 1, 2000 do
+	local completed_owner: any = nil
 	local resume, close = molt_coroutine_execution_wrap(function(code)
+		completed_owner = coroutine.running()
 		molt_frame_enter(code)
 		return index
 	end)
 	assert(resume(outer_slot) == index)
+	assert(completed_owner ~= nil and molt_frame_contexts[completed_owner] == nil,
+		"completed wrapper retained its execution-context index")
 	completed_wrappers[index] = resume
 	completed_closers[index] = close
-end
-for _sweep = 1, 64 do
-	if context_count() <= context_baseline + 2 then break end
-	for _round = 1, 8 do
-		local pressure = table.create(250000, _sweep)
-		assert(pressure[250000] == _sweep)
-		pressure = nil
-	end
 end
 local contexts_after_completed = context_count()
 assert(

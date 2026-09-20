@@ -40,6 +40,15 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
         let (left, right, merge, release);
         {
             let mut builder = FunctionBuilder::new(&mut function, &mut context);
+            // Match production: ownership declarations precede entry-block
+            // creation and must not emit instructions before initialization.
+            let mut roots = NativeCleanupRoots::new(
+                &mut builder,
+                &input,
+                &analysis.alias_roots,
+                &ScalarRepresentationPlan::default(),
+                NativeRcAuthority::NativeValueTracking,
+            );
             let entry = builder.create_block();
             left = builder.create_block();
             right = builder.create_block();
@@ -48,13 +57,6 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let params = builder.block_params(entry).to_vec();
-            let roots = NativeCleanupRoots::new(
-                &mut builder,
-                &input,
-                &analysis.alias_roots,
-                &ScalarRepresentationPlan::default(),
-                NativeRcAuthority::NativeValueTracking,
-            );
             assert!(roots.contains("owner"));
             assert!(roots.shares_owner("owner", "alias"));
             assert!(
@@ -131,7 +133,7 @@ fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let values = builder.block_params(entry).to_vec();
-        let roots = NativeCleanupRoots::new(
+        let mut roots = NativeCleanupRoots::new(
             &mut builder,
             &input,
             &analysis.alias_roots,
@@ -202,7 +204,7 @@ fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
         builder.switch_to_block(entry);
         builder.seal_block(entry);
         let inputs = builder.block_params(entry).to_vec();
-        let roots = NativeCleanupRoots::new(
+        let mut roots = NativeCleanupRoots::new(
             &mut builder,
             &input,
             &analysis.alias_roots,

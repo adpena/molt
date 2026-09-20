@@ -10,11 +10,11 @@ use super::super::op_kinds_generated::{
     simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
-use super::super::simple_def_use::visit_simple_ir_defined_names;
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
     is_variable, simple_var_field_is_transport_fact, simple_var_field_is_value_operand,
+    visit_simple_ir_ssa_definitions,
 };
 use super::*;
 
@@ -93,11 +93,13 @@ impl<'a> SsaContext<'a> {
         // If `var` is an input (not a local-slot mutation target or transport
         // spelling), resolve it too. For `copy_var`/`load_var`, an explicit
         // args[0] is the value source and `var` is local-name transport.
+        let mut var_operand_index = None;
         if simple_var_field_is_value_operand(op)
             && let Some(v) = &op.var
             && is_variable(v)
             && let Some(vid) = self.resolve_known_var(v, var_stacks)
         {
+            var_operand_index = Some(operands.len());
             operands.push(vid);
         }
         if dominators::is_exception_transfer_edge(opcode)
@@ -110,14 +112,15 @@ impl<'a> SsaContext<'a> {
             // than appending makes this one authority for CheckException,
             // TryStart, and every generated wire alias.
             operands.clear();
+            var_operand_index = None;
             operands.extend(self.collect_branch_args(target_bid, var_stacks));
         }
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
         let mut result_count = 0;
-        visit_simple_ir_defined_names(op, |name| {
-            result_count += usize::from(is_variable(name));
+        visit_simple_ir_ssa_definitions(op, |_, index| {
+            result_count = result_count.max(index + 1);
         });
         results.reserve(result_count);
         for _ in 0..result_count {
@@ -292,6 +295,12 @@ impl<'a> SsaContext<'a> {
             && let Some(ref v) = op.var
         {
             attrs.insert("_var".into(), AttrValue::Str(v.clone()));
+            // Record only a value actually resolved above. Unresolved or
+            // reserved var spellings remain transport metadata; lowering must
+            // never guess that the final positional argument came from var.
+            if let Some(index) = var_operand_index {
+                attrs.insert("_simple_var_operand".into(), AttrValue::Int(index as i64));
+            }
         }
 
         // Preserve `_original_kind` for unknown Copy fallbacks and for mapped

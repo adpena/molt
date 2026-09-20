@@ -11,6 +11,7 @@ pub(in crate::native_backend::function_compiler) struct NativeCleanupRoots {
     aliases: BTreeMap<String, String>,
     borrowed_params: BTreeSet<String>,
     explicit_credits: BTreeMap<String, Variable>,
+    empty_token: Option<Value>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -72,12 +73,21 @@ impl NativeCleanupRoots {
             aliases: aliases.clone(),
             borrowed_params,
             explicit_credits,
+            empty_token: None,
         }
     }
 
-    pub(super) fn initialize(&self, builder: &mut FunctionBuilder) {
+    pub(super) fn initialize(&mut self, builder: &mut FunctionBuilder) {
         if !self.roots.is_empty() {
+            // Construction declares variables before the entry block exists.
+            // Materialize one dominating sentinel only after entry parameters
+            // are complete, so empty sibling owners share the same SSA value.
+            assert!(
+                self.empty_token.is_none(),
+                "cleanup roots initialized twice"
+            );
             let none = builder.ins().iconst(types::I64, box_none());
+            self.empty_token = Some(none);
             for &token in self.roots.values() {
                 builder.def_var(token, none);
             }
@@ -115,7 +125,7 @@ impl NativeCleanupRoots {
             builder.def_var(credits, remaining);
             if let Some(token) = self.token(name) {
                 let owner = builder.use_var(token);
-                let none = builder.ins().iconst(types::I64, box_none());
+                let none = self.empty_token.expect("a tracked root has an empty token");
                 let remaining_owner = builder.ins().select(extra, owner, none);
                 builder.def_var(token, remaining_owner);
             }
@@ -184,7 +194,7 @@ impl NativeCleanupRoots {
         }
         if let Some(token) = self.token(name) {
             let owned = builder.use_var(token);
-            let none = builder.ins().iconst(types::I64, box_none());
+            let none = self.empty_token.expect("a tracked root has an empty token");
             let borrowed = builder.ins().icmp_imm(
                 cranelift_codegen::ir::condcodes::IntCC::Equal,
                 owned,
@@ -204,7 +214,7 @@ impl NativeCleanupRoots {
     /// Transfer ownership to the caller/runtime without releasing it here.
     pub(super) fn transfer(&self, builder: &mut FunctionBuilder, name: &str) {
         if let Some(token) = self.token(name) {
-            let none = builder.ins().iconst(types::I64, box_none());
+            let none = self.empty_token.expect("a tracked root has an empty token");
             builder.def_var(token, none);
         }
     }
