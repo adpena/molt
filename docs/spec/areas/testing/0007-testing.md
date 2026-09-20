@@ -4,6 +4,14 @@ See `README.md` for quick-start testing commands and CI parity job summaries.
 Minimum required gates are defined in
 `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
 
+Rust tests that compile helper objects or executables use
+`runtime/test_support/cargo_test_artifacts.rs`. The running Cargo test image
+owns their output root and retention; tests do not create a second temp-root or
+destructor cleanup policy. Exclusive owner directories have compact identities,
+with descriptive labels retained as metadata so linker intermediate filenames
+do not inherit unbounded path lengths. Commands use lossless owner-relative
+arguments through the same helper on Windows, macOS and Linux.
+
 ## Version Policy
 Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,
 document the chosen target in specs/tests and keep the differential suite aligned.

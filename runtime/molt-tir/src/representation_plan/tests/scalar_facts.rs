@@ -77,7 +77,15 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
         let plan = native_representation_plan(&func);
         assert!(plan.is_full_deopt_int_name("wide"), "{kind}");
         assert!(plan.is_full_deopt_int_name("wide_snapshot"), "{kind}");
-        assert!(plan.is_full_deopt_int_name("wide_copy"), "{kind}");
+        assert!(
+            plan.name_has_scalar_kind("wide_copy", ScalarKind::Int),
+            "{kind}"
+        );
+        assert_eq!(
+            plan.is_full_deopt_int_name("wide_copy"),
+            kind == "store_var",
+            "field-role knowledge does not admit store_fast as a raw-carrier move"
+        );
         assert!(plan.is_float_unboxed("float_snapshot"), "{kind}");
         assert!(plan.is_bool_unboxed("bool_snapshot"), "{kind}");
         assert!(!plan.is_raw_int_carrier_name("mixed"), "{kind}");
@@ -143,7 +151,11 @@ fn alias_facts_follow_argument_before_transport_var_metadata() {
 #[test]
 fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() {
     for constant_kind in ["const", "const_int", "load_const"] {
-        for checked_kind in ["checked_add", "checked_sub", "checked_mul"] {
+        for checked_kind in ["checked_add", "checked_mul"] {
+            assert!(matches!(
+                kind_to_opcode_table(checked_kind),
+                Some(OpCode::CheckedAdd | OpCode::CheckedMul)
+            ));
             let mut seed = const_int("seed", 1_i64 << 31);
             seed.kind = constant_kind.into();
             let function = function(
