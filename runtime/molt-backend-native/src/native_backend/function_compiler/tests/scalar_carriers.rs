@@ -1,4 +1,8 @@
 use super::*;
+use crate::native_backend::function_compiler::scalar_carriers::{
+    CapturedScalarTransport, merge_rebind_storage_clif_type,
+};
+use crate::native_backend::simple_backend::MergeRebindStorageKind;
 
 #[test]
 fn native_representation_results_keep_discarded_box_effects_and_independent_owners() {
