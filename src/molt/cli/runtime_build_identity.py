@@ -30,7 +30,6 @@ from molt.cli.runtime_identity_schema import (
     _digest,
     _freeze_json,
     _thaw_json,
-    _json_object_mapping as _json_object_mapping,
     _runtime_toolchain_build_python,
 )
 from molt.dx import _memory_bounded_worker_count

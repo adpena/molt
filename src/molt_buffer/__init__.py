@@ -24,12 +24,6 @@ if _MOLT_RUNTIME_ACTIVE:
     _MOLT_BUFFER2D_SET = _molt_intrinsics.require_intrinsic(
         "molt_buffer2d_set", globals()
     )
-else:
-    _MOLT_BUFFER2D_NEW = None
-    _MOLT_BUFFER2D_GET = None
-    _MOLT_BUFFER2D_ROWS = None
-    _MOLT_BUFFER2D_COLS = None
-    _MOLT_BUFFER2D_SET = None
 
 
 def _integer(value, name: str) -> int:
@@ -59,9 +53,9 @@ def _index(value, length: int) -> int:
 
 class Buffer2D:
     _native: object
-    _data: object
-    _fallback_rows: object
-    _fallback_cols: object
+    _data: list[int]
+    _fallback_rows: int
+    _fallback_cols: int
 
     def __init__(self, rows: int, cols: int, init: int = 0) -> None:
         checked_rows = _dimension(rows, "rows")
@@ -69,9 +63,6 @@ class Buffer2D:
         checked_init = _integer(init, "init")
         if _MOLT_RUNTIME_ACTIVE:
             self._native = _MOLT_BUFFER2D_NEW(checked_rows, checked_cols, checked_init)
-            self._data = None
-            self._fallback_rows = None
-            self._fallback_cols = None
             return
 
         cell_count = checked_rows * checked_cols
@@ -81,7 +72,6 @@ class Buffer2D:
             data = [checked_init] * cell_count
         except MemoryError:
             raise MemoryError("buffer2d allocation failed") from None
-        self._native = None
         self._data = data
         self._fallback_rows = checked_rows
         self._fallback_cols = checked_cols

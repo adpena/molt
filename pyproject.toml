@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molt"
-version = "0.0.001"
+version = "0.0.1"
 description = "Molt: A verified subset Python to native/WASM compiler."
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,6 +32,9 @@ constraint-dependencies = [
 [tool.ruff]
 line-length = 88
 target-version = "py312"
+# Explicit filenames from pre-commit must honor the same generated/vendor
+# authority exclusions as directory-wide lint and formatting commands.
+force-exclude = true
 extend-exclude = [
     "bench/corpus",
     "bench/friends/repos",

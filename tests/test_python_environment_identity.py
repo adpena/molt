@@ -34,6 +34,79 @@ _PORTABLE_PATH_ALIASES = [
 ]
 
 
+@pytest.mark.parametrize("authority", ["", "localhost", "LOCALHOST", "LoCaLhOsT"])
+def test_editable_file_uri_preserves_local_path_encoding(tmp_path, authority):
+    root = tmp_path / "source space caf\u00e9"
+    root.mkdir()
+    payload = json.dumps(
+        {
+            "url": root.as_uri().replace("file://", f"file://{authority}", 1),
+            "dir_info": {"editable": True},
+        }
+    ).encode()
+    assert (
+        location.editable_direct_url_path(payload, distribution="molt")
+        == root.resolve()
+    )
+
+
+@pytest.mark.parametrize("suffix", ["%", "%GG", "%2520"])
+def test_editable_file_uri_rejects_ambiguous_percent_encoding(tmp_path, suffix):
+    payload = json.dumps(
+        {
+            "url": tmp_path.as_uri() + "/" + suffix,
+            "dir_info": {"editable": True},
+        }
+    ).encode()
+    with pytest.raises(PythonEnvironmentIdentityError, match="file URL"):
+        location.editable_direct_url_path(payload, distribution="molt")
+
+
+@pytest.mark.parametrize("url", ["file:relative", "file:../source", "file:C:relative"])
+def test_editable_file_uri_relative_paths_keep_owned_diagnostic(url):
+    payload = json.dumps({"url": url, "dir_info": {"editable": True}}).encode()
+    with pytest.raises(PythonEnvironmentIdentityError, match="non-absolute"):
+        location.editable_direct_url_path(payload, distribution="molt")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="DOS drives are Windows-only")
+@pytest.mark.parametrize("separator", [":", "|"])
+def test_editable_file_uri_admits_local_windows_drive_spellings(tmp_path, separator):
+    url = tmp_path.as_uri().replace(
+        tmp_path.drive, tmp_path.drive[0].lower() + separator, 1
+    )
+    payload = json.dumps({"url": url, "dir_info": {"editable": True}}).encode()
+    assert (
+        location.editable_direct_url_path(payload, distribution="molt")
+        == tmp_path.resolve()
+    )
+
+
+@pytest.mark.parametrize("suffix", ["%00", "%FF"])
+def test_editable_file_uri_cannot_alias_invalid_filesystem_text(tmp_path, suffix):
+    payload = json.dumps(
+        {"url": tmp_path.as_uri() + "/" + suffix, "dir_info": {"editable": True}}
+    ).encode()
+    with pytest.raises(PythonEnvironmentIdentityError):
+        location.editable_direct_url_path(payload, distribution="molt")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://localhost/source",
+        "file://remote/source",
+        "file:////remote/source",
+        "file://localhost/source?query",
+        "file://localhost/source#fragment",
+    ],
+)
+def test_editable_file_uri_rejects_nonlocal_authority(url):
+    payload = json.dumps({"url": url, "dir_info": {"editable": True}}).encode()
+    with pytest.raises(PythonEnvironmentIdentityError, match="non-local"):
+        location.editable_direct_url_path(payload, distribution="molt")
+
+
 @pytest.mark.slow
 def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkeypatch):
     """Exercise real imports without relying on isolation-ignored environment flags."""

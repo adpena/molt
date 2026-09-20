@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from generator_io import generated_file_matches, write_generated_text
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -337,6 +338,7 @@ def _format_python(source: str) -> str:
             "-m",
             "ruff",
             "format",
+            "--no-force-exclude",
             "-",
             "--stdin-filename",
             str(OUT_PYTHON),

@@ -9,8 +9,8 @@ from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_publication import durable_replace, staged_file_path
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity, _json_object_mapping
-from molt.exact_json import read_exact
+from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.exact_json import read_exact, string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -114,7 +114,7 @@ class RuntimeWasmExpectedPair:
 
     @classmethod
     def from_dict(cls, value: object) -> RuntimeWasmExpectedPair:
-        payload = _json_object_mapping(value)
+        payload = string_keyed_mapping(value)
         if (
             payload is None
             or set(payload) != {"schema", "shared", "reloc"}
@@ -340,12 +340,12 @@ def _generation_receipts(
 ) -> dict[str, dict[str, object]] | None:
     """Return the exact typed shared/reloc receipt pair or fail closed."""
 
-    receipts = _json_object_mapping(value)
+    receipts = string_keyed_mapping(value)
     if receipts is None or set(receipts) != {"shared", "reloc"}:
         return None
     typed: dict[str, dict[str, object]] = {}
     for kind in ("shared", "reloc"):
-        record = _json_object_mapping(receipts.get(kind))
+        record = string_keyed_mapping(receipts.get(kind))
         if record is None:
             return None
         typed[kind] = dict(record)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from molt.file_hashing import _sha256_bytes
 from molt.file_publication import atomic_write_bytes
@@ -14,6 +15,27 @@ from molt.toolchain_identity import open_stable_regular_file
 
 class ExactJsonError(ValueError):
     """Raised when JSON contains values outside the exact interchange format."""
+
+
+def string_keyed_mapping(value: object) -> Mapping[str, object] | None:
+    """Admit a string-keyed mapping without copying or coercing its contents.
+
+    Values remain untyped until the consuming schema validates them. This is
+    not a recursive JSON validator or a snapshot of a mutable mapping.
+    """
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        return None
+    return cast(Mapping[str, object], value)
+
+
+def string_keyed_object(value: object, *, context: str) -> dict[str, object]:
+    """Copy an admitted object while preserving context-specific diagnostics."""
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{context} must be an object")
+    mapping = string_keyed_mapping(value)
+    if mapping is None:
+        raise ValueError(f"{context} keys must be strings")
+    return dict(mapping)
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

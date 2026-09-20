@@ -6,7 +6,7 @@ These templates assume you already built a release bundle (tar.gz) and want
 ## fpm (recommended)
 
 ```bash
-VERSION=0.0.001
+VERSION=0.0.1
 ARCH=x86_64
 BUNDLE=molt-$VERSION-linux-$ARCH.tar.gz
 

@@ -95,7 +95,21 @@ Rust via rustup:
   `tools/bootstrap_llvm.py` activate `VsDevCmd.bat` from an installed Build
   Tools instance.
 
+## Generated Python formatting
+
+The Ruff exclusions in `pyproject.toml` apply equally to directory scans and
+explicit pre-commit filenames. Generated projections are changed only through
+their owning generator. Generators that intentionally format Python text pass
+`--no-force-exclude` to Ruff for their output path; routine hooks do not rewrite
+or reinterpret that generated authority.
+
 ## Python runtime identity
+
+Editable PEP 610 file locations admit only empty or case-insensitive localhost
+authorities. Their percent-decoded filesystem bytes, Windows drive admission,
+absolute-path and real-directory checks are independent of the host Python minor
+version. Invalid or multiply encoded URLs fail with the environment-identity
+diagnostic; remote authorities and path indirection are not source custody.
 
 Python environment identity captures one immutable loader snapshot in
 `molt.python_native_locations`: the OS-loaded executable, loaded paths, loader

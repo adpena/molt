@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 import functools
-from typing import Any, cast
+from typing import Any
 
 from molt.compiler_analysis.hashing import stable_payload_hash
 from molt.compiler_analysis.schema import (
@@ -13,18 +13,11 @@ from molt.compiler_analysis.schema import (
     TIR_BOUNDARY_CARRIER,
 )
 from molt.frontend.lowering import op_kinds_generated as op_kind_facts
+from molt.exact_json import string_keyed_mapping
 
 BACKEND_IR_BINARY_IMAGE_ANALYSIS_CACHE_KEY_SCHEMA = (
     "backend-ir-binary-image-analysis-cache-key-v2"
 )
-
-
-def _string_key_mapping(value: object) -> Mapping[str, Any] | None:
-    if not isinstance(value, Mapping):
-        return None
-    if not all(isinstance(key, str) for key in value):
-        return None
-    return cast(Mapping[str, Any], value)
 
 
 def backend_ir_op_source_site(
@@ -121,7 +114,7 @@ def backend_ir_binary_image_analysis_payload(ir: Mapping[str, Any]) -> dict[str,
                 call_op_count += 1
             if backend_ir_op_source_site(op)[0] is not None:
                 function_source_ops += 1
-            op_mapping = _string_key_mapping(op)
+            op_mapping = string_keyed_mapping(op)
             if op_mapping is None:
                 continue
             site, source = backend_ir_op_source_site(op_mapping)

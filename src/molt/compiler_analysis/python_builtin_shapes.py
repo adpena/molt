@@ -58,10 +58,9 @@ BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset(
 _SCALAR_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
     {"NoneType", "bool", "int", "float", "complex", "str", "bytes"}
 )
-_REFERENCE_FREE_KINDS: Final[frozenset[ExpressionKind]] = _SCALAR_KINDS | {
-    "bytearray",
-    "range",
-}
+_REFERENCE_FREE_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
+    {*_SCALAR_KINDS, "bytearray", "range"}
+)
 _BUILTIN_CONTAINER_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
     {"bytearray", "tuple", "list", "set", "frozenset", "dict", "range"}
 )

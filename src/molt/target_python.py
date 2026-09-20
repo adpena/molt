@@ -202,7 +202,7 @@ def _parse_source_for_target(
     *,
     filename: str = "<unknown>",
     target_python: TargetPythonVersion,
-) -> ast.AST:
+) -> ast.Module:
     frontend_version = (sys.version_info.major, sys.version_info.minor)
     if frontend_version < target_python.feature_version:
         raise SyntaxError(
