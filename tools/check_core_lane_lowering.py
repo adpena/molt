@@ -16,6 +16,7 @@ for import_root in (ROOT, SRC_ROOT):
 
 from tools import check_stdlib_intrinsics as stdlib_audit  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
+
 DEFAULT_CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 
 

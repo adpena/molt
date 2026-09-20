@@ -608,9 +608,7 @@ def _load_runtime_feature_target_arch_exclusions_from_categories() -> list[
     tuple[str, tuple[str, ...]]
 ]:
     """Return Cargo features wholly unavailable on target architectures."""
-    return list(
-        _RUNTIME_AVAILABILITY.feature_target_arch_exclusions
-    )
+    return list(_RUNTIME_AVAILABILITY.feature_target_arch_exclusions)
 
 
 _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = (

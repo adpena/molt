@@ -127,7 +127,9 @@ def _precompile_receipt_artifacts(stdout: str) -> dict[str, dict[str, object]]:
     try:
         receipt = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"molt-wasm-host returned invalid precompile JSON: {exc}") from exc
+        raise ValueError(
+            f"molt-wasm-host returned invalid precompile JSON: {exc}"
+        ) from exc
     if not isinstance(receipt, dict):
         raise ValueError("molt-wasm-host precompile receipt must be an object")
     if (
@@ -177,7 +179,7 @@ def _precompile_receipt_artifacts(stdout: str) -> dict[str, dict[str, object]]:
 
 
 def _validate_precompile_receipt_outputs(
-    artifacts: dict[str, dict[str, object]]
+    artifacts: dict[str, dict[str, object]],
 ) -> None:
     """Fail before success if the host receipt does not name its published bytes."""
     for name, artifact in artifacts.items():

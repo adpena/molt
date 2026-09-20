@@ -15,7 +15,9 @@ GATE = REPO_ROOT / "tools" / "check_stdlib_intrinsic_surface.py"
 
 
 def _load_gate():
-    spec = importlib.util.spec_from_file_location("check_stdlib_intrinsic_surface", GATE)
+    spec = importlib.util.spec_from_file_location(
+        "check_stdlib_intrinsic_surface", GATE
+    )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -26,7 +28,10 @@ def test_green_on_real_tree_with_check_exits_0() -> None:
     # The gate must be GREEN on the shipped tree (decompositions preserve
     # registration) — else it can't be a tier-1 gate.
     res = run_guarded_test_process(
-        [sys.executable, str(GATE), "--check"], cwd=REPO_ROOT, capture_output=True, text=True
+        [sys.executable, str(GATE), "--check"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert res.returncode == 0, res.stdout + res.stderr
 
@@ -43,13 +48,17 @@ def test_green_on_real_tree_with_check_exits_0() -> None:
         '_lazy_intrinsic("molt_needed_symbol")',
     ],
 )
-def test_detects_required_but_unregistered(tmp_path, monkeypatch, request_source) -> None:
+def test_detects_required_but_unregistered(
+    tmp_path, monkeypatch, request_source
+) -> None:
     gate = _load_gate()
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     (stdlib / "mod.py").write_text(f"x = {request_source}\n", encoding="utf-8")
     gen = tmp_path / "generated.rs"
-    gen.write_text('IntrinsicSpec { name: "molt_other", ... }\n')  # molt_needed_symbol absent
+    gen.write_text(
+        'IntrinsicSpec { name: "molt_other", ... }\n'
+    )  # molt_needed_symbol absent
     monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(gate, "STDLIB_ROOT", stdlib)
     monkeypatch.setattr(gate, "GENERATED_RS", gen)
@@ -58,7 +67,9 @@ def test_detects_required_but_unregistered(tmp_path, monkeypatch, request_source
     assert n_required == n_registered == 1
 
 
-def test_request_discovery_ignores_non_calls_and_deduplicates(tmp_path, monkeypatch) -> None:
+def test_request_discovery_ignores_non_calls_and_deduplicates(
+    tmp_path, monkeypatch
+) -> None:
     gate = _load_gate()
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()

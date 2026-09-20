@@ -357,8 +357,8 @@ def _safe_run_receipt_matches_invocation(
         or receipt_exit != returncode
     ):
         return False
-    for field in ("elapsed_s", "peak_rss_mib", "rss_limit_mib", "timeout_s"):
-        if not finite_number(payload.get(field)):
+    for metric in ("elapsed_s", "peak_rss_mib", "rss_limit_mib", "timeout_s"):
+        if not finite_number(payload.get(metric)):
             return False
     if payload["elapsed_s"] < 0 or payload["peak_rss_mib"] < 0:
         return False
