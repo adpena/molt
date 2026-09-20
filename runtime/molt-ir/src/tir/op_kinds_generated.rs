@@ -505,7 +505,6 @@ pub struct SimpleIrOpShape {
     pub kind: &'static str,
     pub family: &'static str,
     pub operands: usize,
-    pub requires_result: bool,
     pub value_rule: SimpleIrOpValueRule,
 }
 
@@ -514,42 +513,30 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         kind: "code_new",
         family: "code_metadata",
         operands: 9,
-        requires_result: false,
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
         kind: "code_slot_set",
         family: "code_metadata",
         operands: 2,
-        requires_result: false,
         value_rule: SimpleIrOpValueRule::NonNegative,
     },
     SimpleIrOpShape {
         kind: "code_slots_init",
         family: "code_metadata",
         operands: 0,
-        requires_result: false,
         value_rule: SimpleIrOpValueRule::NonNegative,
     },
     SimpleIrOpShape {
         kind: "trace_enter_slot",
         family: "code_metadata",
         operands: 0,
-        requires_result: false,
         value_rule: SimpleIrOpValueRule::NonNegative,
-    },
-    SimpleIrOpShape {
-        kind: "list_repeat_range",
-        family: "range_fill",
-        operands: 4,
-        requires_result: true,
-        value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
         kind: "bytearray_fill_range",
         family: "range_fill",
         operands: 4,
-        requires_result: false,
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
 ];
@@ -560,8 +547,7 @@ pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
         "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[1]),
         "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[2]),
         "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[3]),
-        "list_repeat_range" => Some(&SIMPLEIR_OP_SHAPES[4]),
-        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[5]),
+        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[4]),
         _ => None,
     }
 }
@@ -1131,7 +1117,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "list_new"
         | "list_pop"
         | "list_remove"
-        | "list_repeat_range"
         | "list_reverse"
         | "load_attr"
         | "module_cache_del"

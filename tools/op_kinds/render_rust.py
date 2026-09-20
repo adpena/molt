@@ -965,7 +965,6 @@ def _render_simpleir_op_shapes(data: dict) -> str:
             "    pub kind: &'static str,\n",
             "    pub family: &'static str,\n",
             "    pub operands: usize,\n",
-            "    pub requires_result: bool,\n",
             "    pub value_rule: SimpleIrOpValueRule,\n",
             "}\n\n",
             "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[\n",
@@ -978,7 +977,6 @@ def _render_simpleir_op_shapes(data: dict) -> str:
                 f"        kind: {_rs_string(row['kind'])},\n",
                 f"        family: {_rs_string(row['family'])},\n",
                 f"        operands: {row['operands']},\n",
-                f"        requires_result: {_rs_bool(row['requires_result'])},\n",
                 f"        value_rule: SimpleIrOpValueRule::{_SIMPLEIR_OP_VALUE_RULES[row['value_rule']]},\n",
                 "    },\n",
             ]

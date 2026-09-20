@@ -524,7 +524,7 @@ simpleir_object_model_semantics_kinds = [
     "build_list", "list_new", "alloc", "build_dict", "dict_new",
     "list_append", "list_pop", "list_extend", "list_insert", "list_remove",
     "list_clear", "list_copy", "list_reverse", "list_count", "list_index",
-    "list_index_range", "list_repeat_range",
+    "list_index_range",
     "get_item", "subscript", "index", "dict_get",
     "set_item", "store_subscript", "store_index", "dict_set", "del_index",
     "dict_update", "dict_update_missing", "dict_update_kwstar", "dict_popitem",
@@ -1956,42 +1956,30 @@ classifier_no_heap_move = [
 kind = "code_new"
 family = "code_metadata"
 operands = 9
-requires_result = false
 value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
 kind = "code_slot_set"
 family = "code_metadata"
 operands = 2
-requires_result = false
 value_rule = "nonnegative"
 
 [[simpleir_op_shape]]
 kind = "code_slots_init"
 family = "code_metadata"
 operands = 0
-requires_result = false
 value_rule = "nonnegative"
 
 [[simpleir_op_shape]]
 kind = "trace_enter_slot"
 family = "code_metadata"
 operands = 0
-requires_result = false
 value_rule = "nonnegative"
-
-[[simpleir_op_shape]]
-kind = "list_repeat_range"
-family = "range_fill"
-operands = 4
-requires_result = true
-value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
 kind = "bytearray_fill_range"
 family = "range_fill"
 operands = 4
-requires_result = false
 value_rule = "unconstrained"
 
 [[simpleir_trailing_arg_result]]
