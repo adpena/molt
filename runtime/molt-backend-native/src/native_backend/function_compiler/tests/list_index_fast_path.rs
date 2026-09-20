@@ -6,7 +6,7 @@ fn sum_reduction_detects_canonical_pattern() {
     //   total = 0
     //   for x in list_of_ints:
     //       total += x
-    let ops = vec![
+    let mut ops = vec![
         list_int_new("my_list"),
         // 0: loop_start
         OpIR {
@@ -70,6 +70,15 @@ fn sum_reduction_detects_canonical_pattern() {
     assert_eq!(candidate.add_out_name, "sum_result");
     assert_eq!(candidate.acc_operand_name, "total");
     assert_eq!(candidate.loop_end_idx, 8);
+    // A result-carrying store cannot be erased by the reduction rewrite. The
+    // sentinel and binding-only out shapes still describe the same one slot.
+    ops[5].out = Some("snapshot".into());
+    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_none());
+    ops[5].out = Some("none".into());
+    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_some());
+    ops[5].var = None;
+    ops[5].out = Some("total".into());
+    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_some());
 }
 
 #[test]

@@ -423,12 +423,16 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             // Boxed storage owns a retained binding. Publication precedes
             // release of the displaced occupant on every path, including loops.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let var_name = op.var.as_deref().or(op.out.as_deref());
-            if let Some(name) = var_name {
+            if let Some(binding) = simple_ir_binding(op) {
+                let name = binding.destination;
+                assert!(
+                    !name.is_empty() && name != "none",
+                    "store_var requires a nonempty, non-reserved binding destination"
+                );
                 // A result-carrying store has two definitions: the mutable
                 // destination and an SSA alias of its source. Preserve both;
                 // generated field roles, not out.or(var), own that distinction.
-                if let Some(result) = op.out.as_deref().filter(|result| *result != name) {
+                if let Some(result) = binding.result {
                     let source = args.first().expect("store_var source");
                     let value = var_get_boxed_overflow_safe(
                         module,
@@ -677,9 +681,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
         }
         "delete_var" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let Some(name) = op.var.as_deref().or(op.out.as_deref()) else {
+            let Some(binding) = simple_ir_binding(op) else {
                 panic!("delete_var missing target local");
             };
+            let name = binding.destination;
+            assert!(
+                !name.is_empty() && name != "none",
+                "delete_var requires a nonempty, non-reserved binding destination"
+            );
             if raw_backed_slot_names.contains(name) {
                 panic!(
                     "delete_var target '{name}' was admitted to a raw-backed slot; missing sentinel requires boxed local storage"
