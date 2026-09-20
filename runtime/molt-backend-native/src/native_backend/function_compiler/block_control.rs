@@ -164,11 +164,10 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     // path so later label materialization does not try to reinterpret them as
     // structured phi joins.
     for op in ops {
-        if matches!(op.kind.as_str(), "store_var" | "delete_var")
-            && let Some(name) = op.var.as_ref().or(op.out.as_ref())
-            && is_join_slot_name(name)
+        if let Some(binding) = simple_ir_binding(op)
+            && is_join_slot_name(binding.destination)
         {
-            slot_backed_join_names.insert(name.clone());
+            slot_backed_join_names.insert(binding.destination.to_string());
         }
     }
 
@@ -212,11 +211,10 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     // exception handling: keep values in memory across EH boundaries.
     let mut all_store_var_targets: BTreeSet<String> = BTreeSet::new();
     for op in ops {
-        if matches!(op.kind.as_str(), "store_var" | "delete_var")
-            && let Some(name) = op.var.as_ref().or(op.out.as_ref())
-            && is_persistent_local_slot_name(name)
+        if let Some(binding) = simple_ir_binding(op)
+            && is_persistent_local_slot_name(binding.destination)
         {
-            all_store_var_targets.insert(name.clone());
+            all_store_var_targets.insert(binding.destination.to_string());
         }
     }
     // All persistent store_var targets in exception-bearing or stateful functions
@@ -233,14 +231,15 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
             "exception_pop" => {
                 exception_region_depth = (exception_region_depth - 1).max(0);
             }
-            "store_var" | "delete_var" if exception_region_depth > 0 => {
-                if let Some(name) = op.var.as_ref().or(op.out.as_ref())
-                    && is_persistent_local_slot_name(name)
+            _ if exception_region_depth > 0 && simple_ir_binding(op).is_some() => {
+                if let Some(binding) = simple_ir_binding(op)
+                    && is_persistent_local_slot_name(binding.destination)
                 {
-                    exception_written_locals.insert(name.clone());
+                    let name = binding.destination;
+                    exception_written_locals.insert(name.to_string());
                     if is_join_slot_name(name) {
                         first_seen_join_in_exception
-                            .entry(name.clone())
+                            .entry(name.to_string())
                             .or_insert(true);
                     }
                 }

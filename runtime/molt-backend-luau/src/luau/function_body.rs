@@ -254,9 +254,12 @@ impl LuauBackend {
         // visible across structured control-flow edges in the emitted function.
         for op in ops.iter().filter(|_| flow.is_none()) {
             if op.kind == "store_var"
-                && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+                && let Some(binding) = molt_tir::tir::simple_def_use::simple_ir_binding(op)
+                && !binding.destination.is_empty()
+                && binding.destination != "none"
             {
-                self.hoisted_vars.insert(sanitize_ident(name));
+                self.hoisted_vars
+                    .insert(sanitize_ident(binding.destination));
             }
         }
 

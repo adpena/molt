@@ -249,10 +249,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                 mutable_names.insert(name);
             }
         }
-        if matches!(op.kind.as_str(), "store_var" | "delete_var")
-            && let Some(name) = op.var.as_deref().or(op.out.as_deref())
-        {
-            mutable_names.insert(name);
+        if let Some(binding) = simple_ir_binding(op) {
+            mutable_names.insert(binding.destination);
         }
     }
     let mut var_names: BTreeSet<String> = BTreeSet::new();
@@ -481,18 +479,9 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             }
         }
         for (idx, op) in func_ir.ops.iter().enumerate() {
-            if let Some(out) = op.out.as_deref()
-                && out != "none"
-            {
-                first_def.entry(out).or_insert(idx);
-            }
-            // Local slot mutations logically (re)define their destination variable.
-            if matches!(op.kind.as_str(), "store_var" | "delete_var")
-                && let Some(var) = op.var.as_deref()
-                && var != "none"
-            {
-                first_def.entry(var).or_insert(idx);
-            }
+            crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+                first_def.entry(name).or_insert(idx);
+            });
         }
         // Names that are ever a local-slot mutation target carry loop/handler state in a
         // slot (they are slot-backed and balanced by the store_var retain-new/
@@ -503,11 +492,10 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         // releasing it at its last use cannot free the stored object.
         let mut store_var_targets: BTreeSet<&str> = BTreeSet::new();
         for op in &func_ir.ops {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var")
-                && let Some(name) = op.var.as_deref().or(op.out.as_deref())
-                && name != "none"
+            if let Some(binding) = simple_ir_binding(op)
+                && binding.destination != "none"
             {
-                store_var_targets.insert(name);
+                store_var_targets.insert(binding.destination);
             }
         }
         // Linear indices of every suspend op (yield / await / channel rendezvous).
@@ -770,22 +758,21 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             };
             for idx in (start + 1)..end {
                 let op = &func_ir.ops[idx];
-                if !matches!(op.kind.as_str(), "store_var" | "delete_var") {
+                let Some(binding) = simple_ir_binding(op) else {
                     continue;
-                }
-                if let Some(name) = &op.var
-                    && name != "none"
-                    && counter_name != Some(name.as_str())
+                };
+                let name = binding.destination;
+                if name != "none"
+                    && counter_name != Some(name)
                     && is_persistent_local_slot_name(name)
-                    && seen.insert(name.clone())
+                    && seen.insert(name.to_string())
                 {
-                    assigned.push(name.clone());
+                    assigned.push(name.to_string());
                     let has_pre_loop_store = func_ir.ops[..start].iter().any(|prior| {
-                        matches!(prior.kind.as_str(), "store_var" | "delete_var")
-                            && prior.var.as_deref() == Some(name.as_str())
+                        simple_ir_binding(prior).is_some_and(|prior| prior.destination == name)
                     });
                     if !has_pre_loop_store {
-                        init_needed.push(name.clone());
+                        init_needed.push(name.to_string());
                     }
                 }
             }

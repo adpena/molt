@@ -294,20 +294,18 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     let mut seen_merge_rebind: BTreeSet<String> = BTreeSet::new();
                     for branch_idx in (op_idx + 1)..end_if_idx {
                         let branch_op = &func_ops[branch_idx];
-                        if !matches!(branch_op.kind.as_str(), "store_var" | "delete_var") {
-                            continue;
-                        }
-                        let Some(name) = branch_op.var.as_ref() else {
+                        let Some(binding) = simple_ir_binding(branch_op) else {
                             continue;
                         };
+                        let name = binding.destination;
                         if name == "none" || int_store_target_names.contains(name) {
                             continue;
                         }
                         if last_use.get(name).copied().unwrap_or(0) <= end_if_idx {
                             continue;
                         }
-                        if seen_merge_rebind.insert(name.clone()) {
-                            merge_rebind_names.push(name.clone());
+                        if seen_merge_rebind.insert(name.to_string()) {
+                            merge_rebind_names.push(name.to_string());
                         }
                     }
                 }

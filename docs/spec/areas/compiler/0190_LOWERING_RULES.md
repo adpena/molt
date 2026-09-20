@@ -352,6 +352,12 @@ The canonical def/use visitor distinguishes a binding-only `out` destination
 from an optional value result with a distinct explicit `var` destination.
 Store-family results are not metadata, and a destination cannot be counted
 twice as both a binding and an independent result.
+`simple_ir_binding` is the borrowed destination/result view shared by def/use,
+allocation and backend emission. A `none` output is discarded, not a second
+destination. Raw native, WASM and source-backend stores preserve the incoming
+snapshot independently of later binding changes; SSA/LLVM consumers use the
+same single semantic result. Backend-local `out.or(var)` result classifiers
+must not reinterpret this contract.
 
 Iterator fusion has one shared SSA authority. Native lowering consumes the
 declared iterator, value/done and unpack operations; it must not scan a later

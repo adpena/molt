@@ -361,12 +361,18 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_int_sum_reduction(
                 if store_var_op.is_some() {
                     return None; // multiple store_vars — too complex
                 }
-                let slot = op.var.as_ref()?;
+                let binding = simple_ir_binding(op)?;
+                // The reduction rewrite replaces this store, but does not
+                // materialize a separate source snapshot for an optional result.
+                if binding.result.is_some() {
+                    return None;
+                }
+                let slot = binding.destination;
                 let args = op.args.as_ref()?;
                 if args.is_empty() {
                     return None;
                 }
-                store_var_op = Some((slot.clone(), args[0].clone()));
+                store_var_op = Some((slot.to_string(), args[0].clone()));
             }
             // Structural ops that don't affect correctness:
             "loop_index_next"
