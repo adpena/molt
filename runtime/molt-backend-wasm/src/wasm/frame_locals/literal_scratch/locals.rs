@@ -7,7 +7,6 @@ use wasm_encoder::ValType;
 pub(in crate::wasm) struct WasmLiteralScratchLocals {
     ptr_local: u32,
     len_local: u32,
-    payload: WasmConstLiteralPayload,
 }
 
 impl WasmLiteralScratchLocals {
@@ -17,10 +16,6 @@ impl WasmLiteralScratchLocals {
 
     pub(in crate::wasm) fn len_local(self) -> u32 {
         self.len_local
-    }
-
-    pub(in crate::wasm) fn payload(self) -> WasmConstLiteralPayload {
-        self.payload
     }
 }
 
@@ -52,7 +47,6 @@ impl WasmFrameLocals {
         WasmLiteralScratchLocals {
             ptr_local,
             len_local,
-            payload,
         }
     }
 
@@ -85,11 +79,10 @@ impl WasmFrameLocals {
     ) -> Option<WasmLiteralScratchLocals> {
         let ptr_name = Self::literal_ptr_name(out_name);
         let len_name = Self::literal_len_name(out_name);
-        let payload = self.literal_scratch_payloads.get(out_name).copied()?;
+        self.literal_scratch_payloads.get(out_name)?;
         Some(WasmLiteralScratchLocals {
             ptr_local: self.get(ptr_name.as_str()).copied()?,
             len_local: self.get(len_name.as_str()).copied()?,
-            payload,
         })
     }
 
