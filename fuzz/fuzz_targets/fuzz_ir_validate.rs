@@ -23,7 +23,6 @@ enum ValidationInput {
 /// missing required fields, unusual combinations.
 const EDGE_CASE_KINDS: &[&str] = &[
     "const",
-    "list_repeat_range",
     "bytearray_fill_range",
     "call",
     "return",

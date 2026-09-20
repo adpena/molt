@@ -112,7 +112,9 @@ pub enum OpShapeViolation {
         expected: usize,
         actual: Option<usize>,
     },
-    MissingResult,
+    Retired {
+        reason: &'static str,
+    },
     NonNegativeValue {
         actual: Option<i64>,
     },
@@ -127,6 +129,9 @@ pub struct OpShapeDiagnostic {
 
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let OpShapeViolation::Retired { reason } = self.violation {
+            return write!(f, "retired compiler operation `{}`: {reason}", self.kind);
+        }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match self.violation {
             OpShapeViolation::OperandCount { expected, actual } => {
@@ -136,7 +141,7 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     None => write!(f, "none"),
                 }
             }
-            OpShapeViolation::MissingResult => write!(f, "requires non-`none` `out` destination"),
+            OpShapeViolation::Retired { .. } => unreachable!("retired diagnostic formatted above"),
             OpShapeViolation::NonNegativeValue { actual } => {
                 write!(
                     f,
@@ -149,15 +154,42 @@ impl std::fmt::Display for OpShapeDiagnostic {
 
 impl std::error::Error for OpShapeDiagnostic {}
 
-/// Validate one generated operation shape without assuming a complete program,
-/// value definitions, slot-table initialization or execution-context ownership.
+/// Reject retired spellings and validate generated operand/integer shape without
+/// assuming a complete program, value definitions, slot-table initialization or
+/// execution-context ownership. Existing result-role/cardinality facts remain
+/// the result authority; this checker does not duplicate them.
 /// Both SimpleIR and preserved TIR operations project into this same checker.
 pub fn validate_op_shape(
     kind: &str,
     operands: Option<usize>,
-    has_result: bool,
     value: Option<i64>,
 ) -> Result<(), OpShapeDiagnostic> {
+    let retired = match kind {
+        "store_init" => Some((
+            "store_init",
+            "emit `store`; fresh-slot initialization is derived from typed-slot ownership facts",
+        )),
+        "guarded_field_init" => Some((
+            "guarded_field_init",
+            "emit `guarded_field_set`; initialization cannot be asserted by wire spelling",
+        )),
+        "object_new_bound_stack" => Some((
+            "object_new_bound_stack",
+            "frame placement requires an owner-lifetime proof; use owned `object_new_bound` allocation",
+        )),
+        "list_repeat_range" => Some((
+            "list_repeat_range",
+            "use canonical list construction, multiplication or comprehension lowering",
+        )),
+        _ => None,
+    };
+    if let Some((kind, reason)) = retired {
+        return Err(OpShapeDiagnostic {
+            family: "retired",
+            kind,
+            violation: OpShapeViolation::Retired { reason },
+        });
+    }
     let Some(shape) = simpleir_op_shape(kind) else {
         return Ok(());
     };
@@ -166,8 +198,6 @@ pub fn validate_op_shape(
             expected: shape.operands,
             actual: operands,
         })
-    } else if shape.requires_result && !has_result {
-        Some(OpShapeViolation::MissingResult)
     } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
         && !value.is_some_and(|value| value >= 0)
     {
@@ -186,14 +216,7 @@ pub fn validate_op_shape(
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
-    validate_op_shape(
-        &op.kind,
-        op.args.as_ref().map(Vec::len),
-        op.out
-            .as_deref()
-            .is_some_and(|out| !out.trim().is_empty() && out != "none"),
-        op.value,
-    )
+    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,9 +267,9 @@ mod op_shape_tests {
     fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
         for shape in SIMPLEIR_OP_SHAPES {
             let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
-            assert!(validate_op_shape(shape.kind, Some(shape.operands), true, value).is_ok());
+            assert!(validate_op_shape(shape.kind, Some(shape.operands), value).is_ok());
             assert!(matches!(
-                validate_op_shape(shape.kind, Some(shape.operands + 1), true, value),
+                validate_op_shape(shape.kind, Some(shape.operands + 1), value),
                 Err(OpShapeDiagnostic {
                     violation: OpShapeViolation::OperandCount { .. },
                     ..
@@ -255,7 +278,7 @@ mod op_shape_tests {
             if shape.operands > 0 {
                 for actual in [None, Some(shape.operands - 1)] {
                     assert!(matches!(
-                        validate_op_shape(shape.kind, actual, true, value),
+                        validate_op_shape(shape.kind, actual, value),
                         Err(OpShapeDiagnostic {
                             violation: OpShapeViolation::OperandCount { .. },
                             ..
@@ -263,16 +286,12 @@ mod op_shape_tests {
                     ));
                 }
             } else {
-                assert!(validate_op_shape(shape.kind, None, true, value).is_ok());
+                assert!(validate_op_shape(shape.kind, None, value).is_ok());
             }
-            assert_eq!(
-                validate_op_shape(shape.kind, Some(shape.operands), false, value).is_ok(),
-                !shape.requires_result
-            );
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 for value in [None, Some(-1), Some(i64::MIN)] {
                     assert!(matches!(
-                        validate_op_shape(shape.kind, Some(shape.operands), true, value),
+                        validate_op_shape(shape.kind, Some(shape.operands), value),
                         Err(OpShapeDiagnostic {
                             violation: OpShapeViolation::NonNegativeValue { .. },
                             ..
@@ -280,38 +299,19 @@ mod op_shape_tests {
                     ));
                 }
                 assert!(
-                    validate_op_shape(shape.kind, Some(shape.operands), true, Some(i64::MAX))
-                        .is_ok()
+                    validate_op_shape(shape.kind, Some(shape.operands), Some(i64::MAX)).is_ok()
                 );
             }
         }
         // Source lines are not code-slot identities and retain their distinct policy.
-        assert!(validate_op_shape("line", None, false, None).is_ok());
-        assert!(validate_op_shape("code_new", Some(9), false, None).is_ok());
+        assert!(validate_op_shape("line", None, None).is_ok());
+        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
     }
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
-    match op.kind.as_str() {
-        "store_init" => {
-            return Err(
-                "retired compiler operation `store_init`: emit `store`; fresh-slot initialization is derived from typed-slot ownership facts"
-                    .into(),
-            );
-        }
-        "guarded_field_init" => {
-            return Err(
-                "retired compiler operation `guarded_field_init`: emit `guarded_field_set`; initialization cannot be asserted by wire spelling"
-                    .into(),
-            );
-        }
-        _ => {}
-    }
-    if op.kind == "object_new_bound_stack" {
-        return Err("retired compiler operation `object_new_bound_stack`: frame placement requires an owner-lifetime proof; use owned `object_new_bound` allocation".into());
-    }
-    validate_representation_fields(op)?;
-    validate_simple_op_shape(op).map_err(|error| error.to_string())
+    validate_simple_op_shape(op).map_err(|error| error.to_string())?;
+    validate_representation_fields(op)
 }
 
 pub(crate) fn validate_function_param_types(

@@ -532,27 +532,27 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "code_slot_set": 2,
         "code_slots_init": 0,
         "trace_enter_slot": 0,
-        "list_repeat_range": 4,
         "bytearray_fill_range": 4,
     }
-    assert not shapes["code_new"][
-        "requires_result"
-    ]  # discarded constructors remain valid
+    assert all("requires_result" not in shape for shape in shapes.values())
     for kind in ("code_slot_set", "code_slots_init", "trace_enter_slot"):
         assert shapes[kind]["value_rule"] == "nonnegative"
     rendered = gen.render_rs(data)
     assert "pub const SIMPLEIR_OP_SHAPES" in rendered
     assert "pub fn simpleir_op_shape" in rendered
+    assert '"list_repeat_range"' not in rendered
+    assert "pub requires_result:" not in rendered
     assert "SIMPLEIR_OP_SHAPES.iter().find" not in rendered
     for index, kind in enumerate(shapes):
         assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
     schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
     assert "RANGE_FILL_OP_SCHEMAS" not in schema
+    assert "MissingResult" not in schema
     assert "simpleir_op_shape(kind)" in schema
     for field, value in [
         ("operands", -1),
         ("operands", True),
-        ("requires_result", 1),
+        ("requires_result", True),
         ("value_rule", "default_zero"),
         ("family", ""),
         ("kind", "unregistered_shape"),

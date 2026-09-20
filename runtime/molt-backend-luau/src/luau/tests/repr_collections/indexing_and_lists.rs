@@ -562,37 +562,45 @@ fn test_list_extend_uses_table_move_fast_path() {
 }
 
 #[test]
-fn test_list_repeat_clamps_negative_count_to_empty() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            name: "list_repeat_clamps".to_string(),
-            params: vec!["value".to_string(), "count".to_string()],
-            param_types: Some(vec!["int".to_string(), "int".to_string()]),
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![
-                OpIR {
-                    kind: "list_repeat_range".to_string(),
-                    args: Some(vec!["value".to_string(), "count".to_string()]),
-                    out: Some("v0".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let output = backend.compile(&ir);
-    assert!(
-        output.contains("math.max(0, count)"),
-        "list repetition must clamp negative counts to empty list, got:\n{output}"
-    );
+fn test_retired_range_repeat_is_rejected_before_luau_emission() {
+    for names in [
+        vec!["value", "count"],
+        vec!["value", "start", "stop", "step"],
+    ] {
+        let params: Vec<String> = names.into_iter().map(str::to_owned).collect();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "retired_range_repeat".to_string(),
+                params: params.clone(),
+                param_types: Some(vec!["int".to_string(); params.len()]),
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                execution_context: ExecutionContextPolicy::None,
+                ops: vec![
+                    OpIR {
+                        kind: "list_repeat_range".to_string(),
+                        args: Some(params),
+                        out: Some("v0".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let error = backend
+            .compile_checked(&ir)
+            .expect_err("retired operation must not emit source");
+        assert!(
+            error.contains("retired compiler operation `list_repeat_range`"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

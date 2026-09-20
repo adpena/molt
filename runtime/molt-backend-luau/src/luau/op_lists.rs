@@ -249,19 +249,6 @@ impl LuauBackend {
                     }
                 }
             }
-            "list_repeat_range" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let val = sanitize_ident(&args[0]);
-                    let count = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = molt_pack_list(); do local __n = math.max(0, {count}); rawset({out}, molt_sequence_length_key, __n); for __i = 1, __n do rawset({out}, __i, {val}) end end"
-                    ));
-                } else {
-                    self.emit_line(&format!("local {out} = molt_pack_list()"));
-                }
-            }
             _ => return false,
         }
         true

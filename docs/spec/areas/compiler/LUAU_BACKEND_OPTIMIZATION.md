@@ -205,11 +205,7 @@ Luau tables have two parts: **array** (integer keys 1..n) and **hash** (everythi
 
 1. **`table.create(n)` pre-allocation**: When list size is known at construction or bounded by a range, emit `table.create(n)` instead of `{}`. The backend already does this for some helpers (e.g., `molt_reversed` uses `table.create(len)`) but not for user code.
 
-2. **Inline array construction**: For `list_repeat_range`, emit `table.create(count, val)` instead of a loop:
-   ```luau
-   -- Current: local v1 = {}; for __i = 1, count do table.insert(v1, val) end
-   -- Better:  local v1 = table.create(count, val)
-   ```
+2. **List repetition**: Optimize the canonical list-construction and multiplication path in its shared sequence helper. Preserve packed length, `None` elements, and repeated element identity; do not introduce a second repetition opcode or a raw-table shortcut.
 
 3. **Avoid remaining `table.insert()` in hot loops**: Prefer indexed assignment `result[n] = x; n += 1` where order and shifting semantics do not require `table.insert`.
 

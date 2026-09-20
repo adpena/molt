@@ -32,7 +32,6 @@ fn operation_shape_fixture(
             kind: shape.kind.into(),
             args: Some(params.clone()),
             value,
-            out: shape.requires_result.then(|| "result".into()),
             ..OpIR::default()
         }],
     );
@@ -127,53 +126,145 @@ fn direct_checked_backends_share_generated_shape_rejection() {
             malformed.push(operation_shape_fixture(shape, shape.operands, Some(-1)));
         }
         for ir in malformed {
-            let expected = molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir).unwrap_err();
-            #[cfg(feature = "native-backend")]
-            assert_eq!(
-                molt_backend::SimpleBackend::new()
-                    .compile_checked(ir.clone())
-                    .err()
-                    .expect("native checked admission"),
-                expected
-            );
-            #[cfg(all(feature = "native-backend", feature = "llvm"))]
-            assert_eq!(
-                molt_backend::SimpleBackend::new()
-                    .compile_llvm_checked(ir.clone())
-                    .err()
-                    .expect("LLVM checked admission"),
-                expected
-            );
-            #[cfg(feature = "wasm-backend")]
-            assert_eq!(
-                molt_backend::WasmBackend::new()
-                    .compile_checked(ir.clone())
-                    .err()
-                    .expect("WASM checked admission"),
-                expected
-            );
-            #[cfg(feature = "rust-backend")]
-            {
-                let error = molt_backend::rust::RustBackend::new()
-                    .compile_checked(&ir)
-                    .unwrap_err();
-                assert!(
-                    error.contains(shape.kind) && error.contains("op#0"),
-                    "{error}"
-                );
-            }
-            #[cfg(feature = "luau-backend")]
-            {
-                let error = molt_backend::luau::LuauBackend::new()
-                    .compile_checked(&ir)
-                    .unwrap_err();
-                assert!(
-                    error.contains(shape.kind) && error.contains("op#0"),
-                    "{error}"
-                );
-            }
-            let _ = expected;
+            assert_checked_shape_rejection(&ir);
         }
+    }
+}
+
+fn assert_checked_shape_rejection(ir: &SimpleIR) {
+    let expected = molt_ir::ir_schema::validate_simple_ir_op_shapes(ir).unwrap_err();
+    #[cfg(feature = "native-backend")]
+    assert_eq!(
+        molt_backend::SimpleBackend::new()
+            .compile_checked(ir.clone())
+            .err()
+            .expect("native checked admission"),
+        expected
+    );
+    #[cfg(all(feature = "native-backend", feature = "llvm"))]
+    assert_eq!(
+        molt_backend::SimpleBackend::new()
+            .compile_llvm_checked(ir.clone())
+            .err()
+            .expect("LLVM checked admission"),
+        expected
+    );
+    #[cfg(feature = "wasm-backend")]
+    assert_eq!(
+        molt_backend::WasmBackend::new()
+            .compile_checked(ir.clone())
+            .err()
+            .expect("WASM checked admission"),
+        expected
+    );
+    #[cfg(feature = "rust-backend")]
+    {
+        let error = molt_backend::rust::RustBackend::new()
+            .compile_checked(ir)
+            .unwrap_err();
+        assert!(error.contains(&expected.to_string()), "{error}");
+    }
+    #[cfg(feature = "luau-backend")]
+    {
+        let error = molt_backend::luau::LuauBackend::new()
+            .compile_checked(ir)
+            .unwrap_err();
+        assert!(error.contains(&expected.to_string()), "{error}");
+    }
+    let _ = expected;
+}
+
+#[test]
+fn retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries() {
+    for (kind, operands, reason) in [
+        (
+            "store_init",
+            2,
+            "fresh-slot initialization is derived from typed-slot ownership facts",
+        ),
+        (
+            "guarded_field_init",
+            2,
+            "initialization cannot be asserted by wire spelling",
+        ),
+        (
+            "object_new_bound_stack",
+            1,
+            "frame placement requires an owner-lifetime proof",
+        ),
+        (
+            "list_repeat_range",
+            2,
+            "canonical list construction, multiplication or comprehension lowering",
+        ),
+        (
+            "list_repeat_range",
+            4,
+            "canonical list construction, multiplication or comprehension lowering",
+        ),
+    ] {
+        let params: Vec<String> = (0..operands).map(|index| format!("arg{index}")).collect();
+        let mut function = test_func(
+            "retired_operation",
+            vec![
+                OpIR {
+                    kind: kind.into(),
+                    args: Some(params.clone()),
+                    out: Some("result".into()),
+                    ..OpIR::default()
+                },
+                op("ret_void"),
+            ],
+        );
+        function.params = params;
+        let ir = SimpleIR {
+            functions: vec![function],
+            profile: None,
+        };
+        let encoded = serde_json::to_string(&ir).unwrap();
+        let mut function = serde_json::to_value(&ir.functions[0]).unwrap();
+        function["kind"] = "function".into();
+        let ndjson = format!(
+            "{{\"kind\":\"ir_stream_start\"}}\n{function}\n{{\"kind\":\"ir_stream_end\"}}\n"
+        );
+        for result in [
+            validate_simple_ir(&ir),
+            SimpleIR::from_json_str(&encoded).map(|_| ()),
+            serde_json::from_str::<SimpleIR>(&encoded)
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            SimpleIR::from_ndjson_reader(std::io::Cursor::new(ndjson.as_bytes())).map(|_| ()),
+        ] {
+            let error = result.expect_err("retired spellings must not enter SimpleIR");
+            assert!(
+                error.contains(&format!("retired compiler operation `{kind}`")),
+                "{error}"
+            );
+            assert!(error.contains(reason), "{error}");
+        }
+        let fragment_error =
+            molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0]).unwrap_err();
+        assert!(fragment_error.to_string().contains(reason));
+        assert!(
+            std::panic::catch_unwind(|| {
+                molt_backend::tir::lower_from_simple::lower_to_tir(&ir.functions[0])
+            })
+            .is_err(),
+            "{kind} must fail before isolated lowering"
+        );
+        assert_checked_shape_rejection(&ir);
+    }
+}
+
+#[test]
+fn bytearray_fill_range_preserves_four_operands_without_an_owned_result() {
+    let shape =
+        molt_ir::tir::op_kinds_generated::simpleir_op_shape("bytearray_fill_range").unwrap();
+    for out in [None, Some("none".to_string())] {
+        let mut ir = operation_shape_fixture(shape, 4, None);
+        ir.functions[0].ops[0].out = out;
+        assert!(validate_simple_ir(&ir).is_ok());
+        assert!(SimpleIR::from_json_str(&serde_json::to_string(&ir).unwrap()).is_ok());
     }
 }
 
