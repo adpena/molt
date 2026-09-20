@@ -113,18 +113,19 @@ impl LuauBackend {
                 self.emit_line(&format!("local {out} = {var}"));
             }
             "load_var" | "copy_var" => {
+                // Keep source selection aligned with the shared SimpleIR
+                // field-role authority. With explicit args, `var` is local-name
+                // metadata; without args, `var` is the value source.
+                let Some(source) = molt_tir::tir::simple_def_use::simple_ir_single_read(op) else {
+                    self.emit_unsupported_op_with_reason(
+                        op,
+                        "local copy requires exactly one source operand",
+                    );
+                    return true;
+                };
+                let source = source.name;
                 let out = self.out_var(op);
-                let var = op
-                    .var
-                    .as_deref()
-                    .or_else(|| {
-                        op.args
-                            .as_deref()
-                            .and_then(|args| args.first().map(String::as_str))
-                    })
-                    .map(sanitize_ident)
-                    .unwrap_or_else(|| "_".to_string());
-                self.emit_line(&format!("local {out} = {var}"));
+                self.emit_line(&format!("local {out} = {}", sanitize_ident(source)));
             }
             "load" | "guarded_load" => {
                 let out = self.out_var(op);

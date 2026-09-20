@@ -245,15 +245,13 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
                 }
             }
             "copy_var" | "load_var" if exception_region_depth > 0 => {
-                let candidate = op
-                    .var
-                    .as_ref()
-                    .or_else(|| op.args.as_ref().and_then(|args| args.first()));
-                if let Some(name) = candidate
+                // Use the same generated read roles as copy/load emission:
+                // explicit args make `var` metadata, not another storage home.
+                if let Some(name) = preanalyze_alias_source(op)
                     && is_join_slot_name(name)
                 {
                     first_seen_join_in_exception
-                        .entry(name.clone())
+                        .entry(name.to_string())
                         .or_insert(true);
                 }
             }

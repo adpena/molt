@@ -113,6 +113,24 @@ SSA operand, never from its old spelling or an assumed last argument; unresolved
 transport-only spellings do not consume an operand. Emission-only temporaries
 share the same collision-safe namespace as values and storage.
 
+SimpleIR read analysis and in-place source rewriting share the generated
+field-role walk in `molt-ir::tir::simple_def_use`. For `copy_var` and `load_var`,
+nonempty `args` supply the source and `var` is metadata; absent or empty `args`
+use `var`. Binding destinations, positional results and trailing unpack results
+are never rewritten as reads, even when their names collide. Native slot/PHI
+planning and source-backend declarations consume these same read/definition
+roles. Alias elimination requires exactly one source and immutable names;
+mutable bindings and repeated definitions retain their load points. Object
+identity alone does not authorize erasing guards or owned-reference operations.
+
+Native list-buffer caching consumes the same typed operation effects and
+executable CFG dominance facts. Nested loop effects count; indexed preludes do
+not create a second loop. Unknown or arbitrary-heap effects fence all cached
+buffers, even for calls without list arguments, and rebinding a list invalidates
+its cached identity. A lexical definition before a loop is not evidence that it
+dominates a resumable entry. There is no backend mutation-name whitelist or
+separate alias graph supplying a weaker safety rule.
+
 Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow
 and SSA construction. Optimization loops require executable backedges; retained
 lexical loop markers do not establish reachability or a valid preheader.

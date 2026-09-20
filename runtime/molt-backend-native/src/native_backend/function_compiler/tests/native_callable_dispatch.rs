@@ -1048,6 +1048,11 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         "cleanup_hash_dict_raw",
         "cleanup_hash_set_raw",
         "cleanup_hash_frozenset_raw",
+        "cleanup_copy_join_metadata_absent",
+        "cleanup_copy_join_metadata_empty",
+        "cleanup_load_join_metadata_absent",
+        "cleanup_load_join_metadata_empty",
+        "cleanup_phi_join_metadata",
     ];
     let Some(rustc) = real_rustc() else {
         return;
@@ -1780,6 +1785,85 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         );
         functions.push(function);
     }
+    for (index, kind, empty_args) in [
+        (69, "copy_var", false),
+        (70, "copy_var", true),
+        (71, "load_var", false),
+        (72, "load_var", true),
+    ] {
+        functions.push(cleanup_oracle_function(
+            TARGET_NAMES[index],
+            &["_bb1_arg0", "source"],
+            Some(&["dyn", "dyn"]),
+            vec![
+                OpIR {
+                    kind: "try_start".into(),
+                    value: Some(80),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: kind.into(),
+                    var: Some("_bb1_arg0".into()),
+                    args: Some(vec!["source".into()]),
+                    out: Some("snapshot".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "try_end".into(),
+                    value: Some(80),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_pop".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: kind.into(),
+                    var: Some("_bb1_arg0".into()),
+                    args: empty_args.then(Vec::new),
+                    out: Some("result".into()),
+                    ..OpIR::default()
+                },
+                ret("result"),
+                cleanup_label(80),
+                ret("_bb1_arg0"),
+            ],
+        ));
+    }
+    functions.push(cleanup_oracle_function(
+        TARGET_NAMES[73],
+        &["_bb1_arg0", "source"],
+        Some(&["dyn", "dyn"]),
+        vec![
+            OpIR {
+                kind: "if".into(),
+                args: Some(vec!["_bb1_arg0".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "else".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "end_if".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "phi".into(),
+                args: Some(vec!["source".into(), "source".into()]),
+                out: Some("merged".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".into(),
+                var: Some("_bb1_arg0".into()),
+                args: Some(vec!["source".into()]),
+                out: Some("snapshot".into()),
+                ..OpIR::default()
+            },
+            ret("_bb1_arg0"),
+        ],
+    ));
     assert!(
         functions
             .iter()
@@ -1992,6 +2076,8 @@ pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
 #[no_mangle]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending_fast() }
 #[no_mangle]
+pub extern "C" fn molt_exception_pop() -> u64 { BOXED_NONE }
+#[no_mangle]
 pub extern "C" fn molt_is_truthy(value: u64) -> u64 {
     u64::from(value != BOXED_FALSE)
 }
@@ -2101,6 +2187,11 @@ fn integer_value(bits: u64) -> i64 {
     fn cleanup_binding_source_result(unused: u64) -> u64;
     fn cleanup_binding_shared_identity(snapshot: u64) -> u64;
     fn cleanup_load_argument_precedence(borrowed: u64) -> u64;
+    fn cleanup_copy_join_metadata_absent(original: u64, source: u64) -> u64;
+    fn cleanup_copy_join_metadata_empty(original: u64, source: u64) -> u64;
+    fn cleanup_load_join_metadata_absent(original: u64, source: u64) -> u64;
+    fn cleanup_load_join_metadata_empty(original: u64, source: u64) -> u64;
+    fn cleanup_phi_join_metadata(original: u64, source: u64) -> u64;
     fn cleanup_iterator_discard_value(iterator: u64) -> u64;
     fn cleanup_iterator_discard_done(iterator: u64) -> u64;
     fn cleanup_iterator_discard_both(iterator: u64);
@@ -2360,6 +2451,29 @@ fn main() {
         assert_counts("load argument precedence", 2, 0, 1, 1);
         molt_dec_ref_obj(result);
         assert_counts("load argument precedence caller cleanup", 2, 0, 2, 0);
+        reset();
+        for run in [
+            cleanup_copy_join_metadata_absent as unsafe extern "C" fn(u64, u64) -> u64,
+            cleanup_copy_join_metadata_empty,
+            cleanup_load_join_metadata_absent,
+            cleanup_load_join_metadata_empty,
+        ] {
+            let original = molt_classmethod_new(BOXED_FALSE);
+            let source = molt_classmethod_new(BOXED_TRUE);
+            let result = run(original, source);
+            assert_eq!(result, original, "join-shaped var metadata must not replace the parameter's storage");
+            assert_counts("join metadata preserves borrowed parameters", 2, 1, 0, 3);
+            molt_dec_ref_obj(result);
+            molt_dec_ref_obj(original);
+            molt_dec_ref_obj(source);
+            assert_counts("join metadata caller cleanup", 2, 1, 3, 0);
+            reset();
+        }
+        assert_eq!(cleanup_phi_join_metadata(BOXED_TRUE, BOXED_FALSE), BOXED_TRUE,
+            "phi join discovery must not rebind a load's metadata name on the true edge");
+        assert_eq!(cleanup_phi_join_metadata(BOXED_FALSE, BOXED_TRUE), BOXED_FALSE,
+            "phi join discovery must not rebind a load's metadata name on the false edge");
+        assert_counts("phi metadata preserves scalar parameters", 0, 0, 0, 0);
         reset();
         let iterator = molt_classmethod_new(BOXED_FALSE);
         assert_eq!(cleanup_iterator_discard_value(iterator), BOXED_FALSE);
