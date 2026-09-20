@@ -31,7 +31,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
-    alias_roots: &BTreeMap<String, String>,
     if_to_else: &BTreeMap<usize, usize>,
     if_to_end_if: &BTreeMap<usize, usize>,
     else_to_end_if: &BTreeMap<usize, usize>,
@@ -40,12 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     list_index_fast_paths: &ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     reachable_blocks: &mut BTreeSet<Block>,
     if_stack: &mut Vec<IfFrame>,
     skip_ops: &mut BTreeSet<usize>,
@@ -53,6 +47,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     rc_authority: NativeRcAuthority,
     scalar_fast_paths_enabled: bool,
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
+    local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -194,44 +189,16 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 .current_block()
                 .expect("if requires an active block");
             let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-            let cleanup_obj = drain_cleanup_tracked_dedup_with_authority(
-                rc_authority,
-                &mut carry_obj,
-                last_use,
-                alias_roots,
-                op_idx,
-                None,
-                Some(already_decrefed),
-            );
+            let cleanup_obj =
+                drain_cleanup_candidates(rc_authority, &mut carry_obj, last_use, op_idx, None);
             for name in cleanup_obj {
-                let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Tracked obj var not found in {} op {}: {}",
-                            func_name, op_idx, name
-                        )
-                    });
-                builder.ins().call(local_dec_ref_obj, &[val]);
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-            let cleanup_ptr = drain_cleanup_tracked_dedup_with_authority(
-                rc_authority,
-                &mut carry_ptr,
-                last_use,
-                alias_roots,
-                op_idx,
-                None,
-                Some(already_decrefed),
-            );
+            let cleanup_ptr =
+                drain_cleanup_candidates(rc_authority, &mut carry_ptr, last_use, op_idx, None);
             for name in cleanup_ptr {
-                let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Tracked ptr var not found in {} op {}: {}",
-                            func_name, op_idx, name
-                        )
-                    });
-                builder.ins().call(local_dec_ref_obj, &[val]);
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             let has_explicit_else = if_to_else.contains_key(&op_idx);
             let end_if_idx = match if_to_end_if.get(&op_idx) {
@@ -567,31 +534,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         .map(|(_, then_name, _)| then_name.as_str())
                         .collect();
                     let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                    let cleanup = drain_cleanup_candidates(
                         rc_authority,
                         &mut carry_obj,
                         last_use,
-                        alias_roots,
                         op_idx,
                         None,
-                        Some(already_decrefed),
                     );
-                    let cleanup = protect_cleanup_names(
-                        &mut carry_obj,
-                        cleanup,
-                        &protected_phi_inputs,
-                        alias_roots,
-                        already_decrefed,
-                    );
+                    let cleanup =
+                        protect_cleanup_names(&mut carry_obj, cleanup, &protected_phi_inputs);
                     for name in cleanup {
-                        let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_name, op_idx, name
-                                )
-                            });
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                     if !carry_obj.is_empty() {
                         extend_unique_tracked(
@@ -601,31 +554,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     }
 
                     let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                    let cleanup = drain_cleanup_candidates(
                         rc_authority,
                         &mut carry_ptr,
                         last_use,
-                        alias_roots,
                         op_idx,
                         None,
-                        Some(already_decrefed),
                     );
-                    let cleanup = protect_cleanup_names(
-                        &mut carry_ptr,
-                        cleanup,
-                        &protected_phi_inputs,
-                        alias_roots,
-                        already_decrefed,
-                    );
+                    let cleanup =
+                        protect_cleanup_names(&mut carry_ptr, cleanup, &protected_phi_inputs);
                     for name in cleanup {
-                        let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_name, op_idx, name
-                                )
-                            });
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                     if !carry_ptr.is_empty() {
                         extend_unique_tracked(
@@ -758,31 +697,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             .map(|(_, _, else_name)| else_name.as_str())
                             .collect();
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_obj,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
-                        let cleanup = protect_cleanup_names(
-                            &mut carry_obj,
-                            cleanup,
-                            &protected_phi_inputs,
-                            alias_roots,
-                            already_decrefed,
-                        );
+                        let cleanup =
+                            protect_cleanup_names(&mut carry_obj, cleanup, &protected_phi_inputs);
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked obj var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_obj.is_empty() {
                             extend_unique_tracked(
@@ -792,31 +717,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_ptr,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
-                        let cleanup = protect_cleanup_names(
-                            &mut carry_ptr,
-                            cleanup,
-                            &protected_phi_inputs,
-                            alias_roots,
-                            already_decrefed,
-                        );
+                        let cleanup =
+                            protect_cleanup_names(&mut carry_ptr, cleanup, &protected_phi_inputs);
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked ptr var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_ptr.is_empty() {
                             extend_unique_tracked(
@@ -918,31 +829,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             .map(|(_, then_name, _)| then_name.as_str())
                             .collect();
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_obj,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
-                        let cleanup = protect_cleanup_names(
-                            &mut carry_obj,
-                            cleanup,
-                            &protected_phi_inputs,
-                            alias_roots,
-                            already_decrefed,
-                        );
+                        let cleanup =
+                            protect_cleanup_names(&mut carry_obj, cleanup, &protected_phi_inputs);
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked obj var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_obj.is_empty() {
                             extend_unique_tracked(
@@ -952,31 +849,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_ptr,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
-                        let cleanup = protect_cleanup_names(
-                            &mut carry_ptr,
-                            cleanup,
-                            &protected_phi_inputs,
-                            alias_roots,
-                            already_decrefed,
-                        );
+                        let cleanup =
+                            protect_cleanup_names(&mut carry_ptr, cleanup, &protected_phi_inputs);
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked ptr var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_ptr.is_empty() {
                             extend_unique_tracked(
@@ -1089,24 +972,15 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     }
                     if let Some(block) = builder.current_block() {
                         let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_obj,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked obj var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_obj.is_empty() {
                             extend_unique_tracked(
@@ -1116,24 +990,15 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
 
                         let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+                        let cleanup = drain_cleanup_candidates(
                             rc_authority,
                             &mut carry_ptr,
                             last_use,
-                            alias_roots,
                             op_idx,
                             None,
-                            Some(already_decrefed),
                         );
                         for name in cleanup {
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked ptr var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
+                            cleanup_roots.release(builder, local_dec_ref_obj, &name);
                         }
                         if !carry_ptr.is_empty() {
                             extend_unique_tracked(
@@ -1252,7 +1117,6 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         names.resize(frame.phi_ops.len(), None);
                         names
                     };
-                    let mut remove_names: BTreeSet<&str> = BTreeSet::new();
                     for (idx, (out, _then_name, _else_name)) in frame.phi_ops.iter().enumerate() {
                         let param = frame.phi_params.get(idx).copied().unwrap_or_else(|| {
                             panic!("phi param missing for {out} in {}", func_name)
@@ -1270,6 +1134,23 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             param,
                             out_storage,
                         );
+                        if rc_authority.native_value_tracking_enabled()
+                            && cleanup_roots.contains(out)
+                        {
+                            let boxed = var_get_boxed_overflow_safe(
+                                module,
+                                import_ids,
+                                builder,
+                                import_refs,
+                                sealed_blocks,
+                                vars,
+                                out,
+                                representation_plan,
+                            )
+                            .expect("phi output carrier");
+                            emit_inc_ref_obj(builder, *boxed, local_inc_ref_obj);
+                            cleanup_roots.acquire(builder, local_dec_ref_obj, out, *boxed);
+                        }
                         if let Some(Some(join_name)) = phi_join_slot_names.get(idx) {
                             let join_storage =
                                 merge_rebind_storage_for_name(join_name, representation_plan);
@@ -1303,37 +1184,15 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             );
                         }
                     }
-                    // Refcount tracking is name-based. A `phi` output is a new name for a
-                    // value that came from one of the predecessor blocks. If we don't
-                    // transfer tracking to the output name, the predecessor name can be
-                    // decref'd at the phi boundary while the output is still live,
-                    // leading to UAF/segfaults for object-valued if-expressions.
-                    for (_out, then_name, else_name) in &frame.phi_ops {
-                        remove_names.insert(then_name.as_str());
-                        remove_names.insert(else_name.as_str());
-                    }
-                    tracked_vars.retain(|name: &String| !remove_names.contains(name.as_str()));
-                    tracked_vars_set.retain(|name| !remove_names.contains(name.as_str()));
-                    tracked_obj_vars.retain(|name: &String| !remove_names.contains(name.as_str()));
-                    tracked_obj_vars_set.retain(|name| !remove_names.contains(name.as_str()));
-                    entry_vars.retain(|name, _| !remove_names.contains(name.as_str()));
-                    if let Some(tracked) = block_tracked_obj.get_mut(&frame.merge_block) {
-                        tracked.retain(|name| !remove_names.contains(name.as_str()));
-                        let mut present: BTreeSet<String> = tracked.iter().cloned().collect();
-                        for (out, _then_name, _else_name) in &frame.phi_ops {
-                            if present.insert(out.clone()) {
-                                tracked.push(out.clone());
-                            }
-                        }
-                    }
-                    if let Some(tracked) = block_tracked_ptr.get_mut(&frame.merge_block) {
-                        tracked.retain(|name| !remove_names.contains(name.as_str()));
-                        let mut present: BTreeSet<String> = tracked.iter().cloned().collect();
-                        for (out, _then_name, _else_name) in &frame.phi_ops {
-                            if present.insert(out.clone()) {
-                                tracked.push(out.clone());
-                            }
-                        }
+                    if let Some(block) = builder.current_block() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(block).or_default(),
+                            frame
+                                .phi_ops
+                                .iter()
+                                .map(|(out, _, _)| out.clone())
+                                .collect(),
+                        );
                     }
                 }
             } else {

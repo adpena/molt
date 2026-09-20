@@ -1,7 +1,145 @@
 use super::*;
 
 #[test]
-fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
+fn native_transparency_uses_generated_no_incref_move_authority() {
+    for kind in [
+        "copy",
+        "copy_var",
+        "load_var",
+        "store_var",
+        "identity_alias",
+        "binding_alias",
+        "box",
+        "unbox",
+        "cast",
+        "widen",
+        "guard_tag",
+        "guard_type",
+    ] {
+        let op = OpIR {
+            kind: kind.into(),
+            args: Some(vec!["source".into()]),
+            out: Some("result".into()),
+            ..OpIR::default()
+        };
+        assert_eq!(
+            super::super::preanalyze_alias_source(&op).is_some(),
+            crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(kind),
+            "{kind}",
+        );
+    }
+    for kind in ["box", "unbox", "binding_alias"] {
+        let mut input = super::cleanup_roots::token_test_ir();
+        input.ops.push(OpIR {
+            kind: kind.into(),
+            args: Some(vec!["owner".into()]),
+            out: Some("independent".into()),
+            ..OpIR::default()
+        });
+        let analysis = preanalyze_for_test(&input);
+        assert_eq!(
+            analysis.alias_roots.get("independent").map(String::as_str),
+            Some("independent"),
+            "{kind} must retain its independent cleanup obligation"
+        );
+    }
+}
+
+#[test]
+fn native_definition_scan_preserves_multi_results_and_rejects_metadata() {
+    let mut input = super::cleanup_roots::token_test_ir();
+    input.ops.extend([
+        OpIR {
+            kind: "unpack_sequence".into(),
+            args: Some(vec!["borrowed".into(), "first".into(), "second".into()]),
+            value: Some(2),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "checked_add".into(),
+            var: Some("sum".into()),
+            out: Some("overflow".into()),
+            args: Some(vec!["first".into(), "second".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dec_ref".into(),
+            out: Some("metadata_only".into()),
+            args: Some(vec!["owner".into()]),
+            ..OpIR::default()
+        },
+    ]);
+    let analysis = preanalyze_function_ir(&input, &ScalarRepresentationPlan::default());
+    for name in ["first", "second", "sum", "overflow"] {
+        assert!(
+            analysis.var_names.iter().any(|defined| defined == name),
+            "{name}"
+        );
+        assert!(analysis.alias_roots.contains_key(name), "{name}");
+    }
+    assert!(
+        !analysis
+            .var_names
+            .iter()
+            .any(|name| name == "metadata_only")
+    );
+}
+
+#[test]
+fn result_carrying_store_preserves_both_binding_and_alias_definition() {
+    let mut input = super::cleanup_roots::token_test_ir();
+    input.ops.push(OpIR {
+        kind: "store_var".into(),
+        var: Some("local".into()),
+        out: Some("result".into()),
+        args: Some(vec!["owner".into()]),
+        ..OpIR::default()
+    });
+    let analysis = preanalyze_for_test(&input);
+    assert_eq!(
+        analysis.alias_roots.get("local").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        analysis.alias_roots.get("result").map(String::as_str),
+        Some("owner")
+    );
+}
+
+#[test]
+fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
+    let mut input = super::cleanup_roots::token_test_ir();
+    input.ops = vec![
+        OpIR {
+            kind: "copy".into(),
+            out: Some("snapshot".into()),
+            args: Some(vec!["borrowed".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "alloc".into(),
+            out: Some("borrowed".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret".into(),
+            args: Some(vec!["snapshot".into()]),
+            ..OpIR::default()
+        },
+    ];
+    let analysis = preanalyze_for_test(&input);
+    assert_eq!(
+        analysis.alias_roots.get("snapshot").map(String::as_str),
+        Some("snapshot")
+    );
+    assert_eq!(
+        analysis.alias_roots.get("borrowed").map(String::as_str),
+        Some("borrowed")
+    );
+}
+
+#[test]
+fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
     let func = FunctionIR {
         name: "join_alias".to_string(),
         params: vec![],
@@ -41,14 +179,14 @@ fn preanalysis_treats_store_var_join_slot_as_alias_definition() {
 
     assert_eq!(
         analysis.alias_roots.get("_bb4_arg0").map(String::as_str),
-        Some("src")
+        Some("_bb4_arg0")
     );
     assert_eq!(
         analysis.alias_roots.get("joined").map(String::as_str),
-        Some("src")
+        Some("joined")
     );
-    assert_eq!(analysis.last_use.get("src"), Some(&3));
-    assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    assert_eq!(analysis.last_use.get("src"), Some(&1));
+    assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&2));
 }
 
 #[test]
@@ -85,7 +223,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         "args[0] is the copied value authority; var is local-name metadata"
     );
     assert_eq!(analysis.last_use.get("value"), Some(&1));
-    assert_eq!(analysis.last_use.get("metadata_slot"), Some(&0));
+    assert_eq!(analysis.last_use.get("metadata_slot"), None);
 }
 
 #[test]

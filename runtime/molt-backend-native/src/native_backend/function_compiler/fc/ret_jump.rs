@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::runtime_import_abi::MOLT_INC_REF_OBJ;
 
 /// Single-source kind authority for [`handle_ret_jump_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -14,7 +13,6 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "delete_var",
     "load_var",
     "copy_var",
-    "load_param",
 ];
 use super::OpFlow;
 use super::list_index_fast_path::ListIndexFastPathState;
@@ -41,18 +39,12 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    param_name_set: &BTreeSet<&str>,
     first_defined_at: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
     last_use: &BTreeMap<String, usize>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     reachable_blocks: &mut BTreeSet<Block>,
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
@@ -98,366 +90,41 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     };
 
     match op.kind.as_str() {
-        kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
-            == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
+        kind if matches!(
+            crate::tir::op_kinds_generated::simpleir_return_shape(kind),
+            crate::tir::op_kinds_generated::SimpleIrReturnShape::Value
+                | crate::tir::op_kinds_generated::SimpleIrReturnShape::Void
+        ) =>
         {
-            if !rc_authority.native_value_tracking_enabled() {
-                block_tracked_obj.clear();
-                block_tracked_ptr.clear();
-                tracked_vars.clear();
-                tracked_obj_vars.clear();
-                tracked_vars_set.clear();
-                tracked_obj_vars_set.clear();
-                entry_vars.clear();
-            }
-            if std::env::var("MOLT_DEBUG_RET_CLEANUP").as_deref() == Ok("1")
-                && std::env::var("MOLT_DEBUG_FUNC_FILTER")
-                    .ok()
-                    .is_none_or(|f| func_name.contains(&f))
-            {
-                eprintln!(
-                    "debug ret cleanup func={} op_idx={} ret_var={:?} tracked_obj_vars_len={} tracked_vars_len={}",
-                    func_name,
-                    op_idx,
-                    op.args.as_ref().and_then(|args| args.first()),
-                    tracked_obj_vars.len(),
-                    tracked_vars.len(),
+            let return_name = (crate::tir::op_kinds_generated::simpleir_return_shape(kind)
+                == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value)
+                .then(|| op.args.as_ref().and_then(|args| args.first()))
+                .flatten();
+            let return_value = if let Some(name) = return_name {
+                let value = ensure_boxed_primitive_safe(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    nbc,
+                    representation_plan,
+                    name,
                 );
-                if !tracked_obj_vars.is_empty() {
-                    eprintln!("debug ret cleanup tracked_obj_vars={:?}", tracked_obj_vars);
+                if rc_authority.native_value_tracking_enabled() {
+                    cleanup_roots.return_owned(builder, local_inc_ref_obj, name, value);
                 }
-                if !tracked_vars.is_empty() {
-                    eprintln!("debug ret cleanup tracked_vars={:?}", tracked_vars);
-                }
-            }
-            let Some(var_name) = op.args.as_ref().and_then(|args| args.first()) else {
-                if let Some(block) = builder.current_block() {
-                    // Function return: fully drain per-block tracked values.
-                    if let Some(names) = block_tracked_obj.remove(&block) {
-                        for name in names {
-                            if cleanup_name_excluded(
-                                &name,
-                                None,
-                                param_name_set,
-                                representation_plan,
-                            ) || !mark_cleanup_root_once(
-                                alias_roots,
-                                &mut *already_decrefed,
-                                &name,
-                            ) {
-                                continue;
-                            }
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked obj var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                        }
-                    }
-                    if let Some(names) = block_tracked_ptr.remove(&block) {
-                        for name in names {
-                            if cleanup_name_excluded(
-                                &name,
-                                None,
-                                param_name_set,
-                                representation_plan,
-                            ) || !mark_cleanup_root_once(
-                                alias_roots,
-                                &mut *already_decrefed,
-                                &name,
-                            ) {
-                                continue;
-                            }
-                            let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                                .unwrap_or_else(|| {
-                                    panic!(
-                                        "Tracked ptr var not found in {} op {}: {}",
-                                        func_name, op_idx, name
-                                    )
-                                });
-                            builder.ins().call(local_dec_ref_obj, &[val]);
-                        }
-                    }
-                }
-                for name in tracked_vars.iter() {
-                    if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
-                        continue;
-                    }
-                    if let Some(val) = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                    {
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                }
-                for name in tracked_obj_vars.iter() {
-                    if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
-                        continue;
-                    }
-                    if let Some(val) = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    ) && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                    {
-                        builder.ins().call(local_dec_ref_obj, &[*val]);
-                    }
-                }
-                reachable_blocks.insert(master_return_block);
-                if returns_value {
-                    let none_bits = builder.ins().iconst(types::I64, box_none());
-                    jump_block(&mut *builder, master_return_block, &[none_bits]);
-                } else {
-                    jump_block(&mut *builder, master_return_block, &[]);
-                }
-                *is_block_filled = true;
-                return OpFlow::Continue;
+                value
+            } else {
+                builder.ins().iconst(types::I64, box_none())
             };
-            // Deferred primitive boxing at function return.
-            let ret_val = ensure_boxed_primitive_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                nbc,
-                representation_plan,
-                var_name,
-            );
-            let ret_root = alias_roots
-                .get(var_name)
-                .cloned()
-                .unwrap_or_else(|| var_name.clone());
-            let mut protected_return_aliases: BTreeSet<String> = BTreeSet::from([var_name.clone()]);
-            for (name, root) in alias_roots {
-                if root == &ret_root {
-                    protected_return_aliases.insert(name.clone());
-                }
-            }
-            if let Some(block) = builder.current_block() {
-                // Function return: fully drain per-block tracked values (except return).
-                if let Some(names) = block_tracked_obj.remove(&block) {
-                    for name in names {
-                        if cleanup_name_excluded(
-                            &name,
-                            Some(&protected_return_aliases),
-                            param_name_set,
-                            representation_plan,
-                        ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
-                        {
-                            continue;
-                        }
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                    }
-                }
-                if let Some(names) = block_tracked_ptr.remove(&block) {
-                    for name in names {
-                        if cleanup_name_excluded(
-                            &name,
-                            Some(&protected_return_aliases),
-                            param_name_set,
-                            representation_plan,
-                        ) || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
-                        {
-                            continue;
-                        }
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                    }
-                }
-            }
-            tracked_vars.retain(|v| !protected_return_aliases.contains(v));
-            tracked_obj_vars.retain(|v| !protected_return_aliases.contains(v));
-            for protected in &protected_return_aliases {
-                tracked_vars_set.remove(protected);
-                tracked_obj_vars_set.remove(protected);
-            }
-            for name in tracked_vars.iter() {
-                if cleanup_name_excluded(
-                    name,
-                    Some(&protected_return_aliases),
-                    param_name_set,
-                    representation_plan,
-                ) {
-                    continue;
-                }
-                let val = entry_vars.get(name).copied().or_else(|| {
-                    var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .map(|v| *v)
-                });
-                if let Some(val) = val
-                    && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                }
-            }
-            for name in tracked_obj_vars.iter() {
-                if cleanup_name_excluded(
-                    name,
-                    Some(&protected_return_aliases),
-                    param_name_set,
-                    representation_plan,
-                ) {
-                    continue;
-                }
-                let val = entry_vars.get(name).copied().or_else(|| {
-                    var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .map(|v| *v)
-                });
-                if let Some(val) = val
-                    && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                }
-            }
+            cleanup_roots.release_all(builder, local_dec_ref_obj);
             reachable_blocks.insert(master_return_block);
             if returns_value {
-                jump_block(&mut *builder, master_return_block, &[ret_val]);
+                jump_block(builder, master_return_block, &[return_value]);
             } else {
-                jump_block(&mut *builder, master_return_block, &[]);
-            }
-            *is_block_filled = true;
-        }
-        kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
-            == crate::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
-        {
-            if !rc_authority.native_value_tracking_enabled() {
-                block_tracked_obj.clear();
-                block_tracked_ptr.clear();
-                tracked_vars.clear();
-                tracked_obj_vars.clear();
-                tracked_vars_set.clear();
-                tracked_obj_vars_set.clear();
-                entry_vars.clear();
-            }
-            if let Some(block) = builder.current_block() {
-                // Function return: fully drain per-block tracked values.
-                if let Some(names) = block_tracked_obj.remove(&block) {
-                    for name in names {
-                        if cleanup_name_excluded(&name, None, param_name_set, representation_plan)
-                            || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
-                        {
-                            continue;
-                        }
-                        let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked obj var not found in {} op {}: {}",
-                                    func_name, op_idx, name
-                                )
-                            });
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                    }
-                }
-                if let Some(names) = block_tracked_ptr.remove(&block) {
-                    for name in names {
-                        if cleanup_name_excluded(&name, None, param_name_set, representation_plan)
-                            || !mark_cleanup_root_once(alias_roots, &mut *already_decrefed, &name)
-                        {
-                            continue;
-                        }
-                        let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "Tracked ptr var not found in {} op {}: {}",
-                                    func_name, op_idx, name
-                                )
-                            });
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                    }
-                }
-            }
-            for name in tracked_vars.iter() {
-                if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(val) = entry_vars.get(name)
-                    && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                }
-            }
-            for name in tracked_obj_vars.iter() {
-                if cleanup_name_excluded(name, None, param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(val) = entry_vars.get(name)
-                    && mark_cleanup_root_once(alias_roots, &mut *already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                }
-            }
-            reachable_blocks.insert(master_return_block);
-            if returns_value {
-                let none_bits = builder.ins().iconst(types::I64, box_none());
-                jump_block(&mut *builder, master_return_block, &[none_bits]);
-            } else {
-                jump_block(&mut *builder, master_return_block, &[]);
+                jump_block(builder, master_return_block, &[]);
             }
             *is_block_filled = true;
         }
@@ -466,36 +133,11 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             let target_block = label_blocks[&target_id];
             if let Some(block) = builder.current_block() {
                 let mut carry_obj = block_tracked_obj.remove(&block).unwrap_or_default();
-                let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    rc_authority,
-                    &mut carry_obj,
-                    last_use,
-                    alias_roots,
-                    op_idx,
-                    None,
-                    Some(&mut *already_decrefed),
-                );
+                let cleanup =
+                    drain_cleanup_candidates(rc_authority, &mut carry_obj, last_use, op_idx, None);
                 for name in cleanup {
-                    // Use entry_vars (definition-time Value) for dec_ref,
-                    // not var_get (current SSA Value). If the variable was
-                    // redefined, var_get returns the WRONG object.
-                    let val = entry_vars.get(&name).copied().or_else(|| {
-                        var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &name,
-                            representation_plan,
-                        )
-                        .map(|v| *v)
-                    });
-                    let Some(val) = val else {
-                        continue;
-                    };
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    // The token carries this path's owner across SSA redefinitions.
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 if !carry_obj.is_empty() {
                     extend_unique_tracked(
@@ -505,33 +147,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
 
                 let mut carry_ptr = block_tracked_ptr.remove(&block).unwrap_or_default();
-                let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    rc_authority,
-                    &mut carry_ptr,
-                    last_use,
-                    alias_roots,
-                    op_idx,
-                    None,
-                    Some(&mut *already_decrefed),
-                );
+                let cleanup =
+                    drain_cleanup_candidates(rc_authority, &mut carry_ptr, last_use, op_idx, None);
                 for name in cleanup {
-                    let val = entry_vars.get(&name).copied().or_else(|| {
-                        var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &name,
-                            representation_plan,
-                        )
-                        .map(|v| *v)
-                    });
-                    let Some(val) = val else {
-                        continue;
-                    };
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 if !carry_ptr.is_empty() {
                     extend_unique_tracked(
@@ -679,24 +298,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             // br_if terminates the current block and can transfer control to either
             // successor. Carry all live tracked values into both.
             let mut carry_obj = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-            let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                rc_authority,
-                &mut carry_obj,
-                last_use,
-                alias_roots,
-                op_idx,
-                None,
-                Some(&mut *already_decrefed),
-            );
+            let cleanup =
+                drain_cleanup_candidates(rc_authority, &mut carry_obj, last_use, op_idx, None);
             for name in cleanup {
-                let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Tracked obj var not found in {} op {}: {}",
-                            func_name, op_idx, name
-                        )
-                    });
-                builder.ins().call(local_dec_ref_obj, &[val]);
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             if !carry_obj.is_empty() {
                 extend_unique_tracked(
@@ -709,24 +314,10 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 );
             }
             let mut carry_ptr = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-            let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                rc_authority,
-                &mut carry_ptr,
-                last_use,
-                alias_roots,
-                op_idx,
-                None,
-                Some(&mut *already_decrefed),
-            );
+            let cleanup =
+                drain_cleanup_candidates(rc_authority, &mut carry_ptr, last_use, op_idx, None);
             for name in cleanup {
-                let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Tracked ptr var not found in {} op {}: {}",
-                            func_name, op_idx, name
-                        )
-                    });
-                builder.ins().call(local_dec_ref_obj, &[val]);
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             if !carry_ptr.is_empty() {
                 extend_unique_tracked(
@@ -829,16 +420,56 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             // at escape points (function return, call args, heap
             // stores) via ensure_boxed_overflow_safe.
             //
-            // Generic path: for variables inside back-edge loops
-            // (TIR-generated label/jump/br_if control flow), we emit:
-            //   inc_ref_obj(new)
-            //   def_var(name, new)
-            //
-            // For non-loop store_var, drain_cleanup_tracked handles
-            // the final dec_ref at the ret point.
+            // Boxed storage owns a retained binding. Publication precedes
+            // release of the displaced occupant on every path, including loops.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let var_name = op.var.as_deref().or(op.out.as_deref());
             if let Some(name) = var_name {
+                // A result-carrying store has two definitions: the mutable
+                // destination and an SSA alias of its source. Preserve both;
+                // generated field roles, not out.or(var), own that distinction.
+                if let Some(result) = op.out.as_deref().filter(|result| *result != name) {
+                    let source = args.first().expect("store_var source");
+                    let value = var_get_boxed_overflow_safe(
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        sealed_blocks,
+                        vars,
+                        source,
+                        representation_plan,
+                    )
+                    .expect("store_var result source");
+                    if rc_authority.native_value_tracking_enabled()
+                        && native_alias_mints_owner(alias_roots, source, result)
+                    {
+                        if cleanup_roots.contains(result)
+                            && merge_rebind_storage_for_name(source, representation_plan)
+                                == MergeRebindStorageKind::BoxedI64
+                        {
+                            emit_inc_ref_obj(builder, *value, local_inc_ref_obj);
+                        }
+                        cleanup_roots.acquire(builder, local_dec_ref_obj, result, *value);
+                    }
+                    def_var_from_boxed_transport(
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        vars,
+                        representation_plan,
+                        nbc,
+                        result,
+                        *value,
+                    );
+                    if let Some(block) = builder.current_block() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(block).or_default(),
+                            vec![result.to_string()],
+                        );
+                    }
+                }
                 // --- Raw-primary int fast path ---
                 // When source is raw-primary (its Variable holds unboxed i64)
                 // AND destination is proven-int, transfer the raw i64 directly.
@@ -988,78 +619,24 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         return OpFlow::Continue;
                     }
                     let old = builder.ins().stack_load(types::I64, slot, 0);
-                    emit_inc_ref_obj(&mut *builder, *val, local_inc_ref_obj);
+                    if merge_rebind_storage_for_name(&args[0], representation_plan)
+                        == MergeRebindStorageKind::BoxedI64
+                    {
+                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
+                    }
                     builder.ins().stack_store(*val, slot, 0);
                     builder.ins().call(local_dec_ref_obj, &[old]);
                     return OpFlow::Continue;
                 }
-                // Check if this store_var is inside a back-edge loop.
-                // If so, emit inc_ref(new) for correct refcount
-                // management of heap-allocated values (bigints).
-                // Detect if this store_var is inside a back-edge loop
-                // by checking if any jump/br_if in the function targets
-                // a label at a position before the jump.
-                let in_loop = {
-                    let mut found = false;
-                    let mut lbl_pos: std::collections::HashMap<i64, usize> =
-                        std::collections::HashMap::new();
-                    for (i, o) in func_ops.iter().enumerate() {
-                        if matches!(o.kind.as_str(), "label" | "state_label")
-                            && let Some(id) = o.value
-                        {
-                            lbl_pos.insert(id, i);
-                        }
-                    }
-                    for (i, o) in func_ops.iter().enumerate() {
-                        if matches!(o.kind.as_str(), "jump" | "br_if")
-                            && let Some(tid) = o.value
-                            && let Some(&tp) = lbl_pos.get(&tid)
-                            && tp < i
-                            && op_idx >= tp
-                            && op_idx <= i
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                    found
-                };
-                let store_uses_boxed_transport = !representation_plan.is_raw_int_carrier_name(name)
-                    && !representation_plan.is_bool_unboxed(name)
-                    && !representation_plan.is_float_unboxed(name);
-                // RC drop-insertion substrate (design 20, R1 guard — inc
-                // side): when the TIR drop pass processed this function it
-                // already inserted the loop-carried RC ownership transfer
-                // (a `DecRef(old)` before the back-edge; the back-edge passes
-                // the new value's single owned reference to the header phi).
-                // The legacy `inc_ref(new)`-per-iteration path below would
-                // then add an unmatched reference per iteration. This is the
-                // symmetric twin of the `loop_reassign_old_val` dec-side
-                // guard (§4.1) and is NECESSARY for sound activation — but
-                // note it is NOT SUFFICIENT on its own: the broader native
-                // value-tracking RC (`tracked_obj_vars` registration +
-                // `drain_cleanup_tracked_dedup` at exits, retain-at-store /
-                // release-at-scope-exit) still negates the TIR `DecRef(old)`
-                // on loop-carried accumulators. Closing the residual O(n)
-                // leak requires gating that whole system on `drop_inserted`
-                // (the Phase-5 native-RC retirement — see the activation note
-                // in `pass_manager::build_default_pipeline` and design 20
-                // §4.1). The guard here is dormant until the pass is wired.
-                if in_loop
-                    && store_uses_boxed_transport
-                    && rc_authority.native_value_tracking_enabled()
+                // A mutable binding owns a reference independently of its source.
+                // NativeCleanupRoots publishes/replaces this owner after the store;
+                // the TIR lane supplies its own explicit ownership operations.
+                if rc_authority.native_value_tracking_enabled()
+                    && cleanup_roots.contains(name)
+                    && merge_rebind_storage_for_name(&args[0], representation_plan)
+                        == MergeRebindStorageKind::BoxedI64
                 {
-                    // inc_ref the new value so it survives loop iterations.
-                    // No dec_ref for old — drain_cleanup_tracked handles
-                    // final cleanup at function return (lifetimes extended
-                    // by the back-edge detection in preanalysis).
-                    let inc_callee = SimpleBackend::import_runtime_func_id_split(
-                        &mut *module,
-                        &mut *import_ids,
-                        MOLT_INC_REF_OBJ,
-                    );
-                    let inc_local = module.declare_func_in_func(inc_callee, builder.func);
-                    builder.ins().call(inc_local, &[*val]);
+                    emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
                 }
                 def_var_from_boxed_transport(
                     &mut *module,
@@ -1072,6 +649,16 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     name,
                     *val,
                 );
+                if rc_authority.native_value_tracking_enabled() {
+                    cleanup_roots.acquire(builder, local_dec_ref_obj, name, *val);
+                    if let Some(block) = builder.current_block() {
+                        extend_unique_tracked(
+                            block_tracked_obj.entry(block).or_default(),
+                            vec![name.to_string()],
+                        );
+                    }
+                }
+                return OpFlow::Continue;
             } else {
                 // No destination variable name — still need to evaluate
                 // the source for side effects (should not happen in
@@ -1141,21 +728,12 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     missing_val,
                 );
             }
-            remove_tracked_name(&mut *tracked_vars, name);
-            tracked_vars_set.remove(name);
-            remove_tracked_name(&mut *tracked_obj_vars, name);
-            tracked_obj_vars_set.remove(name);
-            entry_vars.remove(name);
-            if let Some(block) = builder.current_block() {
-                if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
-                    remove_tracked_name(tracked, name);
-                }
-                if let Some(tracked) = block_tracked_obj.get_mut(&block) {
-                    remove_tracked_name(tracked, name);
-                }
-            }
             if rc_authority.native_value_tracking_enabled() {
-                builder.ins().call(local_dec_ref_obj, &[old_val]);
+                if slot_backed_join_slots.contains_key(name) {
+                    builder.ins().call(local_dec_ref_obj, &[old_val]);
+                } else {
+                    cleanup_roots.release(builder, local_dec_ref_obj, name);
+                }
             }
             return OpFlow::Continue;
         }
@@ -1208,6 +786,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     out_name,
                                     boxed,
                                 );
+                                if rc_authority.native_value_tracking_enabled() {
+                                    cleanup_roots.acquire(
+                                        builder,
+                                        local_dec_ref_obj,
+                                        out_name,
+                                        boxed,
+                                    );
+                                }
                             }
                         }
                         return OpFlow::Continue;
@@ -1228,8 +814,13 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // freed — the headline O(n) loop-accumulator leak. Skip
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
-                    if rc_authority.native_value_tracking_enabled() {
-                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj);
+                    if rc_authority.native_value_tracking_enabled()
+                        && op
+                            .out
+                            .as_deref()
+                            .is_some_and(|out| cleanup_roots.contains(out))
+                    {
+                        emit_inc_ref_obj(builder, val, local_inc_ref_obj);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {
                         def_var_from_boxed_transport(
@@ -1243,6 +834,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             out_name,
                             val,
                         );
+                        if rc_authority.native_value_tracking_enabled() {
+                            cleanup_roots.acquire(builder, local_dec_ref_obj, out_name, val);
+                        }
                     }
                     return OpFlow::Continue;
                 }
@@ -1333,6 +927,15 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 )
                 .expect("load_var: var not found");
                 if let Some(out_name) = op.out.as_ref().as_ref() {
+                    let source = preanalyze_alias_source(op).expect("variable load source");
+                    if rc_authority.native_value_tracking_enabled()
+                        && native_alias_mints_owner(alias_roots, source, out_name)
+                        && cleanup_roots.contains(out_name)
+                        && merge_rebind_storage_for_name(source, representation_plan)
+                            == MergeRebindStorageKind::BoxedI64
+                    {
+                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
+                    }
                     def_var_from_boxed_transport(
                         &mut *module,
                         &mut *import_ids,
@@ -1385,6 +988,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                                     out_name,
                                     boxed,
                                 );
+                                if rc_authority.native_value_tracking_enabled() {
+                                    cleanup_roots.acquire(
+                                        builder,
+                                        local_dec_ref_obj,
+                                        out_name,
+                                        boxed,
+                                    );
+                                }
                             }
                         }
                         return OpFlow::Continue;
@@ -1405,8 +1016,13 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     // freed — the headline O(n) loop-accumulator leak. Skip
                     // it; the load yields a borrowed alias the TIR pass tracks
                     // in alias-root space.
-                    if rc_authority.native_value_tracking_enabled() {
-                        emit_inc_ref_obj(&mut *builder, val, local_inc_ref_obj);
+                    if rc_authority.native_value_tracking_enabled()
+                        && op
+                            .out
+                            .as_deref()
+                            .is_some_and(|out| cleanup_roots.contains(out))
+                    {
+                        emit_inc_ref_obj(builder, val, local_inc_ref_obj);
                     }
                     if let Some(out_name) = op.out.as_ref().as_ref() {
                         def_var_from_boxed_transport(
@@ -1420,6 +1036,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                             out_name,
                             val,
                         );
+                        if rc_authority.native_value_tracking_enabled() {
+                            cleanup_roots.acquire(builder, local_dec_ref_obj, out_name, val);
+                        }
                     }
                     return OpFlow::Continue;
                 }
@@ -1476,6 +1095,15 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 )
                 .expect("copy_var: src not found");
                 if let Some(out_name) = op.out.as_ref().as_ref() {
+                    let source = preanalyze_alias_source(op).expect("variable load source");
+                    if rc_authority.native_value_tracking_enabled()
+                        && native_alias_mints_owner(alias_roots, source, out_name)
+                        && cleanup_roots.contains(out_name)
+                        && merge_rebind_storage_for_name(source, representation_plan)
+                            == MergeRebindStorageKind::BoxedI64
+                    {
+                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
+                    }
                     def_var_from_boxed_transport(
                         &mut *module,
                         &mut *import_ids,
@@ -1487,25 +1115,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                         out_name,
                         *val,
                     );
-                }
-            }
-        }
-        "load_param" => {
-            // TIR emits load_param for function parameters — map param index
-            // to the corresponding block param value
-            let param_idx = op.value.unwrap_or(0) as usize;
-            if let Some(out_name) = op.out.as_ref().as_ref() {
-                let entry_block = builder.func.layout.entry_block().unwrap();
-                let param_val = {
-                    let params = builder.func.dfg.block_params(entry_block);
-                    if param_idx < params.len() {
-                        Some(params[param_idx])
-                    } else {
-                        None
-                    }
-                };
-                if let Some(val) = param_val {
-                    def_var_named(&mut *builder, vars, out_name, val);
                 }
             }
         }

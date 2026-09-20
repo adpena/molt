@@ -87,16 +87,3 @@ pub(crate) fn switch_to_block_tracking(
     builder.switch_to_block(block);
     *is_block_filled = false;
 }
-
-#[cfg(feature = "native-backend")]
-pub(crate) fn resolve_cleanup_value(
-    builder: &mut FunctionBuilder,
-    vars: &BTreeMap<String, Variable>,
-    entry_vars: &BTreeMap<String, Value>,
-    name: &str,
-) -> Option<Value> {
-    entry_vars
-        .get(name)
-        .copied()
-        .or_else(|| var_get(builder, vars, name).map(|v| *v))
-}

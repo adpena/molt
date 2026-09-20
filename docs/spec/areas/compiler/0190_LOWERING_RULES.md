@@ -95,8 +95,18 @@ so structural inlining cannot consume the entry block. Missing edge operands or
 labels fail at this shared boundary instead of borrowing a lexical value or
 emitting a backend-specific fallthrough.
 
+SSA operands also own copy sources after rewriting. Original source-name
+metadata cannot override an operand selected by a join, substitution or loop
+backedge. Named-store destinations remain destinations; they are not an
+alternative source-value authority when projecting copies back to SimpleIR.
+Named stores and deletes without their explicit destination fail at that
+boundary; lowering must not invent a local slot from an SSA result name.
+
 Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow
-and SSA construction. Source-ordered SimpleIR motion cannot prove dominance of
+and SSA construction. Optimization loops require executable backedges; retained
+lexical loop markers do not establish reachability or a valid preheader.
+Hoisted operands must dominate the destination through the canonical CFG.
+Source-ordered SimpleIR motion cannot prove dominance of
 resumption edges into a loop and must not run before that analysis. Native,
 LLVM and WASM preparation and the frontend midend no longer have a second
 constant-hoisting pass;
@@ -304,6 +314,36 @@ exact operand counts, payload sizes and offsets remain required. Layout facts
 do not establish callback-free construction or lifetime. Escape analysis uses
 the terminator's canonical direct-value and edge projections, so new control
 forms cannot silently omit an ownership obligation.
+
+Native cleanup follows executable ownership, not the order in which branches
+are emitted. Functions already processed by TIR drop insertion allocate no
+native cleanup tokens. Direct native tracking carries each boxed ownership root
+through Cranelift SSA: acquisition publishes the new owner before releasing a
+displaced owner, release consumes the current path's token, and return transfers
+it. Borrowed inputs start without an owned credit; returning a borrowed value
+acquires the caller's credit. Joins and loop backedges carry predecessor state,
+so cleanup in one branch cannot suppress a sibling's obligation.
+
+Generated alias facts distinguish shared-root value moves from independent
+retained results. BoxVal and UnboxVal retain independent ownership when projected
+to boxed SimpleIR; equal bits do not imply one credit. Mutable bindings and their
+snapshots cannot be conflated by a static alias map. Candidate liveness lists
+schedule cleanup but do not constitute a second release-state authority. Raw
+scalar carriers remain outside boxed-object cleanup.
+
+No-result explicit retains are credits for the current binding epoch. Rebinding
+starts a new epoch and cannot spend the previous object's explicit credit
+against its replacement. The old credit remains an explicit IR obligation,
+balanced through a surviving handle; native tracking does not invent or release
+external ownership. Result-carrying stores publish their destination and result
+exactly once, including when the destination is a raw or stack-backed carrier.
+
+Iterator fusion has one shared SSA authority. Native lowering consumes the
+declared iterator, value/done and unpack operations; it must not scan a later
+source window, skip consumers, or replace an observable tuple with a key or
+done flag. A multi-result operation publishes every generated result field,
+including trailing unpack outputs, through the same ownership path as ordinary
+single-result operations.
 
 Callable capability requirements are independent of exact callable identity.
 Live global loads union the requirements of possible imported provenance and

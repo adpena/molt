@@ -111,12 +111,6 @@ struct SsaContext<'a> {
     params: Vec<String>,
     /// Shared `None` value used for known variables without a reaching def.
     undef_value: Option<ValueId>,
-    /// Global iter_next fusion map: op_idx → (done_index_idx, val_index_idx,
-    /// done_var, val_var).  Built by scanning the raw op stream BEFORE the
-    /// CFG splits blocks, so the pattern spans across check_exception boundaries.
-    iter_fuse_map: HashMap<usize, (usize, usize, String, String)>,
-    /// Op indices to skip globally (fused into IterNextUnboxed).
-    iter_fuse_skip: HashSet<usize>,
     /// Source-site fact active at each SimpleIR op index, derived once from
     /// frontend `line` markers plus per-op source fields.
     source_sites: Vec<Option<SourceSite>>,
@@ -149,8 +143,6 @@ impl<'a> SsaContext<'a> {
             pending_inline_consts: Vec::new(),
             params: params.to_vec(),
             undef_value: None,
-            iter_fuse_map: HashMap::new(),
-            iter_fuse_skip: HashSet::new(),
             source_sites: Self::build_source_sites(ops),
             aug_predecessors: vec![Vec::new(); n],
             aug_dominators: vec![None; n],
@@ -218,7 +210,6 @@ impl<'a> SsaContext<'a> {
         if self.cfg.blocks.is_empty() {
             return;
         }
-        self.build_iter_fuse_map();
         self.gather_defs_uses();
         self.build_augmented_cfg();
         self.compute_dominance_frontiers();
@@ -337,74 +328,7 @@ impl<'a> SsaContext<'a> {
             let op_indices = self.block_info[bid].op_indices.clone();
 
             for &op_idx in &op_indices {
-                // Skip ops globally fused into IterNextUnboxed.
-                if self.iter_fuse_skip.contains(&op_idx) {
-                    continue;
-                }
                 let op = &self.ops[op_idx];
-
-                // Fused iter_next_unboxed: emit a single TIR op with two results
-                // (value, done_flag) instead of iter_next + 2x index.
-                if let Some(fuse_entry) = self.iter_fuse_map.get(&op_idx) {
-                    let done_var = fuse_entry.2.clone();
-                    let val_var = fuse_entry.3.clone();
-                    let iter_vid = op
-                        .args
-                        .as_ref()
-                        .and_then(|a| a.first())
-                        .and_then(|a| Self::resolve_var(a, &var_stacks))
-                        .or(self.undef_value)
-                        .expect("iter arg not found");
-                    let val_vid = self.fresh_value_typed();
-                    let done_vid = self.fresh_value_typed();
-                    let mut attrs = AttrDict::new();
-                    attrs.insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
-                    attrs.insert("_simple_result_0".into(), AttrValue::Str(val_var.clone()));
-                    attrs.insert("_simple_result_1".into(), AttrValue::Str(done_var.clone()));
-                    let mut tir_op = TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::IterNextUnboxed,
-                        operands: vec![iter_vid],
-                        results: vec![val_vid, done_vid],
-                        attrs,
-                        source_span: None,
-                    };
-                    self.stamp_source_identity(&mut tir_op, op_idx);
-                    // Push val and done onto their variable stacks.
-                    var_stacks.entry(val_var.clone()).or_default().push(val_vid);
-                    block_pushed
-                        .iter_mut()
-                        .find(|(v, _)| v == &val_var)
-                        .map(|(_, c)| *c += 1)
-                        .unwrap_or_else(|| block_pushed.push((val_var.clone(), 1)));
-                    var_stacks
-                        .entry(done_var.clone())
-                        .or_default()
-                        .push(done_vid);
-                    block_pushed
-                        .iter_mut()
-                        .find(|(v, _)| v == &done_var)
-                        .map(|(_, c)| *c += 1)
-                        .unwrap_or_else(|| block_pushed.push((done_var.clone(), 1)));
-                    // Also push the pair var (referenced by loop_break_if_true).
-                    let pair_var = op.out.clone().unwrap_or_default();
-                    if !pair_var.is_empty() && pair_var != "none" {
-                        var_stacks
-                            .entry(pair_var.clone())
-                            .or_default()
-                            .push(done_vid);
-                        block_pushed
-                            .iter_mut()
-                            .find(|(v, _)| v == &pair_var)
-                            .map(|(_, c)| *c += 1)
-                            .unwrap_or_else(|| block_pushed.push((pair_var, 1)));
-                    }
-                    for const_op in self.pending_inline_consts.drain(..) {
-                        tir_blocks[bid].ops.push(const_op);
-                    }
-                    tir_blocks[bid].ops.push(tir_op);
-                    continue;
-                }
 
                 let tir_op = self.translate_op(op_idx, op, &var_stacks);
 
@@ -595,6 +519,7 @@ impl<'a> SsaContext<'a> {
             }
         }
 
+        self.fuse_iter_next_projections(&mut tir_blocks);
         self.tir_blocks = tir_blocks;
     }
 
@@ -667,6 +592,386 @@ mod tests {
     // Helper: count block arguments across all blocks.
     fn total_block_args(output: &SsaOutput) -> usize {
         output.blocks.iter().map(|b| b.args.len()).sum()
+    }
+
+    mod iter_next_fusion {
+        use super::*;
+
+        fn lower(ops: &[OpIR], params: &[&str]) -> SsaOutput {
+            let cfg = CFG::build(ops);
+            let params: Vec<String> = params.iter().map(|name| (*name).to_string()).collect();
+            convert_to_ssa_with_params(&cfg, ops, &params)
+        }
+
+        fn opcode_count(output: &SsaOutput, opcode: OpCode) -> usize {
+            output
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .filter(|op| op.opcode == opcode)
+                .count()
+        }
+
+        fn assert_fused(output: &SsaOutput) {
+            assert_eq!(opcode_count(output, OpCode::IterNextUnboxed), 1);
+            assert_eq!(opcode_count(output, OpCode::IterNext), 0);
+            assert_eq!(opcode_count(output, OpCode::Index), 0);
+        }
+
+        fn assert_materialized(output: &SsaOutput) {
+            assert_eq!(opcode_count(output, OpCode::IterNextUnboxed), 0);
+            assert_eq!(opcode_count(output, OpCode::IterNext), 1);
+            assert_eq!(opcode_count(output, OpCode::Index), 2);
+        }
+
+        fn basic_projection_ops() -> Vec<OpIR> {
+            vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ]
+        }
+
+        #[test]
+        fn exact_ordered_pair_projections_fuse() {
+            let ops = basic_projection_ops();
+            let output = lower(&ops, &["iter"]);
+            assert_fused(&output);
+            let fused = output
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .find(|op| op.opcode == OpCode::IterNextUnboxed)
+                .expect("iter_next projections must fuse");
+            assert_eq!(
+                fused.attrs.get("_simple_result_0"),
+                Some(&AttrValue::Str("value".into()))
+            );
+            assert_eq!(
+                fused.attrs.get("_simple_result_1"),
+                Some(&AttrValue::Str("done".into()))
+            );
+        }
+
+        #[test]
+        fn intervening_effect_is_preserved() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("module_cache_set", &["done", "iter"], "none"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+            let output = lower(&ops, &["iter"]);
+
+            assert_fused(&output);
+            assert_eq!(opcode_count(&output, OpCode::ModuleCacheSet), 1);
+        }
+
+        #[test]
+        fn fused_result_name_becomes_visible_only_at_projection_site() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_val_out("const", 7, "done"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("module_cache_set", &["done", "iter"], "none"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+            let output = lower(&ops, &["iter"]);
+            assert_fused(&output);
+
+            let old_done = output
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .find(|op| op.opcode == OpCode::ConstInt && op.source_op_index() == Some(2))
+                .and_then(|op| op.results.first())
+                .copied()
+                .expect("the prior done definition must remain materialized");
+            let fused_done = output
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .find(|op| op.opcode == OpCode::IterNextUnboxed)
+                .and_then(|op| op.results.get(1))
+                .copied()
+                .expect("fused done result");
+            let effect_done = output
+                .blocks
+                .iter()
+                .flat_map(|block| block.ops.iter())
+                .find(|op| op.opcode == OpCode::ModuleCacheSet)
+                .and_then(|op| op.operands.first())
+                .copied()
+                .expect("effect must read the old done binding");
+
+            assert_eq!(effect_done, old_done);
+            assert_ne!(effect_done, fused_done);
+        }
+
+        #[test]
+        fn extra_pair_consumer_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("is", &["pair", "iter"], "extra"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
+
+        #[test]
+        fn shadowed_selector_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("copy", &["selector_override"], "idx1"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter", "selector_override"]));
+        }
+
+        #[test]
+        fn branch_reassignment_ambiguity_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["cond".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_val("jump", 20),
+                op_val("label", 10),
+                op_args_out("copy", &["other_pair"], "pair"),
+                op_val("jump", 20),
+                op_val("label", 20),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter", "cond", "other_pair"]));
+        }
+
+        #[test]
+        fn unused_mixed_forwarding_rejects_pair_elimination() {
+            let cfg_ops = vec![
+                OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec!["cond".to_string()]),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                op_val("jump", 20),
+                op_val("label", 10),
+                op_val("jump", 20),
+                op_val("label", 20),
+                op("ret_void"),
+            ];
+            let cfg = CFG::build(&cfg_ops);
+            assert_eq!(cfg.blocks.len(), 4, "synthetic diamond CFG shape changed");
+            let mut context = SsaContext::new("mixed_forwarding", &cfg, &cfg_ops, &[]);
+            context.build_augmented_cfg();
+
+            let mut idx1_attrs = AttrDict::new();
+            idx1_attrs.insert("value".into(), AttrValue::Int(1));
+            let mut idx0_attrs = AttrDict::new();
+            idx0_attrs.insert("value".into(), AttrValue::Int(0));
+            let mut iter_attrs = AttrDict::new();
+            iter_attrs.insert("_simple_out".into(), AttrValue::Str("pair".into()));
+            let mut done_attrs = AttrDict::new();
+            done_attrs.insert("_simple_out".into(), AttrValue::Str("done".into()));
+            let mut value_attrs = AttrDict::new();
+            value_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
+
+            let mut blocks = vec![
+                TirBlock {
+                    id: BlockId(0),
+                    args: vec![],
+                    ops: vec![
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::ConstInt,
+                            operands: vec![],
+                            results: vec![ValueId(1)],
+                            attrs: idx1_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::ConstInt,
+                            operands: vec![],
+                            results: vec![ValueId(2)],
+                            attrs: idx0_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::IterNext,
+                            operands: vec![ValueId(0)],
+                            results: vec![ValueId(3)],
+                            attrs: iter_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Index,
+                            operands: vec![ValueId(3), ValueId(1)],
+                            results: vec![ValueId(4)],
+                            attrs: done_attrs,
+                            source_span: None,
+                        },
+                        TirOp {
+                            dialect: Dialect::Molt,
+                            opcode: OpCode::Index,
+                            operands: vec![ValueId(3), ValueId(2)],
+                            results: vec![ValueId(5)],
+                            attrs: value_attrs,
+                            source_span: None,
+                        },
+                    ],
+                    terminator: Terminator::CondBranch {
+                        cond: ValueId(0),
+                        then_block: BlockId(1),
+                        then_args: vec![],
+                        else_block: BlockId(2),
+                        else_args: vec![],
+                    },
+                },
+                TirBlock {
+                    id: BlockId(1),
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Branch {
+                        target: BlockId(3),
+                        args: vec![ValueId(3)],
+                    },
+                },
+                TirBlock {
+                    id: BlockId(2),
+                    args: vec![],
+                    ops: vec![TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::ConstNone,
+                        operands: vec![],
+                        results: vec![ValueId(6)],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    }],
+                    terminator: Terminator::Branch {
+                        target: BlockId(3),
+                        args: vec![ValueId(6)],
+                    },
+                },
+                TirBlock {
+                    id: BlockId(3),
+                    args: vec![TirValue {
+                        id: ValueId(7),
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            ];
+
+            context.fuse_iter_next_projections(&mut blocks);
+
+            assert_eq!(
+                blocks[0]
+                    .ops
+                    .iter()
+                    .filter(|op| op.opcode == OpCode::IterNext)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                blocks[0]
+                    .ops
+                    .iter()
+                    .filter(|op| op.opcode == OpCode::IterNextUnboxed)
+                    .count(),
+                0
+            );
+            assert!(matches!(
+                &blocks[1].terminator,
+                Terminator::Branch { args, .. } if args == &[ValueId(3)]
+            ));
+        }
+
+        #[test]
+        fn projection_distance_has_no_correctness_window() {
+            let mut ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+            ];
+            for value in 0..30 {
+                ops.push(op_val_out("const", value, &format!("gap_{value}")));
+            }
+            ops.extend([
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("ret_void"),
+            ]);
+            let output = lower(&ops, &["iter"]);
+
+            assert_fused(&output);
+            assert_eq!(opcode_count(&output, OpCode::ConstInt), 32);
+        }
+
+        #[test]
+        fn value_projection_before_done_rejects_fusion() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op("ret_void"),
+            ];
+
+            assert_materialized(&lower(&ops, &["iter"]));
+        }
+
+        #[test]
+        fn exception_aware_loop_keeps_fast_path_and_pending_check() {
+            let ops = vec![
+                op_val_out("const", 1, "idx1"),
+                op_val_out("const", 0, "idx0"),
+                op("loop_start"),
+                op_args_out("iter_next", &["iter"], "pair"),
+                op("loop_break_if_exception"),
+                op_args_out("index", &["pair", "idx1"], "done"),
+                op_args("loop_break_if_true", &["done"]),
+                op_args_out("index", &["pair", "idx0"], "value"),
+                op("loop_continue"),
+                op("loop_end"),
+                op("ret_void"),
+            ];
+            let output = lower(&ops, &["iter"]);
+
+            assert_fused(&output);
+            assert_eq!(opcode_count(&output, OpCode::ExceptionPending), 1);
+        }
     }
 
     #[test]

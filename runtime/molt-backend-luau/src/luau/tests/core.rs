@@ -1186,6 +1186,40 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ],
                 ..FunctionIR::default()
             },
+            FunctionIR {
+                name: "set_function_defaults".to_string(),
+                params: vec!["func".to_string(), "defaults".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "set_attr".to_string(),
+                        args: Some(vec!["func".to_string(), "defaults".to_string()]),
+                        s_value: Some("__defaults__".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "set_function_kwdefaults".to_string(),
+                params: vec!["func".to_string(), "kwdefaults".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "set_attr".to_string(),
+                        args: Some(vec!["func".to_string(), "kwdefaults".to_string()]),
+                        s_value: Some("__kwdefaults__".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
         ],
         profile: None,
     };
@@ -1195,6 +1229,13 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
     assert!(compiled.contains("molt_function_set_builtin(builtin)"));
     assert!(compiled.contains("molt_call_checked(builtin, left, right)"));
     assert!(compiled.contains("molt_callargs_invoke(builtin, builder)"));
+    assert_eq!(
+        compiled
+            .matches("local function molt_function_attr_set")
+            .count(),
+        1,
+        "metadata-aware function mutation must have one emitted authority"
+    );
     assert!(!compiled.contains("pcall(molt_iterator_new"));
     let oracle = r#"
 local function mixed_target(a, b, c, d, e) return a + b + c + d + e end
@@ -1235,11 +1276,11 @@ assert(not zero_arity_ok and zero_arity_error.__type == "TypeError")
 
 local function defaulted(value) return value end
 molt_function_metadata[defaulted] = {arg_names=molt_pack_tuple("value"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=molt_pack_tuple(10), kwdefaults=nil}
-molt_function_attr_set(defaulted, "__defaults__", molt_pack_tuple(20))
+set_function_defaults(defaulted, molt_pack_tuple(20))
 assert(molt_func_attr_get(defaulted, "__defaults__") == molt_function_metadata[defaulted].defaults)
 assert(direct_call(defaulted) == 20 and builder_call(defaulted) == 20)
 local invalid_defaults_ok, invalid_defaults_error = pcall(function()
-	molt_function_attr_set(defaulted, "__defaults__", 1)
+	set_function_defaults(defaulted, 1)
 end)
 assert(not invalid_defaults_ok and invalid_defaults_error.__type == "TypeError")
 
@@ -1247,7 +1288,7 @@ local function keyword_only(option) return option end
 local first_kwdefaults = molt_dict_new(); molt_dict_set(first_kwdefaults, "option", 11)
 molt_function_metadata[keyword_only] = {arg_names=molt_pack_tuple(), posonly=0, kwonly=molt_pack_tuple("option"), vararg=nil, varkw=nil, defaults=nil, kwdefaults=first_kwdefaults}
 local second_kwdefaults = molt_dict_new(); molt_dict_set(second_kwdefaults, "option", 12)
-molt_function_attr_set(keyword_only, "__kwdefaults__", second_kwdefaults)
+set_function_kwdefaults(keyword_only, second_kwdefaults)
 assert(molt_func_attr_get(keyword_only, "__kwdefaults__") == molt_function_metadata[keyword_only].kwdefaults)
 assert(direct_call(keyword_only) == 12 and builder_call(keyword_only) == 12)
 
@@ -1256,7 +1297,7 @@ molt_function_metadata[method] = {arg_names=molt_pack_tuple("self", "value"), po
 local bound = molt_bound_method_new(method, 30)
 assert(molt_function_metadata[bound].bound_func == method and molt_function_metadata[bound].bound_self == 30)
 assert(direct_call(bound) == 37 and builder_call(bound) == 37)
-molt_function_attr_set(method, "__defaults__", molt_pack_tuple(9))
+set_function_defaults(method, molt_pack_tuple(9))
 assert(direct_call(bound) == 39 and builder_call(bound) == 39)
 print("luau-callargs-checked-execution-ok")
 "#;
@@ -2123,17 +2164,7 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn ordered_dict_runtime_executes_full_semantics_in_lune() {
-    let dict_runtime_source = format!(
-        "local molt_binary_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal function molt_binary_new(kind: string, value: string): any local result = {{}}; molt_binary_metadata[result] = {{kind=kind, value=value}}; return result end\n{}{}{}",
-        dict_runtime::DICT_CORE_RUNTIME,
-        dict_runtime::CALLARGS_RUNTIME,
-        dict_runtime::EQUALITY_REPR_RUNTIME
-    );
-    let source = format!(
-        "--!strict\nlocal molt_func_attrs = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_function_metadata = setmetatable({{}}, {{__mode=\"k\"}})\nlocal molt_call_checked: (any, ...any) -> any\nlocal molt_equal: (any, any, any?) -> boolean\nlocal molt_sequence_length_key = {{}}\nlocal molt_sequence_kind_key = {{}}\nlocal function molt_sequence_len(sequence: {{any}}): number\n\tlocal packed = rawget(sequence, molt_sequence_length_key)\n\tif type(packed) == \"number\" then return packed end\n\treturn #sequence\nend\nlocal function molt_pack_sequence_kind(kind: string, ...): {{any}} local sequence = table.pack(...); rawset(sequence, molt_sequence_length_key, sequence.n); rawset(sequence, molt_sequence_kind_key, kind); rawset(sequence, \"n\", nil); return sequence end\nlocal function molt_pack_list(...): {{any}} return molt_pack_sequence_kind(\"list\", ...) end\nlocal function molt_pack_tuple(...): {{any}} return molt_pack_sequence_kind(\"tuple\", ...) end\n{}\nlocal math_floor = math.floor\n{}\n{}",
-        dict_runtime_source,
-        include_str!("../../luau_json_prelude.luau"),
-        r#"
+    let oracle = r#"
 local function run_authority_oracle()
 local d = molt_dict_new()
 assert(next(d) == nil)
@@ -2340,17 +2371,11 @@ assert(molt_repr(view_values) == "dict_values([1, None])")
 assert(molt_repr(view_items) == "dict_items([('a', 1), ('b', None)])")
 
 local weak_function = setmetatable({}, {__mode="v"})
-local weak_self_sentinel = {}
-local function molt_func_attr_set(func, name, value)
-	local attrs = molt_func_attrs[func]
-	if attrs == nil then attrs = {}; molt_func_attrs[func] = attrs end
-	rawset(attrs, name, if value == func then weak_self_sentinel else value)
-end
 local function install_ephemeral()
 	local function ephemeral(value) return value end
 	molt_function_metadata[ephemeral] = {arg_names=molt_pack_tuple("value"), posonly=0, kwonly=molt_pack_tuple(), vararg=nil, varkw=nil, defaults=nil, kwdefaults=nil}
 	molt_func_attr_set(ephemeral, "__self_cycle", ephemeral)
-	assert(molt_func_attrs[ephemeral].__self_cycle == weak_self_sentinel)
+	assert(molt_func_attrs[ephemeral].__self_cycle == molt_func_self_attr)
 	weak_function[1] = ephemeral
 end
 install_ephemeral()
@@ -2516,7 +2541,25 @@ assert(bench_elapsed < 5 and dict_retained_kib > 0 and set_10k_heap_kib > 0 and 
 print(string.format("luau-authority-ok dict5k_elapsed=%.6f dict_heap_kib=%.1f dict_bytes_per_map=%.1f call100k_elapsed=%.6f call_heap_delta_kib=%.1f set1k_elapsed=%.6f set1k_heap_kib=%.1f set1k_bytes=%.1f set10k_elapsed=%.6f set10k_heap_kib=%.1f set10k_bytes=%.1f set100k_elapsed=%.6f set100k_heap_kib=%.1f set100k_bytes=%.1f tuple10k_mixed100k_elapsed=%.6f tuple_peak_heap_delta_kib=%.1f collision10k_elapsed=%.6f churn100k_delete99900_elapsed=%.6f churn_allocator_delta_kib=%.1f churn_capacity=%d frozen10k_lookup100k_elapsed=%.6f", bench_elapsed, dict_retained_kib, dict_retained_kib * 1024 / 5000, call_bench_elapsed, call_heap_delta_kib, set_1k_elapsed, set_1k_heap_kib, set_1k_bytes, set_10k_elapsed, set_10k_heap_kib, set_10k_bytes, set_100k_elapsed, set_100k_heap_kib, set_100k_bytes, tuple_bench_elapsed, tuple_peak_heap_delta_kib, collision_bench_elapsed, churn_elapsed, churn_heap_delta_kib, churn_metadata.next_id, frozen_lookup_elapsed))
 end
 run_authority_oracle()
-"#
+"#;
+    let mut backend = LuauBackend::new();
+    backend.emit_prelude_conditional(oracle);
+    let source = format!("{}\n{oracle}", backend.output);
+    assert_eq!(
+        source
+            .matches("local function molt_function_attr_set")
+            .count(),
+        1,
+        "metadata-aware function mutation must have one emitted authority"
+    );
+    assert!(
+        source
+            .find("local function molt_function_attr_set")
+            .expect("metadata-aware function mutation helper")
+            < source
+                .find("local function run_authority_oracle")
+                .expect("ordered-dict executable oracle"),
+        "runtime helpers must be declared before the executable oracle"
     );
     let runtime_bytes = dict_runtime::DICT_CORE_RUNTIME.len()
         + dict_runtime::CALLARGS_RUNTIME.len()

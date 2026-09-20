@@ -1,80 +1,432 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::super::is_structural;
 use super::variables::is_variable;
 use super::*;
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TirOpLocation {
+    block: usize,
+    op: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalOrigin {
+    Unresolved,
+    Unique(ValueId),
+    Mixed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PairProvenance {
+    iter_pairs: HashSet<ValueId>,
+    has_other: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TirIterProjection {
+    location: TirOpLocation,
+    result: ValueId,
+    name: String,
+}
+
+#[derive(Clone, Debug)]
+struct TirIterFusePlan {
+    producer: TirOpLocation,
+    pair: ValueId,
+    done: TirIterProjection,
+    value: TirIterProjection,
+}
+
 impl<'a> SsaContext<'a> {
-    /// Scan the raw linear op stream for iter_next → index(pair,1) →
-    /// index(pair,0) patterns.  This runs BEFORE the CFG splits blocks at
-    /// check_exception boundaries, so the pattern can span across them.
-    pub(super) fn build_iter_fuse_map(&mut self) {
-        let ops = self.ops;
-        for (i, op) in ops.iter().enumerate() {
-            if op.kind != "iter_next" {
-                continue;
-            }
-            let pair_var = match &op.out {
-                Some(v) if v != "none" => v.clone(),
-                _ => continue,
-            };
-            let mut done_idx = None;
-            let mut val_idx = None;
-            let scan_end = (i + 20).min(ops.len());
-            for j in (i + 1)..scan_end {
-                let scan_op = &ops[j];
-                if scan_op.kind == "index"
-                    && let Some(args) = &scan_op.args
-                    && args.len() >= 2
-                    && args[0] == pair_var
-                {
-                    let idx_name = &args[1];
-                    let const_val = ops[..j].iter().rev().take(20).find_map(|c| {
-                        if c.kind == "const" && c.out.as_deref() == Some(idx_name) {
-                            c.value
-                        } else {
-                            None
-                        }
-                    });
-                    if const_val == Some(1) && done_idx.is_none() {
-                        done_idx = Some(j);
-                    } else if const_val == Some(0) && val_idx.is_none() {
-                        val_idx = Some(j);
-                    }
+    /// Replace a materialized iterator pair with `IterNextUnboxed` only after
+    /// ordinary SSA renaming has made shadowing, merges, and exact uses explicit
+    /// as `ValueId`s. Block-argument forwarding is canonicalized separately
+    /// from semantic uses, so CFG transport cannot masquerade as a pair read.
+    pub(super) fn fuse_iter_next_projections(&mut self, blocks: &mut [TirBlock]) {
+        let mut definitions = HashMap::<ValueId, TirOpLocation>::new();
+        let mut candidates = Vec::<(TirOpLocation, ValueId)>::new();
+        for (block_idx, block) in blocks.iter().enumerate() {
+            for (op_idx, op) in block.ops.iter().enumerate() {
+                let location = TirOpLocation {
+                    block: block_idx,
+                    op: op_idx,
+                };
+                for &result in &op.results {
+                    definitions.insert(result, location);
                 }
-            }
-            if std::env::var("MOLT_DEBUG_ITER_FUSE").is_ok() {
-                eprintln!(
-                    "ITER_FUSE iter_next@{i} pair={pair_var} done_idx={done_idx:?} val_idx={val_idx:?}"
-                );
-            }
-            if let (Some(di), Some(vi)) = (done_idx, val_idx) {
-                let done_var = ops[di].out.clone().unwrap_or_default();
-                let val_var = ops[vi].out.clone().unwrap_or_default();
-                self.iter_fuse_map.insert(i, (di, vi, done_var, val_var));
-                // Skip all ops between iter_next and the value index — EXCEPT a
-                // `loop_break_if_exception` control op.  That op is a second
-                // conditional loop break (gated on the runtime exception flag,
-                // emitted after ITER_NEXT in iterator-consumer loops compiled
-                // without the function exception stack) and MUST survive fusion:
-                // adding it to the skip set would silently drop it and
-                // re-introduce the infinite-loop/OOM bug on a mid-iteration
-                // raise.  It is `is_structural`, so it becomes a block
-                // terminator (CondBranch on the materialized `ExceptionPending`
-                // flag) rather than a fused body op — fully compatible with the
-                // fused `iter_next_unboxed` value/done extraction that precedes
-                // it.  Keeping fusion preserves the per-iteration tuple-alloc
-                // elision (the perf-critical fast path).
-                let skip_end = di.max(vi);
-                for skip in (i + 1)..=skip_end {
-                    if ops[skip].kind == "loop_break_if_exception" {
-                        continue;
-                    }
-                    self.iter_fuse_skip.insert(skip);
+                if op.opcode == OpCode::IterNext && op.operands.len() == 1 && op.results.len() == 1
+                {
+                    candidates.push((location, op.results[0]));
                 }
             }
         }
+        if candidates.is_empty() {
+            return;
+        }
+
+        let mut incoming: Vec<Vec<Vec<ValueId>>> = blocks
+            .iter()
+            .map(|block| vec![Vec::new(); block.args.len()])
+            .collect();
+        let mut incomplete: Vec<Vec<bool>> = blocks
+            .iter()
+            .map(|block| vec![false; block.args.len()])
+            .collect();
+        let mut unmatched_forwarding = Vec::<ValueId>::new();
+        for block in blocks.iter() {
+            block.terminator.for_each_edge(|target, args| {
+                let target_idx = target.0 as usize;
+                let Some(target_incoming) = incoming.get_mut(target_idx) else {
+                    unmatched_forwarding.extend(args.iter().copied());
+                    return;
+                };
+                for arg_idx in 0..target_incoming.len() {
+                    if let Some(&value) = args.get(arg_idx) {
+                        target_incoming[arg_idx].push(value);
+                    } else {
+                        incomplete[target_idx][arg_idx] = true;
+                    }
+                }
+                unmatched_forwarding.extend(args.iter().skip(target_incoming.len()).copied());
+            });
+        }
+
+        let candidate_pairs: HashSet<ValueId> = candidates.iter().map(|(_, pair)| *pair).collect();
+        let mut origins = HashMap::<ValueId, CanonicalOrigin>::new();
+        let mut provenance = HashMap::<ValueId, PairProvenance>::new();
+        for block in blocks.iter() {
+            for op in &block.ops {
+                for &result in &op.results {
+                    origins.insert(result, CanonicalOrigin::Unique(result));
+                    let mut value_provenance = PairProvenance {
+                        has_other: true,
+                        ..PairProvenance::default()
+                    };
+                    if candidate_pairs.contains(&result) {
+                        value_provenance.iter_pairs.insert(result);
+                        value_provenance.has_other = false;
+                    }
+                    provenance.insert(result, value_provenance);
+                }
+            }
+        }
+        for (block_idx, block) in blocks.iter().enumerate() {
+            for (arg_idx, arg) in block.args.iter().enumerate() {
+                if incoming[block_idx][arg_idx].is_empty() {
+                    origins.insert(arg.id, CanonicalOrigin::Unique(arg.id));
+                    provenance.insert(
+                        arg.id,
+                        PairProvenance {
+                            has_other: true,
+                            ..PairProvenance::default()
+                        },
+                    );
+                } else {
+                    origins.insert(arg.id, CanonicalOrigin::Unresolved);
+                    provenance.insert(arg.id, PairProvenance::default());
+                }
+            }
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (block_idx, block) in blocks.iter().enumerate() {
+                for (arg_idx, arg) in block.args.iter().enumerate() {
+                    if incoming[block_idx][arg_idx].is_empty() {
+                        continue;
+                    }
+
+                    let mut next_origin = CanonicalOrigin::Unresolved;
+                    let mut next_provenance = PairProvenance {
+                        has_other: incomplete[block_idx][arg_idx],
+                        ..PairProvenance::default()
+                    };
+                    for incoming_value in &incoming[block_idx][arg_idx] {
+                        match origins
+                            .get(incoming_value)
+                            .copied()
+                            .unwrap_or(CanonicalOrigin::Mixed)
+                        {
+                            CanonicalOrigin::Unresolved => {}
+                            CanonicalOrigin::Unique(origin) => {
+                                next_origin = match next_origin {
+                                    CanonicalOrigin::Unresolved => CanonicalOrigin::Unique(origin),
+                                    CanonicalOrigin::Unique(current) if current == origin => {
+                                        CanonicalOrigin::Unique(current)
+                                    }
+                                    CanonicalOrigin::Unique(_) | CanonicalOrigin::Mixed => {
+                                        CanonicalOrigin::Mixed
+                                    }
+                                };
+                            }
+                            CanonicalOrigin::Mixed => next_origin = CanonicalOrigin::Mixed,
+                        }
+                        if let Some(incoming_provenance) = provenance.get(incoming_value) {
+                            next_provenance
+                                .iter_pairs
+                                .extend(incoming_provenance.iter_pairs.iter().copied());
+                            next_provenance.has_other |= incoming_provenance.has_other;
+                        } else {
+                            next_provenance.has_other = true;
+                        }
+                    }
+                    if incomplete[block_idx][arg_idx] {
+                        next_origin = CanonicalOrigin::Mixed;
+                    }
+                    if origins.get(&arg.id) != Some(&next_origin) {
+                        origins.insert(arg.id, next_origin);
+                        changed = true;
+                    }
+                    if provenance.get(&arg.id) != Some(&next_provenance) {
+                        provenance.insert(arg.id, next_provenance);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for origin in origins.values_mut() {
+            if *origin == CanonicalOrigin::Unresolved {
+                *origin = CanonicalOrigin::Mixed;
+            }
+        }
+
+        let mut candidate_uses =
+            HashMap::<ValueId, Vec<(TirOpLocation, usize)>>::with_capacity(candidates.len());
+        let mut invalid_candidates = HashSet::<ValueId>::new();
+        for (block_idx, block) in blocks.iter().enumerate() {
+            for (arg_idx, arg) in block.args.iter().enumerate() {
+                let Some(pair_provenance) = provenance.get(&arg.id) else {
+                    continue;
+                };
+                for pair in &pair_provenance.iter_pairs {
+                    let removable = !incomplete[block_idx][arg_idx]
+                        && !pair_provenance.has_other
+                        && pair_provenance.iter_pairs.len() == 1
+                        && origins.get(&arg.id) == Some(&CanonicalOrigin::Unique(*pair));
+                    if !removable {
+                        invalid_candidates.insert(*pair);
+                    }
+                }
+            }
+        }
+        for value in unmatched_forwarding {
+            if let Some(pair_provenance) = provenance.get(&value) {
+                invalid_candidates.extend(pair_provenance.iter_pairs.iter().copied());
+            }
+        }
+        for (block_idx, block) in blocks.iter().enumerate() {
+            for (op_idx, op) in block.ops.iter().enumerate() {
+                for (operand_idx, operand) in op.operands.iter().enumerate() {
+                    let Some(pair_provenance) = provenance.get(operand) else {
+                        continue;
+                    };
+                    for pair in &pair_provenance.iter_pairs {
+                        if pair_provenance.iter_pairs.len() == 1
+                            && !pair_provenance.has_other
+                            && origins.get(operand) == Some(&CanonicalOrigin::Unique(*pair))
+                        {
+                            candidate_uses.entry(*pair).or_default().push((
+                                TirOpLocation {
+                                    block: block_idx,
+                                    op: op_idx,
+                                },
+                                operand_idx,
+                            ));
+                        } else {
+                            invalid_candidates.insert(*pair);
+                        }
+                    }
+                }
+            }
+            block.terminator.for_each_direct_value(|value| {
+                if let Some(pair_provenance) = provenance.get(&value) {
+                    invalid_candidates.extend(pair_provenance.iter_pairs.iter().copied());
+                }
+            });
+        }
+
+        let mut plans = Vec::<TirIterFusePlan>::new();
+        for (producer, pair) in candidates {
+            let Some(uses) = candidate_uses.remove(&pair) else {
+                continue;
+            };
+            if invalid_candidates.contains(&pair) || uses.len() != 2 {
+                continue;
+            }
+
+            let mut done = None;
+            let mut value = None;
+            for (location, operand_idx) in uses {
+                let projection = &blocks[location.block].ops[location.op];
+                if projection.opcode != OpCode::Index
+                    || operand_idx != 0
+                    || projection.operands.len() != 2
+                    || projection.results.len() != 1
+                {
+                    done = None;
+                    value = None;
+                    break;
+                }
+                let selector = projection.operands[1];
+                let Some(CanonicalOrigin::Unique(selector_definition)) =
+                    origins.get(&selector).copied()
+                else {
+                    done = None;
+                    value = None;
+                    break;
+                };
+                let Some(selector_location) = definitions.get(&selector_definition).copied() else {
+                    done = None;
+                    value = None;
+                    break;
+                };
+                let selector_op = &blocks[selector_location.block].ops[selector_location.op];
+                let Some(AttrValue::Int(selector_value)) = selector_op.attrs.get("value") else {
+                    done = None;
+                    value = None;
+                    break;
+                };
+                let Some(AttrValue::Str(name)) = projection.attrs.get("_simple_out") else {
+                    done = None;
+                    value = None;
+                    break;
+                };
+                if selector_op.opcode != OpCode::ConstInt
+                    || name.is_empty()
+                    || name == "none"
+                    || !self.tir_op_dominates(selector_location, location)
+                {
+                    done = None;
+                    value = None;
+                    break;
+                }
+                let candidate = TirIterProjection {
+                    location,
+                    result: projection.results[0],
+                    name: name.clone(),
+                };
+                match *selector_value {
+                    1 if done.is_none() => done = Some(candidate),
+                    0 if value.is_none() => value = Some(candidate),
+                    _ => {
+                        done = None;
+                        value = None;
+                        break;
+                    }
+                }
+            }
+            let (Some(done), Some(value)) = (done, value) else {
+                continue;
+            };
+            if done.name == value.name
+                || !self.tir_op_dominates(producer, done.location)
+                || !self.tir_op_dominates(producer, value.location)
+                || !self.tir_op_dominates(done.location, value.location)
+            {
+                continue;
+            }
+            plans.push(TirIterFusePlan {
+                producer,
+                pair,
+                done,
+                value,
+            });
+        }
+        if plans.is_empty() {
+            return;
+        }
+
+        let planned_pairs: HashSet<ValueId> = plans.iter().map(|plan| plan.pair).collect();
+        let mut removed_block_args: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
+        for plan in &plans {
+            let producer = &mut blocks[plan.producer.block].ops[plan.producer.op];
+            producer.opcode = OpCode::IterNextUnboxed;
+            producer.results = vec![plan.value.result, plan.done.result];
+            producer.attrs.remove("_simple_out");
+            producer
+                .attrs
+                .insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
+            producer.attrs.insert(
+                "_simple_result_0".into(),
+                AttrValue::Str(plan.value.name.clone()),
+            );
+            producer.attrs.insert(
+                "_simple_result_1".into(),
+                AttrValue::Str(plan.done.name.clone()),
+            );
+            self.value_types.remove(&plan.pair);
+        }
+        for (block_idx, block) in blocks.iter().enumerate() {
+            for (arg_idx, arg) in block.args.iter().enumerate() {
+                let Some(CanonicalOrigin::Unique(pair)) = origins.get(&arg.id).copied() else {
+                    continue;
+                };
+                if planned_pairs.contains(&pair)
+                    && provenance.get(&arg.id).is_some_and(|facts| {
+                        !facts.has_other
+                            && facts.iter_pairs.len() == 1
+                            && facts.iter_pairs.contains(&pair)
+                    })
+                {
+                    removed_block_args[block_idx].push(arg_idx);
+                }
+            }
+        }
+        for indices in &mut removed_block_args {
+            indices.sort_unstable();
+            indices.dedup();
+        }
+        for block in blocks.iter_mut() {
+            block.terminator.for_each_edge_mut(|target, args| {
+                if let Some(indices) = removed_block_args.get(target.0 as usize) {
+                    for &index in indices.iter().rev() {
+                        if index < args.len() {
+                            args.remove(index);
+                        }
+                    }
+                }
+            });
+        }
+        for (block_idx, indices) in removed_block_args.iter().enumerate() {
+            for &index in indices.iter().rev() {
+                let removed = blocks[block_idx].args.remove(index);
+                self.value_types.remove(&removed.id);
+            }
+        }
+
+        let mut removed_ops: Vec<HashSet<usize>> = vec![HashSet::new(); blocks.len()];
+        for plan in plans {
+            removed_ops[plan.done.location.block].insert(plan.done.location.op);
+            removed_ops[plan.value.location.block].insert(plan.value.location.op);
+        }
+        for (block_idx, block) in blocks.iter_mut().enumerate() {
+            let mut op_idx = 0usize;
+            block.ops.retain(|_| {
+                let keep = !removed_ops[block_idx].contains(&op_idx);
+                op_idx += 1;
+                keep
+            });
+        }
+    }
+
+    fn tir_op_dominates(&self, definition: TirOpLocation, usage: TirOpLocation) -> bool {
+        if definition.block == usage.block {
+            return definition.op < usage.op;
+        }
+        let mut cursor = usage.block;
+        while let Some(idom) = self.aug_dominators[cursor] {
+            if idom == definition.block {
+                return true;
+            }
+            if idom == cursor {
+                break;
+            }
+            cursor = idom;
+        }
+        false
     }
 
     // -- Phase 1: gather variable defs and uses per block --------------------
