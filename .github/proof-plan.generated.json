@@ -174,7 +174,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "2256801cf85ada6d3441fb0578c7cf79808a5f0bda0a72cb01bb901a5d062758",
+  "authority_sha256": "b55d3a1b0106fae86ae789f7df8612b15afc1d856625f50010b965dbea33ae02",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3394,6 +3394,8 @@
         "--bins",
         "--test",
         "generated_artifact_custody",
+        "--test",
+        "ir_contract_validation",
         "-p",
         "molt-artifact-publish",
         "-p",
@@ -3616,13 +3618,18 @@
         "--locked",
         "-p",
         "molt-backend-native",
+        "-p",
+        "molt-backend",
         "--features",
-        "native-backend llvm",
+        "molt-backend/native-backend,molt-backend/llvm",
         "--lib",
+        "--test",
+        "ir_contract_validation",
         "--no-fail-fast",
         "--",
         "llvm_backend::lowering",
-        "llvm_backend::runtime_imports"
+        "llvm_backend::runtime_imports",
+        "direct_checked_backends_share_generated_shape_rejection"
       ],
       "cache_domain": "llvm-cargo",
       "cell": "linux-x86_64-py312-llvm-release-fast",

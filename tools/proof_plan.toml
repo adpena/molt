@@ -2009,7 +2009,7 @@ dependencies = ["rust.test.ir-wasm-runtime-authorities"]
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
 # Pass and WASM libtests are owned by the prerequisite, not repeated here.
-argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
@@ -2077,8 +2077,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
-# Libtests belong to the implementation crate, not its re-exporting driver.
-argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "--features", "native-backend llvm", "--lib", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports"]
+# Libtests belong to the implementation crate. The driver's contract target
+# additionally proves the public checked SimpleIR-to-LLVM admission boundary.
+argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
