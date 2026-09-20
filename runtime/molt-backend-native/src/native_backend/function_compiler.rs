@@ -1259,8 +1259,6 @@ impl SimpleBackend {
                 _ if op_family == Some(fc::NativeOpFamily::SetOps) => {
                     let __flow = fc::set_ops::handle_set_op(
                         &op,
-                        op_idx,
-                        &func_ir.name,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -2001,7 +1999,7 @@ impl SimpleBackend {
                 // sentinel) -> the exact silent miscompile fixed in 0323ad28c. Fail
                 // loud here, just as every fc::* handler's own `_ => unreachable!`.
                 _ => {
-                    if let Some(binding) = simple_ir_binding(op) {
+                    if let Some(binding) = simple_ir_binding(&op) {
                         panic!(
                             "native backend: no codegen for binding op kind `{}` (destination={:?}) in function `{}`",
                             op.kind, binding.destination, func_ir.name,
@@ -2114,7 +2112,7 @@ impl SimpleBackend {
                 && !(matches!(op.kind.as_str(), "inc_ref" | "borrow")
                     && rc_skip_inc.contains(&op_idx))
                 {
-                    if (simple_ir_binding(op).is_some()
+                    if (simple_ir_binding(&op).is_some()
                         || alias_src_name
                             .as_deref()
                             .is_none_or(|source| !cleanup_roots.shares_owner(source, name)))
