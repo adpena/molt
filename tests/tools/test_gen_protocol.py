@@ -316,6 +316,13 @@ def test_source_failure_cannot_emit_a_guessed_protocol(tmp_path, failure):
         _surface(surface_class)
 
 
+def test_generator_formats_its_excluded_output_path():
+    assert (
+        gen_protocol._format_generated_text(gen_protocol.OUT_PROTOCOL, "value=1\n")
+        == "value = 1\n"
+    )
+
+
 def test_attribute_union_preserves_mro_precedence_and_root_scope():
     class Base:
         class_choice: int

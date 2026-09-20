@@ -3,11 +3,32 @@ from __future__ import annotations
 import math
 import hashlib
 import os
+from collections import UserDict
+from types import MappingProxyType
 from pathlib import Path
 
 import pytest
 
 from molt import exact_json, file_publication
+
+
+@pytest.mark.parametrize("factory", [dict, UserDict, MappingProxyType])
+def test_mapping_admission_does_not_copy_or_interpret_values(factory):
+    opaque = object()
+    payload = factory({"key": opaque})
+    assert exact_json.string_keyed_mapping(payload) is payload
+    copied = exact_json.string_keyed_object(payload, context="receipt")
+    assert copied == payload and copied is not payload
+    assert copied["key"] is opaque
+
+
+@pytest.mark.parametrize("value", [None, [], "key", 1, {0: "value"}, {"key": 1, 0: 2}])
+def test_mapping_admission_rejects_non_objects_and_non_string_keys(value):
+    assert exact_json.string_keyed_mapping(value) is None
+    with pytest.raises(
+        ValueError, match="receipt (must be an object|keys must be strings)"
+    ):
+        exact_json.string_keyed_object(value, context="receipt")
 
 
 def test_exact_file_read_admits_byte_limit_and_rejects_before_decode(

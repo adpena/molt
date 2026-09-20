@@ -60,6 +60,17 @@ class SourceExtensionInvocationError(ValueError):
     """A source-extension producer invocation is malformed."""
 
 
+def _source_extension_set_command(value: object) -> SourceExtensionSetCommand:
+    if type(value) is str:
+        if value == "produce-set":
+            return "produce-set"
+        if value == "attest-set-candidate":
+            return "attest-set-candidate"
+    raise SourceExtensionInvocationError(
+        f"unknown source-extension set command {value!r}"
+    )
+
+
 def _required_string(value: object, *, field: str) -> str:
     if type(value) is not str or not value or "\0" in value:
         raise SourceExtensionInvocationError(
@@ -92,13 +103,7 @@ class SourceExtensionSetInvocation:
     expected_candidate_identity_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        if type(self.command) is not str or self.command not in {
-            "produce-set",
-            "attest-set-candidate",
-        }:
-            raise SourceExtensionInvocationError(
-                f"unknown source-extension set command {self.command!r}"
-            )
+        _source_extension_set_command(self.command)
         for _option, field, _help in _COMMON_OPTIONS:
             _required_string(getattr(self, field), field=field)
         if self.abi_tier not in SOURCE_EXTENSION_SET_ABI_TIERS:
@@ -155,7 +160,7 @@ class SourceExtensionSetInvocation:
             raise SourceExtensionInvocationError(
                 "source-extension invocation must begin with 'extension <command>'"
             )
-        command = values[1]
+        raw_command = values[1]
         parsed: dict[str, str] = {}
         json_output = False
         prepared = False
@@ -202,18 +207,24 @@ class SourceExtensionSetInvocation:
                 "source-extension producer is missing required options: "
                 + ", ".join(missing)
             )
-        fields = {
-            field: parsed.get(option, "wasm" if field == "target" else "cpython-abi")
-            for option, field, _help in _COMMON_OPTIONS
-        }
-        fields.update(
-            {
-                field: parsed.get(option)
-                for option, field in _OPTIONAL_VALUE_FIELDS.items()
-            }
-        )
+        command = _source_extension_set_command(raw_command)
         return cls(
-            command=command, json_output=json_output, prepared=prepared, **fields
+            command=command,
+            package=parsed["--package"],
+            package_version=parsed["--package-version"],
+            module_set=parsed["--module-set"],
+            python_version=parsed["--python-version"],
+            source=parsed["--source"],
+            build_root=parsed["--build-root"],
+            target=parsed.get("--target", "wasm"),
+            abi_tier=parsed.get("--abi-tier", "cpython-abi"),
+            json_output=json_output,
+            prepared=prepared,
+            candidate_output=parsed.get(_CANDIDATE_OUTPUT_OPTION),
+            expected_identity_sha256=parsed.get(_EXPECTED_IDENTITY_OPTION),
+            expected_candidate_identity_sha256=parsed.get(
+                _EXPECTED_CANDIDATE_IDENTITY_OPTION
+            ),
         )
 
     def module_argv(self, python_executable: str) -> tuple[str, ...]:

@@ -43,12 +43,15 @@ class CallSplitDispatchMixin(_MixinBase):
         ):
             return CALL_NOT_HANDLED
         supplied = set(parameters[: len(node.args)])
+        keyword_names: list[str] = []
         for keyword in node.keywords:
-            if keyword.arg not in parameters or keyword.arg in supplied:
+            name = keyword.arg
+            if name is None or name not in parameters or name in supplied:
                 # The real callable owns signature errors, after evaluation of
                 # all supplied arguments. This also covers arbitrary **mapping.
                 return CALL_NOT_HANDLED
-            supplied.add(keyword.arg)
+            supplied.add(name)
+            keyword_names.append(name)
 
         receiver = self.visit(node.func.value)
         if receiver is None:
@@ -86,12 +89,7 @@ class CallSplitDispatchMixin(_MixinBase):
             tag = self._consume_scratch_cell(tag_cell)
 
         arguments = dict(zip(parameters, values[: len(node.args)]))
-        arguments.update(
-            (keyword.arg, value)
-            for keyword, value in zip(
-                node.keywords, values[len(node.args) :], strict=True
-            )
-        )
+        arguments.update(zip(keyword_names, values[len(node.args) :], strict=True))
         separator = arguments.get("sep")
         if separator is None:
             separator = MoltValue(self.next_var(), type_hint="None")

@@ -728,6 +728,9 @@ def test_pre_commit_hooks_are_read_only_by_default() -> None:
     assert "- id: end-of-file-fixer" not in pre_commit_text
     assert "- id: trailing-whitespace" not in pre_commit_text
     assert "git diff --cached --check" in pre_commit_text
+    ruff = tomllib.loads(_read("pyproject.toml"))["tool"]["ruff"]
+    assert ruff["force-exclude"] is True
+    assert "src/molt/_wasm_abi_generated.py" in ruff["extend-exclude"]
 
 
 def test_default_ci_python_version_comes_from_single_file() -> None:

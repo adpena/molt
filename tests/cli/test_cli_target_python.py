@@ -7,6 +7,7 @@ import molt.cli as cli
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import wrapper_build as cli_wrapper_build
 
 
 def test_target_python_defaults_to_lowest_supported_project_floor(
@@ -212,6 +213,24 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
 ) -> None:
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n")
+    captured_targets: list[str] = []
+
+    def dependency_fingerprints(*, resolved_build_entry, **_kwargs):
+        captured_targets.append(resolved_build_entry.target_python.tag)
+        return [], {"image": {}}
+
+    # This witnesses version propagation into the real cache input, not a
+    # cross-version parse or a cold scan of the complete stdlib/tooling closure.
+    # The real closure consumer has its own binary-image integration witnesses.
+    monkeypatch.setattr(
+        cli_wrapper_build,
+        "_wrapper_build_dependency_fingerprints",
+        dependency_fingerprints,
+    )
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime")
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "frontend"
+    )
     monkeypatch.setattr(
         cli_build_inputs,
         "_parse_source_for_target",
@@ -258,6 +277,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
 
     assert payload312["target_python"] == "py312"
     assert payload314["target_python"] == "py314"
+    assert captured_targets == ["py312", "py314"]
     assert key312 != key314
 
 

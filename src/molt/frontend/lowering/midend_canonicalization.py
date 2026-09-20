@@ -265,7 +265,9 @@ class MidendCanonicalizationMixin(_MixinBase):
             return ("pure" if operands[0] is not None else "reads_heap", True)
         if op.kind in FRONTEND_TRUTHINESS_CONTROL_KINDS:
             condition_type = operands[0] if operands else None
-            _, nothrow = frontend_predicate_facts("BOOL", condition_type)
+            predicate = frontend_predicate_facts("BOOL", condition_type)
+            assert predicate is not None
+            _, nothrow = predicate
             return ("control", nothrow)
         if op.kind == "LEN":
             if len(operands) == 1 and operands[0] in _EXACT_LEN_RECEIVER_TYPES:
@@ -318,7 +320,9 @@ class MidendCanonicalizationMixin(_MixinBase):
             if op.kind in FRONTEND_TRUTHINESS_CONTROL_KINDS:
                 operands = self._exact_primitive_operand_types(op, const_by_name)
                 condition_type = operands[0] if operands else None
-                callback_free, _ = frontend_predicate_facts("BOOL", condition_type)
+                predicate = frontend_predicate_facts("BOOL", condition_type)
+                assert predicate is not None
+                callback_free, _ = predicate
                 return not callback_free
             facts = self._op_primitive_facts(op, const_by_name)
             if facts is not None:

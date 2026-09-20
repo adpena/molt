@@ -847,8 +847,6 @@ def _native_support_function_roots_by_module(
                 filename=str(path),
                 target_python=target_python,
             )
-            if not isinstance(tree, ast.Module):
-                return None
         except (OSError, SyntaxError, UnicodeDecodeError):
             return None
         parsed[module] = tree

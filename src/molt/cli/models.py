@@ -1866,7 +1866,7 @@ class _ResolvedBuildEntry:
     entry_module: str
     module_roots: list[Path]
     entry_source: str
-    entry_tree: ast.AST
+    entry_tree: ast.Module
     target_python: TargetPythonVersion
     external_module_roots: tuple[Path, ...] = ()
     image_scope: _BinaryImageScope | None = None

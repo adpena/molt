@@ -36,6 +36,42 @@ def test_cpython_package_does_not_probe_runtime_intrinsics(monkeypatch, package)
     runpy.run_path(str(source))
 
 
+def test_active_buffer_owns_only_native_storage(monkeypatch):
+    monkeypatch.setattr(_intrinsics, "runtime_active", lambda: True)
+    storage = {}
+
+    def new(rows, cols, value):
+        handle = object()
+        storage[handle] = (rows, cols, [value] * (rows * cols))
+        return handle
+
+    def get(handle, row, col):
+        rows, cols, values = storage[handle]
+        return values[(row % rows) * cols + (col % cols)]
+
+    def set_value(handle, row, col, value):
+        rows, cols, values = storage[handle]
+        values[(row % rows) * cols + (col % cols)] = value
+
+    exports = {
+        "molt_buffer2d_new": new,
+        "molt_buffer2d_rows": lambda handle: storage[handle][0],
+        "molt_buffer2d_cols": lambda handle: storage[handle][1],
+        "molt_buffer2d_get": get,
+        "molt_buffer2d_set": set_value,
+    }
+    monkeypatch.setattr(
+        _intrinsics, "require_intrinsic", lambda name, namespace: exports[name]
+    )
+    source = Path(__file__).resolve().parents[2] / "src/molt_buffer/__init__.py"
+    namespace = runpy.run_path(str(source))
+    buffer = namespace["Buffer2D"](2, 3, 7)
+    assert (buffer.rows, buffer.cols, buffer.get(0, 1)) == (2, 3, 7)
+    buffer.set(1, 2, 9)
+    assert buffer.get(1, 2) == 9
+    assert vars(buffer) == {"_native": buffer._native}
+
+
 @pytest.mark.parametrize(
     ("source", "packages"),
     [

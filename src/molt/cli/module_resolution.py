@@ -343,7 +343,7 @@ class _ModuleResolutionCache:
     )
     source_cache: dict[Path, str] = field(default_factory=dict)
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
-    ast_cache: dict[tuple[Path, str, str], ast.AST] = field(default_factory=dict)
+    ast_cache: dict[tuple[Path, str, str], ast.Module] = field(default_factory=dict)
     ast_error_cache: dict[tuple[Path, str, str], SyntaxError] = field(
         default_factory=dict
     )
@@ -561,7 +561,7 @@ class _ModuleResolutionCache:
         filename: str,
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         retain: bool = True,
-    ) -> ast.AST:
+    ) -> ast.Module:
         cache_key = (self.resolved_path(path), filename, target_python.tag)
         if not retain:
             return _parse_source_for_target(

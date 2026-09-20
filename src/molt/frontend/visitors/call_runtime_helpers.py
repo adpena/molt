@@ -448,14 +448,14 @@ class CallRuntimeHelperMixin(_MixinBase):
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         return res
 
-    def _builtin_str_single_object_arg(self, node: ast.AST) -> ast.AST | None:
+    def _builtin_str_single_object_arg(self, node: ast.AST) -> ast.expr | None:
         if not isinstance(node, ast.Call):
             return None
         if self._specializable_builtin_name(node) != "str":
             return None
         if len(node.args) + len(node.keywords) != 1:
             return None
-        kw_object: ast.AST | None = None
+        kw_object: ast.expr | None = None
         for keyword in node.keywords:
             if keyword.arg != "object":
                 return None

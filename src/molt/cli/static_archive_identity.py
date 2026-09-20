@@ -4,9 +4,10 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import BinaryIO, Callable, Mapping, cast
+from typing import BinaryIO, Callable, Mapping
 
 from molt.toolchain_identity import open_stable_regular_file
+from molt.exact_json import string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
 
@@ -57,9 +58,9 @@ StaticArchiveMemberVisitor = Callable[[StaticArchiveMember, BinaryIO], None]
 
 def validate_artifact_content_identity(value: object) -> Mapping[str, object]:
     """Admit one exact artifact receipt without Python numeric coercion."""
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+    receipt = string_keyed_mapping(value)
+    if receipt is None:
         raise StaticArchiveIdentityError("artifact content identity must be an object")
-    receipt = cast(Mapping[str, object], value)
     schema = receipt.get("schema")
     if schema == _BYTE_IDENTITY_SCHEMA:
         digest_key = "sha256"

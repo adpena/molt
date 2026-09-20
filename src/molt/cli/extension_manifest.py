@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any, Mapping
 
 from molt.capability_policy import split_capability_tokens
+from molt.exact_json import string_keyed_mapping
 from molt.file_hashing import _sha256_file
 from molt.cli.models import _ExternalNativeCallableExport
 from molt.cli.native_link_plan import _host_target_triple, resolve_native_target_spec
@@ -315,12 +316,13 @@ def _manifest_callable_exports(
     seen: set[str] = set()
     for index, raw_export in enumerate(value):
         label = f"callable_exports[{index}]"
-        if not isinstance(raw_export, Mapping):
+        export_payload = string_keyed_mapping(raw_export)
+        if export_payload is None:
             errors.append(f"extension_manifest.json {label} must be an object")
             continue
 
         try:
-            export = normalize_native_callable_export(raw_export)
+            export = normalize_native_callable_export(export_payload)
         except NativeCallableExportError as exc:
             detail = str(exc)
             field_prefixes = (

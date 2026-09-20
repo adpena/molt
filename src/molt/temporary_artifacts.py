@@ -52,6 +52,14 @@ class ScratchRetention:
             raise ValueError("scratch retention limits must be nonnegative integers")
 
 
+@dataclass(frozen=True, slots=True)
+class _ScratchTerminal:
+    digest: str
+    finished_ns: int
+    retained_bytes: int
+    success: bool
+
+
 @dataclass(slots=True)
 class GuardScratchLease:
     generation: Path
@@ -206,30 +214,40 @@ def _target_bytes(target: Path) -> int:
     return total
 
 
-def _terminal(generation: Path, owner: Mapping[str, object]) -> dict[str, object]:
+def _terminal(generation: Path, owner: Mapping[str, object]) -> _ScratchTerminal:
     _target(generation, owner)
     terminal = read_exact(
         resolve_owned_path(generation / "terminal.json"),
         max_bytes=_MAX_RECEIPT_BYTES,
         label="scratch terminal",
     )
+    if not isinstance(terminal, dict):
+        raise ValueError("scratch terminal receipt does not authorize reclamation")
+    digest = canonical_json_sha256(terminal)
+    success = terminal.get("success")
+    finished_ns = terminal.get("finished_ns")
+    retained_bytes = terminal.get("retained_bytes")
     if (
-        not isinstance(terminal, dict)
-        or terminal.get("schema") != SCHEMA
+        terminal.get("schema") != SCHEMA
         or terminal.get("token") != owner["token"]
         or terminal.get("target_identity") != owner["target_identity"]
         or terminal.get("target") != owner.get("target")
         or terminal.get("generation") != str(generation)
         or terminal.get("closed") is not True
-        or type(terminal.get("success")) is not bool
-        or type(terminal.get("finished_ns")) is not int
-        or terminal["finished_ns"] < 0
-        or type(terminal.get("retained_bytes")) is not int
-        or terminal["retained_bytes"] < 0
-        or canonical_json_sha256(terminal) != owner.get("terminal_digest")
+        or type(success) is not bool
+        or type(finished_ns) is not int
+        or finished_ns < 0
+        or type(retained_bytes) is not int
+        or retained_bytes < 0
+        or digest != owner.get("terminal_digest")
     ):
         raise ValueError("scratch terminal receipt does not authorize reclamation")
-    return terminal
+    return _ScratchTerminal(
+        digest=digest,
+        finished_ns=finished_ns,
+        retained_bytes=retained_bytes,
+        success=success,
+    )
 
 
 def _index_path(generation: Path) -> Path:
@@ -475,11 +493,11 @@ def reclaim_terminal_scratch(
                     raise ValueError("retained scratch payload identity changed")
                 candidates.append(
                     (
-                        terminal["finished_ns"],
-                        terminal["retained_bytes"],
+                        terminal.finished_ns,
+                        terminal.retained_bytes,
                         generation,
-                        owner["terminal_digest"],
-                        terminal["success"],
+                        terminal.digest,
+                        terminal.success,
                     )
                 )
         except ScratchBusy:

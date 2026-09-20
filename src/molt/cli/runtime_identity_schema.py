@@ -14,7 +14,12 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
     RuntimeCrateType,
 )
-from molt.exact_json import canonical_json_bytes, canonical_json_sha256, read_exact
+from molt.exact_json import (
+    canonical_json_bytes,
+    canonical_json_sha256,
+    read_exact,
+    string_keyed_mapping,
+)
 from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
 from molt.python_runtime_identity import validate_python_runtime_identity
 
@@ -49,9 +54,9 @@ _RUNTIME_BUILD_MEMBER_FIELDS = {
 
 def _freeze_json(value: object) -> object:
     if isinstance(value, Mapping):
-        if not all(isinstance(key, str) for key in value):
+        typed = string_keyed_mapping(value)
+        if typed is None:
             raise TypeError("runtime identity JSON object keys must be strings")
-        typed = cast(Mapping[str, object], value)
         return MappingProxyType(
             {key: _freeze_json(item) for key, item in typed.items()}
         )
@@ -66,9 +71,9 @@ def _freeze_json(value: object) -> object:
 
 def _thaw_json(value: object) -> object:
     if isinstance(value, Mapping):
-        if not all(isinstance(key, str) for key in value):
+        typed = string_keyed_mapping(value)
+        if typed is None:
             raise TypeError("runtime identity JSON object keys must be strings")
-        typed = cast(Mapping[str, object], value)
         return {key: _thaw_json(item) for key, item in typed.items()}
     if isinstance(value, (list, tuple)):
         return [_thaw_json(item) for item in value]
@@ -81,14 +86,6 @@ def _canonical_json(value: object) -> str:
 
 def _digest(value: object) -> str:
     return canonical_json_sha256(_thaw_json(value))
-
-
-def _json_object_mapping(value: object) -> Mapping[str, object] | None:
-    """Narrow one validated JSON object without coercing or aliasing keys."""
-
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
-        return None
-    return cast(Mapping[str, object], value)
 
 
 def _portable_filename(value: str) -> bool:
@@ -110,7 +107,7 @@ def _string_sequence(value: object, *, label: str) -> tuple[str, ...]:
 
 
 def _validated_common_config(payload: object) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     required = {
         "cargo_profile",
         "target_triple",
@@ -138,20 +135,20 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
         raise ValueError("runtime Cargo command must use its content-attested role")
     if "base_rustflags" in value:
         _string_sequence(value["base_rustflags"], label="base Rust flags")
-    environment = _json_object_mapping(value["environment"])
+    environment = string_keyed_mapping(value["environment"])
     if environment is None or any(
         not key or not _valid_sha256(item) for key, item in environment.items()
     ):
         raise ValueError("runtime build environment identity is invalid")
     if "ambient_c_build_environment" in value:
-        ambient = _json_object_mapping(value["ambient_c_build_environment"])
+        ambient = string_keyed_mapping(value["ambient_c_build_environment"])
         if ambient is None:
             raise ValueError("runtime C build environment is invalid")
         for key, item in ambient.items():
             if not key:
                 raise ValueError("runtime C environment key is empty")
             _string_sequence(item, label=f"C environment {key}")
-    scripts = _json_object_mapping(value["build_script_environment"])
+    scripts = string_keyed_mapping(value["build_script_environment"])
     if scripts is None or not scripts:
         raise ValueError("runtime build-script environment is invalid")
     return value
@@ -160,7 +157,7 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
 def _validated_build_script_environment(
     payload: object, *, target: str, build_python: object
 ) -> None:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None:
         raise ValueError("runtime build-script environment must be an object")
     schema = value.get("schema")
@@ -177,10 +174,10 @@ def _validated_build_script_environment(
         raise ValueError("runtime build-script schema is invalid")
     if set(value) != fields:
         raise ValueError("runtime build-script environment shape is invalid")
-    python = _json_object_mapping(value["build_python"])
+    python = string_keyed_mapping(value["build_python"])
     if python is None or set(python) != {"selected_by", "selectors", "content_digest"}:
         raise ValueError("runtime build-script Python selection is invalid")
-    selectors = _json_object_mapping(python["selectors"])
+    selectors = string_keyed_mapping(python["selectors"])
     selected = python["selected_by"]
     if selectors is None or set(selectors) != {"MOLT_BUILD_PYTHON", "PYTHON"}:
         raise ValueError("runtime build-script Python selectors are invalid")
@@ -220,7 +217,7 @@ def _validated_build_script_environment(
     if wasm and not set(symbols[1]).issubset(symbols[0]):
         raise ValueError("runtime build-script data exports are unowned")
     for name in ("MOLT_WASM_LONGDOUBLE_ARCHIVE", "MOLT_WASM_BUILTINS_ARCHIVE"):
-        archive = _json_object_mapping(value[name])
+        archive = string_keyed_mapping(value[name])
         if archive is None:
             raise ValueError("runtime build-script archive state is invalid")
         state = archive.get("state")
@@ -231,7 +228,7 @@ def _validated_build_script_environment(
             if set(archive) != {"state"}:
                 raise ValueError("runtime absent archive has content")
         elif state == "resolved":
-            content = _json_object_mapping(archive.get("content"))
+            content = string_keyed_mapping(archive.get("content"))
             if (
                 set(archive) != {"state", "content"}
                 or content is None
@@ -247,7 +244,7 @@ def _validated_build_script_environment(
 
 
 def _validated_publication_authority(payload: object) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or not isinstance(value.get("schema"), str) or not value["schema"]:
         raise ValueError("runtime publication authority schema is invalid")
     if "files" in value:
@@ -260,7 +257,7 @@ def _validated_publication_authority(payload: object) -> Mapping[str, object]:
             raise ValueError("runtime publication files must be an array")
         paths = []
         for raw in files:
-            item = _json_object_mapping(raw)
+            item = string_keyed_mapping(raw)
             if item is None or set(item) != {"path", "size", "sha256"}:
                 raise ValueError("runtime publication file record is invalid")
             path, size = item["path"], item["size"]
@@ -297,7 +294,7 @@ def _validated_publication_authority(payload: object) -> Mapping[str, object]:
 
 
 def _validated_tree_summary(payload: object, *, label: str) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or set(value) != {
         "digest",
         "file_count",
@@ -335,7 +332,7 @@ def _validated_executable_content_identity(
     *,
     logical_name: str,
 ) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     base_fields = {
         "content_filename",
         "entrypoint",
@@ -371,7 +368,7 @@ def _validated_executable_content_identity(
 
 
 def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or set(value) != {
         "identity_sha256",
         "logical_name",
@@ -380,7 +377,7 @@ def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
         "selected_executable",
     }:
         raise ValueError("runtime build Python identity shape is invalid")
-    selected = _json_object_mapping(value.get("selected_executable"))
+    selected = string_keyed_mapping(value.get("selected_executable"))
     if selected is None or set(selected) != {
         "content_filename",
         "entrypoint",
@@ -422,7 +419,7 @@ def _validated_runtime_toolchain_content(
     *,
     target_triple: str,
 ) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or set(value) != {
         "archives",
         "cargo_configuration",
@@ -433,7 +430,7 @@ def _validated_runtime_toolchain_content(
         "wrappers",
     }:
         raise ValueError("runtime toolchain content shape is invalid")
-    tools = _json_object_mapping(value.get("tools"))
+    tools = string_keyed_mapping(value.get("tools"))
     allowed_tools = {
         "ar",
         "build_python",
@@ -461,7 +458,7 @@ def _validated_runtime_toolchain_content(
             _validated_build_python_identity(raw)
         else:
             _validated_executable_content_identity(raw, logical_name=name)
-    wrappers = _json_object_mapping(value.get("wrappers"))
+    wrappers = string_keyed_mapping(value.get("wrappers"))
     if wrappers is None:
         raise ValueError("runtime toolchain wrapper identities are invalid")
     for name, raw in wrappers.items():
@@ -471,7 +468,7 @@ def _validated_runtime_toolchain_content(
     _validated_tree_summary(
         value.get("cargo_configuration"), label="Cargo configuration"
     )
-    resources = _json_object_mapping(value.get("rust_resources"))
+    resources = string_keyed_mapping(value.get("rust_resources"))
     if resources is None or set(resources) != {
         "content",
         "host_triple",
@@ -493,7 +490,7 @@ def _validated_runtime_toolchain_content(
         raise ValueError("runtime Rust target identity is invalid")
     _validated_tree_summary(resources.get("content"), label="Rust resources")
 
-    sysroots = _json_object_mapping(value.get("sysroots"))
+    sysroots = string_keyed_mapping(value.get("sysroots"))
     expected_sysroots = {"wasi"} if target_triple.startswith("wasm32-") else set()
     if sysroots is None or set(sysroots) != expected_sysroots:
         raise ValueError("runtime sysroot identity is invalid")
@@ -504,7 +501,7 @@ def _validated_runtime_toolchain_content(
         raise ValueError("runtime archive identities are invalid")
     archive_names: set[str] = set()
     for raw in archives:
-        archive = _json_object_mapping(raw)
+        archive = string_keyed_mapping(raw)
         if archive is None or set(archive) != {"logical_name", "sha256", "size"}:
             raise ValueError("runtime archive identity shape is invalid")
         name = archive.get("logical_name")
@@ -528,11 +525,11 @@ def _validated_runtime_toolchain_content(
 def _validated_toolchain_manifest_payload(
     payload: object,
 ) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or set(value) != {"target_triple", "toolchain"}:
         raise ValueError("runtime toolchain manifest content shape is invalid")
     target = value.get("target_triple")
-    toolchain = _json_object_mapping(value.get("toolchain"))
+    toolchain = string_keyed_mapping(value.get("toolchain"))
     if not isinstance(target, str) or not target or toolchain is None or not toolchain:
         raise ValueError("runtime toolchain manifest content is invalid")
     _validated_runtime_toolchain_content(toolchain, target_triple=target)
@@ -554,10 +551,10 @@ def _validated_runtime_build_payload(
     compile_digest: object,
     family_digest: object,
 ) -> Mapping[str, object]:
-    value = _json_object_mapping(payload)
+    value = string_keyed_mapping(payload)
     if value is None or set(value) != {"family", "member_kind"}:
         raise ValueError("runtime build identity payload shape is invalid")
-    family = _json_object_mapping(value.get("family"))
+    family = string_keyed_mapping(value.get("family"))
     member_kind = value.get("member_kind")
     if (
         family is None
@@ -567,15 +564,15 @@ def _validated_runtime_build_payload(
         or not member_kind
     ):
         raise ValueError("runtime build identity family shape is invalid")
-    compile_payload = _json_object_mapping(family.get("compile"))
-    publication = _json_object_mapping(family.get("publication_authority"))
-    members = _json_object_mapping(family.get("members"))
+    compile_payload = string_keyed_mapping(family.get("compile"))
+    publication = string_keyed_mapping(family.get("publication_authority"))
+    members = string_keyed_mapping(family.get("members"))
     if (
         compile_payload is None
         or set(compile_payload) != _RUNTIME_BUILD_COMPILE_FIELDS
-        or _json_object_mapping(compile_payload.get("sources")) is None
-        or _json_object_mapping(compile_payload.get("toolchain")) is None
-        or _json_object_mapping(compile_payload.get("common_config")) is None
+        or string_keyed_mapping(compile_payload.get("sources")) is None
+        or string_keyed_mapping(compile_payload.get("toolchain")) is None
+        or string_keyed_mapping(compile_payload.get("common_config")) is None
         or publication is None
         or members is None
         or not members
@@ -619,7 +616,7 @@ def _validated_runtime_build_payload(
         ):
             raise ValueError("runtime WASM family archive closure is incomplete")
     for kind, raw_member in members.items():
-        member = _json_object_mapping(raw_member)
+        member = string_keyed_mapping(raw_member)
         if (
             not kind
             or member is None
@@ -636,7 +633,7 @@ def _validated_runtime_build_payload(
                 isinstance(item, str) and item for item in items
             ):
                 raise ValueError("runtime build identity member shape is invalid")
-    member = _json_object_mapping(members.get(member_kind))
+    member = string_keyed_mapping(members.get(member_kind))
     if member is None:
         raise ValueError("runtime build identity selected member is absent")
     if not all(_valid_sha256(item) for item in (digest, compile_digest, family_digest)):
@@ -681,7 +678,7 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
 
     @classmethod
     def from_dict(cls, value: object) -> RuntimeToolchainContentManifest:
-        outer = _json_object_mapping(value)
+        outer = string_keyed_mapping(value)
         if (
             outer is None
             or set(outer) != {"schema", "digest", "payload"}
@@ -689,7 +686,7 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
         ):
             raise ValueError("runtime toolchain manifest schema is invalid")
         digest = outer.get("digest")
-        payload = _json_object_mapping(outer.get("payload"))
+        payload = string_keyed_mapping(outer.get("payload"))
         if not _valid_sha256(digest) or payload is None or digest != _digest(payload):
             raise ValueError("runtime toolchain manifest digest is invalid")
         assert isinstance(digest, str)
@@ -771,14 +768,14 @@ class RuntimeBuildIdentity(Mapping[str, object]):
 
     @classmethod
     def from_dict(cls, value: object) -> RuntimeBuildIdentity:
-        outer = _json_object_mapping(value)
+        outer = string_keyed_mapping(value)
         if (
             outer is None
             or set(outer) != _RUNTIME_BUILD_OUTER_FIELDS
             or outer.get("schema") != _SCHEMA
         ):
             raise ValueError("runtime build identity schema is invalid")
-        payload = _json_object_mapping(outer.get("payload"))
+        payload = string_keyed_mapping(outer.get("payload"))
         digest = outer.get("digest")
         compile_digest = outer.get("compile_digest")
         family_digest = outer.get("family_digest")
@@ -866,10 +863,10 @@ def require_native_runtime_staticlib_identity(
     )
     family = cast(Mapping[str, object], build_identity.payload["family"])
     compile_payload = cast(Mapping[str, object], family["compile"])
-    common_config = _json_object_mapping(compile_payload.get("common_config"))
-    members = _json_object_mapping(family.get("members"))
+    common_config = string_keyed_mapping(compile_payload.get("common_config"))
+    members = string_keyed_mapping(family.get("members"))
     member = (
-        _json_object_mapping(members.get("staticlib")) if members is not None else None
+        string_keyed_mapping(members.get("staticlib")) if members is not None else None
     )
     logical_target = target_triple or "native"
     if (
