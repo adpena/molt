@@ -20,9 +20,12 @@ arm and hits the dispatch's loud catch-all panic at codegen — exactly how
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "audit_op_kinds.py"
@@ -263,6 +266,193 @@ def test_d9_routes_bitwise_and_matrix_to_dedicated_families() -> None:
     )
     assert handlers["MatrixOps"] == ("matrix_ops", "handle_matrix_op")
     assert AUDIT.extract_native_handler_routing_drifts() == []
+
+
+def _native_projection_fixture(tmp_path: Path, monkeypatch, opcode: str = "ConstInt"):
+    data = AUDIT._load_op_kinds_toml()
+    row = next(row for row in data["kind"] if row.get("mapper_opcode") == opcode)
+    spellings = {row["canonical"], *row.get("aliases", [])}
+    path = tmp_path / "fixture.rs"
+    routes = "\n".join(f"    {json.dumps(kind)}," for kind in sorted(spellings))
+    path.write_text(
+        f"""
+const HANDLED_KINDS: &[&str] = &[
+{routes}
+];
+fn project_wire(wire: &str) -> &str {{
+    if crate::tir::op_kinds_generated::kind_to_opcode_table(wire)
+        == Some(crate::tir::ops::OpCode::{opcode})
+    {{
+        {json.dumps(row["canonical"])}
+    }} else {{
+        wire
+    }}
+}}
+fn handle_fixture(op: &OpIR) {{
+    match project_wire(&op.kind) {{
+        {json.dumps(row["canonical"])} => {{}},
+        _ => panic!("unsupported"),
+    }}
+}}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(AUDIT, "ROOT", tmp_path)
+    monkeypatch.setattr(AUDIT, "NATIVE_FC_DIR", tmp_path)
+    monkeypatch.setattr(
+        AUDIT,
+        "extract_native_family_dispatch_slices",
+        lambda: {"Fixture": [("fixture", "HANDLED_KINDS")]},
+    )
+    monkeypatch.setattr(
+        AUDIT,
+        "extract_native_family_handlers",
+        lambda: {"Fixture": ("fixture", "handle_fixture")},
+    )
+    return path, row, data
+
+
+@pytest.mark.parametrize("opcode", ["ConstInt", "Bool"])
+def test_d9_registry_projection_expands_raw_alias_preimage(
+    tmp_path: Path, monkeypatch, opcode: str
+) -> None:
+    path, row, _ = _native_projection_fixture(tmp_path, monkeypatch, opcode)
+    spellings = {row["canonical"], *row["aliases"]}
+    assert (
+        AUDIT.extract_native_handler_arm_kinds(path, "handle_fixture", spellings)
+        == spellings
+    )
+    assert AUDIT.extract_native_handler_routing_drifts() == []
+
+
+def test_d9_live_literal_projection_uses_registry_aliases() -> None:
+    path = AUDIT.NATIVE_FC_DIR / "const_literals.rs"
+    routes = AUDIT.extract_rust_str_slice_consts(path)["HANDLED_KINDS"]
+    assert (
+        AUDIT.extract_native_handler_arm_kinds(path, "handle_const_literal_op", routes)
+        == routes
+    )
+
+
+def test_d9_missing_alias_route_is_not_erased_by_canonicalization(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, row, _ = _native_projection_fixture(tmp_path, monkeypatch)
+    missing = row["aliases"][0]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"    {json.dumps(missing)},\n", "", 1
+        ),
+        encoding="utf-8",
+    )
+    assert AUDIT.extract_native_handler_routing_drifts() == [
+        f"fixture.rs:handle_fixture:{missing}:arm-not-in-fixture::HANDLED_KINDS"
+    ]
+
+
+def test_d9_new_registry_alias_requires_its_own_raw_route(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, row, data = _native_projection_fixture(tmp_path, monkeypatch)
+    row["aliases"].append("future_literal_alias")
+    monkeypatch.setattr(AUDIT, "_load_op_kinds_toml", lambda: data)
+    assert AUDIT.extract_native_handler_routing_drifts() == [
+        "fixture.rs:handle_fixture:future_literal_alias:arm-not-in-fixture::HANDLED_KINDS"
+    ]
+
+
+def test_d9_projected_alias_arm_is_unreachable_not_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, row, _ = _native_projection_fixture(tmp_path, monkeypatch)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"{json.dumps(row['canonical'])} =>", f"{json.dumps(row['aliases'][0])} =>"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AUDIT.RustMatchParseError, match="unreachable projected alias arms"
+    ):
+        AUDIT.extract_native_handler_routing_drifts()
+
+
+def test_d9_missing_canonical_arm_does_not_claim_any_aliases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, row, _ = _native_projection_fixture(tmp_path, monkeypatch)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            f"        {json.dumps(row['canonical'])} => {{}},\n", ""
+        ),
+        encoding="utf-8",
+    )
+    assert AUDIT.extract_native_handler_routing_drifts() == [
+        f"fixture.rs:handle_fixture:{kind}:fixture::HANDLED_KINDS-not-in-arm"
+        for kind in sorted({row["canonical"], *row["aliases"]})
+    ]
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("== Some", "!= Some"),
+        ("kind_to_opcode_table(wire)", "untrusted_transform(wire)"),
+        ("if crate::", "let extra = wire; if crate::"),
+        ("    } else {\n        wire", '    } else {\n        "const"'),
+        ('        "const"\n', '        "const_float"\n'),
+        ("OpCode::ConstInt", "OpCode::UnknownOpcode"),
+    ],
+)
+def test_d9_projection_requires_the_complete_generated_contract(
+    tmp_path: Path, monkeypatch, before: str, after: str
+) -> None:
+    path, _, _ = _native_projection_fixture(tmp_path, monkeypatch)
+    source = path.read_text(encoding="utf-8")
+    assert before in source
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(AUDIT.RustMatchParseError):
+        AUDIT.extract_native_handler_routing_drifts()
+
+
+def test_d9_opaque_dispatch_cannot_borrow_a_nested_raw_match(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path, _, _ = _native_projection_fixture(tmp_path, monkeypatch)
+    path.write_text(
+        """
+fn handle_fixture(op: &OpIR) {
+    match opaque(op.kind.as_str()) {
+        _ => match op.kind.as_str() { "const" => (), _ => () },
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(AUDIT.RustMatchParseError, match="without a supported"):
+        AUDIT.extract_native_handler_arm_kinds(path, "handle_fixture", {"const"})
+
+
+def test_native_match_parser_stays_inside_real_function_boundaries(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "scoped.rs"
+    path.write_text(
+        """
+// fn target() { match op.kind.as_str() { "comment" => () } }
+fn target(op: &OpIR) {
+    let text = "match op.kind.as_str() { fake }";
+}
+fn unrelated(op: &OpIR) {
+    match op.kind.as_str() { "neighbor" => (), _ => () }
+}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(AUDIT.RustMatchParseError, match="not found in fn target"):
+        AUDIT.extract_match_arms(path, "target", "match op.kind.as_str()")
+    with pytest.raises(AUDIT.RustMatchParseError, match="without a supported"):
+        AUDIT.extract_native_handler_arm_kinds(path, "target", {"const", "const_int"})
 
 
 def test_llvm_preserved_coverage_comes_from_handler_slices() -> None:

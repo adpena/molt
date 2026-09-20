@@ -20,6 +20,163 @@ fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     }
 }
 
+fn operation_shape_fixture(
+    shape: &molt_ir::tir::op_kinds_generated::SimpleIrOpShape,
+    operands: usize,
+    value: Option<i64>,
+) -> SimpleIR {
+    let params: Vec<_> = (0..operands).map(|index| format!("arg{index}")).collect();
+    let mut function = test_func(
+        "operation_shape_fixture",
+        vec![OpIR {
+            kind: shape.kind.into(),
+            args: Some(params.clone()),
+            value,
+            out: shape.requires_result.then(|| "result".into()),
+            ..OpIR::default()
+        }],
+    );
+    function.params = params;
+    if shape.kind == "trace_enter_slot" {
+        function.execution_context = molt_ir::ExecutionContextPolicy::Local;
+        function.ops.push(op("trace_exit"));
+    }
+    function.ops.push(op("ret_void"));
+    SimpleIR {
+        functions: vec![function],
+        profile: None,
+    }
+}
+
+#[test]
+fn generated_operation_shapes_agree_across_all_transport_boundaries() {
+    use molt_ir::tir::op_kinds_generated::{SIMPLEIR_OP_SHAPES, SimpleIrOpValueRule};
+    for shape in SIMPLEIR_OP_SHAPES {
+        let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
+        for operands in [shape.operands, shape.operands + 1] {
+            let ir = operation_shape_fixture(shape, operands, value);
+            let valid = operands == shape.operands;
+            let encoded = serde_json::to_string(&ir).unwrap();
+            let mut function = serde_json::to_value(&ir.functions[0]).unwrap();
+            function["kind"] = "function".into();
+            let ndjson = format!(
+                "{{\"kind\":\"ir_stream_start\"}}\n{function}\n{{\"kind\":\"ir_stream_end\"}}\n"
+            );
+            let results = [
+                validate_simple_ir(&ir),
+                SimpleIR::from_json_str(&encoded).map(|_| ()),
+                serde_json::from_str::<SimpleIR>(&encoded)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                SimpleIR::from_ndjson_reader(std::io::Cursor::new(ndjson.as_bytes())).map(|_| ()),
+            ];
+            for result in results {
+                assert_eq!(result.is_ok(), valid, "{}: {result:?}", shape.kind);
+                if let Err(error) = result {
+                    assert!(
+                        error.contains(shape.kind) && error.contains("args"),
+                        "{error}"
+                    );
+                    assert!(error.contains("op#0"), "{error}");
+                }
+            }
+            let fragment = molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0]);
+            assert_eq!(fragment.is_ok(), valid);
+        }
+    }
+}
+
+#[test]
+fn isolated_lowering_rejects_shapes_without_requiring_program_slot_closure() {
+    use molt_ir::tir::op_kinds_generated::simpleir_op_shape;
+    let shape = simpleir_op_shape("code_slot_set").unwrap();
+    let fragment = operation_shape_fixture(shape, 2, Some(17));
+    // No table-init or code-construction declaration: those are program/runtime
+    // semantics, not the isolated function's operand transport contract.
+    let tir = molt_backend::tir::lower_from_simple::lower_to_tir(&fragment.functions[0]);
+    assert!(molt_backend::tir::verify::verify_operation_shapes(&tir).is_ok());
+    let malformed = operation_shape_fixture(shape, 1, Some(17));
+    let error = std::panic::catch_unwind(|| {
+        molt_backend::tir::lower_from_simple::lower_to_tir(&malformed.functions[0])
+    })
+    .err()
+    .expect("direct function lowering must reject old one-operand slots");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("invalid SimpleIR operation shape before lowering"),
+        "{message}"
+    );
+    assert!(message.contains("code_slot_set"), "{message}");
+}
+
+#[test]
+fn direct_checked_backends_share_generated_shape_rejection() {
+    use molt_ir::tir::op_kinds_generated::{SIMPLEIR_OP_SHAPES, SimpleIrOpValueRule};
+    for shape in SIMPLEIR_OP_SHAPES {
+        let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
+        let mut malformed = vec![operation_shape_fixture(shape, shape.operands + 1, value)];
+        if shape.operands > 0 {
+            malformed.push(operation_shape_fixture(shape, shape.operands - 1, value));
+        }
+        if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+            malformed.push(operation_shape_fixture(shape, shape.operands, None));
+            malformed.push(operation_shape_fixture(shape, shape.operands, Some(-1)));
+        }
+        for ir in malformed {
+            let expected = molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir).unwrap_err();
+            #[cfg(feature = "native-backend")]
+            assert_eq!(
+                molt_backend::SimpleBackend::new()
+                    .compile_checked(ir.clone())
+                    .err()
+                    .expect("native checked admission"),
+                expected
+            );
+            #[cfg(all(feature = "native-backend", feature = "llvm"))]
+            assert_eq!(
+                molt_backend::SimpleBackend::new()
+                    .compile_llvm_checked(ir.clone())
+                    .err()
+                    .expect("LLVM checked admission"),
+                expected
+            );
+            #[cfg(feature = "wasm-backend")]
+            assert_eq!(
+                molt_backend::WasmBackend::new()
+                    .compile_checked(ir.clone())
+                    .err()
+                    .expect("WASM checked admission"),
+                expected
+            );
+            #[cfg(feature = "rust-backend")]
+            {
+                let error = molt_backend::rust::RustBackend::new()
+                    .compile_checked(&ir)
+                    .unwrap_err();
+                assert!(
+                    error.contains(shape.kind) && error.contains("op#0"),
+                    "{error}"
+                );
+            }
+            #[cfg(feature = "luau-backend")]
+            {
+                let error = molt_backend::luau::LuauBackend::new()
+                    .compile_checked(&ir)
+                    .unwrap_err();
+                assert!(
+                    error.contains(shape.kind) && error.contains("op#0"),
+                    "{error}"
+                );
+            }
+            let _ = expected;
+        }
+    }
+}
+
 #[test]
 fn validate_simple_ir_rejects_retired_frame_allocation_before_lowering() {
     for payload in [None, Some(-1), Some(16), Some(i64::MAX)] {

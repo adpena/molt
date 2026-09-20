@@ -1200,8 +1200,9 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
                 }
             }
         }
-        for op in &func.ops {
-            ir_schema::validate_required_fields(op)?;
+        for (op_index, op) in func.ops.iter().enumerate() {
+            ir_schema::validate_required_fields(op)
+                .map_err(|error| format!("function `{}` op#{op_index}: {error}", func.name))?;
             if op.passes_execution_context {
                 let Some(target) = op.s_value.as_deref() else {
                     return Err("execution-context call metadata requires a direct target".into());

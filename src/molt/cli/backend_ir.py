@@ -21,7 +21,6 @@ from molt.native_callable_abi import (
     native_callable_uses_callargs,
 )
 from molt.native_callable_exports import NativeCallableExport
-from molt.type_facts import TypeFacts
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.backend_cache import (
@@ -32,14 +31,10 @@ from molt.cli.cache_keys import _json_ir_default
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
 from molt.cli.frontend_integration import _register_global_code_id_with_state
 from molt.cli.models import (
-    FallbackPolicy,
-    ParseCodec,
-    TypeHintPolicy,
     _FrontendIntegrationState,
     _ExternalNativeModuleInitSpec,
     _ExternalPackageNativeArtifactPlan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _MidendDiagnosticsState,
     _PreparedBackendIR,
 )
 from molt.cli.module_cache import _normalize_backend_ir_functions
@@ -54,73 +49,6 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli import required_features as _required_features
 from molt.cli import runtime_features as _runtime_features
 from molt.target_python import TargetPythonVersion
-
-
-def _append_module_code_slot_ops(
-    ops: list[dict[str, Any]],
-    *,
-    logical_source_path: str,
-    code_id: int,
-    next_var: int,
-) -> int:
-    file_var = f"v{next_var}"
-    next_var += 1
-    name_var = f"v{next_var}"
-    next_var += 1
-    line_var = f"v{next_var}"
-    next_var += 1
-    linetable_var = f"v{next_var}"
-    next_var += 1
-    varnames_var = f"v{next_var}"
-    next_var += 1
-    names_var = f"v{next_var}"
-    next_var += 1
-    argcount_var = f"v{next_var}"
-    next_var += 1
-    posonly_var = f"v{next_var}"
-    next_var += 1
-    kwonly_var = f"v{next_var}"
-    next_var += 1
-    code_var = f"v{next_var}"
-    next_var += 1
-    ops.extend(
-        [
-            {
-                "kind": "const_str",
-                "s_value": logical_source_path,
-                "out": file_var,
-            },
-            {"kind": "const_str", "s_value": "<module>", "out": name_var},
-            {"kind": "const", "value": 1, "out": line_var},
-            {"kind": "const_none", "out": linetable_var},
-            {"kind": "tuple_new", "args": [], "out": varnames_var},
-            {"kind": "tuple_new", "args": [], "out": names_var},
-            {"kind": "const", "value": 0, "out": argcount_var},
-            {"kind": "const", "value": 0, "out": posonly_var},
-            {"kind": "const", "value": 0, "out": kwonly_var},
-            {
-                "kind": "code_new",
-                "args": [
-                    file_var,
-                    name_var,
-                    line_var,
-                    linetable_var,
-                    varnames_var,
-                    names_var,
-                    argcount_var,
-                    posonly_var,
-                    kwonly_var,
-                ],
-                "out": code_var,
-            },
-            {
-                "kind": "code_slot_set",
-                "value": code_id,
-                "args": [code_var],
-            },
-        ]
-    )
-    return next_var
 
 
 def _python_version_display(
@@ -296,56 +224,6 @@ def _append_entry_sys_init_op(
     return next_var
 
 
-def _build_module_code_ops(
-    *,
-    module_order: Sequence[str],
-    module_graph: Mapping[str, Path],
-    generated_module_source_paths: Mapping[str, str],
-    entry_module: str,
-    entry_path: Path | None,
-    register_global_code_id: Callable[[str], int],
-    next_var: int,
-) -> tuple[list[dict[str, Any]], int, dict[str, list[dict[str, Any]]]]:
-    """Build code-slot setup ops for each module.
-
-    Returns ``(all_ops, next_var, per_module_ops)`` where *per_module_ops*
-    maps each module name to its individual code-slot setup ops.  The flat
-    *all_ops* list is the concatenation of all per-module ops (kept for
-    backwards compatibility with ``molt_isolate_bootstrap``).
-    """
-    module_code_ops: list[dict[str, Any]] = []
-    per_module_ops: dict[str, list[dict[str, Any]]] = {}
-    for module_name in module_order:
-        module_path = module_graph[module_name]
-        logical_source_path = generated_module_source_paths.get(
-            module_name, module_path.as_posix()
-        )
-        init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
-        code_id = register_global_code_id(init_symbol)
-        this_module_ops: list[dict[str, Any]] = []
-        next_var = _append_module_code_slot_ops(
-            this_module_ops,
-            logical_source_path=logical_source_path,
-            code_id=code_id,
-            next_var=next_var,
-        )
-        per_module_ops[module_name] = this_module_ops
-        module_code_ops.extend(this_module_ops)
-    if entry_module != "__main__" and entry_path is not None:
-        init_symbol = SimpleTIRGenerator.module_init_symbol("__main__")
-        code_id = register_global_code_id(init_symbol)
-        main_ops: list[dict[str, Any]] = []
-        next_var = _append_module_code_slot_ops(
-            main_ops,
-            logical_source_path=entry_path.as_posix(),
-            code_id=code_id,
-            next_var=next_var,
-        )
-        per_module_ops["__main__"] = main_ops
-        module_code_ops.extend(main_ops)
-    return module_code_ops, next_var, per_module_ops
-
-
 def _replace_entry_call_with_spawn_override(
     entry_ops: list[dict[str, Any]],
     *,
@@ -457,12 +335,10 @@ def _build_isolate_bootstrap_ops(
     *,
     code_slot_count: int,
     version_ops: Sequence[dict[str, Any]],
-    module_code_ops: Sequence[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     ops = [
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
-        *module_code_ops,
     ]
     # Native runtime and WASM host imports share () -> owned Molt object.
     # A ret_void-only body has a genuinely void native linkage signature.
@@ -2212,29 +2088,13 @@ def _prepare_backend_ir(
     *,
     entry_module: str,
     module_graph: Mapping[str, Path],
-    parse_codec: ParseCodec,
-    type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
-    type_facts: TypeFacts | None,
-    enable_phi: bool,
     known_modules: Collection[str],
-    known_classes: Mapping[str, Any],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
-    known_func_kinds: dict[str, dict[str, str]],
-    module_chunking: bool,
-    module_chunk_max_ops: int,
-    optimization_profile: str,
-    pgo_hot_function_names: Collection[str],
-    frontend_phase_timeout: float | None,
     integration_state: _FrontendIntegrationState,
-    diagnostics_state: _MidendDiagnosticsState,
-    record_frontend_timing: Callable[..., None],
     fail: Callable[..., _CliFailure],
     json_output: bool,
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
-    generated_module_source_paths: Mapping[str, str],
     spawn_enabled: bool,
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
@@ -2260,10 +2120,8 @@ def _prepare_backend_ir(
             command="build",
         )
 
-    entry_path: Path | None = None
     if entry_module != "__main__":
-        entry_path = module_graph.get(entry_module)
-        if entry_path is None:
+        if entry_module not in module_graph:
             return None, fail(
                 f"Entry module not found: {entry_module}",
                 json_output,
@@ -2354,7 +2212,6 @@ def _prepare_backend_ir(
         version_ops=version_ops,
         register_global_code_id=register_global_code_id,
     )
-    entry_call_idx = _entry_call_index(entry_ops, entry_init)
     next_var = _next_tir_var_index(entry_ops)
     # Determine whether to inject a sys init call into molt_main.
     #
@@ -2378,44 +2235,8 @@ def _prepare_backend_ir(
             next_var=next_var,
             lazy=False,
         )
-        entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    module_code_ops, next_var, per_module_ops = _build_module_code_ops(
-        module_order=module_order,
-        module_graph=module_graph,
-        generated_module_source_paths=generated_module_source_paths,
-        entry_module=entry_module,
-        entry_path=entry_path,
-        register_global_code_id=register_global_code_id,
-        next_var=next_var,
-    )
-
-    # ── Lazy stdlib initialisation ──
-    #
-    # Previously *all* module code-slot metadata was set up eagerly in
-    # ``molt_main`` before any module init ran.  This meant that even modules
-    # the program never imports paid the cost of allocating a code object at
-    # startup.
-    #
-    # Each module's own ``molt_init_*`` function already contains a
-    # ``CODE_SLOT_SET`` emitted by the frontend, so it is safe to omit the
-    # duplicate setup from ``molt_main`` for modules that are not needed at
-    # startup.  Only the entry module (and ``sys`` when eagerly injected in
-    # the ``full`` profile) keep their code-slot ops in ``molt_main``.
-    eager_modules: set[str] = {entry_module}
-    if entry_module != "__main__":
-        eager_modules.add("__main__")
-    # When sys is eagerly injected (full profile), its code-slot metadata
-    # must also be set up before the init call runs.
-    if _inject_sys_init:
-        eager_modules.add("sys")
-
-    # Collect only the eager module code-slot ops for molt_main.
-    entry_module_code_ops: list[dict[str, Any]] = []
-    for mod_name in eager_modules:
-        entry_module_code_ops.extend(per_module_ops.get(mod_name, []))
-
-    entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    entry_ops[entry_call_idx:entry_call_idx] = entry_module_code_ops
+    # Wrappers own table allocation only. Each frontend-lowered module init
+    # publishes its lexical code/globals pair immediately before frame entry.
     host_init_ops = _build_entry_main_ops(
         entry_init=entry_init,
         version_ops=version_ops,
@@ -2429,8 +2250,6 @@ def _prepare_backend_ir(
             next_var=next_var,
             lazy=False,
         )
-    host_init_call_idx = _entry_call_index(host_init_ops, entry_init)
-    host_init_ops[host_init_call_idx:host_init_call_idx] = entry_module_code_ops
     host_init_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     if spawn_enabled:
         _replace_entry_call_with_spawn_override(
@@ -2447,7 +2266,6 @@ def _prepare_backend_ir(
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
         code_slot_count=len(global_code_ids),
         version_ops=version_ops,
-        module_code_ops=entry_module_code_ops,
     )
     functions.append(
         {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}

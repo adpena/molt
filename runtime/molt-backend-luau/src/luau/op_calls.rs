@@ -92,15 +92,14 @@ impl LuauBackend {
             }
             "code_new" => {
                 let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
+                let args = op.args.as_deref().expect("admitted code_new operands");
                 let fields = args
                     .iter()
                     .enumerate()
                     .map(|(index, value)| format!("[{}]={}", index + 1, sanitize_ident(value)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                if args.len() >= 9 {
-                    self.emit_line(&format!(
+                self.emit_line(&format!(
                         "local {out} = {{__molt_code=true, co_filename={}, co_name={}, co_firstlineno={}, co_linetable={}, co_varnames={}, co_names={}, co_argcount={}, co_posonlyargcount={}, co_kwonlyargcount={}, {fields}}}",
                         sanitize_ident(&args[0]),
                         sanitize_ident(&args[1]),
@@ -112,9 +111,6 @@ impl LuauBackend {
                         sanitize_ident(&args[7]),
                         sanitize_ident(&args[8]),
                     ));
-                } else {
-                    self.emit_unsupported_op(op);
-                }
             }
             "builtin_func" => {
                 if let Some(ref out_name) = op.out {

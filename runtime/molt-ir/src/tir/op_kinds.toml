@@ -1949,6 +1949,51 @@ classifier_no_heap_move = [
     "store_var",
 ]
 
+# Operation shapes shared by wire admission, isolated-function lowering and
+# preserved-Copy TIR verification. Backends consume admitted operands/IDs;
+# none owns a second arity or missing-ID policy.
+[[simpleir_op_shape]]
+kind = "code_new"
+family = "code_metadata"
+operands = 9
+requires_result = false
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "code_slot_set"
+family = "code_metadata"
+operands = 2
+requires_result = false
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "code_slots_init"
+family = "code_metadata"
+operands = 0
+requires_result = false
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "trace_enter_slot"
+family = "code_metadata"
+operands = 0
+requires_result = false
+value_rule = "nonnegative"
+
+[[simpleir_op_shape]]
+kind = "list_repeat_range"
+family = "range_fill"
+operands = 4
+requires_result = true
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "bytearray_fill_range"
+family = "range_fill"
+operands = 4
+requires_result = false
+value_rule = "unconstrained"
+
 [[simpleir_trailing_arg_result]]
 kind = "unpack_sequence"
 first_result_arg = 1
