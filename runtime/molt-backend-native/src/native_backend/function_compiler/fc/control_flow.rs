@@ -1103,10 +1103,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             if next.kind != "load_var" {
                                 break;
                             }
-                            if let Some(var_name) = next.var.as_ref()
+                            if let Some(var_name) = preanalyze_alias_source(next)
                                 && is_join_slot_name(var_name)
                             {
-                                names.push(Some(var_name.clone()));
+                                names.push(Some(var_name.to_string()));
                                 scan_idx += 1;
                                 continue;
                             }

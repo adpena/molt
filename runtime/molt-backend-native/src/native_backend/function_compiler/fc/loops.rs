@@ -184,6 +184,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         op_idx,
                         &pre_loop_defined,
                         representation_plan,
+                        list_index_fast_paths,
                     );
                     for list_name in &li_hoist {
                         if list_index_fast_paths
@@ -414,7 +415,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         for bwd in (0..op_idx).rev() {
                             let b = &ops[bwd];
                             if b.kind == "load_var"
-                                && b.var.as_deref() == Some(an.as_str())
+                                && preanalyze_alias_source(b) == Some(an.as_str())
                                 && let Some(ref out) = b.out
                                 && let Some(v) = var_get_boxed_overflow_safe(
                                     &mut *module,
@@ -558,6 +559,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         op_idx,
                         &pre_loop_defined,
                         representation_plan,
+                        list_index_fast_paths,
                     );
                     for list_name in &li_hoist {
                         if list_index_fast_paths

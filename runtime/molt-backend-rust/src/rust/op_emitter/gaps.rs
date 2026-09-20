@@ -70,16 +70,11 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_unpack_sequence(&mut self, op: &OpIR) {
-        let mut source = None;
-        let mut read_count = 0;
-        molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
-            read_count += 1;
-            source.get_or_insert(read.name);
-        });
-        let Some(source) = source.filter(|_| read_count == 1) else {
+        let Some(source) = molt_tir::tir::simple_def_use::simple_ir_single_read(op) else {
             self.emit_unsupported_op(op, "unpacking requires one source operand");
             return;
         };
+        let source = source.name;
         let mut output_count = 0;
         molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |_| {
             output_count += 1;

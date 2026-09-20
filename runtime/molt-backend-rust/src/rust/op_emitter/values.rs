@@ -185,16 +185,11 @@ impl RustBackend {
         // The shared field-role authority distinguishes a slot load from an
         // SSA copy: load_var/copy_var's var is metadata when args is present.
         // Use the same source that CFG liveness and normalization consume.
-        let mut source = None;
-        let mut read_count = 0;
-        molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
-            read_count += 1;
-            source.get_or_insert(read.name);
-        });
-        let Some(source) = source.filter(|_| read_count == 1) else {
+        let Some(source) = molt_tir::tir::simple_def_use::simple_ir_single_read(op) else {
             self.emit_unsupported_op(op, "local copy requires exactly one source operand");
             return;
         };
+        let source = source.name;
         let output = out_var(op);
         self.emit_line(&declare_molt_value(
             &output,

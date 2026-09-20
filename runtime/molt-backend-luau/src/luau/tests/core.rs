@@ -3325,6 +3325,301 @@ fn representation_conversions_reject_malformed_operands_even_without_results() {
 }
 
 #[test]
+fn local_copy_sources_follow_canonical_field_roles() {
+    for kind in ["load_var", "copy_var"] {
+        for args in [None, Some(vec![])] {
+            let mut backend = LuauBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args,
+                var: Some("source".to_string()),
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.unsupported_ops.is_empty(), "{kind}");
+            assert!(
+                backend.output.contains("local result = source"),
+                "{kind}: {}",
+                backend.output
+            );
+        }
+
+        for metadata in [None, Some("unread_metadata".to_string())] {
+            let mut backend = LuauBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args: Some(vec!["source".to_string()]),
+                var: metadata,
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.unsupported_ops.is_empty(), "{kind}");
+            assert!(
+                backend.output.contains("local result = source"),
+                "{kind}: {}",
+                backend.output
+            );
+            assert!(!backend.output.contains("unread_metadata"), "{kind}");
+        }
+
+        for (args, metadata) in [
+            (None, None),
+            (Some(vec![]), None),
+            (Some(vec!["first".to_string(), "second".to_string()]), None),
+            (
+                Some(vec!["first".to_string(), "second".to_string()]),
+                Some("unread_metadata".to_string()),
+            ),
+        ] {
+            let mut backend = LuauBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args,
+                var: metadata,
+                out: Some("result".to_string()),
+                ..OpIR::default()
+            });
+            assert!(backend.output.is_empty(), "{kind}: {}", backend.output);
+            assert_eq!(backend.unsupported_ops.len(), 1, "{kind}");
+            assert!(
+                backend.unsupported_ops[0].contains("exactly one source operand"),
+                "{kind}: {:?}",
+                backend.unsupported_ops
+            );
+        }
+    }
+}
+
+#[test]
+fn module_cache_effects_ignore_out_metadata() {
+    for (kind, args, emitted_effect) in [
+        (
+            "module_cache_set",
+            vec!["cache_key".to_string(), "module".to_string()],
+            "molt_module_cache[cache_key] = module",
+        ),
+        (
+            "module_cache_del",
+            vec!["cache_key".to_string()],
+            "molt_module_cache[cache_key] = nil",
+        ),
+    ] {
+        for metadata in [None, Some("none".to_string()), Some("metadata".to_string())] {
+            let mut backend = LuauBackend::new();
+            backend.emit_op(&OpIR {
+                kind: kind.to_string(),
+                args: Some(args.clone()),
+                out: metadata,
+                ..OpIR::default()
+            });
+            assert!(backend.unsupported_ops.is_empty(), "{kind}");
+            assert!(
+                backend.output.contains(emitted_effect),
+                "{kind}: {}",
+                backend.output
+            );
+            assert!(
+                !backend.output.contains("local none ="),
+                "{kind}: {}",
+                backend.output
+            );
+            assert!(
+                !backend.output.contains("local metadata ="),
+                "{kind}: {}",
+                backend.output
+            );
+        }
+    }
+}
+
+#[test]
+fn structured_hoisting_ignores_local_copy_metadata() {
+    for kind in ["load_var", "copy_var"] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("{kind}_metadata_scope"),
+                params: vec!["condition".to_string(), "actual".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "if".to_string(),
+                        args: Some(vec!["condition".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_int".to_string(),
+                        value: Some(7),
+                        out: Some("metadata_collision".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "end_if".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: kind.to_string(),
+                        args: Some(vec!["actual".to_string()]),
+                        var: Some("metadata_collision".to_string()),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+
+        let source = LuauBackend::new().compile(&ir);
+        assert!(
+            source.contains("local metadata_collision: number = 7"),
+            "{kind}: {source}"
+        );
+        assert!(source.contains("local result = actual"), "{kind}: {source}");
+        assert!(
+            !source.contains("local result = metadata_collision"),
+            "{kind}: {source}"
+        );
+        assert!(
+            !source.contains("\tlocal metadata_collision\n"),
+            "{kind}: {source}"
+        );
+    }
+}
+
+#[test]
+fn structured_hoisting_tracks_canonical_secondary_results() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "secondary_result_scope".to_string(),
+            params: vec![
+                "condition".to_string(),
+                "iterator".to_string(),
+                "sequence".to_string(),
+            ],
+            ops: vec![
+                OpIR {
+                    kind: "if".to_string(),
+                    args: Some(vec!["condition".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "iter_next_unboxed".to_string(),
+                    args: Some(vec!["iterator".to_string()]),
+                    var: Some("var_result".to_string()),
+                    out: Some("out_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "unpack_sequence".to_string(),
+                    args: Some(vec!["sequence".to_string(), "trailing_result".to_string()]),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    args: Some(vec!["var_result".to_string()]),
+                    out: Some("copied_var_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    args: Some(vec!["trailing_result".to_string()]),
+                    out: Some("copied_trailing_result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile(&ir);
+    assert!(source.contains("\tlocal trailing_result\n"), "{source}");
+    assert!(source.contains("\tlocal var_result\n"), "{source}");
+    assert!(
+        source.contains("\t\ttrailing_result = __molt_unpacked_"),
+        "{source}"
+    );
+    assert!(
+        source.contains("\t\tvar_result = __next_out_result[1]"),
+        "{source}"
+    );
+    assert!(!source.contains("\t\tlocal trailing_result ="), "{source}");
+    assert!(!source.contains("\t\tlocal var_result ="), "{source}");
+}
+
+#[test]
+fn structured_hoisting_ignores_out_metadata_collisions() {
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            name: "out_metadata_scope".to_string(),
+            params: ["condition", "container", "key", "value"]
+                .map(str::to_string)
+                .to_vec(),
+            ops: vec![
+                OpIR {
+                    kind: "if".to_string(),
+                    args: Some(vec!["condition".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_index".to_string(),
+                    args: Some(["container", "key", "value"].map(str::to_string).to_vec()),
+                    out: Some("metadata_collision".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "end_if".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_int".to_string(),
+                    value: Some(7),
+                    out: Some("metadata_collision".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("metadata_collision".to_string()),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+
+    let source = LuauBackend::new().compile(&ir);
+    assert!(
+        source.contains("\tlocal metadata_collision: number = 7\n"),
+        "{source}"
+    );
+    assert!(!source.contains("\tlocal metadata_collision\n"), "{source}");
+    assert!(
+        source.contains("local result = metadata_collision"),
+        "{source}"
+    );
+}
+
+#[test]
 fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

@@ -1,6 +1,10 @@
 //! Backend-neutral IR rewrite/elision passes (moved verbatim from lib.rs).
 
 use crate::ir::{FunctionIR, OpIR};
+use crate::tir::simple_def_use::{
+    simple_ir_binding, simple_ir_out_result, simple_ir_single_read, visit_simple_ir_defined_names,
+    visit_simple_ir_reads_mut,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Pre-process phi ops into explicit store_var/load_var pairs.
@@ -376,94 +380,63 @@ fn try_wrapper_has_except_dispatch(
     false
 }
 
-fn alias_rewrite_var_field_is_storage_definition(op: &OpIR) -> bool {
-    matches!(
-        op.kind.as_str(),
-        "store_var"
-            | "store_fast"
-            | "store_var_slot"
-            | "store_fast_slot"
-            | "delete_var"
-            | "iter_next_unboxed"
-    )
-}
-
-fn alias_rewrite_var_field_is_value_read(op: &OpIR) -> bool {
-    if matches!(op.kind.as_str(), "copy_var" | "load_var")
-        && op.args.as_ref().is_some_and(|args| !args.is_empty())
-    {
-        return false;
-    }
-    !alias_rewrite_var_field_is_storage_definition(op)
-}
-
 fn alias_rewrite_mutable_storage_names(ops: &[OpIR]) -> BTreeSet<String> {
-    ops.iter()
-        .filter(|op| alias_rewrite_var_field_is_storage_definition(op))
-        .filter_map(|op| op.var.as_deref().or(op.out.as_deref()))
-        .filter(|name| *name != "none")
-        .map(str::to_string)
-        .collect()
+    let mut seen = BTreeSet::new();
+    let mut mutable = BTreeSet::new();
+    for op in ops {
+        if let Some(binding) = simple_ir_binding(op) {
+            mutable.insert(binding.destination.to_string());
+        }
+        visit_simple_ir_defined_names(op, |name| {
+            if !seen.insert(name) {
+                mutable.insert(name.to_string());
+            }
+        });
+    }
+    mutable
 }
 
-/// Collapse simple SSA alias-only copy ops (`copy`, `copy_var`,
+/// Collapse simple SSA alias-only copy ops (`copy`, `copy_var`, `load_var`,
 /// `identity_alias`) by rewriting later uses to the original source name.
 ///
 /// Python local storage names are not SSA values: a `store_var` target can be
 /// overwritten between a copy site and a later use. Treating those names as
 /// immutable aliases erases the load point and lets exception-split native
 /// blocks reuse stale SSA values. Alias collapse is therefore restricted to
-/// names that are not mutable storage targets anywhere in the function.
+/// names that are neither mutable storage targets nor repeated definitions
+/// anywhere in the function. Input rewriting never touches result/metadata
+/// fields. Guards and owned aliases retain their validation/reference effects.
 pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
     let mutable_storage_names = alias_rewrite_mutable_storage_names(ops);
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
-    let resolve_alias = |name: &str, aliases: &BTreeMap<String, String>| -> String {
-        let mut current = name;
-        while let Some(next) = aliases.get(current) {
-            current = next;
-        }
-        current.to_string()
-    };
-
     for op in ops.iter_mut() {
-        if alias_rewrite_var_field_is_value_read(op)
-            && let Some(var) = op.var.as_mut()
-        {
-            *var = resolve_alias(var, &aliases);
-        }
-        if let Some(args) = op.args.as_mut() {
-            for arg in args {
-                *arg = resolve_alias(arg, &aliases);
+        visit_simple_ir_reads_mut(op, |_, name| {
+            if let Some(source) = aliases.get(name) {
+                name.clone_from(source);
             }
-        }
+        });
 
-        match op.kind.as_str() {
-            "copy_var" if op.args.is_none() => {
-                if let (Some(src), Some(out)) = (op.var.as_ref(), op.out.as_ref())
-                    && out != "none"
-                    && !mutable_storage_names.contains(out)
-                    && !mutable_storage_names.contains(src)
-                {
-                    aliases.insert(out.clone(), src.clone());
-                    op.kind = "nop".to_string();
-                    op.var = None;
-                    op.out = None;
-                }
-            }
-            "copy" | "identity_alias" => {
-                if let (Some(args), Some(out)) = (op.args.as_ref(), op.out.as_ref())
-                    && let Some(src) = args.first()
-                    && out != "none"
-                    && !mutable_storage_names.contains(out)
-                    && !mutable_storage_names.contains(src)
-                {
-                    aliases.insert(out.clone(), src.clone());
-                    op.kind = "nop".to_string();
-                    op.args = None;
-                    op.out = None;
-                }
-            }
-            _ => {}
+        // This is operation-erasure eligibility, not the broader ownership
+        // no-heap-move classifier: that also admits guards and mutable stores.
+        if !matches!(
+            op.kind.as_str(),
+            "copy" | "copy_var" | "load_var" | "identity_alias"
+        ) {
+            continue;
+        }
+        let source = simple_ir_single_read(op).map(|read| read.name);
+        if let (Some(src), Some(out)) = (source, simple_ir_out_result(op))
+            && src != out
+            && !mutable_storage_names.contains(out)
+            && !mutable_storage_names.contains(src)
+        {
+            // Sources have already been rewritten to their terminal name;
+            // flattened entries need neither chain walks nor cycle recovery.
+            aliases.insert(out.to_string(), src.to_string());
+            op.kind = "nop".to_string();
+            op.var = None;
+            op.args = None;
+            op.out = None;
         }
     }
 }
@@ -478,6 +451,151 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| name(value)).collect()
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_uses_canonical_sources_for_all_copy_forms() {
+        for kind in ["copy", "copy_var", "load_var", "identity_alias"] {
+            let forms = if matches!(kind, "copy_var" | "load_var") {
+                vec![None, Some(vec![]), Some(args(&["source"]))]
+            } else {
+                vec![Some(args(&["source"]))]
+            };
+            for source_args in forms {
+                let mut ops = vec![
+                    OpIR {
+                        kind: kind.into(),
+                        var: matches!(kind, "copy_var" | "load_var").then(|| {
+                            name(
+                                if source_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                                    "metadata_collision"
+                                } else {
+                                    "source"
+                                },
+                            )
+                        }),
+                        args: source_args,
+                        out: Some(name("alias")),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(args(&["alias"])),
+                        ..OpIR::default()
+                    },
+                ];
+                rewrite_copy_aliases(&mut ops);
+                assert_eq!(ops[0].kind, "nop", "{kind}");
+                assert!(ops[0].var.is_none() && ops[0].args.is_none() && ops[0].out.is_none());
+                assert_eq!(ops[1].args.as_ref(), Some(&args(&["source"])), "{kind}");
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_preserves_binding_and_redefined_names() {
+        for kind in [
+            "store_var",
+            "store_fast",
+            "delete_var",
+            "const",
+            "checked_add",
+            "unpack_sequence",
+        ] {
+            for destination_in_var in [false, true] {
+                let mut definition = OpIR {
+                    kind: kind.into(),
+                    args: Some(args(&["replacement"])),
+                    ..OpIR::default()
+                };
+                if kind == "unpack_sequence" {
+                    definition.args.as_mut().unwrap().push(name("alias"));
+                } else if kind == "const" || !destination_in_var {
+                    definition.out = Some(name("alias"));
+                } else {
+                    definition.var = Some(name("alias"));
+                }
+                let mut ops = vec![
+                    OpIR {
+                        kind: "copy".into(),
+                        args: Some(args(&["source"])),
+                        out: Some(name("alias")),
+                        ..OpIR::default()
+                    },
+                    definition,
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(args(&["alias"])),
+                        ..OpIR::default()
+                    },
+                ];
+                rewrite_copy_aliases(&mut ops);
+                assert_eq!(ops[0].kind, "copy", "{kind} var={destination_in_var}");
+                assert_eq!(ops[2].args.as_ref(), Some(&args(&["alias"])));
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_keeps_guards_ownership_and_malformed_copies() {
+        for kind in [
+            "guard_tag",
+            "guard_type",
+            "binding_alias",
+            "borrow",
+            "unknown_alias",
+        ] {
+            let mut ops = vec![OpIR {
+                kind: kind.into(),
+                args: Some(args(&["source"])),
+                out: Some(name("alias")),
+                ..OpIR::default()
+            }];
+            rewrite_copy_aliases(&mut ops);
+            assert_eq!(ops[0].kind, kind);
+        }
+        for kind in ["copy", "copy_var", "load_var", "identity_alias"] {
+            for source_args in [None, Some(vec![]), Some(args(&["a", "b"]))] {
+                let mut ops = vec![OpIR {
+                    kind: kind.into(),
+                    args: source_args,
+                    out: Some(name("alias")),
+                    ..OpIR::default()
+                }];
+                rewrite_copy_aliases(&mut ops);
+                assert_eq!(ops[0].kind, kind);
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_flattens_chains_without_self_alias_cycles() {
+        let mut ops = vec![OpIR {
+            kind: "copy".into(),
+            args: Some(args(&["source"])),
+            out: Some(name("source")),
+            ..OpIR::default()
+        }];
+        let mut source = name("source");
+        for index in 0..128 {
+            let out = format!("alias_{index}");
+            ops.push(OpIR {
+                kind: "copy".into(),
+                args: Some(vec![source]),
+                out: Some(out.clone()),
+                ..OpIR::default()
+            });
+            source = out;
+        }
+        ops.push(OpIR {
+            kind: "ret".into(),
+            args: Some(vec![source]),
+            ..OpIR::default()
+        });
+        rewrite_copy_aliases(&mut ops);
+        assert_eq!(ops[0].kind, "copy");
+        assert!(ops[1..129].iter().all(|op| op.kind == "nop"));
+        assert_eq!(ops.last().unwrap().args.as_ref(), Some(&args(&["source"])));
     }
 
     #[test]

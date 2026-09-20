@@ -17,6 +17,9 @@ pub(in crate::native_backend::function_compiler) struct ListIndexFastPathState {
     pub(in crate::native_backend::function_compiler) list_is_bool_cache: BTreeMap<String, Variable>,
     pub(in crate::native_backend::function_compiler) conditional_list_bool_shadows:
         BTreeMap<String, ConditionalListBoolShadow>,
+    // Immutable derivation of the function's canonical CFG, built only if a
+    // loop survives effect filtering and shared by every hoist scan.
+    loop_execution_dominators: Option<Vec<Option<usize>>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -63,9 +66,10 @@ pub(in crate::native_backend::function_compiler) fn loop_start_has_index_prelude
 
 /// Scan a loop body (from `start_idx+1` to the matching `loop_end`) and return
 /// the set of list variable names whose data_ptr/len can be hoisted before the
-/// loop.  A variable is hoistable when it is read through `index` and NOT
-/// mutated by `store_index`, `list_append`, `list_pop`, `list_extend`,
-/// `list_insert`, `list_remove`, or `list_clear` anywhere in the loop body.
+/// loop. A variable is hoistable when typed indexing cannot invoke Python and
+/// no operation at any nesting depth can invalidate the cached storage. Opaque
+/// effects fence the whole heap: even a zero-argument call can mutate a list
+/// through a global or captured alias.
 ///
 /// Returns `(list_int_hoistable, list_generic_hoistable)`.
 ///
@@ -82,98 +86,184 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     start_idx: usize,
     pre_loop_defined: &BTreeSet<String>,
     representation_plan: &ScalarRepresentationPlan,
+    fast_paths: &mut ListIndexFastPathState,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
+    use crate::tir::op_kinds_generated::{
+        copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
+        kind_to_opcode_table, opcode_effects_table, simpleir_kind_is_cfg_or_ssa_consumed,
+        simpleir_kind_is_conditional_branch,
+    };
+    use crate::tir::ops::OpCode;
+    use crate::tir::types::TirType;
+
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
     let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
-    let mut mutated: BTreeSet<String> = BTreeSet::new();
-    // Aliasing: copy_var/copy/alias make two names reference the SAME underlying
-    // list buffer, so mutating (or escaping) either end invalidates a hoisted
-    // data_ptr/len for BOTH. Record the edges and close `mutated` over them below.
-    let mut alias_edges: Vec<(String, String)> = Vec::new();
-
-    let mut depth = 0i32;
-    for idx in (start_idx + 1)..ops.len() {
-        let op = &ops[idx];
-        match op.kind.as_str() {
-            "loop_start" | "loop_index_start" => depth += 1,
-            "loop_end" if depth > 0 => depth -= 1,
-            "loop_end" => break,
-            _ => {}
-        }
-        // Only consider ops at the current loop nesting level (depth == 0).
-        // Inner loop accesses get their own hoisting when their loop_start is
-        // processed.
-        if depth != 0 {
-            continue;
-        }
-        let args = match op.args.as_ref() {
-            Some(a) if !a.is_empty() => a,
-            _ => continue,
-        };
-        match op.kind.as_str() {
-            "index" => {
-                if representation_plan.op_has_container_storage(
-                    idx,
-                    op,
-                    ContainerStorageKind::FlatListInt,
-                ) {
-                    list_int_accessed.insert(args[0].clone());
-                } else if representation_plan.op_has_container_kind(op, ContainerKind::List) {
-                    list_generic_accessed.insert(args[0].clone());
-                }
-            }
-            // In-place mutations invalidate a hoisted data_ptr/len for the receiver.
-            "store_index" | "list_append" | "list_pop" | "list_extend" | "list_insert"
-            | "list_remove" | "list_clear" => {
-                mutated.insert(args[0].clone());
-            }
-            // Storing the list as a value escapes it into a container from which
-            // opaque code may later mutate it; the container operand also escapes.
-            "store_attr" | "store_subscript" | "store_global" => {
-                for operand in args.iter() {
-                    mutated.insert(operand.clone());
-                }
-            }
-            // A call can hand the list to opaque code that mutates or reallocates
-            // it (e.g. `list.append` inside a callee), which would leave a hoisted
-            // data_ptr/len stale — a silent wrong answer or a use-after-free after a
-            // reallocation. Every operand is conservatively treated as escaped.
-            "call" | "call_method" | "call_function" | "call_kw" | "invoke" => {
-                for operand in args.iter() {
-                    mutated.insert(operand.clone());
-                }
-            }
-            // Aliasing edge: destination shares the source list's buffer.
-            "copy_var" | "copy" | "load_var" | "identity_alias" | "alias" => {
-                if let Some(dest) = op.out.as_ref().or(op.var.as_ref()) {
-                    alias_edges.push((dest.clone(), args[0].clone()));
-                }
-            }
-            _ => {}
+    let mut body_definitions = BTreeSet::new();
+    let mut loop_end = None;
+    // The loop_start before an indexed prelude is metadata for the same loop,
+    // not an additional nested loop. This matches native loop emission.
+    let mut body_start = start_idx;
+    if ops.get(start_idx).is_some_and(|op| op.kind == "loop_start")
+        && loop_start_has_index_prelude(ops, start_idx)
+    {
+        while ops[body_start].kind != "loop_index_start" {
+            body_start += 1;
         }
     }
-
-    // Close `mutated` over alias edges to a fixpoint. Aliases are undirected (both
-    // ends are the same buffer), so mutation of either end marks the other.
-    if !alias_edges.is_empty() {
-        loop {
-            let mut changed = false;
-            for (a, b) in &alias_edges {
-                if mutated.contains(a) && mutated.insert(b.clone()) {
-                    changed = true;
-                }
-                if mutated.contains(b) && mutated.insert(a.clone()) {
-                    changed = true;
-                }
+    let mut depth = 0i32;
+    for idx in (body_start + 1)..ops.len() {
+        let op = &ops[idx];
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            body_definitions.insert(name.to_string());
+        });
+        match op.kind.as_str() {
+            "loop_start" if loop_start_has_index_prelude(ops, idx) => continue,
+            "loop_start" | "loop_index_start" => {
+                depth += 1;
+                continue;
             }
-            if !changed {
+            "loop_end" if depth > 0 => {
+                depth -= 1;
+                continue;
+            }
+            "loop_end" => {
+                loop_end = Some(idx);
                 break;
             }
+            _ => {}
+        }
+        if op.is_async_work_poll() {
+            return (BTreeSet::new(), BTreeSet::new());
+        }
+        let flat_index = op.kind == "index"
+            && representation_plan.op_has_container_storage(
+                idx,
+                op,
+                ContainerStorageKind::FlatListInt,
+            );
+        let list_index = op.kind == "index"
+            && representation_plan.op_has_container_kind(op, ContainerKind::List);
+        if (flat_index || list_index)
+            && op.args.as_ref().is_some_and(|args| {
+                args.len() == 2 && representation_plan.name_is_integer_scalar(&args[1])
+            })
+        {
+            // Only current-depth accesses become candidates, but nested reads
+            // still need this same no-callback proof before crossing the fence.
+            if depth == 0 {
+                let name = op.args.as_ref().unwrap()[0].clone();
+                if flat_index {
+                    list_int_accessed.insert(name);
+                } else {
+                    list_generic_accessed.insert(name);
+                }
+            }
+            continue;
+        }
+        let mut operand_types = Vec::new();
+        crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+            operand_types.push(match representation_plan.name_scalar_kind(read.name) {
+                Some(ScalarKind::Int) => TirType::I64,
+                Some(ScalarKind::Bool) => TirType::Bool,
+                Some(ScalarKind::Float) => TirType::F64,
+                Some(ScalarKind::Str) => TirType::Str,
+                Some(ScalarKind::NoneValue) => TirType::None,
+                None => TirType::DynBox,
+            });
+        });
+        let kind = op.kind.as_str();
+        let opcode = kind_to_opcode_table(kind);
+        // Reference acquisition and no-heap transport do not mutate list
+        // storage. They remain real instructions with their own owner credits.
+        // A binding replacement can run an old owner's finalizer, so it only
+        // qualifies when both old home and incoming value are proven scalars.
+        let scalar_binding = simple_ir_binding(op).is_none_or(|binding| {
+            representation_plan.name_is_non_heap_scalar(binding.destination)
+                && operand_types.iter().all(|ty| {
+                    matches!(
+                        ty,
+                        TirType::I64 | TirType::Bool | TirType::F64 | TirType::None
+                    )
+                })
+        });
+        if (copy_kind_is_explicit_no_heap_move_table(kind) && scalar_binding)
+            || copy_kind_mints_owned_alias_ref_table(kind)
+            || opcode == Some(OpCode::IncRef)
+        {
+            continue;
+        }
+        if opcode.is_none() && simpleir_kind_is_cfg_or_ssa_consumed(kind) {
+            if !simpleir_kind_is_conditional_branch(kind)
+                || operand_types.iter().all(|ty| {
+                    matches!(
+                        ty,
+                        TirType::I64 | TirType::Bool | TirType::F64 | TirType::Str | TirType::None
+                    )
+                })
+            {
+                continue;
+            }
+        }
+        let effects = opcode.map(|opcode| {
+            crate::tir::op_semantics::op_instance_facts(opcode, &operand_types)
+                .map_or_else(|| opcode_effects_table(opcode), |facts| facts.effects)
+        });
+        // Non-capture is not non-mutation. Unknown/Copy-lifted runtime ops and
+        // opaque callbacks invalidate every candidate, including unpassed lists.
+        if effects.is_none_or(|effects| effects.may_access_arbitrary_heap || !effects.effect_free) {
+            return (BTreeSet::new(), BTreeSet::new());
         }
     }
-
-    list_int_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
-    list_generic_accessed.retain(|v| !mutated.contains(v) && pre_loop_defined.contains(v));
+    list_int_accessed.retain(|v| pre_loop_defined.contains(v) && !body_definitions.contains(v));
+    list_generic_accessed.retain(|v| pre_loop_defined.contains(v) && !body_definitions.contains(v));
+    let Some(loop_end) = loop_end else {
+        return (BTreeSet::new(), BTreeSet::new());
+    };
+    if list_int_accessed.is_empty() && list_generic_accessed.is_empty() {
+        return (list_int_accessed, list_generic_accessed);
+    }
+    // A lexical prefix is not a dominance proof. Reuse the canonical execution
+    // graph, including exception/resume edges, before installing preheader data.
+    let dominators = fast_paths
+        .loop_execution_dominators
+        .get_or_insert_with(|| crate::tir::cfg::CFG::build(ops).execution_op_dominators(ops));
+    let dominates = |definition: usize, mut use_index: usize| {
+        loop {
+            if definition == use_index {
+                return true;
+            }
+            let Some(parent) = dominators[use_index] else {
+                return false;
+            };
+            use_index = parent;
+        }
+    };
+    if (body_start != 0 && dominators[body_start].is_none())
+        || ((body_start + 1)..=loop_end).any(|index| {
+            // An end marker after an unconditional continue is lexical only.
+            // The canonical graph leaves unreachable nodes without an idom;
+            // real exception/resume entries remain reachable and must pass.
+            dominators[index].is_some() && !dominates(body_start, index)
+        })
+    {
+        return (BTreeSet::new(), BTreeSet::new());
+    }
+    let mut lexical_definitions = BTreeSet::new();
+    let mut dominating_definitions = BTreeSet::new();
+    for (index, op) in ops.iter().enumerate().take(start_idx) {
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            lexical_definitions.insert(name.to_string());
+            if dominates(index, body_start) {
+                dominating_definitions.insert(name.to_string());
+            }
+        });
+    }
+    let available = |name: &String| {
+        // Names supplied only by the caller are entry parameters.
+        !lexical_definitions.contains(name) || dominating_definitions.contains(name)
+    };
+    list_int_accessed.retain(available);
+    list_generic_accessed.retain(available);
     (list_int_accessed, list_generic_accessed)
 }
 
@@ -191,12 +281,9 @@ pub(in crate::native_backend::function_compiler) fn collect_pre_loop_defined_nam
 ) -> BTreeSet<String> {
     let mut defined: BTreeSet<String> = BTreeSet::new();
     for op in ops.iter().take(start_idx) {
-        if let Some(out) = op.out.as_ref() {
-            defined.insert(out.clone());
-        }
-        if let Some(var) = op.var.as_ref() {
-            defined.insert(var.clone());
-        }
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            defined.insert(name.to_string());
+        });
     }
     defined
 }

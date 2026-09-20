@@ -216,28 +216,19 @@ impl LuauBackend {
                     }
                     _ => {}
                 }
-                // Record first declaration site of each variable.
-                if let Some(ref out_name) = op.out
-                    && out_name != "none"
-                    && !op.kind.starts_with("nop")
-                {
-                    let var = sanitize_ident(out_name);
-                    decl_scope.entry(var).or_insert((depth, block_id));
+                // Record first declaration site of each canonical definition.
+                if !op.kind.starts_with("nop") {
+                    molt_tir::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+                        let var = sanitize_ident(name);
+                        decl_scope.entry(var).or_insert((depth, block_id));
+                    });
                 }
                 // Check if any referenced variable was declared at a deeper
                 // depth OR in a different block at the same depth.
-                let refs: Vec<&str> = op
-                    .args
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|s| s.as_str())
-                    .chain(op.var.as_deref())
-                    .collect();
-                for r in refs {
-                    let var = sanitize_ident(r);
+                molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |source| {
+                    let var = sanitize_ident(source.name);
                     if param_set.contains(&var) {
-                        continue;
+                        return;
                     }
                     if let Some(&(dd, db)) = decl_scope.get(&var) {
                         // Hoist if: declared deeper, OR declared at same
@@ -246,7 +237,7 @@ impl LuauBackend {
                             self.hoisted_vars.insert(var);
                         }
                     }
-                }
+                });
             }
         }
 

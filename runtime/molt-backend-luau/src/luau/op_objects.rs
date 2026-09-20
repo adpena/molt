@@ -336,20 +336,12 @@ impl LuauBackend {
                     let module = sanitize_ident(&args[1]);
                     self.emit_line(&format!("molt_module_cache[{name}] = {module}"));
                 }
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
-                }
             }
             "module_cache_del" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(name_var) = args.first() {
                     let name = sanitize_ident(name_var);
                     self.emit_line(&format!("molt_module_cache[{name}] = nil"));
-                }
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "module_get_global" => {
