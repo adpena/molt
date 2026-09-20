@@ -752,8 +752,7 @@ class ExceptionLoweringMixin(_MixinBase):
                 result=MoltValue("none"),
             )
         )
-        self._visit_block(node.body)
-        body_terminated = self.block_terminated
+        body_terminated = self._visit_block(node.body)
         self.block_terminated = False
         if not body_terminated:
             self.emit(

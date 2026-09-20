@@ -12,10 +12,16 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    opcode_canonical_kind_table, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use super::{ExceptionOpPosition, ExceptionPopOwnerStates, ExceptionRegionToken};
+use super::{
+    ExceptionOpPosition, ExceptionPopOwnerStates, ExceptionRegionDiagnostic,
+    ExceptionRegionDiagnosticKind, ExceptionRegionToken,
+};
 
 pub(super) type AnonymousHandlerDestinations = BTreeMap<ExceptionOpPosition, BTreeSet<i64>>;
 
@@ -278,6 +284,9 @@ pub(super) fn match_ref_release_owner(
         })
 }
 
+// Closed-world resume custody: only reachable save sites populate this map.
+// An absent state is unwitnessed; a present empty region stack is a genuine
+// depth-zero save and must remain reachable.
 pub(super) type StateResumeStacks = BTreeMap<i64, BTreeSet<ExceptionPathState>>;
 
 fn collect_const_int_values(func: &TirFunction) -> ConstIntValues {
@@ -294,21 +303,26 @@ fn collect_const_int_values(func: &TirFunction) -> ConstIntValues {
     values
 }
 
-fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Option<i64> {
-    if op.opcode == OpCode::StateYield {
-        return label_value(op);
+fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Result<Option<i64>, &'static str> {
+    let kind = opcode_canonical_kind_table(op.opcode);
+    if !simpleir_kind_is_suspend(kind) {
+        return Ok(None);
     }
-    if op.opcode == OpCode::StateTransition
-        || op.opcode == OpCode::ChanSendYield
-        || op.opcode == OpCode::ChanRecvYield
-    {
-        return op
-            .operands
+    // Membership is generated, as in CFG construction. The saved-state shape
+    // is an integer attribute for pure yield and the last operand's direct
+    // integer constant for repoll, never the repoll's ready-state attribute.
+    if simpleir_kind_is_repoll(kind) {
+        op.operands
             .last()
             .and_then(|pending| const_int_values.get(pending))
-            .copied();
+            .copied()
+            .map(Some)
+            .ok_or("pending-state operand is not a statically known integer constant")
+    } else {
+        label_value(op)
+            .map(Some)
+            .ok_or("saved-state value attribute is not an integer")
     }
-    None
 }
 
 fn terminator_successors_with_state(
@@ -317,7 +331,6 @@ fn terminator_successors_with_state(
     anonymous_destinations: &AnonymousHandlerDestinations,
     state: &ExceptionPathState,
     state_resume_stacks: &StateResumeStacks,
-    unknown_state: Option<&ExceptionPathState>,
 ) -> Vec<(BlockId, ExceptionPathState)> {
     match term {
         Terminator::Branch { target, .. } => {
@@ -376,6 +389,8 @@ fn terminator_successors_with_state(
                 terminator_successor_state(label_to_block, anonymous_destinations, *default, state),
             ));
             for (state, target, _) in cases {
+                // CFG cases are a syntactic superset. No reachable save means
+                // no resume edge, not custody inherited from the dispatcher.
                 if let Some(stacks) = state_resume_stacks.get(state) {
                     successors.extend(stacks.iter().map(|resume_stack| {
                         (
@@ -388,16 +403,6 @@ fn terminator_successors_with_state(
                             ),
                         )
                     }));
-                } else if let Some(fallback_state) = unknown_state {
-                    successors.push((
-                        *target,
-                        terminator_successor_state(
-                            label_to_block,
-                            anonymous_destinations,
-                            *target,
-                            fallback_state,
-                        ),
-                    ));
                 }
             }
             successors
@@ -412,11 +417,12 @@ fn collect_state_resume_stacks_once(
     anonymous_destinations: &AnonymousHandlerDestinations,
     state_resume_stacks: &StateResumeStacks,
     const_int_values: &ConstIntValues,
-) -> StateResumeStacks {
+) -> Result<StateResumeStacks, Vec<ExceptionRegionDiagnostic>> {
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
     let mut observed = StateResumeStacks::new();
+    let mut diagnostics = BTreeMap::new();
     while let Some((block, op_index, state)) = queue.pop_front() {
         if !visited.insert((block, op_index, state.clone())) {
             continue;
@@ -431,20 +437,35 @@ fn collect_state_resume_stacks_once(
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
-                None,
             ) {
                 queue.push_back((succ, 0, succ_state));
             }
             continue;
         }
         let op = &tir_block.ops[op_index];
-        if let Some(resume_state) = state_id(op, const_int_values) {
-            observed
-                .entry(resume_state)
-                .or_default()
-                .insert(state.clone());
-        }
         let pos = ExceptionOpPosition { block, op_index };
+        match state_id(op, const_int_values) {
+            Ok(Some(resume_state)) => {
+                observed
+                    .entry(resume_state)
+                    .or_default()
+                    .insert(state.clone());
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                diagnostics
+                    .entry(pos)
+                    .or_insert_with(|| ExceptionRegionDiagnostic {
+                        kind: ExceptionRegionDiagnosticKind::UnresolvedResumeState,
+                        value: None,
+                        position: pos,
+                        message: format!(
+                            "reachable {:?} has an unresolved saved resume state: {reason}",
+                            op.opcode
+                        ),
+                    });
+            }
+        }
         let next_state = state.after_op(pos, op);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
@@ -458,14 +479,18 @@ fn collect_state_resume_stacks_once(
             queue.push_back((block, op_index + 1, next_state));
         }
     }
-    observed
+    if diagnostics.is_empty() {
+        Ok(observed)
+    } else {
+        Err(diagnostics.into_values().collect())
+    }
 }
 
 pub(super) fn compute_state_resume_stacks(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
     anonymous_destinations: &AnonymousHandlerDestinations,
-) -> StateResumeStacks {
+) -> Result<StateResumeStacks, Vec<ExceptionRegionDiagnostic>> {
     let const_int_values = collect_const_int_values(func);
     let mut stacks = StateResumeStacks::new();
     loop {
@@ -475,7 +500,7 @@ pub(super) fn compute_state_resume_stacks(
             anonymous_destinations,
             &stacks,
             &const_int_values,
-        );
+        )?;
         let mut changed = false;
         for (state, observed_stacks) in observed {
             let state_stacks = stacks.entry(state).or_default();
@@ -484,7 +509,7 @@ pub(super) fn compute_state_resume_stacks(
             }
         }
         if !changed {
-            return stacks;
+            return Ok(stacks);
         }
     }
 }
@@ -531,7 +556,6 @@ pub(super) fn reachable_region_pops(
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
-                Some(&state),
             ) {
                 queue.push_back((succ, 0, succ_state, Some(block)));
             }
@@ -597,7 +621,6 @@ pub(super) fn path_states_before(
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
-                Some(&state),
             ) {
                 queue.push_back((succ, 0, succ_state));
             }
@@ -653,7 +676,6 @@ pub(super) fn lexical_handlers_before(
                 anonymous_destinations,
                 &state,
                 state_resume_stacks,
-                Some(&state),
             ) {
                 queue.push_back((succ, 0, succ_state));
             }
@@ -680,12 +702,12 @@ pub(super) fn lexical_handlers_before(
 pub fn exception_pop_owner_states(
     func: &TirFunction,
     target: ExceptionOpPosition,
-) -> ExceptionPopOwnerStates {
+) -> Result<ExceptionPopOwnerStates, Vec<ExceptionRegionDiagnostic>> {
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
     let (state_resume_stacks, _, anonymous_destinations) =
-        super::exception_region_path_authority(func, &label_to_block);
+        super::exception_region_path_authority(func, &label_to_block)?;
     let mut queue = VecDeque::new();
     queue.push_back((
         func.entry_block,
@@ -721,7 +743,6 @@ pub fn exception_pop_owner_states(
                 &anonymous_destinations,
                 &state,
                 &state_resume_stacks,
-                Some(&state),
             ) {
                 let next_pred = (succ == target.block).then_some(block);
                 queue.push_back((succ, 0, succ_state, next_pred));
@@ -744,5 +765,5 @@ pub fn exception_pop_owner_states(
             queue.push_back((block, op_index + 1, next_state, pred_into_target));
         }
     }
-    owners
+    Ok(owners)
 }
