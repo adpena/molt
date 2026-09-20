@@ -44,7 +44,7 @@
 //! | [`DomChildren`]  | `build_dom_children`                | gvn                              |
 //! | [`ExecReachable`]| `executable_reachable_blocks`       | (full-CFG reachable set)         |
 //! | [`StrictReachable`]| `reachable_blocks_with(TerminatorOnly)` | gvn (cross-block replace) |
-//! | [`LoopForest`]   | loop roles/backedges + `collect_loop_blocks` | licm, bce, vectorize, polyhedral, block-versioning, type-guard-hoist, refcount-elim, scev, value-range, counted-loop, loop-unroll |
+//! | [`LoopForest`]   | executable backedges + `collect_loop_blocks` | licm, bce, vectorize, polyhedral, block-versioning, type-guard-hoist, refcount-elim, scev, value-range, counted-loop, loop-unroll |
 //! | [`DefMap`]       | value → defining block              | gvn, licm                        |
 //!
 //! The names map to the S1 spec's `{PredMap, ImmediateDoms, DomChildren,
@@ -148,15 +148,16 @@ pub trait Analysis {
     fn compute(func: &TirFunction) -> Self::Result;
 }
 
-/// Loop forest: structural loop headers from explicit `loop_roles` plus
-/// dominator-proven backedges, with the natural-loop body of each. Shared by
+/// Executable loop forest: dominator-proven backedges and the natural-loop
+/// body of each. Lexical `loop_roles` are retention/lowering metadata, not
+/// evidence that a loop can execute a backedge. Shared by
 /// LICM, BCE, vectorize, and polyhedral so loop-shape discovery has one cached
 /// authority.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoopForestResult {
     /// Loop headers in ascending `BlockId` order (deterministic).
     pub headers: Vec<BlockId>,
-    /// header → natural-loop body block set.
+    /// header → executable, header-dominated natural-loop body block set.
     pub bodies: HashMap<BlockId, HashSet<BlockId>>,
 }
 
@@ -228,8 +229,8 @@ impl Analysis for StrictReachable {
     }
 }
 
-/// Loop forest (headers from explicit loop roles and natural-loop backedges,
-/// bodies from natural-loop construction).
+/// Loop forest (headers from executable natural-loop backedges, bodies from
+/// natural-loop construction).
 pub struct LoopForest;
 impl Analysis for LoopForest {
     type Result = LoopForestResult;
@@ -240,19 +241,10 @@ impl Analysis for LoopForest {
         let pred_map = dominators::build_pred_map(func);
         let idoms = dominators::compute_idoms(func, &pred_map);
 
-        let mut header_set: HashSet<BlockId> = func
-            .loop_roles
-            .iter()
-            .filter_map(|(bid, role)| {
-                if matches!(role, super::blocks::LoopRole::LoopHeader)
-                    && func.blocks.contains_key(bid)
-                {
-                    Some(*bid)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // An unconditional break may leave a retained loop_end -> header edge
+        // whose source is unreachable. It preserves source structure, but
+        // must not create an optimization loop (or become its preheader).
+        let mut header_set: HashSet<BlockId> = HashSet::new();
 
         for (&candidate, preds) in &pred_map {
             if idoms.contains_key(&candidate)
@@ -656,6 +648,86 @@ mod tests {
         let h = forest.headers[0];
         let body = &forest.bodies[&h];
         assert!(body.contains(&h));
+    }
+
+    #[test]
+    fn loop_forest_excludes_structural_headers_without_executable_backedges() {
+        let mut func = loopy();
+        let header = BlockId(1);
+        let exit = BlockId(2);
+        func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
+            target: exit,
+            args: vec![],
+        };
+        let dead_latch = func.fresh_block();
+        func.blocks.insert(
+            dead_latch,
+            TirBlock {
+                id: dead_latch,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(dead_latch, LoopRole::LoopEnd);
+        func.loop_pairs.insert(header, dead_latch);
+
+        let mut am = AnalysisManager::new();
+        assert!(am.get::<LoopForest>(&func).headers.is_empty());
+        assert!(func.loop_roles.contains_key(&header));
+        assert!(func.blocks.contains_key(&dead_latch));
+    }
+
+    #[test]
+    fn loop_forest_excludes_unreachable_predecessors_from_live_loop_body() {
+        let mut func = loopy();
+        let header = BlockId(1);
+        let latch = func.fresh_block();
+        let dead_feeder = func.fresh_block();
+
+        let Terminator::CondBranch { then_block, .. } =
+            &mut func.blocks.get_mut(&header).unwrap().terminator
+        else {
+            panic!("loopy header must be conditional");
+        };
+        *then_block = latch;
+        func.blocks.insert(
+            latch,
+            TirBlock {
+                id: latch,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            dead_feeder,
+            TirBlock {
+                id: dead_feeder,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: latch,
+                    args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(dead_feeder, LoopRole::LoopEnd);
+        func.loop_pairs.insert(header, dead_feeder);
+
+        let mut am = AnalysisManager::new();
+        let forest = am.get::<LoopForest>(&func);
+        assert_eq!(forest.headers, vec![header]);
+        let body = &forest.bodies[&header];
+        assert!(body.contains(&header));
+        assert!(body.contains(&latch));
+        assert!(!body.contains(&dead_feeder));
     }
 
     #[test]

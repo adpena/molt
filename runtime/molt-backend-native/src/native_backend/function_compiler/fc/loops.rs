@@ -64,92 +64,6 @@ pub(in crate::native_backend::function_compiler) fn metadata_only_structured_loo
     metadata_only
 }
 
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-/// Capture the old slot value before a loop-body assignment overwrites it.
-/// The parent epilogue later drops that old value, matching CPython
-/// STORE_FAST semantics for reassignment while staying disabled when TIR drop
-/// insertion is the sole RC authority.
-pub(in crate::native_backend::function_compiler) fn capture_loop_reassign_old_value(
-    op: &OpIR,
-    out_name: Option<&str>,
-    loop_depth: i32,
-    rc_authority: NativeRcAuthority,
-    is_block_filled: bool,
-    rc_skip_dec: &std::collections::HashSet<String>,
-    loop_body_out_vars: &BTreeMap<usize, Vec<String>>,
-    vars: &BTreeMap<String, Variable>,
-    builder: &mut FunctionBuilder<'_>,
-) -> Option<Value> {
-    if loop_depth <= 0 || !rc_authority.native_value_tracking_enabled() || is_block_filled {
-        return None;
-    }
-    let name = out_name?;
-    if name == "none"
-        || rc_skip_dec.contains(name)
-        || !loop_reassign_old_value_may_need_drop(op.kind.as_str())
-    {
-        return None;
-    }
-    let is_loop_body_var = loop_body_out_vars
-        .values()
-        .any(|body_vars| body_vars.iter().any(|var| var == name));
-    if !is_loop_body_var {
-        return None;
-    }
-    vars.get(name).map(|var| builder.use_var(*var))
-}
-
-#[cfg(feature = "native-backend")]
-/// Emit the delayed drop for a loop-carried reassignment old value after the
-/// op handler has stored the replacement value.
-pub(in crate::native_backend::function_compiler) fn emit_loop_reassign_old_drop(
-    builder: &mut FunctionBuilder<'_>,
-    local_dec_ref_obj: FuncRef,
-    old_value: Option<Value>,
-    is_block_filled: bool,
-) {
-    if let Some(old_value) = old_value
-        && !is_block_filled
-    {
-        builder.ins().call(local_dec_ref_obj, &[old_value]);
-    }
-}
-
-#[cfg(feature = "native-backend")]
-fn loop_reassign_old_value_may_need_drop(kind: &str) -> bool {
-    !matches!(
-        kind,
-        "const"
-            | "const_str"
-            | "const_bytes"
-            | "const_bigint"
-            | "const_float"
-            | "const_none"
-            | "const_bool"
-            | "loop_index_start"
-            | "loop_index_next"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "loop_continue"
-            | "loop_start"
-            | "loop_end"
-            | "phi"
-            | "load_var"
-            | "copy_var"
-            | "store_var"
-            | "delete_var"
-            | "label"
-            | "state_label"
-            | "state_switch"
-            | "state_transition"
-            | "store_index"
-            | "index"
-    )
-}
-
 /// Cranelift codegen handlers for structured loop lowering.
 ///
 /// Extracted from compile_func_inner's per-op dispatch (M1.10). Loop
@@ -171,14 +85,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     last_use: &BTreeMap<String, usize>,
-    alias_roots: &BTreeMap<String, String>,
     exception_label_ids: &BTreeSet<i64>,
     loop_body_init_vars: &BTreeMap<usize, Vec<String>>,
     list_index_fast_paths: &mut ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    entry_vars: &BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     reachable_blocks: &mut BTreeSet<Block>,
     loop_stack: &mut Vec<LoopFrame>,
     skip_ops: &mut BTreeSet<usize>,
@@ -1055,24 +967,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .current_block()
                     .expect("loop_break_if_exception requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_obj_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_obj_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_ptr_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 // Read the authoritative runtime exception-pending flag.
                 // In needs-stack=False functions `exc_flag_ptr_slot` is
@@ -1104,24 +1012,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
                 for name in tracked_obj_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 for name in tracked_ptr_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 reachable_blocks.insert(frame.after_block);
                 ensure_block_in_layout(&mut *builder, frame.after_block);
@@ -1154,24 +1048,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .current_block()
                     .expect("loop_break_if_true requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_obj_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_obj_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_ptr_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 // Fast path: extract bool payload directly for NaN-boxed
                 // booleans from fast_int comparisons or type hints.
@@ -1273,24 +1163,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
                 for name in tracked_obj_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 for name in tracked_ptr_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 reachable_blocks.insert(frame.after_block);
                 ensure_block_in_layout(&mut *builder, frame.after_block);
@@ -1329,24 +1205,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .current_block()
                     .expect("loop_break_if_false requires an active block");
                 let mut carry_obj_lb = block_tracked_obj.remove(&current_block).unwrap_or_default();
-                let tracked_obj_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_obj_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_obj_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 let mut carry_ptr_lb = block_tracked_ptr.remove(&current_block).unwrap_or_default();
-                let tracked_ptr_snapshot = drain_cleanup_tracked_dedup_with_authority(
+                let tracked_ptr_snapshot = drain_cleanup_candidates(
                     rc_authority,
                     &mut carry_ptr_lb,
                     last_use,
-                    alias_roots,
                     op_idx,
                     None,
-                    Some(&mut *already_decrefed),
                 );
                 // Fast path: when the condition is a NaN-boxed bool from a
                 // fast_int comparison (lt/le/gt/ge/eq/ne), extract the bool
@@ -1454,24 +1326,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
                 for name in tracked_obj_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked obj var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 for name in tracked_ptr_snapshot {
-                    let val = resolve_cleanup_value(&mut *builder, vars, entry_vars, &name)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Tracked ptr var not found in {} op {}: {}",
-                                func_ir.name, op_idx, name
-                            )
-                        });
-                    builder.ins().call(local_dec_ref_obj, &[val]);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
                 reachable_blocks.insert(frame.after_block);
                 ensure_block_in_layout(&mut *builder, frame.after_block);
@@ -1507,66 +1365,18 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .current_block()
                     .expect("loop_break requires an active block");
                 if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
+                    let cleanup =
+                        drain_cleanup_candidates(rc_authority, names, last_use, op_idx, None);
                     for name in cleanup {
-                        // Use entry_vars (definition-time Value) for dec_ref,
-                        // not var_get (current SSA Value). If the variable was
-                        // redefined, var_get returns the WRONG object.
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                import_refs,
-                                sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        // The token carries this path\'s owner across SSA redefinitions.
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                 }
                 if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
+                    let cleanup =
+                        drain_cleanup_candidates(rc_authority, names, last_use, op_idx, None);
                     for name in cleanup {
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                import_refs,
-                                sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                 }
                 reachable_blocks.insert(frame.after_block);
@@ -1673,66 +1483,18 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .current_block()
                     .expect("loop_continue requires an active block");
                 if let Some(names) = block_tracked_obj.get_mut(&current_block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
+                    let cleanup =
+                        drain_cleanup_candidates(rc_authority, names, last_use, op_idx, None);
                     for name in cleanup {
-                        // Use entry_vars (definition-time Value) for dec_ref,
-                        // not var_get (current SSA Value). If the variable was
-                        // redefined, var_get returns the WRONG object.
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                import_refs,
-                                sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        // The token carries this path\'s owner across SSA redefinitions.
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                 }
                 if let Some(names) = block_tracked_ptr.get_mut(&current_block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
+                    let cleanup =
+                        drain_cleanup_candidates(rc_authority, names, last_use, op_idx, None);
                     for name in cleanup {
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                import_refs,
-                                sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                 }
                 reachable_blocks.insert(frame.loop_block);

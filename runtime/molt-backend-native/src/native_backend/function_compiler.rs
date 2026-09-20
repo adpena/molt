@@ -205,7 +205,7 @@ impl SimpleBackend {
         // mis-pairs with the slot-store transport's inc — re-opening the O(n)
         // accumulator leak. Retire it (empty skip sets) for those functions so the
         // TIR drops lower verbatim; the legacy native-RC functions keep it.
-        let (rc_skip_inc, rc_skip_dec) = if drop_inserted {
+        let (rc_skip_inc, _) = if drop_inserted {
             (HashSet::new(), HashSet::new())
         } else {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
@@ -306,7 +306,6 @@ impl SimpleBackend {
             std::collections::HashSet::new();
         let mut tracked_obj_vars_set: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        let mut entry_vars: BTreeMap<String, Value> = BTreeMap::new();
         let mut label_blocks = BTreeMap::new();
         let mut resume_blocks = BTreeMap::new();
         let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
@@ -324,11 +323,13 @@ impl SimpleBackend {
         let mut loop_depth: i32 = 0;
         let mut block_tracked_obj: BTreeMap<Block, Vec<String>> = BTreeMap::new();
         let mut block_tracked_ptr: BTreeMap<Block, Vec<String>> = BTreeMap::new();
-        // Global dedup set: tracks which variable names have already been
-        // dec_ref'd by any cleanup site. Prevents double-free when tracked
-        // values are cloned to multiple blocks by if/check_exception/br_if.
-        let mut already_decrefed: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut cleanup_roots = NativeCleanupRoots::new(
+            &mut builder,
+            &func_ir,
+            &alias_roots,
+            representation_plan,
+            rc_authority,
+        );
 
         // Phase 1d: int shadow plumbing eliminated. The main Cranelift
         // Variable IS the raw i64 carrier for representation_plan members.
@@ -358,6 +359,7 @@ impl SimpleBackend {
 
         reachable_blocks.insert(entry_block);
         switch_to_block_materialized(&mut builder, entry_block);
+        cleanup_roots.initialize(&mut builder);
 
         for (i, val) in entry_param_values.iter().copied().enumerate() {
             let name = &func_ir.params[i];
@@ -1013,31 +1015,12 @@ impl SimpleBackend {
                         .call(trace_fn, &[name_bits, len_bits, idx_bits]);
                 }
             }
-            // `store_var` defines the target slot just like `out`-producing ops
-            // define their result name. Treat the destination variable as the
-            // logical definition site so RC/liveness tracking preserves values
-            // across structured joins emitted by the TIR roundtrip.
-            let out_name = op.out.clone().or_else(|| {
-                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                    op.var.clone()
-                } else {
-                    None
-                }
+            let mut defined_names = BTreeSet::new();
+            crate::tir::simple_def_use::visit_simple_ir_defined_names(&op, |name| {
+                defined_names.insert(name.to_string());
             });
             let alias_src_name = preanalyze_alias_source(&ops[op_idx]).map(str::to_string);
             let mut output_is_ptr = false;
-
-            let loop_reassign_old_val = fc::loops::capture_loop_reassign_old_value(
-                &op,
-                out_name.as_deref(),
-                loop_depth,
-                rc_authority,
-                is_block_filled,
-                &rc_skip_dec,
-                &loop_body_out_vars,
-                &vars,
-                &mut builder,
-            );
 
             // Single routing decision for this op, derived from each handler's
             // `HANDLED_KINDS` authority (see `fc::op_family`). The family arms
@@ -1176,8 +1159,6 @@ impl SimpleBackend {
                 _ if op_family == Some(fc::NativeOpFamily::Sequence) => {
                     let __flow = fc::sequence_ops::handle_sequence_op(
                         &op,
-                        ops,
-                        op_idx,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1185,7 +1166,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         &mut scalarized_tuples,
-                        &mut skip_ops,
                         representation_plan,
                         &nbc,
                     );
@@ -1530,9 +1510,7 @@ impl SimpleBackend {
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
                         &last_use,
-                        &alias_roots,
-                        &mut already_decrefed,
-                        &entry_vars,
+                        &mut cleanup_roots,
                         local_inc_ref_obj,
                         local_dec_ref_obj,
                         local_exc_pending_fast,
@@ -1587,10 +1565,8 @@ impl SimpleBackend {
                         &mut local_closure_envs,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &mut entry_vars,
                         &last_use,
-                        &alias_roots,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         local_inc_ref_obj,
                         local_dec_ref_obj,
                         &nbc,
@@ -1654,12 +1630,7 @@ impl SimpleBackend {
                         defined_functions,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &mut tracked_obj_vars,
-                        &mut tracked_vars,
-                        &mut tracked_obj_vars_set,
-                        &mut tracked_vars_set,
-                        &mut entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         local_dec_ref_obj,
                         &nbc,
                     );
@@ -1692,15 +1663,8 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut tracked_obj_vars,
-                        &mut tracked_vars,
-                        &mut tracked_obj_vars_set,
-                        &mut tracked_vars_set,
                         &alias_roots,
-                        &mut entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         &rc_skip_inc,
                         rc_authority,
                         local_inc_ref_obj,
@@ -1826,9 +1790,7 @@ impl SimpleBackend {
                         &mut tracked_obj_vars_set,
                         &mut tracked_vars_set,
                         &last_use,
-                        &alias_roots,
-                        &mut already_decrefed,
-                        &mut entry_vars,
+                        &mut cleanup_roots,
                         local_dec_ref_obj,
                         local_exc_pending_fast,
                         exc_flag_ptr_slot,
@@ -1866,7 +1828,6 @@ impl SimpleBackend {
                         representation_plan,
                         &first_defined_at,
                         &last_use,
-                        &alias_roots,
                         &if_to_else,
                         &if_to_end_if,
                         &else_to_end_if,
@@ -1875,12 +1836,7 @@ impl SimpleBackend {
                         &list_index_fast_paths,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &mut tracked_vars,
-                        &mut tracked_obj_vars,
-                        &mut tracked_vars_set,
-                        &mut tracked_obj_vars_set,
-                        &mut entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         &mut reachable_blocks,
                         &mut if_stack,
                         &mut skip_ops,
@@ -1888,6 +1844,7 @@ impl SimpleBackend {
                         rc_authority,
                         scalar_fast_paths_enabled,
                         &maybe_debug_seal,
+                        local_inc_ref_obj,
                         local_dec_ref_obj,
                         &nbc,
                     );
@@ -1910,14 +1867,12 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &last_use,
-                        &alias_roots,
                         &exception_label_ids,
                         &loop_body_init_vars,
                         &mut list_index_fast_paths,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         &mut reachable_blocks,
                         &mut loop_stack,
                         &mut skip_ops,
@@ -1951,14 +1906,11 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &param_name_set,
                         &last_use,
-                        &alias_roots,
                         &field_store_modes,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &mut entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         defined_functions,
                         &mut output_is_ptr,
                         stateful,
@@ -2010,18 +1962,12 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &param_name_set,
                         &first_defined_at,
                         &alias_roots,
                         &last_use,
                         &mut block_tracked_obj,
                         &mut block_tracked_ptr,
-                        &mut tracked_vars,
-                        &mut tracked_obj_vars,
-                        &mut tracked_vars_set,
-                        &mut tracked_obj_vars_set,
-                        &mut entry_vars,
-                        &mut already_decrefed,
+                        &mut cleanup_roots,
                         &mut reachable_blocks,
                         &label_blocks,
                         &label_transport_plans,
@@ -2072,13 +2018,6 @@ impl SimpleBackend {
                     }
                 }
             }
-
-            fc::loops::emit_loop_reassign_old_drop(
-                &mut builder,
-                local_dec_ref_obj,
-                loop_reassign_old_val,
-                is_block_filled,
-            );
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
             //
@@ -2142,182 +2081,79 @@ impl SimpleBackend {
                         .map(String::as_str),
                     _ => None,
                 };
-                let cleanup = drain_cleanup_entry_tracked_with_authority(
-                    rc_authority,
-                    &mut tracked_obj_vars,
-                    &mut entry_vars,
-                    &last_use,
-                    &alias_roots,
-                    &mut already_decrefed,
-                    op_idx,
-                    cleanup_skip,
-                );
-                for val in cleanup {
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                }
-                let cleanup = drain_cleanup_entry_tracked_with_authority(
-                    rc_authority,
-                    &mut tracked_vars,
-                    &mut entry_vars,
-                    &last_use,
-                    &alias_roots,
-                    &mut already_decrefed,
-                    op_idx,
-                    cleanup_skip,
-                );
-                for val in cleanup {
-                    // Use dec_ref_obj (NaN-box aware) instead of dec_ref (raw ptr).
-                    // entry_vars always stores NaN-boxed bits, not raw pointers,
-                    // so we must use the variant that checks the tag before
-                    // dereferencing.  Using raw dec_ref here would SIGSEGV for
-                    // any non-pointer NaN-boxed value (floats, inline ints, etc.).
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                }
-            }
-
-            if !is_block_filled
-                && let Some(dst_name) = out_name.as_ref()
-                && dst_name != "none"
-                && let Some(src_name) = alias_src_name.as_deref()
-                && src_name != dst_name
-            {
-                let join_slot_transfer = op.kind == "store_var" && is_join_slot_name(dst_name);
-                if join_slot_transfer {
-                    let root = alias_roots
-                        .get(src_name)
-                        .map(String::as_str)
-                        .unwrap_or(src_name);
-                    if builder.current_block() == Some(body_entry_block) && loop_depth == 0 {
-                        remove_tracked_alias_group(&mut tracked_vars, &alias_roots, root);
-                        tracked_vars_set
-                            .retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
-                        remove_tracked_alias_group(&mut tracked_obj_vars, &alias_roots, root);
-                        tracked_obj_vars_set
-                            .retain(|name| alias_roots.get(name).map(String::as_str) != Some(root));
-                        entry_vars.retain(|name, _| {
-                            alias_roots.get(name).map(String::as_str) != Some(root)
-                        });
-                    } else if let Some(block) = builder.current_block() {
-                        if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
-                            remove_tracked_alias_group(tracked, &alias_roots, root);
-                        }
-                        if let Some(tracked) = block_tracked_obj.get_mut(&block) {
-                            remove_tracked_alias_group(tracked, &alias_roots, root);
-                        }
-                    }
-                } else if last_use.get(src_name).copied() == Some(op_idx) {
-                    if builder.current_block() == Some(body_entry_block) && loop_depth == 0 {
-                        remove_tracked_name(&mut tracked_vars, src_name);
-                        tracked_vars_set.remove(src_name);
-                        remove_tracked_name(&mut tracked_obj_vars, src_name);
-                        tracked_obj_vars_set.remove(src_name);
-                        entry_vars.remove(src_name);
-                    } else if let Some(block) = builder.current_block() {
-                        if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
-                            remove_tracked_name(tracked, src_name);
-                        }
-                        if let Some(tracked) = block_tracked_obj.get_mut(&block) {
-                            remove_tracked_name(tracked, src_name);
-                        }
+                for tracked in [&mut tracked_obj_vars, &mut tracked_vars] {
+                    let cleanup = drain_cleanup_candidates(
+                        rc_authority,
+                        tracked,
+                        &last_use,
+                        op_idx,
+                        cleanup_skip,
+                    );
+                    for name in cleanup {
+                        cleanup_roots.release(&mut builder, local_dec_ref_obj, &name);
                     }
                 }
             }
 
-            if let Some(name) = out_name.as_ref()
-                && name != "none"
-                // RC drop-insertion substrate (design 20 §4.1, Phase 5): when the
-                // TIR drop pass owns this function's RC, suppress heap-result
-                // registration into the native value-tracking system entirely.
-                // Registration is the SINGLE source that feeds every drain site
-                // (`tracked_*`/`block_tracked_*`/`entry_vars` are populated nowhere
-                // else), so skipping it here makes every `drain_cleanup_tracked_*`
-                // call and the final-return cleanup loops no-ops — the TIR
-                // `DecRef`/`IncRef` ops become the SOLE RC authority. Without this
-                // the tracking holds a second reference on loop-carried
-                // accumulators and the TIR `DecRef(old)` only takes rc 2→1, never
-                // freeing it (the O(n) residual leak the activation must close).
+            for name in &defined_names {
+                if name != "none"
+                && !is_block_filled
+                && cleanup_roots.contains(name)
+                // The TIR lane never acquires native owner tokens.
                 && rc_authority.native_value_tracking_enabled()
                 && op.kind != "delete_var"
                 && !slot_backed_join_slots.contains_key(name.as_str())
                 && let Some(block) = builder.current_block()
-                // RC coalescing: skip tracking for variables whose dec_ref
-                // was elided because the matching inc_ref was also elided.
-                && !rc_skip_dec.contains(name.as_str())
-                // Parameters are borrowed from the caller — never track them
-                // for cleanup dec_ref. The caller owns the reference.
-                && !param_name_set.contains(name.as_str())
-            {
-                if block == body_entry_block && loop_depth == 0 {
-                    if output_is_ptr {
-                        if tracked_vars_set.insert(name.to_string()) {
-                            tracked_vars.push(name.clone());
+                // Coalescing is operation-local. A dead retain result must not
+                // suppress an earlier or later owner with the same textual name.
+                && !(matches!(op.kind.as_str(), "inc_ref" | "borrow")
+                    && rc_skip_inc.contains(&op_idx))
+                {
+                    if (op.kind == "store_var"
+                        || alias_src_name
+                            .as_deref()
+                            .is_none_or(|source| !cleanup_roots.shares_owner(source, name)))
+                        && let Some(value) = var_get_boxed_overflow_safe(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            name,
+                            representation_plan,
+                        )
+                    {
+                        cleanup_roots.acquire(&mut builder, local_dec_ref_obj, name, *value);
+                    }
+                    if block == body_entry_block && loop_depth == 0 {
+                        if output_is_ptr {
+                            if tracked_vars_set.insert(name.to_string()) {
+                                tracked_vars.push(name.clone());
+                            }
+                        } else {
+                            if tracked_obj_vars_set.insert(name.to_string()) {
+                                tracked_obj_vars.push(name.clone());
+                            }
                         }
+                    } else if output_is_ptr {
+                        block_tracked_ptr
+                            .entry(block)
+                            .or_default()
+                            .push(name.to_string());
                     } else {
-                        if tracked_obj_vars_set.insert(name.to_string()) {
-                            tracked_obj_vars.push(name.clone());
-                        }
+                        block_tracked_obj
+                            .entry(block)
+                            .or_default()
+                            .push(name.to_string());
                     }
-                    if let Some(val) = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        name,
-                        representation_plan,
-                    ) {
-                        entry_vars.insert(name.clone(), *val);
-                    }
-                } else if output_is_ptr {
-                    block_tracked_ptr
-                        .entry(block)
-                        .or_default()
-                        .push(name.to_string());
-                } else {
-                    block_tracked_obj
-                        .entry(block)
-                        .or_default()
-                        .push(name.to_string());
                 }
             }
         }
 
         // Finalize Master Return Block
         if !is_block_filled {
-            if !rc_authority.native_value_tracking_enabled() {
-                block_tracked_obj.clear();
-                block_tracked_ptr.clear();
-                tracked_vars.clear();
-                tracked_obj_vars.clear();
-                tracked_vars_set.clear();
-                tracked_obj_vars_set.clear();
-                entry_vars.clear();
-            }
-            // Both tracked_vars and tracked_obj_vars store NaN-boxed bits in
-            // entry_vars, so always use dec_ref_obj (NaN-box aware) for cleanup.
-            // Using raw dec_ref on NaN-boxed bits causes SIGSEGV for non-pointer
-            // values (floats from abs/round, inline ints, etc.).
-            for name in &tracked_vars {
-                if cleanup_name_excluded(name, None, &param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(val) = entry_vars.get(name)
-                    && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                }
-            }
-            for name in &tracked_obj_vars {
-                if cleanup_name_excluded(name, None, &param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(val) = entry_vars.get(name)
-                    && mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name)
-                {
-                    builder.ins().call(local_dec_ref_obj, &[*val]);
-                }
-            }
+            cleanup_roots.release_all(&mut builder, local_dec_ref_obj);
             if returns_value {
                 let none_bits = builder.ins().iconst(types::I64, box_none());
                 jump_block(&mut builder, master_return_block, &[none_bits]);

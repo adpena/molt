@@ -6,12 +6,11 @@ use super::fc::list_index_fast_path::{
 use super::fc::loops::metadata_only_structured_loop_ops;
 use super::fc::memory::typed_slot_store_helper_name;
 use super::{
-    BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan,
-    alias_root_name, box_raw_bool_value, box_raw_i64_value_overflow_safe, cleanup_roots_for_names,
+    BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
+    ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
-    import_func_ref, is_cold_module_chunk_function, jump_block, mark_cleanup_root_once,
-    materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
-    switch_to_block_materialized,
+    import_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
+    preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
 };
 use crate::repr::{ContainerStorageKind, ScalarKind};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};

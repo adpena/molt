@@ -450,7 +450,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
 }
 
 #[test]
-fn copy_var_reemission_prefers_preserved_source_local_name() {
+fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
     let mut func = TirFunction::new("copy_var_source_local_name".into(), vec![], TirType::None);
     let source = func.fresh_value();
     let copied = func.fresh_value();
@@ -487,11 +487,105 @@ fn copy_var_reemission_prefers_preserved_source_local_name() {
         .find(|op| op.kind == "copy_var" && op.out.as_deref() == Some(copied_name.as_str()))
         .expect("copy_var must be re-emitted for the copied value");
 
-    assert_eq!(copy.var.as_deref(), Some("x"));
+    assert_eq!(copy.var, Some(value_var(source)));
     assert_eq!(
         copy.args, None,
-        "copy_var source identity must use var metadata, not a duplicate args lane"
+        "the resolved SSA source must use the canonical single-operand copy encoding"
     );
+}
+
+#[test]
+fn copy_source_substitution_never_revives_transport_metadata() {
+    for kind in [None, Some("copy"), Some("copy_var"), Some("load_var")] {
+        for metadata in [
+            None,
+            Some("stale_local".to_string()),
+            Some(value_var(ValueId(1))),
+        ] {
+            let mut attrs = AttrDict::new();
+            if let Some(kind) = kind {
+                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            }
+            if let Some(metadata) = metadata {
+                attrs.insert("_var".into(), AttrValue::Str(metadata));
+            }
+            let mut op = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![ValueId(1)],
+                results: vec![ValueId(2)],
+                attrs,
+                source_span: None,
+            };
+            for source in [ValueId(1), ValueId(3)] {
+                op.operands[0] = source;
+                let lowered = super::super::op_lowering::lower_op_many(&op);
+                assert_eq!(lowered.len(), 1, "{op:?}");
+                assert_eq!(lowered[0].kind, "copy_var");
+                assert_eq!(lowered[0].var, Some(value_var(source)), "{op:?}");
+                assert_eq!(lowered[0].out, Some(value_var(ValueId(2))));
+                assert_eq!(lowered[0].args, None);
+            }
+        }
+    }
+}
+
+#[test]
+fn named_store_substitution_changes_source_but_not_destination() {
+    for results in [vec![], vec![ValueId(2)]] {
+        let mut op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![ValueId(1)],
+            results,
+            attrs: AttrDict::from([
+                ("_original_kind".into(), AttrValue::Str("store_var".into())),
+                ("_var".into(), AttrValue::Str("destination".into())),
+            ]),
+            source_span: None,
+        };
+        for source in [ValueId(1), ValueId(3)] {
+            op.operands[0] = source;
+            let lowered = super::super::op_lowering::lower_op_many(&op);
+            assert_eq!(lowered.len(), 1 + op.results.len());
+            assert_eq!(lowered[0].kind, "store_var");
+            assert_eq!(lowered[0].args, Some(vec![value_var(source)]));
+            assert_eq!(lowered[0].var.as_deref(), Some("destination"));
+            assert_eq!(lowered[0].out, None);
+            if let Some(result) = op.results.first() {
+                assert_eq!(lowered[1].kind, "copy_var");
+                assert_eq!(lowered[1].var, Some(value_var(source)));
+                assert_eq!(lowered[1].out, Some(value_var(*result)));
+                assert_eq!(lowered[1].args, None);
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "named-local mutation requires an explicit _var destination")]
+fn named_store_cannot_invent_a_destination_from_its_result() {
+    super::super::op_lowering::lower_op_many(&TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![ValueId(1)],
+        results: vec![ValueId(2)],
+        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("store_var".into()))]),
+        source_span: None,
+    });
+}
+
+#[test]
+#[should_panic(expected = "named-local mutation requires an explicit _var destination")]
+fn named_delete_cannot_invent_a_destination_from_its_result() {
+    super::super::op_lowering::lower_op_many(&TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::DeleteVar,
+        operands: vec![],
+        results: vec![ValueId(2)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
 }
 
 #[test]

@@ -22,7 +22,7 @@ use super::var_get_boxed_overflow_safe_fn;
 /// Cranelift codegen handlers for value-custody transfer ops: `inc_ref`,
 /// `borrow`, `dec_ref`, `del_boundary`, `release`, `box`, `unbox`, `cast`,
 /// `widen`, and retained alias ops. This owns alias-preserving refcount
-/// adjustment and tracked cleanup-root scrubbing for explicit release operations.
+/// adjustment and path-local owner-token consumption for explicit releases.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
@@ -35,15 +35,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
-    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
     alias_roots: &BTreeMap<String, String>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     rc_skip_inc: &std::collections::HashSet<usize>,
     rc_authority: NativeRcAuthority,
     local_inc_ref_obj: FuncRef,
@@ -94,6 +87,9 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 )
                 .expect("inc_ref/borrow source not found");
                 emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                if op.out.as_deref().is_none_or(|name| name == "none") {
+                    cleanup_roots.retain_explicit(builder, src_name);
+                }
                 if let Some(out_name) = op.out.as_ref()
                     && out_name != "none"
                 {
@@ -146,21 +142,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     representation_plan,
                 )
                 .expect("dec_ref/release source not found");
+                cleanup_roots.consume_explicit(builder, src_name);
                 builder.ins().call(local_dec_ref_obj, &[src]);
-                let consumed_root = alias_root_name(alias_roots, src_name).to_string();
-                already_decrefed.insert(consumed_root.clone());
-                let consumed_roots = BTreeSet::from([consumed_root]);
-                scrub_tracked_roots(
-                    &consumed_roots,
-                    alias_roots,
-                    tracked_vars,
-                    tracked_obj_vars,
-                    tracked_vars_set,
-                    tracked_obj_vars_set,
-                    entry_vars,
-                    block_tracked_obj,
-                    block_tracked_ptr,
-                );
                 if let Some(out_name) = op.out.as_ref()
                     && out_name != "none"
                 {
@@ -175,35 +158,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             // survives on a dormant-native lane, codegen must route it
             // explicitly and perform no second release here.
         }
-        "box" | "unbox" | "cast" | "widen" => {
-            let args_names = op.args.as_ref().expect("conversion args missing");
-            let src_name = args_names
-                .first()
-                .expect("conversion op requires one source arg");
-            let src = *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                src_name,
-                representation_plan,
-            )
-            .expect("conversion source not found");
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
-                // Under the terminal TIR drop authority these conversion ops
-                // are transparent aliases of the same ownership root. Legacy
-                // native value tracking still needs its historical retain so
-                // an independently cleaned textual name remains valid.
-                if rc_authority.native_value_tracking_enabled() {
-                    emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
-                }
-                def_var_named(&mut *builder, vars, out_name.clone(), src);
-            }
-        }
         // `copy` is the frontend's args-based pure SSA value move
         // (`{kind:"copy", args:[src], out:result}`). It survives
         // `rewrite_copy_aliases` whenever its result/source is a mutable-storage
@@ -213,9 +167,10 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         // from the sole alias kind that mints a new owned reference. Keep
         // Cranelift aligned with TIR, WASM, and LIR-fast: `copy` and
         // `identity_alias` share their source root; `binding_alias` contributes
-        // exactly +1. Legacy non-drop-inserted functions retain the old textual
-        // name model until their RC authority is migrated.
-        "copy" | "identity_alias" | "binding_alias" => {
+        // exactly +1. Direct conversions use the same representation boundary:
+        // boxed inputs retain an independent result; raw inputs materialize
+        // their result ownership without retaining a nonexistent source owner.
+        "copy" | "identity_alias" | "binding_alias" | "box" | "unbox" | "cast" | "widen" => {
             let args_names = op.args.as_ref().expect("alias args missing");
             let src_name = args_names
                 .first()
@@ -223,8 +178,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
-                // The unboxed-scalar primary lanes (`representation_plan`,
-                // `representation_plan`, `representation_plan`) each carry a RAW
+                // The unboxed-scalar primary lanes each carry a RAW
                 // machine value in the destination's Cranelift Variable — raw
                 // i64, raw 0/1, raw f64 respectively (see `int_raw_value` /
                 // `bool_raw_value` / `float_value_for`). An alias whose OUT is a
@@ -316,17 +270,16 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     )
                     .expect("alias source not found");
                     let kind = op.kind.as_str();
-                    if crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
-                        || rc_authority.native_value_tracking_enabled()
+                    let retained_binding =
+                        crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+                            || (rc_authority.native_value_tracking_enabled()
+                                && (matches!(kind, "box" | "unbox" | "cast" | "widen")
+                                    || native_alias_mints_owner(alias_roots, src_name, out_name)));
+                    if retained_binding
+                        && merge_rebind_storage_for_name(src_name, representation_plan)
+                            == MergeRebindStorageKind::BoxedI64
                     {
-                        emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
-                    } else {
-                        debug_assert!(
-                            crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
-                                kind
-                            ),
-                            "native alias '{kind}' lacks generated ownership classification"
-                        );
+                        emit_inc_ref_obj(builder, src, local_inc_ref_obj);
                     }
                     def_var_named(&mut *builder, vars, out_name.clone(), src);
                 }

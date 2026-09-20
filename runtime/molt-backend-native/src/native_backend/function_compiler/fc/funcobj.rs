@@ -89,10 +89,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     local_closure_envs: &mut BTreeMap<String, String>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    entry_vars: &mut BTreeMap<String, Value>,
     last_use: &BTreeMap<String, usize>,
-    alias_roots: &BTreeMap<String, String>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
@@ -794,72 +792,17 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 }
             }
             if !is_block_filled && let Some(block) = builder.current_block() {
-                if let Some(names) = block_tracked_obj.get_mut(&block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
-                    for name in cleanup {
-                        // Use entry_vars (definition-time Value) for dec_ref,
-                        // not var_get (current SSA Value). If the variable was
-                        // redefined, var_get returns the WRONG object.
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                        // Remove from entry_vars so exception-handler
-                        // and function-return cleanup paths do not
-                        // dec-ref this already-freed variable again.
-                        entry_vars.remove(&name);
-                    }
-                }
-                if let Some(names) = block_tracked_ptr.get_mut(&block) {
-                    let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                        rc_authority,
-                        names,
-                        last_use,
-                        alias_roots,
-                        op_idx,
-                        None,
-                        Some(&mut *already_decrefed),
-                    );
-                    for name in cleanup {
-                        let val = entry_vars.get(&name).copied().or_else(|| {
-                            var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                &name,
-                                representation_plan,
-                            )
-                            .map(|v| *v)
-                        });
-                        let Some(val) = val else {
-                            continue;
-                        };
-                        builder.ins().call(local_dec_ref_obj, &[val]);
-                        entry_vars.remove(&name);
+                for tracked in [
+                    block_tracked_obj.get_mut(&block),
+                    block_tracked_ptr.get_mut(&block),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for name in
+                        drain_cleanup_candidates(rc_authority, tracked, last_use, op_idx, None)
+                    {
+                        cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     }
                 }
             }

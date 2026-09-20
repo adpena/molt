@@ -467,8 +467,11 @@ pub fn collect_loop_blocks(
         }
     }
 
-    // Defensive: only retain blocks that actually exist in the function.
-    loop_blocks.retain(|bid| func.blocks.contains_key(bid));
+    // Retained lexical blocks can feed a live latch without being executable.
+    // Every consumer (optimization, drop placement and WASM layout) needs the
+    // same header-dominated body under the supplied CFG policy. An absent or
+    // unreachable header therefore has no body either.
+    loop_blocks.retain(|bid| func.blocks.contains_key(bid) && dominates(header_bid, *bid, idoms));
     loop_blocks
 }
 
@@ -477,6 +480,43 @@ mod tests {
     use super::*;
     use crate::tir::blocks::TirBlock;
     use crate::tir::types::TirType;
+
+    #[test]
+    fn natural_loop_body_excludes_retained_unreachable_feeders() {
+        let mut func = TirFunction::new("loop_with_dead_feeder".into(), vec![], TirType::None);
+        let header = func.fresh_block();
+        let latch = func.fresh_block();
+        let dead_feeder = func.fresh_block();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+        for (id, target) in [(header, latch), (latch, header), (dead_feeder, latch)] {
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Branch {
+                        target,
+                        args: vec![],
+                    },
+                },
+            );
+        }
+        for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
+            let preds = build_pred_map_with(&func, policy);
+            let idoms = compute_idoms_with(&func, &preds, policy);
+            assert_eq!(
+                collect_loop_blocks(&func, &preds, &idoms, header),
+                HashSet::from([header, latch]),
+            );
+            for non_executable in [dead_feeder, BlockId(99)] {
+                assert!(collect_loop_blocks(&func, &preds, &idoms, non_executable).is_empty());
+            }
+        }
+    }
 
     #[test]
     fn absent_entry_has_no_reachable_or_dominator_nodes() {

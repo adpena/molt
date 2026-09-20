@@ -57,14 +57,11 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
-    alias_roots: &BTreeMap<String, String>,
     field_store_modes: &BTreeMap<usize, FieldStoreMode>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     defined_functions: &BTreeSet<String>,
     output_is_ptr: &mut bool,
     stateful: bool,
@@ -280,24 +277,20 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .current_block()
                 .expect("store requires an active block");
             let mut origin_obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-            let origin_obj_cleanup = drain_cleanup_tracked_dedup_with_authority(
+            let origin_obj_cleanup = drain_cleanup_candidates(
                 rc_authority,
                 &mut origin_obj_live,
                 last_use,
-                alias_roots,
                 op_idx,
                 None,
-                Some(&mut *already_decrefed),
             );
             let mut origin_ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-            let origin_ptr_cleanup = drain_cleanup_tracked_dedup_with_authority(
+            let origin_ptr_cleanup = drain_cleanup_candidates(
                 rc_authority,
                 &mut origin_ptr_live,
                 last_use,
-                alias_roots,
                 op_idx,
                 None,
-                Some(&mut *already_decrefed),
             );
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -453,44 +446,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 );
             }
             for name in origin_obj_cleanup {
-                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                    var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &name,
-                        representation_plan,
-                    )
-                    .map(|v| *v)
-                }) {
-                    builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
-                }
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             for name in origin_ptr_cleanup {
-                if cleanup_name_excluded(&name, None, param_name_set, representation_plan) {
-                    continue;
-                }
-                if let Some(cleanup_val) = entry_vars.get(&name).copied().or_else(|| {
-                    var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &name,
-                        representation_plan,
-                    )
-                    .map(|v| *v)
-                }) {
-                    builder.ins().call(local_dec_ref_obj, &[cleanup_val]);
-                }
+                cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"

@@ -184,26 +184,27 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
 pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source(
     op: &OpIR,
 ) -> Option<&str> {
-    match op.kind.as_str() {
-        "copy" => op.var.as_deref().or_else(|| {
+    // Only the generated no-incref move family can share one owner token.
+    // BoxVal/UnboxVal and binding_alias mint independent result credits even
+    // when their boxed bits equal the operand.
+    crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(&op.kind)
+        .then(|| {
             op.args
                 .as_ref()
                 .and_then(|args| args.first())
                 .map(String::as_str)
-        }),
-        "copy_var" | "load_var" => op
-            .args
-            .as_ref()
-            .and_then(|args| args.first())
-            .map(String::as_str)
-            .or(op.var.as_deref()),
-        "box" | "unbox" | "cast" | "widen" | "identity_alias" | "store_var" => op
-            .args
-            .as_ref()
-            .and_then(|args| args.first())
-            .map(String::as_str),
-        _ => None,
-    }
+                .or(op.var.as_deref())
+        })
+        .flatten()
+}
+
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn native_alias_mints_owner(
+    aliases: &BTreeMap<String, String>,
+    source: &str,
+    destination: &str,
+) -> bool {
+    alias_root_name(aliases, source) != alias_root_name(aliases, destination)
 }
 
 #[cfg(feature = "native-backend")]
@@ -226,7 +227,34 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // RC drop-insertion substrate (design 20, R1 guard): set by the leading
     // `drop_inserted` marker op the TIR back-conversion emits for drop-processed
     // functions.
-    let mut drop_inserted = false;
+    let mut drop_inserted = func_ir.ops.iter().any(|op| op.kind == "drop_inserted");
+    // Static alias roots describe immutable SSA identities, never a changing
+    // storage cell. A store owns its retained binding and a load owns a retained
+    // snapshot; otherwise a later rebind would retarget an earlier SSA alias.
+    let mut definition_counts: BTreeMap<&str, usize> = func_ir
+        .params
+        .iter()
+        .map(|name| (name.as_str(), 1))
+        .collect();
+    let mut mutable_names = BTreeSet::<&str>::new();
+    for op in &func_ir.ops {
+        let mut definitions = BTreeSet::new();
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            definitions.insert(name);
+        });
+        for name in definitions {
+            let count = definition_counts.entry(name).or_default();
+            *count += 1;
+            if *count > 1 {
+                mutable_names.insert(name);
+            }
+        }
+        if matches!(op.kind.as_str(), "store_var" | "delete_var")
+            && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+        {
+            mutable_names.insert(name);
+        }
+    }
     let mut var_names: BTreeSet<String> = BTreeSet::new();
     let mut last_use = BTreeMap::new();
     let mut alias_roots = BTreeMap::new();
@@ -264,50 +292,37 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             _ => {}
         }
 
-        let logical_out = op.out.as_ref().or_else(|| {
-            op.var
-                .as_ref()
-                .filter(|_| matches!(op.kind.as_str(), "store_var" | "delete_var"))
-        });
-        if let Some(out) = logical_out
-            && out != "none"
-        {
-            var_names.insert(out.clone());
-            // Seed outputs with their definition site so unused temporaries
-            // can still be released deterministically after this op.
-            last_use.entry(out.clone()).or_insert(idx);
-            if let Some(src) = preanalyze_alias_source(op) {
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |out| {
+            var_names.insert(out.to_string());
+            last_use.entry(out.to_string()).or_insert(idx);
+            if let Some(src) = preanalyze_alias_source(op)
+                && (drop_inserted
+                    || (!mutable_names.contains(out)
+                        && !mutable_names.contains(src)
+                        && merge_rebind_storage_for_name(src, representation_plan)
+                            == merge_rebind_storage_for_name(out, representation_plan)))
+            {
                 let root = alias_roots
                     .get(src)
                     .cloned()
                     .unwrap_or_else(|| src.to_string());
-                alias_roots.insert(out.clone(), root);
+                alias_roots.insert(out.to_string(), root);
             } else {
                 alias_roots
-                    .entry(out.clone())
-                    .or_insert_with(|| out.clone());
+                    .entry(out.to_string())
+                    .or_insert_with(|| out.to_string());
             }
-            let heap_literal_uses_data_segment =
-                fc::const_literals::op_uses_heap_literal_data_segment(op);
-            if heap_literal_uses_data_segment {
-                var_names.insert(format!("{}_ptr", out));
-                var_names.insert(format!("{}_len", out));
+            if fc::const_literals::op_uses_heap_literal_data_segment(op) {
+                var_names.insert(format!("{out}_ptr"));
+                var_names.insert(format!("{out}_len"));
             }
-        }
-        if let Some(var) = &op.var
-            && var != "none"
-        {
-            var_names.insert(var.clone());
-            last_use.insert(var.clone(), idx);
-        }
-        if let Some(args) = &op.args {
-            for name in args {
-                if name != "none" {
-                    var_names.insert(name.clone());
-                    last_use.insert(name.clone(), idx);
-                }
+        });
+        crate::tir::simple_def_use::visit_simple_ir_reads(op, |source| {
+            if source.name != "none" {
+                var_names.insert(source.name.to_string());
+                last_use.insert(source.name.to_string(), idx);
             }
-        }
+        });
 
         match op.kind.as_str() {
             "if" => if_stack.push((idx, None)),
@@ -368,7 +383,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // op N inside a loop body gets last_use = N, but if the loop iterates
     // again the variable is needed at op N again (which is reached via the
     // back-edge from loop_continue → loop_start).  Without this extension,
-    // drain_cleanup_tracked at a check_exception site inside the loop body
+    // drain_cleanup_candidates at a check_exception site inside the loop body
     // can dec-ref the variable after the first iteration, freeing it before
     // the second iteration uses it.
     //
@@ -386,7 +401,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // While loops, break, continue: while loops emit loop_start/loop_end
     // (no loop_index_start), so they are covered.  loop_break/loop_continue
     // ops sit inside the range; variables they reference are extended.
-    // At loop_break, drain_cleanup_tracked sees last_use > op_idx and
+    // At loop_break, drain_cleanup_candidates sees last_use > op_idx and
     // keeps variables alive; they propagate to after_block for later cleanup.
     let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut loop_body_init_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
@@ -598,31 +613,12 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             BTreeSet::new()
         };
 
-        // Extend ALL variable lifetimes to function end for ANY function
-        // that has loops (structured or TIR-generated). This prevents
-        // drain_cleanup_tracked from emitting premature dec_ref for values
-        // stored in cell lists during loop iterations.
-        //
-        // Why func_end and not loop_end: drain_cleanup_tracked fires at
-        // multiple intermediate points (check_exception, label transitions,
-        // store_index calls). If any of these is AFTER the loop_end index
-        // but BEFORE the function return, the dec_ref frees cell list values
-        // that are still referenced by the cell list.
-        //
-        // This is the Swift ARC pattern: retain at store, release at scope
-        // exit (function return). The only cost is delayed cleanup.
-        //
-        // RC drop-insertion substrate (design 20 §4.1, Phase 5): this func-end
-        // lifetime extension exists SOLELY to keep `drain_cleanup_tracked_*` from
-        // emitting a premature dec_ref on a loop-carried value (the Swift-ARC
-        // release-at-scope-exit model). When the TIR drop pass owns this
-        // function's RC, the value-tracking drains are already neutralized (the
-        // registration skip above leaves the tracked lists empty), and the TIR
-        // `DecRef(old)` on the back-edge releases the previous iteration's value
-        // precisely. Extending every variable's lifetime to func_end would defeat
-        // that precision, so it is dropped for drop-inserted functions. (SSA
-        // block-param threading for loop-carried values is handled by the TIR phi
-        // / native join-slot machinery, not by this RC-only extension.)
+        // The source-order last-use map cannot establish precise liveness
+        // across loop exits and exception edges. Keep loop-carried candidates
+        // until function exit; executable tokens still release displaced owners
+        // at rebinding. This schedules cleanup without becoming release state.
+        // TIR drop insertion already owns precise releases and needs no such
+        // native lifetime extension.
         //
         // `stateful_per_iter_temps` are excluded: their release belongs INSIDE the
         // loop body (at the suspend boundary), not at the per-yield return — see the
@@ -638,12 +634,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                 }
             }
         }
-        // Also extend last_use for variables in back-edge ranges to the
-        // back-edge jump position. This prevents drain_cleanup_tracked
-        // from emitting ADDITIONAL dec_ref beyond what store_var handles.
-        // For back-edge loops: extend ALL variables to function end.
-        // This is the only approach that prevents all premature dec_ref.
-        // Memory leak is bounded by function scope (cleanup at ret).
+        // Apply the same conservative candidate lifetime to label-based loops;
+        // their backedges need not have structured loop markers.
         //
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): same rationale
         // as the structured-loop extension above — this is an RC-tracking-only

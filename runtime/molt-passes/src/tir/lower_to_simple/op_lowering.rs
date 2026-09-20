@@ -14,6 +14,12 @@ use super::op_utils::{
 // Op lowering
 // ---------------------------------------------------------------------------
 
+fn local_destination(op: &TirOp) -> String {
+    attr_str(&op.attrs, "_var")
+        .filter(|name| !name.is_empty())
+        .expect("named-local mutation requires an explicit _var destination")
+}
+
 fn assign_multi_result_transport(simple: &mut OpIR, op: &TirOp) {
     let names = op.results.iter().map(|value| value_var(*value));
     if simpleir_var_field_role_table(simple.kind.as_str()) == SimpleIrVarFieldRole::Result {
@@ -44,24 +50,27 @@ pub(super) fn lower_op_many(op: &TirOp) -> Vec<OpIR> {
             attr_str(&op.attrs, "_original_kind").as_deref(),
             Some("store_var")
         )
-        && let Some(result) = op.results.first()
     {
-        let args = operand_args(op);
-        let source_var = args.first().cloned();
-        return vec![
-            OpIR {
-                kind: "store_var".to_string(),
-                args: Some(args.clone()),
-                var: attr_str(&op.attrs, "_var").or_else(|| Some(value_var(*result))),
-                ..OpIR::default()
-            },
-            OpIR {
+        assert_eq!(op.operands.len(), 1, "store_var requires one SSA source");
+        assert!(
+            op.results.len() <= 1,
+            "store_var permits at most one alias result"
+        );
+        let mut lowered = vec![OpIR {
+            kind: "store_var".to_string(),
+            args: Some(operand_args(op)),
+            var: Some(local_destination(op)),
+            ..OpIR::default()
+        }];
+        if let Some(result) = op.results.first() {
+            lowered.push(OpIR {
                 kind: "copy_var".to_string(),
-                var: source_var,
+                var: Some(value_var(op.operands[0])),
                 out: Some(value_var(*result)),
                 ..OpIR::default()
-            },
-        ];
+            });
+        }
+        return lowered;
     }
     lower_op(op).into_iter().collect()
 }
@@ -256,7 +265,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::DeleteVar => Some(OpIR {
             kind: "delete_var".to_string(),
             args: Some(operand_args(op)),
-            var: attr_str(&op.attrs, "_var").or_else(|| op.results.first().map(|v| value_var(*v))),
+            var: Some(local_destination(op)),
             ..OpIR::default()
         }),
 
@@ -348,16 +357,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // Copy: either a genuine copy_var or a passthrough for an unknown op
         // whose original kind was preserved in attrs.
         OpCode::Copy => {
-            if let Some(original_kind) = attr_str(&op.attrs, "_original_kind") {
-                if original_kind == "store_var" {
-                    return Some(OpIR {
-                        kind: original_kind,
-                        args: Some(operand_args(op)),
-                        var: attr_str(&op.attrs, "_var")
-                            .or_else(|| op.results.first().map(|v| value_var(*v))),
-                        ..OpIR::default()
-                    });
-                }
+            if let Some(original_kind) = attr_str(&op.attrs, "_original_kind")
+                .filter(|kind| !matches!(kind.as_str(), "copy" | "copy_var" | "load_var"))
+            {
                 // Passthrough: reconstruct the original SimpleIR op with all fields.
                 Some(OpIR {
                     kind: original_kind,
@@ -384,7 +386,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             } else if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {
                     kind: "copy_var".to_string(),
-                    var: attr_str(&op.attrs, "_var").or_else(|| Some(value_var(*src))),
+                    // The SSA operand is the value authority. `_var` may be
+                    // the original local spelling, or unrelated metadata when
+                    // the authored load/copy supplied an explicit args[0]. It
+                    // must never replace the resolved (and possibly rewritten)
+                    // SSA source during re-emission.
+                    var: Some(value_var(*src)),
                     out: Some(value_var(*dst)),
                     ..OpIR::default()
                 })
