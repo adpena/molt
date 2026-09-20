@@ -1,5 +1,20 @@
 use super::*;
 
+fn scan_loop_hoistable_lists(
+    ops: &[OpIR],
+    start_idx: usize,
+    pre_loop_defined: &BTreeSet<String>,
+    plan: &ScalarRepresentationPlan,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    super::scan_loop_hoistable_lists(
+        ops,
+        start_idx,
+        pre_loop_defined,
+        plan,
+        &mut Default::default(),
+    )
+}
+
 #[test]
 fn sum_reduction_detects_canonical_pattern() {
     // Simulates the IR for:
@@ -611,34 +626,390 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
 
     // Positive control: a list only READ (index) in the loop stays hoistable — the
     // escape checks must not over-disable the common case.
-    let read_ops = vec![
-        list_int_new("lst"),
-        OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "index".to_string(),
-            args: Some(vec!["lst".to_string(), "idx".to_string()]),
-            out: Some("cur".to_string()),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "add".to_string(),
-            args: Some(vec!["total".to_string(), "cur".to_string()]),
-            out: Some("total_next".to_string()),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
-        },
-    ];
+    let read_ops = typed_list_hoist_fixture();
     let plan = representation_plan_for_ops(&read_ops);
-    let pre = collect_pre_loop_defined_names(&read_ops, 1);
-    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&read_ops, 1, &pre, &plan);
+    let pre = collect_pre_loop_defined_names(&read_ops, 3);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&read_ops, 3, &pre, &plan);
     assert!(
         flat_hoist.contains("lst"),
         "a read-only indexed list must remain hoistable (no false escape)"
+    );
+}
+
+fn typed_list_hoist_fixture() -> Vec<OpIR> {
+    vec![
+        list_int_new("lst"),
+        OpIR {
+            kind: "const".into(),
+            value: Some(0),
+            out: Some("idx".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "const".into(),
+            value: Some(1),
+            out: Some("total".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_start".into(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "index".into(),
+            args: Some(vec!["lst".into(), "idx".into()]),
+            out: Some("cur".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "add".into(),
+            args: Some(vec!["total".into(), "idx".into()]),
+            out: Some("total_next".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "loop_end".into(),
+            ..OpIR::default()
+        },
+    ]
+}
+
+#[test]
+fn list_hoisting_fences_mutation_through_aliases_before_and_inside_the_loop() {
+    let mut aliases = vec![];
+    for kind in ["copy_var", "load_var"] {
+        for args in [None, Some(vec![]), Some(vec!["lst".to_string()])] {
+            aliases.push(OpIR {
+                kind: kind.into(),
+                args,
+                var: Some("lst".into()),
+                out: Some("alias".into()),
+                ..OpIR::default()
+            });
+        }
+    }
+    for kind in [
+        "copy",
+        "identity_alias",
+        "binding_alias",
+        "borrow",
+        "box",
+        "unbox",
+        "and",
+        "or",
+    ] {
+        aliases.push(OpIR {
+            kind: kind.into(),
+            args: Some(vec![
+                "lst".into();
+                if matches!(kind, "and" | "or") { 2 } else { 1 }
+            ]),
+            out: Some("alias".into()),
+            ..OpIR::default()
+        });
+    }
+    for alias in aliases {
+        for before_loop in [false, true] {
+            let mut ops = typed_list_hoist_fixture()[..3].to_vec();
+            if before_loop {
+                ops.push(alias.clone());
+            }
+            let start = ops.len();
+            ops.push(OpIR {
+                kind: "loop_start".into(),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "index".into(),
+                args: Some(vec!["lst".into(), "idx".into()]),
+                out: Some("cur".into()),
+                ..OpIR::default()
+            });
+            if !before_loop {
+                ops.push(alias.clone());
+            }
+            ops.push(OpIR {
+                kind: "list_append".into(),
+                args: Some(vec!["alias".into(), "cur".into()]),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "loop_end".into(),
+                ..OpIR::default()
+            });
+            let plan = representation_plan_for_ops(&ops);
+            let pre = collect_pre_loop_defined_names(&ops, start);
+            let (flat, generic) = scan_loop_hoistable_lists(&ops, start, &pre, &plan);
+            assert!(
+                !flat.contains("lst") && !generic.contains("lst"),
+                "{alias:?} prefix={before_loop}"
+            );
+        }
+    }
+}
+
+#[test]
+fn list_hoisting_does_not_turn_copy_metadata_into_a_buffer_definition() {
+    for kind in ["copy_var", "load_var"] {
+        let mut ops = typed_list_hoist_fixture();
+        ops.insert(
+            4,
+            OpIR {
+                kind: kind.into(),
+                var: Some("lst".into()),
+                args: Some(vec!["idx".into()]),
+                out: Some("alias".into()),
+                ..OpIR::default()
+            },
+        );
+        let plan = representation_plan_for_ops(&ops);
+        let pre = collect_pre_loop_defined_names(&ops, 3);
+        let (flat, generic) = scan_loop_hoistable_lists(&ops, 3, &pre, &plan);
+        assert!(flat.contains("lst") || generic.contains("lst"), "{kind}");
+    }
+}
+
+#[test]
+fn list_hoisting_fences_nested_effects_and_pairs_indexed_preludes() {
+    let fixture = typed_list_hoist_fixture();
+    for (kind, args) in [
+        ("call", vec![]),
+        ("call_method_ic", vec!["receiver"]),
+        ("call_indirect", vec!["callee", "callargs"]),
+        ("call_bind", vec!["callee", "callargs"]),
+        ("invoke_ffi", vec![]),
+        ("list_reverse", vec!["lst"]),
+        ("list_pop", vec!["lst"]),
+        ("del_index", vec!["lst", "idx"]),
+        ("index_set", vec!["lst", "idx", "total"]),
+    ] {
+        for nested in [false, true] {
+            let mut ops = fixture[..4].to_vec();
+            if nested {
+                ops.push(OpIR {
+                    kind: "loop_start".into(),
+                    ..OpIR::default()
+                });
+                ops.push(OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("inner_zero".into()),
+                    ..OpIR::default()
+                });
+                ops.push(OpIR {
+                    kind: "loop_index_start".into(),
+                    args: Some(vec!["inner_zero".into()]),
+                    out: Some("inner_idx".into()),
+                    ..OpIR::default()
+                });
+            }
+            ops.push(OpIR {
+                kind: kind.into(),
+                args: Some(args.iter().map(|name| name.to_string()).collect()),
+                ..OpIR::default()
+            });
+            if nested {
+                ops.push(OpIR {
+                    kind: "loop_end".into(),
+                    ..OpIR::default()
+                });
+            }
+            ops.extend_from_slice(&fixture[4..]);
+            let plan = representation_plan_for_ops(&ops);
+            let pre = collect_pre_loop_defined_names(&ops, 3);
+            let (flat, generic) = scan_loop_hoistable_lists(&ops, 3, &pre, &plan);
+            assert!(
+                flat.is_empty() && generic.is_empty(),
+                "{kind}, nested={nested}"
+            );
+        }
+    }
+
+    // One indexed prelude is one loop. Neither a nested prelude nor a mutation
+    // after the matching outer end may swallow that boundary.
+    let mut ops = fixture[..4].to_vec();
+    ops.push(OpIR {
+        kind: "loop_index_start".into(),
+        args: Some(vec!["idx".into()]),
+        out: Some("outer_idx".into()),
+        ..OpIR::default()
+    });
+    ops.push(OpIR {
+        kind: "loop_start".into(),
+        ..OpIR::default()
+    });
+    ops.push(OpIR {
+        kind: "const".into(),
+        value: Some(0),
+        out: Some("inner_zero".into()),
+        ..OpIR::default()
+    });
+    ops.push(OpIR {
+        kind: "loop_index_start".into(),
+        args: Some(vec!["inner_zero".into()]),
+        out: Some("inner_idx".into()),
+        ..OpIR::default()
+    });
+    ops.push(OpIR {
+        kind: "loop_end".into(),
+        ..OpIR::default()
+    });
+    ops.extend_from_slice(&fixture[4..]);
+    ops.push(OpIR {
+        kind: "list_append".into(),
+        args: Some(vec!["lst".into(), "total".into()]),
+        ..OpIR::default()
+    });
+    let plan = representation_plan_for_ops(&ops);
+    let pre = collect_pre_loop_defined_names(&ops, 3);
+    assert!(
+        scan_loop_hoistable_lists(&ops, 3, &pre, &plan)
+            .0
+            .contains("lst")
+    );
+}
+
+#[test]
+fn list_hoisting_requires_stable_names_and_callback_free_indexing() {
+    for destination in ["lst", "local_total"] {
+        let mut ops = typed_list_hoist_fixture();
+        ops.insert(
+            6,
+            OpIR {
+                kind: "store_var".into(),
+                var: Some(destination.into()),
+                args: Some(vec![if destination == "lst" {
+                    "lst".into()
+                } else {
+                    "total".into()
+                }]),
+                ..OpIR::default()
+            },
+        );
+        let plan = representation_plan_for_ops(&ops);
+        let pre = collect_pre_loop_defined_names(&ops, 3);
+        let (flat, generic) = scan_loop_hoistable_lists(&ops, 3, &pre, &plan);
+        assert_eq!(
+            flat.contains("lst") || generic.contains("lst"),
+            destination != "lst",
+            "{destination}"
+        );
+    }
+    let mut ops = typed_list_hoist_fixture();
+    ops[4].args = Some(vec!["lst".into(), "opaque_index".into()]);
+    let plan = representation_plan_for_ops(&ops);
+    let pre = collect_pre_loop_defined_names(&ops, 3);
+    let (flat, generic) = scan_loop_hoistable_lists(&ops, 3, &pre, &plan);
+    assert!(
+        flat.is_empty() && generic.is_empty(),
+        "__index__ may mutate captured lists"
+    );
+}
+
+#[test]
+fn list_hoisting_requires_real_preheader_and_definition_dominance() {
+    let fixture = typed_list_hoist_fixture();
+    let mut continued = fixture.clone();
+    continued.insert(
+        6,
+        OpIR {
+            kind: "loop_continue".into(),
+            ..OpIR::default()
+        },
+    );
+    let plan = representation_plan_for_ops(&continued);
+    let pre = collect_pre_loop_defined_names(&continued, 3);
+    assert!(
+        scan_loop_hoistable_lists(&continued, 3, &pre, &plan)
+            .0
+            .contains("lst"),
+        "unreachable loop_end after a real backedge must not disable hoisting"
+    );
+
+    let mut bypass = fixture[..3].to_vec();
+    bypass.push(OpIR {
+        kind: "br_if".into(),
+        args: Some(vec!["idx".into()]),
+        value: Some(90),
+        ..OpIR::default()
+    });
+    bypass.push(fixture[3].clone());
+    bypass.push(OpIR {
+        kind: "label".into(),
+        value: Some(90),
+        ..OpIR::default()
+    });
+    bypass.extend_from_slice(&fixture[4..]);
+
+    let mut partial_definition = fixture[1..3].to_vec();
+    partial_definition.push(OpIR {
+        kind: "br_if".into(),
+        args: Some(vec!["idx".into()]),
+        value: Some(91),
+        ..OpIR::default()
+    });
+    partial_definition.push(fixture[0].clone());
+    partial_definition.push(OpIR {
+        kind: "label".into(),
+        value: Some(91),
+        ..OpIR::default()
+    });
+    partial_definition.extend_from_slice(&fixture[3..]);
+    for (ops, start) in [(bypass, 4), (partial_definition, 5)] {
+        let plan = representation_plan_for_ops(&ops);
+        let pre = collect_pre_loop_defined_names(&ops, start);
+        let (flat, generic) = scan_loop_hoistable_lists(&ops, start, &pre, &plan);
+        assert!(
+            flat.is_empty() && generic.is_empty(),
+            "lexical position is not a reaching-definition proof"
+        );
+    }
+}
+
+#[test]
+fn pre_loop_definitions_follow_result_and_binding_roles() {
+    let ops = vec![
+        OpIR {
+            kind: "copy_var".into(),
+            var: Some("metadata".into()),
+            args: Some(vec!["read_only".into()]),
+            out: Some("copy".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "unpack_sequence".into(),
+            value: Some(2),
+            args: Some(vec!["read_only".into(), "first".into(), "second".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "checked_add".into(),
+            var: Some("sum".into()),
+            out: Some("overflow".into()),
+            args: Some(vec!["read_only".into(); 2]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dec_ref".into(),
+            out: Some("out_metadata".into()),
+            args: Some(vec!["read_only".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "store_var".into(),
+            var: Some("slot".into()),
+            out: Some("snapshot".into()),
+            args: Some(vec!["read_only".into()]),
+            ..OpIR::default()
+        },
+    ];
+    assert_eq!(
+        collect_pre_loop_defined_names(&ops, ops.len()),
+        [
+            "copy", "first", "second", "sum", "overflow", "slot", "snapshot"
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     );
 }

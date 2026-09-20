@@ -140,6 +140,51 @@ fn native_binding_consumers_share_destination_and_optional_result_roles() {
 }
 
 #[test]
+fn native_join_planning_uses_semantic_copy_sources_not_metadata() {
+    for kind in ["copy_var", "load_var"] {
+        for (var, args, expected) in [
+            ("_bb1_arg0", Some(vec!["source".to_string()]), None),
+            (
+                "metadata",
+                Some(vec!["_bb2_arg0".to_string()]),
+                Some("_bb2_arg0"),
+            ),
+            ("_bb1_arg0", None, Some("_bb1_arg0")),
+            ("_bb1_arg0", Some(vec![]), Some("_bb1_arg0")),
+        ] {
+            let read = OpIR {
+                kind: kind.into(),
+                var: Some(var.into()),
+                args,
+                out: Some("snapshot".into()),
+                ..OpIR::default()
+            };
+            let ops = vec![
+                OpIR {
+                    kind: "try_start".into(),
+                    value: Some(10),
+                    ..OpIR::default()
+                },
+                read.clone(),
+                OpIR {
+                    kind: "exception_pop".into(),
+                    ..OpIR::default()
+                },
+            ];
+            let slots = collect_slot_backed_join_names(&ops, &BTreeSet::from([10]), false);
+            assert_eq!(
+                slots,
+                expected.into_iter().map(str::to_string).collect(),
+                "{read:?}"
+            );
+            let source =
+                super::super::preanalyze_alias_source(&read).expect("copy has one semantic source");
+            assert_eq!(source, expected.unwrap_or("source"), "{read:?}");
+        }
+    }
+}
+
+#[test]
 fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
     let mut input = super::cleanup_roots::token_test_ir();
     input.ops = vec![

@@ -144,30 +144,62 @@ fn push_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
     }
 }
 
+// Compute positions before borrowing their values. Immutable analysis and
+// in-place rewriting must visit the identical generated field-role projection.
+fn simple_ir_read_fields(op: &OpIR) -> impl Iterator<Item = SimpleIrReadField> + use<> {
+    let arg_count = op.args.as_ref().map_or(0, Vec::len);
+    let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+        .unwrap_or(arg_count)
+        .min(arg_count);
+    (0..read_arity).map(SimpleIrReadField::Arg).chain(
+        (simple_ir_var_field_is_read(op) && op.var.is_some()).then_some(SimpleIrReadField::Var),
+    )
+}
+
 /// Every source read and its canonical field role, in deterministic order.
 ///
 /// Consumers that need positional diagnostics or narrowly-scoped transport
 /// exceptions use this API directly. Name-set consumers should insert the
 /// borrowed names into their own long-lived set.
 pub fn visit_simple_ir_reads<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrRead<'a>)) {
-    if let Some(args) = op.args.as_ref() {
-        let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
-            .unwrap_or(args.len())
-            .min(args.len());
-        for (index, name) in args.iter().take(read_arity).enumerate() {
-            visit(SimpleIrRead {
-                name,
-                field: SimpleIrReadField::Arg(index),
-            });
-        }
+    for field in simple_ir_read_fields(op) {
+        let name = match field {
+            SimpleIrReadField::Arg(index) => {
+                &op.args.as_ref().expect("read argument exists")[index]
+            }
+            SimpleIrReadField::Var => op.var.as_ref().expect("read variable exists"),
+        };
+        visit(SimpleIrRead { name, field });
     }
-    if simple_ir_var_field_is_read(op)
-        && let Some(name) = op.var.as_deref()
-    {
-        visit(SimpleIrRead {
-            name,
-            field: SimpleIrReadField::Var,
-        });
+}
+
+/// A unary semantic input, independent of its transport field. Missing or
+/// multiple reads fail closed rather than selecting an arbitrary first value.
+pub fn simple_ir_single_read(op: &OpIR) -> Option<SimpleIrRead<'_>> {
+    let mut source = None;
+    let mut count = 0;
+    visit_simple_ir_reads(op, |read| {
+        count += 1;
+        source = Some(read);
+    });
+    source.filter(|_| count == 1)
+}
+
+/// Rewrite only semantic source names. Results, binding destinations and
+/// metadata are inaccessible to the callback, even when they collide with a
+/// read name. This uses the same allocation-free field walk as read analysis.
+pub fn visit_simple_ir_reads_mut(
+    op: &mut OpIR,
+    mut visit: impl FnMut(SimpleIrReadField, &mut String),
+) {
+    for field in simple_ir_read_fields(op) {
+        let name = match field {
+            SimpleIrReadField::Arg(index) => {
+                &mut op.args.as_mut().expect("read argument exists")[index]
+            }
+            SimpleIrReadField::Var => op.var.as_mut().expect("read variable exists"),
+        };
+        visit(field, name);
     }
 }
 
@@ -237,6 +269,55 @@ mod tests {
         OpIR {
             kind: kind.to_string(),
             ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn mutable_reads_share_field_roles_and_preserve_nonread_collisions() {
+        for kind in [
+            "copy",
+            "copy_var",
+            "load_var",
+            "store_var",
+            "store_fast",
+            "delete_var",
+            "checked_add",
+            "checked_mul",
+            "iter_next_unboxed",
+            "unpack_sequence",
+            "store_index",
+            "ret",
+            "ret_void",
+            "unmapped_transport",
+        ] {
+            for args in [None, Some(vec![]), Some(vec!["same".into(); 3])] {
+                for var in [None, Some("same".into())] {
+                    let mut input = op(kind);
+                    input.args = args.clone();
+                    input.var = var;
+                    input.out = Some("same".into());
+                    let mut expected = input.clone();
+                    let mut fields = Vec::new();
+                    visit_simple_ir_reads(&input, |read| {
+                        fields.push(read.field);
+                        match read.field {
+                            SimpleIrReadField::Arg(index) => {
+                                expected.args.as_mut().unwrap()[index] = "rewritten".into();
+                            }
+                            SimpleIrReadField::Var => expected.var = Some("rewritten".into()),
+                        }
+                    });
+                    let mut mutated_fields = Vec::new();
+                    visit_simple_ir_reads_mut(&mut input, |field, name| {
+                        mutated_fields.push(field);
+                        *name = "rewritten".into();
+                    });
+                    assert_eq!(mutated_fields, fields, "{kind}");
+                    assert_eq!(input.args, expected.args, "{kind}");
+                    assert_eq!(input.var, expected.var, "{kind}");
+                    assert_eq!(input.out, expected.out, "{kind}");
+                }
+            }
         }
     }
 
