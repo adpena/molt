@@ -288,6 +288,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     filters = core.argv[core.argv.index("--") + 1 :]
     assert {
+        "wasm_abi::",
+        "async_rt::channels::",
+        "async_rt::net_stubs::",
+        "intrinsics::registry::",
+    } <= set(filters)
+    assert {
         "tir::",
         "wasm::",
         "call::",
@@ -342,6 +348,7 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
     lowering = commands["llvm.test.lowering"].argv
     assert "--lib" in lowering
     assert "llvm_backend::lowering" in lowering
+    assert "llvm_backend::runtime_imports" in lowering
     linkage = commands["linker.test.generated-object-admission"].argv
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 

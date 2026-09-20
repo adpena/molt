@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
-const { createRuntimeLifetime, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = require('./runtime_lifecycle.js');
+const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
@@ -1991,7 +1991,7 @@ const handleDbHost = (entry, reqPtr, reqLen, outPtr, tokenId) => {
   } catch (err) {
     return dbHostUnavailable(outPtr);
   }
-  const streamHandle = runtimeInstance.exports.molt_stream_new(0n);
+  const streamHandle = createRuntimeStream(runtimeInstance, 0n);
   if (!streamHandle || streamHandle === 0n) {
     return dbHostUnavailable(outPtr);
   }
@@ -4936,7 +4936,7 @@ const processHostStdio = (handle, which, outStreamPtr) => {
   if (!entry || !outStreamPtr) return -EBADF;
   if (which === PROCESS_STDIO_STDOUT) {
     if (!entry.stdoutStream) {
-      const streamBits = runtimeInstance.exports.molt_stream_new(0n);
+      const streamBits = createRuntimeStream(runtimeInstance, 0n);
       entry.stdoutStream = streamBits;
     }
     writeU64(Number(outStreamPtr), BigInt(entry.stdoutStream));
@@ -4945,7 +4945,7 @@ const processHostStdio = (handle, which, outStreamPtr) => {
   }
   if (which === PROCESS_STDIO_STDERR) {
     if (!entry.stderrStream) {
-      const streamBits = runtimeInstance.exports.molt_stream_new(0n);
+      const streamBits = createRuntimeStream(runtimeInstance, 0n);
       entry.stderrStream = streamBits;
     }
     writeU64(Number(outStreamPtr), BigInt(entry.stderrStream));

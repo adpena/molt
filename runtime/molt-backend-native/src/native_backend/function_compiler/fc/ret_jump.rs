@@ -410,274 +410,138 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
         }
         // TIR round-trip variable ops — wire SSA values between blocks
         "store_var" => {
-            // Store a value into a named variable.
-            //
-            // Fast path: when the source is raw-primary int and the
-            // destination is proven-int, copy the raw i64 directly
-            // with NO boxing and NO refcount ops.  Raw i64 values
-            // are stack values, not heap pointers — refcounting them
-            // is both incorrect and wasteful.  Overflow is handled
-            // at escape points (function return, call args, heap
-            // stores) via ensure_boxed_overflow_safe.
-            //
-            // Boxed storage owns a retained binding. Publication precedes
-            // release of the displaced occupant on every path, including loops.
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            if let Some(binding) = simple_ir_binding(op) {
-                let name = binding.destination;
-                assert!(
-                    !name.is_empty() && name != "none",
-                    "store_var requires a nonempty, non-reserved binding destination"
-                );
-                // A result-carrying store has two definitions: the mutable
-                // destination and an SSA alias of its source. Preserve both;
-                // generated field roles, not out.or(var), own that distinction.
-                if let Some(result) = binding.result {
-                    let source = args.first().expect("store_var source");
-                    let value = var_get_boxed_overflow_safe(
-                        module,
-                        import_ids,
-                        builder,
-                        import_refs,
-                        sealed_blocks,
-                        vars,
-                        source,
-                        representation_plan,
-                    )
-                    .expect("store_var result source");
-                    if rc_authority.native_value_tracking_enabled()
-                        && native_alias_mints_owner(alias_roots, source, result)
-                    {
-                        if cleanup_roots.contains(result)
-                            && merge_rebind_storage_for_name(source, representation_plan)
-                                == MergeRebindStorageKind::BoxedI64
-                        {
-                            emit_inc_ref_obj(builder, *value, local_inc_ref_obj);
-                        }
-                        cleanup_roots.acquire(builder, local_dec_ref_obj, result, *value);
-                    }
-                    def_var_from_boxed_transport(
-                        module,
-                        import_ids,
-                        builder,
-                        import_refs,
-                        vars,
-                        representation_plan,
-                        nbc,
-                        result,
-                        *value,
-                    );
-                    if let Some(block) = builder.current_block() {
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(block).or_default(),
-                            vec![result.to_string()],
-                        );
-                    }
-                }
-                // --- Raw-primary int fast path ---
-                // When source is raw-primary (its Variable holds unboxed i64)
-                // AND destination is proven-int, transfer the raw i64 directly.
-                // This eliminates box+unbox round-trips in tight loops like
-                // `total += i; i += 1` where both sides are proven-int.
-                if representation_plan.is_raw_int_carrier_name(&args[0])
-                    && scalar_fast_paths_enabled
-                    && representation_plan.is_raw_int_carrier_name(name)
-                    && !slot_backed_join_slots.contains_key(name)
-                {
-                    // Read raw i64 from source Variable (no boxing).
-                    let raw_val =
-                        { int_raw_value(&mut *builder, vars, representation_plan, &args[0]) }
-                            .unwrap_or_else(|| {
-                                // Source is raw-primary but has no shadow entry yet.
-                                // Read directly from the main Variable (which holds raw i64).
-                                let var = *vars
-                                    .get(&args[0])
-                                    .expect("store_var: raw src var not found");
-                                builder.use_var(var)
-                            });
-                    // Phase 1c: representation_plan join slots write raw
-                    // i64 directly to the main Variable. The
-                    // loop_start demote is taught to skip them, so
-                    // both the entry preheader and the back edge
-                    // pass raw i64 to the loop header phi —
-                    // consistent representation, no per-iteration
-                    // box→unbox round trip.
-                    //
-                    // Boxed join slots still box on the back edge because
-                    // their other definition sites may produce NaN-boxed
-                    // values (mixed-type stores or generic runtime calls).
-                    def_var_named(&mut *builder, vars, name, raw_val);
-                    // Propagate shadow to destination (both tiers).
-                    // No refcount ops needed -- raw i64 is not a heap pointer.
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary float fast path ---
-                // When destination is a float-primary variable, transfer
-                // raw f64 directly with no boxing and no refcount ops.
-                // Float values are always stack values, never heap pointers.
-                if representation_plan.is_float_unboxed(name)
-                    && scalar_fast_paths_enabled
-                    && !slot_backed_join_slots.contains_key(name)
-                {
-                    let raw_f64 =
-                        float_value_for(&mut *builder, vars, representation_plan, &args[0])
-                            .unwrap_or_else(|| {
-                                // Source is NaN-boxed -- extract f64 bits.
-                                let boxed = var_get_boxed_overflow_safe(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    &mut *sealed_blocks,
-                                    vars,
-                                    &args[0],
-                                    representation_plan,
-                                )
-                                .expect("store_var: float src not found");
-                                builder
-                                    .ins()
-                                    .bitcast(types::F64, MemFlagsData::new(), *boxed)
-                            });
-                    def_var_named(&mut *builder, vars, name, raw_f64);
-                    // No refcount ops needed -- raw f64 is not a heap pointer.
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary bool fast path ---
-                // Bool-primary store targets keep raw 0/1 in their
-                // main Cranelift Variable, including proven join
-                // carriers. The static fixpoint only admits targets
-                // whose store sources are themselves raw-closed.
-                if representation_plan.is_bool_unboxed(name)
-                    && scalar_fast_paths_enabled
-                    && !slot_backed_join_slots.contains_key(name)
-                {
-                    let raw_bool =
-                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
-                            .unwrap_or_else(|| {
-                                panic!("store_var: bool-primary src missing raw bool: {}", args[0])
-                            });
-                    def_raw_bool_value(
-                        &mut *builder,
-                        vars,
-                        representation_plan,
-                        name,
-                        raw_bool,
-                        nbc,
-                    );
-                    // No refcount ops needed -- raw bool is an inline scalar.
-                    return OpFlow::Continue;
-                }
-                // --- Raw-backed join slots ---
-                // The slot carries RAW i64 / raw 0-1 bool (no NaN
-                // box, no refcount — a raw scalar is never a heap
-                // pointer). Checked BEFORE the boxing read below so
-                // no dead box blocks are emitted. The carrier chain
-                // only admits a name when every store source is
-                // raw-closed, so a non-raw source here is a chain
-                // inconsistency.
-                if raw_backed_slot_names.contains(name)
-                    && let Some(&slot) = slot_backed_join_slots.get(name)
-                {
-                    let raw_val = if representation_plan.is_bool_unboxed(name) {
-                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
-                    } else {
-                        int_raw_value(&mut *builder, vars, representation_plan, &args[0])
-                    }
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "store_var: raw-backed slot '{name}' fed by non-raw source '{}' (carrier chain inconsistency)",
-                            args[0]
-                        )
-                    });
-                    builder.ins().stack_store(raw_val, slot, 0);
-                    return OpFlow::Continue;
-                }
-                // --- Slot-backed join slots ---
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[0],
+            let binding = simple_ir_binding(op).expect("store_var missing target local");
+            let name = binding.destination;
+            assert!(
+                !name.is_empty() && name != "none",
+                "store_var requires a nonempty, non-reserved binding destination"
+            );
+            let source = op
+                .args
+                .as_ref()
+                .and_then(|args| args.first())
+                .expect("store_var source");
+            let mut incoming = CapturedScalarTransport::read_local(
+                builder,
+                vars,
+                representation_plan,
+                slot_backed_join_slots,
+                raw_backed_slot_names,
+                source,
+            );
+            let slot = slot_backed_join_slots.get(name).copied();
+            let storage = if slot.is_some() && !raw_backed_slot_names.contains(name) {
+                MergeRebindStorageKind::BoxedI64
+            } else {
+                merge_rebind_storage_for_name(name, representation_plan)
+            };
+            // Resolve every output from the captured input before publishing
+            // either name (the source may itself be one of the outputs).
+            let value = incoming.value_for_home(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                representation_plan,
+                nbc,
+                name,
+                storage,
+            );
+            let result = binding.result.map(|result| {
+                let result_storage = merge_rebind_storage_for_name(result, representation_plan);
+                let result_value = incoming.value_for_home(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
                     representation_plan,
-                )
-                .expect("store_var: src not found");
-                if let Some(&slot) = slot_backed_join_slots.get(name) {
-                    // RC drop-insertion substrate (design 20 §4.1, Phase 5):
-                    // this is the memory-phi arm of the native value-tracking
-                    // RC — a CPython-`STORE_FAST` retain-new / release-old on
-                    // the loop-carried slot. For drop-inserted functions the
-                    // TIR drops own this: the TIR `DecRef(old)` (inserted on
-                    // the back-edge, right before this store) already releases
-                    // the previous occupant, and the new value is produced
-                    // OWNED (rc=1) so its single reference transfers into the
-                    // slot with a bare store — no inc, no dec. Running the
-                    // legacy inc(new)/dec(old) here too would add one
-                    // unbalanced reference per iteration (inc not matched by
-                    // the TIR drop), re-opening the O(n) loop-accumulator leak
-                    // (the string-concat / bigint-accumulator headline case).
-                    if !rc_authority.native_value_tracking_enabled() {
-                        builder.ins().stack_store(*val, slot, 0);
-                        return OpFlow::Continue;
-                    }
-                    let old = builder.ins().stack_load(types::I64, slot, 0);
-                    if merge_rebind_storage_for_name(&args[0], representation_plan)
-                        == MergeRebindStorageKind::BoxedI64
-                    {
-                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
-                    }
-                    builder.ins().stack_store(*val, slot, 0);
-                    builder.ins().call(local_dec_ref_obj, &[old]);
-                    return OpFlow::Continue;
-                }
-                // A mutable binding owns a reference independently of its source.
-                // NativeCleanupRoots publishes/replaces this owner after the store;
-                // the TIR lane supplies its own explicit ownership operations.
-                if rc_authority.native_value_tracking_enabled()
-                    && cleanup_roots.contains(name)
-                    && merge_rebind_storage_for_name(&args[0], representation_plan)
-                        == MergeRebindStorageKind::BoxedI64
-                {
-                    emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
-                }
-                def_var_from_boxed_transport(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
+                    nbc,
+                    result,
+                    result_storage,
+                );
+                (result, result_storage, result_value)
+            });
+            let native_rc = rc_authority.native_value_tracking_enabled();
+            let owns_destination = native_rc
+                && storage == MergeRebindStorageKind::BoxedI64
+                && (slot.is_some() || cleanup_roots.contains(name));
+            let owns_result = native_rc
+                && result.is_some_and(|(result, storage, _)| {
+                    storage == MergeRebindStorageKind::BoxedI64
+                        && cleanup_roots.contains(result)
+                        && native_alias_mints_owner(alias_roots, source, result)
+                });
+            // One raw-to-boxed materialization supplies one credit. Additional
+            // independent owners retain that same object, never box it again.
+            // Acquire all credits before any displaced owner can be released.
+            if owns_destination && !incoming.take_boxed_owner() {
+                emit_inc_ref_obj(builder, value, local_inc_ref_obj);
+            }
+            if owns_result && !incoming.take_boxed_owner() {
+                emit_inc_ref_obj(
+                    builder,
+                    result.expect("snapshot owner").2,
+                    local_inc_ref_obj,
+                );
+            }
+            let displaced = if native_rc && storage == MergeRebindStorageKind::BoxedI64 {
+                slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0))
+            } else {
+                None
+            };
+            if let Some(slot) = slot {
+                builder.ins().stack_store(value, slot, 0);
+            } else {
+                def_var_from_merge_rebind_storage(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
                     vars,
                     representation_plan,
                     nbc,
                     name,
-                    *val,
-                );
-                if rc_authority.native_value_tracking_enabled() {
-                    cleanup_roots.acquire(builder, local_dec_ref_obj, name, *val);
-                    if let Some(block) = builder.current_block() {
-                        extend_unique_tracked(
-                            block_tracked_obj.entry(block).or_default(),
-                            vec![name.to_string()],
-                        );
-                    }
-                }
-                return OpFlow::Continue;
-            } else {
-                // No destination variable name — still need to evaluate
-                // the source for side effects (should not happen in
-                // well-formed TIR, but defensive).
-                let _val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[0],
-                    representation_plan,
+                    value,
+                    storage,
                 );
             }
+            if let Some((result, result_storage, result_value)) = result {
+                def_var_from_merge_rebind_storage(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    result,
+                    result_value,
+                    result_storage,
+                );
+            }
+            // Explicit TIR ownership remains authoritative in drop-inserted
+            // functions. Native owners publish before displaced cleanup.
+            if owns_result {
+                let (result, _, result_value) = result.expect("snapshot owner");
+                cleanup_roots.acquire(builder, local_dec_ref_obj, result, result_value);
+            }
+            if let Some(displaced) = displaced {
+                builder.ins().call(local_dec_ref_obj, &[displaced]);
+            } else if owns_destination {
+                cleanup_roots.acquire(builder, local_dec_ref_obj, name, value);
+            }
+            if let Some(block) = builder.current_block() {
+                let tracked = block_tracked_obj.entry(block).or_default();
+                if owns_destination && slot.is_none() {
+                    extend_unique_tracked(tracked, vec![name.to_string()]);
+                }
+                if let Some((result, MergeRebindStorageKind::BoxedI64, _)) = result {
+                    extend_unique_tracked(tracked, vec![result.to_string()]);
+                }
+            }
+            return OpFlow::Continue;
         }
         "delete_var" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -747,385 +611,61 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             return OpFlow::Continue;
         }
         "load_var" | "copy_var" => {
-            // Load a named variable into an output (block arg receiving / copy).
-            // Use Variable-backed shadow (phi-resolved across loop iterations)
-            // when available, falling back to Value-based shadow.
-            if let Some(ref var_name) = op.var
-                && op.args.as_ref().is_none_or(|args| args.is_empty())
-            {
-                if let Some(&slot) = slot_backed_join_slots.get(var_name) {
-                    // Raw-backed slot: the slot holds RAW i64 (or a
-                    // raw 0/1 bool) — no unbox, no refcount. A
-                    // raw-primary out takes the value verbatim; any
-                    // other out gets the overflow-safe box (NEVER
-                    // the trusted unboxed transport, which truncates
-                    // at 2^47).
-                    if raw_backed_slot_names.contains(var_name.as_str()) {
-                        let raw_val = builder.ins().stack_load(types::I64, slot, 0);
-                        if let Some(out_name) = op.out.as_ref().as_ref() {
-                            if representation_plan.is_bool_unboxed(var_name.as_str()) {
-                                def_raw_bool_value(
-                                    &mut *builder,
-                                    vars,
-                                    representation_plan,
-                                    out_name,
-                                    raw_val,
-                                    nbc,
-                                );
-                            } else if representation_plan.is_raw_int_carrier_name(out_name.as_str())
-                            {
-                                def_var_named(&mut *builder, vars, out_name, raw_val);
-                            } else {
-                                let boxed = box_raw_i64_value_overflow_safe(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    &mut *sealed_blocks,
-                                    raw_val,
-                                );
-                                def_var_from_boxed_transport(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    vars,
-                                    representation_plan,
-                                    nbc,
-                                    out_name,
-                                    boxed,
-                                );
-                                if rc_authority.native_value_tracking_enabled() {
-                                    cleanup_roots.acquire(
-                                        builder,
-                                        local_dec_ref_obj,
-                                        out_name,
-                                        boxed,
-                                    );
-                                }
-                            }
-                        }
-                        return OpFlow::Continue;
-                    }
-                    let val = builder.ins().stack_load(types::I64, slot, 0);
-                    // RC drop-insertion substrate (design 20 §4.1, Phase 5):
-                    // the load-side arm of the memory-phi value-tracking RC.
-                    // The legacy model inc_refs on every slot LOAD so the
-                    // loaded SSA value is OWNED, and balances it with a
-                    // release at the value's last use. For drop-inserted
-                    // functions the TIR drops own RC under the borrow model
-                    // (design §1.2): a slot load is a BORROW (no new
-                    // reference), and the TIR `DecRef` at the loaded value's
-                    // last use is the genuine release of the slot occupant's
-                    // single reference (the loop-carried back-edge drop).
-                    // Keeping the load-inc here would pair it with that TIR
-                    // `DecRef` (net zero) so the carried accumulator is never
-                    // freed — the headline O(n) loop-accumulator leak. Skip
-                    // it; the load yields a borrowed alias the TIR pass tracks
-                    // in alias-root space.
-                    if rc_authority.native_value_tracking_enabled()
-                        && op
-                            .out
-                            .as_deref()
-                            .is_some_and(|out| cleanup_roots.contains(out))
-                    {
-                        emit_inc_ref_obj(builder, val, local_inc_ref_obj);
-                    }
-                    if let Some(out_name) = op.out.as_ref().as_ref() {
-                        def_var_from_boxed_transport(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            vars,
-                            representation_plan,
-                            nbc,
-                            out_name,
-                            val,
-                        );
-                        if rc_authority.native_value_tracking_enabled() {
-                            cleanup_roots.acquire(builder, local_dec_ref_obj, out_name, val);
-                        }
-                    }
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary int fast path ---
-                // When source is raw-primary and output is proven-int,
-                // transfer raw i64 directly -- no boxing, no refcount.
-                if representation_plan.is_raw_int_carrier_name(var_name.as_str())
-                    && scalar_fast_paths_enabled
-                    && op
-                        .out
-                        .as_ref()
-                        .is_some_and(|o| representation_plan.is_raw_int_carrier_name(o))
-                {
-                    let raw_val = int_raw_value(&mut *builder, vars, representation_plan, var_name)
-                        .unwrap_or_else(|| {
-                            let var = *vars
-                                .get(var_name.as_str())
-                                .expect("load_var: raw src var not found");
-                            builder.use_var(var)
-                        });
-                    let out_name = op.out.as_ref().unwrap();
-                    def_var_named(&mut *builder, vars, out_name, raw_val);
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary float fast path ---
-                // When output is float-primary, transfer raw f64 directly.
-                if op
-                    .out
-                    .as_ref()
-                    .is_some_and(|o| representation_plan.is_float_unboxed(o))
-                    && scalar_fast_paths_enabled
-                {
-                    let raw_f64 =
-                        float_value_for(&mut *builder, vars, representation_plan, var_name)
-                            .unwrap_or_else(|| {
-                                let boxed = var_get_boxed_overflow_safe(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    &mut *sealed_blocks,
-                                    vars,
-                                    var_name,
-                                    representation_plan,
-                                )
-                                .expect("load_var: float src not found");
-                                builder
-                                    .ins()
-                                    .bitcast(types::F64, MemFlagsData::new(), *boxed)
-                            });
-                    let out_name = op.out.as_ref().unwrap();
-                    def_var_named(&mut *builder, vars, out_name, raw_f64);
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary bool fast path ---
-                if representation_plan.is_bool_unboxed(var_name.as_str())
-                    && scalar_fast_paths_enabled
-                    && op
-                        .out
-                        .as_ref()
-                        .is_some_and(|o| representation_plan.name_is_bool_scalar(o))
-                {
-                    let raw_bool =
-                        bool_raw_value(&mut *builder, vars, representation_plan, var_name)
-                            .unwrap_or_else(|| {
-                                panic!("load_var: bool-primary src missing raw bool: {var_name}")
-                            });
-                    let out_name = op.out.as_ref().unwrap();
-                    def_raw_bool_value(
-                        &mut *builder,
-                        vars,
-                        representation_plan,
-                        out_name,
-                        raw_bool,
-                        nbc,
-                    );
-                    return OpFlow::Continue;
-                }
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    var_name,
-                    representation_plan,
-                )
-                .expect("load_var: var not found");
-                if let Some(out_name) = op.out.as_ref().as_ref() {
-                    let source = preanalyze_alias_source(op).expect("variable load source");
-                    if rc_authority.native_value_tracking_enabled()
-                        && native_alias_mints_owner(alias_roots, source, out_name)
-                        && cleanup_roots.contains(out_name)
-                        && merge_rebind_storage_for_name(source, representation_plan)
-                            == MergeRebindStorageKind::BoxedI64
-                    {
-                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
-                    }
-                    def_var_from_boxed_transport(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        vars,
-                        representation_plan,
-                        nbc,
-                        out_name,
-                        *val,
-                    );
-                }
-            } else if let Some(args) = op.args.as_ref()
-                && !args.is_empty()
-            {
-                if let Some(&slot) = slot_backed_join_slots.get(&args[0]) {
-                    // Raw-backed slot (see the var-named arm above).
-                    if raw_backed_slot_names.contains(args[0].as_str()) {
-                        let raw_val = builder.ins().stack_load(types::I64, slot, 0);
-                        if let Some(out_name) = op.out.as_ref().as_ref() {
-                            if representation_plan.is_bool_unboxed(args[0].as_str()) {
-                                def_raw_bool_value(
-                                    &mut *builder,
-                                    vars,
-                                    representation_plan,
-                                    out_name,
-                                    raw_val,
-                                    nbc,
-                                );
-                            } else if representation_plan.is_raw_int_carrier_name(out_name.as_str())
-                            {
-                                def_var_named(&mut *builder, vars, out_name, raw_val);
-                            } else {
-                                let boxed = box_raw_i64_value_overflow_safe(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    &mut *sealed_blocks,
-                                    raw_val,
-                                );
-                                def_var_from_boxed_transport(
-                                    &mut *module,
-                                    &mut *import_ids,
-                                    &mut *builder,
-                                    &mut *import_refs,
-                                    vars,
-                                    representation_plan,
-                                    nbc,
-                                    out_name,
-                                    boxed,
-                                );
-                                if rc_authority.native_value_tracking_enabled() {
-                                    cleanup_roots.acquire(
-                                        builder,
-                                        local_dec_ref_obj,
-                                        out_name,
-                                        boxed,
-                                    );
-                                }
-                            }
-                        }
-                        return OpFlow::Continue;
-                    }
-                    let val = builder.ins().stack_load(types::I64, slot, 0);
-                    // RC drop-insertion substrate (design 20 §4.1, Phase 5):
-                    // the load-side arm of the memory-phi value-tracking RC.
-                    // The legacy model inc_refs on every slot LOAD so the
-                    // loaded SSA value is OWNED, and balances it with a
-                    // release at the value's last use. For drop-inserted
-                    // functions the TIR drops own RC under the borrow model
-                    // (design §1.2): a slot load is a BORROW (no new
-                    // reference), and the TIR `DecRef` at the loaded value's
-                    // last use is the genuine release of the slot occupant's
-                    // single reference (the loop-carried back-edge drop).
-                    // Keeping the load-inc here would pair it with that TIR
-                    // `DecRef` (net zero) so the carried accumulator is never
-                    // freed — the headline O(n) loop-accumulator leak. Skip
-                    // it; the load yields a borrowed alias the TIR pass tracks
-                    // in alias-root space.
-                    if rc_authority.native_value_tracking_enabled()
-                        && op
-                            .out
-                            .as_deref()
-                            .is_some_and(|out| cleanup_roots.contains(out))
-                    {
-                        emit_inc_ref_obj(builder, val, local_inc_ref_obj);
-                    }
-                    if let Some(out_name) = op.out.as_ref().as_ref() {
-                        def_var_from_boxed_transport(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            vars,
-                            representation_plan,
-                            nbc,
-                            out_name,
-                            val,
-                        );
-                        if rc_authority.native_value_tracking_enabled() {
-                            cleanup_roots.acquire(builder, local_dec_ref_obj, out_name, val);
-                        }
-                    }
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary int fast path (args-based copy_var) ---
-                if representation_plan.is_raw_int_carrier_name(&args[0])
-                    && scalar_fast_paths_enabled
-                    && op
-                        .out
-                        .as_ref()
-                        .is_some_and(|o| representation_plan.is_raw_int_carrier_name(o))
-                {
-                    let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
-                        .unwrap_or_else(|| {
-                            let var = *vars.get(&args[0]).expect("copy_var: raw src var not found");
-                            builder.use_var(var)
-                        });
-                    let out_name = op.out.as_ref().unwrap();
-                    def_var_named(&mut *builder, vars, out_name, raw_val);
-                    return OpFlow::Continue;
-                }
-                // --- Raw-primary bool fast path (args-based copy_var) ---
-                if representation_plan.is_bool_unboxed(&args[0])
-                    && scalar_fast_paths_enabled
-                    && op
-                        .out
-                        .as_ref()
-                        .is_some_and(|o| representation_plan.name_is_bool_scalar(o))
-                {
-                    let raw_bool =
-                        bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
-                            .unwrap_or_else(|| {
-                                panic!("copy_var: bool-primary src missing raw bool: {}", args[0])
-                            });
-                    let out_name = op.out.as_ref().unwrap();
-                    def_raw_bool_value(
-                        &mut *builder,
-                        vars,
-                        representation_plan,
-                        out_name,
-                        raw_bool,
-                        nbc,
-                    );
-                    return OpFlow::Continue;
-                }
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[0],
-                    representation_plan,
-                )
-                .expect("copy_var: src not found");
-                if let Some(out_name) = op.out.as_ref().as_ref() {
-                    let source = preanalyze_alias_source(op).expect("variable load source");
-                    if rc_authority.native_value_tracking_enabled()
-                        && native_alias_mints_owner(alias_roots, source, out_name)
-                        && cleanup_roots.contains(out_name)
-                        && merge_rebind_storage_for_name(source, representation_plan)
-                            == MergeRebindStorageKind::BoxedI64
-                    {
-                        emit_inc_ref_obj(builder, *val, local_inc_ref_obj);
-                    }
-                    def_var_from_boxed_transport(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        vars,
-                        representation_plan,
-                        nbc,
-                        out_name,
-                        *val,
-                    );
-                }
+            let source = preanalyze_alias_source(op).expect("variable load source");
+            let Some(out) = op.out.as_deref().filter(|out| *out != "none") else {
+                return OpFlow::Continue;
+            };
+            let mut incoming = CapturedScalarTransport::read_local(
+                builder,
+                vars,
+                representation_plan,
+                slot_backed_join_slots,
+                raw_backed_slot_names,
+                source,
+            );
+            let storage = merge_rebind_storage_for_name(out, representation_plan);
+            let value = incoming.value_for_home(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                representation_plan,
+                nbc,
+                out,
+                storage,
+            );
+            let owns_result = rc_authority.native_value_tracking_enabled()
+                && storage == MergeRebindStorageKind::BoxedI64
+                && cleanup_roots.contains(out)
+                && native_alias_mints_owner(alias_roots, source, out);
+            if owns_result && !incoming.take_boxed_owner() {
+                emit_inc_ref_obj(builder, value, local_inc_ref_obj);
             }
+            def_var_from_merge_rebind_storage(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                vars,
+                representation_plan,
+                nbc,
+                out,
+                value,
+                storage,
+            );
+            if owns_result {
+                cleanup_roots.acquire(builder, local_dec_ref_obj, out, value);
+            }
+            if storage == MergeRebindStorageKind::BoxedI64
+                && let Some(block) = builder.current_block()
+            {
+                extend_unique_tracked(
+                    block_tracked_obj.entry(block).or_default(),
+                    vec![out.to_string()],
+                );
+            }
+            return OpFlow::Continue;
         }
         _ => unreachable!("handle_ret_jump_op received non-ret/jump op `{}`", op.kind),
     }

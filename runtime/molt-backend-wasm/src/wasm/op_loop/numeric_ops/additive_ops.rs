@@ -2,7 +2,7 @@ use super::common::{
     binary_operands, emit_guarded_int_binary_result_or_boxed, emit_inline_int_result,
     emit_inline_int_result_or_boxed, emit_plain_f64_arithmetic_result,
     emit_plain_f64_binary_result, emit_plain_f64_binary_result_or_boxed,
-    emit_trusted_int_binary_operand_tees, int_binary_temps, store_numeric_result,
+    emit_trusted_int_binary_operand_tees, int_binary_temps, store_runtime_result,
 };
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
@@ -113,5 +113,12 @@ pub(super) fn emit_additive_numeric_op(
             },
         );
     }
-    store_numeric_result(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        selection.import,
+    );
 }

@@ -10,7 +10,7 @@ use super::super::poll::ws_wait_poll_fn_addr;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use super::super::sockets::require_net_capability;
 use super::super::sockets::{SendData, send_data_from_bits};
-use super::stream::bytes_channel;
+use super::stream::{bytes_channel, send_result_into_object};
 #[cfg(molt_has_net_io)]
 use crate::GilReleaseGuard;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -130,18 +130,34 @@ pub unsafe extern "C" fn molt_ws_pair(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
+            return MoltObject::none().bits();
+        };
         let mut left = 0u64;
         let mut right = 0u64;
-        let rc = unsafe { molt_ws_pair(capacity_bits, &mut left, &mut right) };
+        // The pointer-output ABI retains its raw capacity/status contract.
+        let rc = unsafe { molt_ws_pair(capacity as u64, &mut left, &mut right) };
         if rc != 0 {
             return raise_exception::<_>(_py, "RuntimeError", "molt_ws_pair failed");
         }
-        let tuple_ptr = alloc_tuple(_py, &[left, right]);
-        if tuple_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        ws_pair_into_tuple(_py, left, right)
     })
+}
+
+fn ws_pair_into_tuple(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
+    let tuple_ptr = alloc_tuple(py, &[left, right]);
+    if tuple_ptr.is_null() {
+        if !crate::exception_pending(py) {
+            crate::record_memory_error_without_allocation(py);
+        }
+        // These integer handles own external channels, not refcounted objects.
+        // Retire both unpublished owners without crossing an exception-gated
+        // public ABI, preserving the allocation failure already pending.
+        ws_ref_dec(py, ptr_from_bits(left) as *mut MoltWebSocket);
+        ws_ref_dec(py, ptr_from_bits(right) as *mut MoltWebSocket);
+        return MoltObject::none().bits();
+    }
+    MoltObject::from_ptr(tuple_ptr).bits()
 }
 
 #[unsafe(no_mangle)]
@@ -1462,7 +1478,7 @@ pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
         };
         let _owned_guard = owned;
         // SAFETY: pointer/length pair comes from validated bytes-like object.
-        unsafe { molt_ws_send(ws_bits, data_ptr, data_len as u64) as u64 }
+        send_result_into_object(unsafe { molt_ws_send(ws_bits, data_ptr, data_len as u64) })
     })
 }
 
@@ -1545,6 +1561,125 @@ pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {
 #[cfg(test)]
 mod host_send_result_tests {
     use super::{HostSendOutcome, classify_host_send_result};
+
+    #[test]
+    fn websocket_pair_tuple_failure_retires_both_unpublished_handles() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreBudget;
+        impl Drop for RestoreBudget {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for preserve_error in [false, true] {
+                let mut left = 0;
+                let mut right = 0;
+                assert_eq!(unsafe { super::molt_ws_pair(0, &mut left, &mut right) }, 0);
+                assert!(!crate::ptr_from_bits(left).is_null());
+                assert!(!crate::ptr_from_bits(right).is_null());
+                if preserve_error {
+                    crate::raise_exception::<()>(py, "ValueError", "preserve caller failure");
+                }
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    max_allocations: Some(0),
+                    ..Default::default()
+                })));
+                let budget = RestoreBudget;
+                let result = super::ws_pair_into_tuple(py, left, right);
+                drop(budget);
+                assert_eq!(result, crate::MoltObject::none().bits());
+                assert!(crate::ptr_from_bits(left).is_null());
+                assert!(crate::ptr_from_bits(right).is_null());
+                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    if preserve_error {
+                        "ValueError"
+                    } else {
+                        "MemoryError"
+                    }
+                ));
+                crate::clear_exception(py);
+                crate::dec_ref_bits(py, error);
+            }
+        });
+    }
+
+    #[test]
+    fn websocket_send_object_boxes_ready_and_preserves_pending() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let pair = super::molt_ws_pair_obj(crate::MoltObject::from_int(1).bits());
+            let pair_ptr = crate::obj_from_bits(pair)
+                .as_ptr()
+                .expect("WebSocket pair tuple");
+            let (left, right) = unsafe {
+                crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
+                    (items[0], items[1])
+                })
+            }
+            .expect("WebSocket pair tuple contents");
+            crate::dec_ref_bits(_py, pair);
+            let payload = crate::alloc_bytes(_py, b"payload");
+            assert!(!payload.is_null());
+            let payload_bits = crate::MoltObject::from_ptr(payload).bits();
+
+            let ready = unsafe { super::molt_ws_send_obj(left, payload_bits) };
+            assert_eq!(crate::obj_from_bits(ready).as_int(), Some(0));
+            let pending = unsafe { super::molt_ws_send_obj(left, payload_bits) };
+            assert_eq!(pending, crate::pending_bits_i64() as u64);
+            let received = unsafe { super::molt_ws_recv(right) as u64 };
+            crate::dec_ref_bits(_py, received);
+            assert_eq!(unsafe { super::molt_ws_send(left, b"raw".as_ptr(), 3) }, 0);
+
+            let invalid =
+                unsafe { super::molt_ws_send_obj(left, crate::MoltObject::none().bits()) };
+            assert_eq!(invalid, crate::MoltObject::none().bits());
+            assert!(crate::exception_pending(_py));
+            crate::clear_exception(_py);
+            crate::dec_ref_bits(_py, payload_bits);
+            unsafe {
+                super::molt_ws_drop(left);
+                super::molt_ws_drop(right);
+            }
+        });
+    }
+
+    #[test]
+    fn websocket_send_object_preserves_hook_closed_and_exception_results() {
+        extern "C" fn send_hook(ctx: *mut u8, _data: *const u8, _len: usize) -> i64 {
+            if ctx.is_null() {
+                crate::MoltObject::none().bits() as i64
+            } else {
+                crate::with_gil_entry_nopanic!(_py, {
+                    crate::raise_exception::<i64>(_py, "OSError", "send failed")
+                })
+            }
+        }
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let payload = crate::alloc_bytes(_py, b"payload");
+            assert!(!payload.is_null());
+            let payload_bits = crate::MoltObject::from_ptr(payload).bits();
+            let mut marker = 0u8;
+            for ctx in [std::ptr::null_mut(), &mut marker as *mut u8] {
+                let ws = super::molt_ws_new_with_hooks(send_hook as *const () as usize, 0, 0, ctx);
+                let ws_bits = crate::opaque_handle_bits(ws);
+                let result = unsafe { super::molt_ws_send_obj(ws_bits, payload_bits) };
+                assert_eq!(result, crate::MoltObject::none().bits());
+                assert_eq!(crate::exception_pending(_py), !ctx.is_null());
+                crate::clear_exception(_py);
+                unsafe { super::molt_ws_drop(ws_bits) };
+            }
+            crate::dec_ref_bits(_py, payload_bits);
+        });
+    }
 
     #[test]
     fn websocket_host_send_errors_never_masquerade_as_closed() {

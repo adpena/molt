@@ -633,11 +633,12 @@ fn handle_checked_add_op(
     // loop — same semantics, no speedup). This mirrors the
     // Luau lowering exactly.
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
     let mut results = [None, None];
-    let mut result_count = 0;
-    crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-        results[result_count] = Some(name);
-        result_count += 1;
+    visit_simple_ir_results(op, |result| match result.field {
+        SimpleIrResultField::Var => results[0] = result.name,
+        SimpleIrResultField::Out => results[1] = result.name,
+        SimpleIrResultField::Arg(_) => unreachable!("checked arithmetic has fixed result roles"),
     });
     let [sum_name, flag_name] = results;
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
@@ -705,9 +706,7 @@ fn handle_checked_add_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let sum_boxed = builder.inst_results(call)[0];
-        if let Some(sum_name) = sum_name {
-            def_var_named(&mut *builder, vars, sum_name, sum_boxed);
-        }
+        bind_owned_runtime_result_name(sum_name, sum_boxed, module, import_ids, builder, vars);
         if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(
@@ -786,11 +785,12 @@ fn handle_checked_mul_op(
     // CONSTANT FALSE (the peel's slow path is correctly dead; the
     // "fast" loop IS the boxed loop — same semantics, no speedup).
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
     let mut results = [None, None];
-    let mut result_count = 0;
-    crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-        results[result_count] = Some(name);
-        result_count += 1;
+    visit_simple_ir_results(op, |result| match result.field {
+        SimpleIrResultField::Var => results[0] = result.name,
+        SimpleIrResultField::Out => results[1] = result.name,
+        SimpleIrResultField::Arg(_) => unreachable!("checked arithmetic has fixed result roles"),
     });
     let [prod_name, flag_name] = results;
     let lhs_raw = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
@@ -858,9 +858,7 @@ fn handle_checked_mul_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let prod_boxed = builder.inst_results(call)[0];
-        if let Some(prod_name) = prod_name {
-            def_var_named(&mut *builder, vars, prod_name, prod_boxed);
-        }
+        bind_owned_runtime_result_name(prod_name, prod_boxed, module, import_ids, builder, vars);
         if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(

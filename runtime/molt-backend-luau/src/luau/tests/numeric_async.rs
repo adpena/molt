@@ -77,6 +77,53 @@ fn test_compile_checked_lowers_checked_mul_helper() {
 }
 
 #[test]
+fn test_checked_numeric_results_preserve_discarded_field_positions() {
+    for (kind, helper) in [
+        ("checked_add", "molt_checked_i64_add"),
+        ("checked_mul", "molt_checked_i64_mul"),
+    ] {
+        for discarded in [None, Some("none")] {
+            let compile = |var: Option<&str>, out: Option<&str>| {
+                let ir = SimpleIR {
+                    functions: vec![FunctionIR {
+                        name: format!("{kind}_discarded_result_test"),
+                        params: vec!["a".to_string(), "b".to_string()],
+                        param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                        source_file: None,
+                        is_extern: false,
+                        codegen_partition: false,
+                        execution_context: ExecutionContextPolicy::None,
+                        ops: vec![
+                            OpIR {
+                                kind: kind.to_string(),
+                                args: Some(vec!["a".to_string(), "b".to_string()]),
+                                var: var.map(str::to_string),
+                                out: out.map(str::to_string),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            },
+                        ],
+                    }],
+                    profile: None,
+                };
+                LuauBackend::new().compile(&ir)
+            };
+
+            let source = compile(discarded, Some("overflow"));
+            assert!(source.contains(&format!("local _, overflow: boolean = {helper}(a, b)")));
+            assert!(!source.contains(&format!("local overflow: number = {helper}(a, b)")));
+
+            let source = compile(Some("value"), discarded);
+            assert!(source.contains(&format!("local value: number = {helper}(a, b)")));
+            assert!(!source.contains(&format!("local _, value: boolean = {helper}(a, b)")));
+        }
+    }
+}
+
+#[test]
 fn test_compile_checked_lowers_zero_division_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

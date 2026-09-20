@@ -1,4 +1,3 @@
-use super::WasmLiteralScratchPolicy;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::{WasmFrameLocalKind, WasmFrameLocals};
 use crate::wasm_abi_generated::WasmConstLiteralPayload;
@@ -8,7 +7,7 @@ use wasm_encoder::ValType;
 pub(in crate::wasm) struct WasmLiteralScratchLocals {
     ptr_local: u32,
     len_local: u32,
-    policy: WasmLiteralScratchPolicy,
+    payload: WasmConstLiteralPayload,
 }
 
 impl WasmLiteralScratchLocals {
@@ -20,13 +19,8 @@ impl WasmLiteralScratchLocals {
         self.len_local
     }
 
-    #[cfg(test)]
     pub(in crate::wasm) fn payload(self) -> WasmConstLiteralPayload {
-        self.policy.payload()
-    }
-
-    pub(in crate::wasm) fn parse_scalar_eligible(self) -> bool {
-        self.policy.parse_scalar_eligible()
+        self.payload
     }
 }
 
@@ -35,12 +29,14 @@ impl WasmFrameLocals {
         &mut self,
         out_name: &str,
         payload: WasmConstLiteralPayload,
-        parse_scalar_eligible: bool,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> WasmLiteralScratchLocals {
-        let policy = WasmLiteralScratchPolicy::new(payload, parse_scalar_eligible);
-        self.record_literal_scratch_policy(out_name, policy);
+        assert!(
+            !matches!(payload, WasmConstLiteralPayload::None),
+            "literal scratch requires a typed literal payload"
+        );
+        self.record_literal_scratch_payload(out_name, payload);
         let ptr_local = self.ensure_named_i64(
             Self::literal_ptr_name(out_name),
             WasmFrameLocalKind::LiteralScratchPtr,
@@ -56,7 +52,7 @@ impl WasmFrameLocals {
         WasmLiteralScratchLocals {
             ptr_local,
             len_local,
-            policy,
+            payload,
         }
     }
 
@@ -67,11 +63,10 @@ impl WasmFrameLocals {
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> Option<WasmLiteralScratchLocals> {
-        WasmLiteralScratchPolicy::from_const_policy(policy).map(|literal_policy| {
+        policy.needs_literal_scratch().then(|| {
             self.ensure_literal_scratch(
                 out_name,
-                literal_policy.payload(),
-                literal_policy.parse_scalar_eligible(),
+                policy.literal_payload(),
                 local_types,
                 local_count,
             )
@@ -90,32 +85,24 @@ impl WasmFrameLocals {
     ) -> Option<WasmLiteralScratchLocals> {
         let ptr_name = Self::literal_ptr_name(out_name);
         let len_name = Self::literal_len_name(out_name);
-        let policy = self.literal_scratch_policies.get(out_name).copied()?;
+        let payload = self.literal_scratch_payloads.get(out_name).copied()?;
         Some(WasmLiteralScratchLocals {
             ptr_local: self.get(ptr_name.as_str()).copied()?,
             len_local: self.get(len_name.as_str()).copied()?,
-            policy,
+            payload,
         })
     }
 
-    pub(in crate::wasm) fn try_parse_scalar_literal_scratch(
-        &self,
-        out_name: &str,
-    ) -> Option<WasmLiteralScratchLocals> {
-        self.try_literal_scratch(out_name)
-            .filter(|scratch| scratch.parse_scalar_eligible())
-    }
-
-    fn record_literal_scratch_policy(&mut self, out_name: &str, policy: WasmLiteralScratchPolicy) {
-        if let Some(existing) = self.literal_scratch_policies.get(out_name) {
+    fn record_literal_scratch_payload(&mut self, out_name: &str, payload: WasmConstLiteralPayload) {
+        if let Some(existing) = self.literal_scratch_payloads.get(out_name) {
             assert_eq!(
-                *existing, policy,
-                "wasm literal scratch policy for {out_name} changed"
+                *existing, payload,
+                "wasm literal scratch payload for {out_name} changed"
             );
             return;
         }
-        self.literal_scratch_policies
-            .insert(out_name.to_string(), policy);
+        self.literal_scratch_payloads
+            .insert(out_name.to_string(), payload);
     }
 
     fn literal_ptr_name(out_name: &str) -> String {

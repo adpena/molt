@@ -6123,7 +6123,19 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
     assert "main_molt__ocr_tokens" in exports
 
 
-def test_strip_internal_exports_keeps_linked_host_call_helpers() -> None:
+@pytest.mark.parametrize("split_runtime", [False, True])
+def test_strip_internal_exports_keeps_linked_host_call_helpers(
+    split_runtime: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # This witness owns export retention, not Python tooling source discovery.
+    # Keep the real strip/DCE consumers; source-closure and cache invalidation
+    # have dedicated tests with their own changing authority fixtures.
+    monkeypatch.setattr(
+        wasm_link, "_wasm_link_transform_authority_digest", lambda: "host-export-policy"
+    )
+    monkeypatch.setattr(wasm_link, "_wasm_link_cache_root", lambda: tmp_path / "cache")
     data = _build_exported_runtime_module_many(
         [
             "molt_main",
@@ -6138,10 +6150,21 @@ def test_strip_internal_exports_keeps_linked_host_call_helpers() -> None:
             "molt_len",
             "molt_index",
             "molt_profile_dump",
+            "molt_stream_new",
+            "molt_stream_send",
+            "molt_stream_close",
+            "molt_stream_drop",
+            "molt_int_from_i64",
+            "molt_exception_pending_fast",
+            "molt_dec_ref_obj",
             "dead_internal_export",
         ]
     )
-    updated = wasm_link._strip_internal_exports(data)
+    updated = (
+        wasm_link._tree_shake_runtime(data, set(), facts_provider=_facts_provider)
+        if split_runtime
+        else wasm_link._strip_internal_exports(data)
+    )
     exports = wasm_link._collect_function_exports(updated or data)
     assert "molt_scratch_alloc" in exports
     assert "molt_scratch_free" in exports
@@ -6154,6 +6177,15 @@ def test_strip_internal_exports_keeps_linked_host_call_helpers() -> None:
     assert "molt_len" in exports
     assert "molt_index" in exports
     assert "molt_profile_dump" in exports
+    assert {
+        "molt_stream_new",
+        "molt_stream_send",
+        "molt_stream_close",
+        "molt_stream_drop",
+        "molt_int_from_i64",
+        "molt_exception_pending_fast",
+        "molt_dec_ref_obj",
+    } <= set(exports)
     assert "dead_internal_export" not in exports
 
 

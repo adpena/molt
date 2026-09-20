@@ -1,8 +1,8 @@
 use super::super::WasmFrameLocals;
+use super::result_sink::store_borrowed_value;
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use molt_tir::tir::simple_def_use::simple_ir_binding;
+use molt_tir::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
 use wasm_encoder::Function;
 use wasm_encoder::Instruction;
 
@@ -50,14 +50,12 @@ pub(super) fn emit_local_slot_op(
             true
         }
         "load_var" | "copy_var" | "copy" | "identity_alias" | "binding_alias" => {
-            let src_name = op
-                .var
-                .as_ref()
-                .or_else(|| op.args.as_ref().and_then(|args| args.first()))
-                .expect("load_var/copy_var requires source");
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            let mut src_name = None;
+            visit_simple_ir_reads(op, |read| {
+                src_name.get_or_insert(read.name);
+            });
+            let src_name = src_name.expect("load_var/copy_var requires source");
+            if let Some(out) = locals.bound_op_result_slot(op) {
                 let src = locals[src_name];
                 // The generated TIR ownership authority distinguishes transparent
                 // bit-passthrough aliases from the sole alias that mints a new
@@ -68,11 +66,7 @@ pub(super) fn emit_local_slot_op(
                     op.kind.as_str(),
                 ) {
                     func.instruction(&Instruction::LocalGet(src));
-                    emit_call(
-                        func,
-                        reloc_enabled,
-                        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-                    );
+                    store_borrowed_value(func, Some(out), import_ids, reloc_enabled);
                 } else {
                     debug_assert!(
                         molt_tir::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
@@ -81,8 +75,9 @@ pub(super) fn emit_local_slot_op(
                         "local alias '{}' lacks generated ownership classification",
                         op.kind
                     );
+                    func.instruction(&Instruction::LocalGet(src));
+                    func.instruction(&Instruction::LocalSet(out));
                 }
-                copy_local(func, locals, src_name, out_name);
             }
             true
         }
@@ -92,7 +87,7 @@ pub(super) fn emit_local_slot_op(
 
 fn copy_local(func: &mut Function, locals: &WasmFrameLocals, src_name: &str, dst_name: &str) {
     let src = locals[src_name];
-    let dst = locals[dst_name];
+    let dst = locals.result_slot(dst_name);
     func.instruction(&Instruction::LocalGet(src));
     func.instruction(&Instruction::LocalSet(dst));
 }

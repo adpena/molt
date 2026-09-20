@@ -19,6 +19,21 @@ pub struct SimpleIrRead<'a> {
     pub field: SimpleIrReadField,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimpleIrResultField {
+    Var,
+    Out,
+    Arg(usize),
+}
+
+/// One declared result position. A missing or reserved `none` name discards
+/// that position; it never shifts a sibling result into a different role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimpleIrResult<'a> {
+    pub name: Option<&'a str>,
+    pub field: SimpleIrResultField,
+}
+
 /// A mutable binding and its optional value snapshot. This borrowed field-role
 /// view does not validate names or expand any backend's admitted operation set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,33 +75,59 @@ pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
     }
 }
 
-/// Visit names defined directly by an operation result without allocating.
-pub fn visit_simple_ir_result_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
-    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result
-        && let Some(var) = op.var.as_deref()
-        && var != "none"
-    {
-        visit(var);
+/// Visit result field roles, preserving absent/discarded positions. Bindings
+/// expose only their optional snapshot, never their mutable destination, and
+/// generated out metadata is not a result.
+pub fn visit_simple_ir_results<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrResult<'a>)) {
+    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result {
+        visit(SimpleIrResult {
+            name: op.var.as_deref().filter(|name| *name != "none"),
+            field: SimpleIrResultField::Var,
+        });
     }
-    if let Some(binding) = simple_ir_binding(op) {
-        if let Some(result) = binding.result {
-            visit(result);
-        }
-    } else if !simpleir_out_field_is_metadata(op.kind.as_str())
-        && let Some(out) = op.out.as_deref()
-        && out != "none"
-    {
-        visit(out);
+    if !simpleir_out_field_is_metadata(op.kind.as_str()) {
+        let name = if let Some(binding) = simple_ir_binding(op) {
+            binding.result
+        } else {
+            op.out.as_deref().filter(|name| *name != "none")
+        };
+        visit(SimpleIrResult {
+            name,
+            field: SimpleIrResultField::Out,
+        });
     }
     if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind.as_str())
         && let Some(args) = op.args.as_deref()
     {
-        for name in args.iter().skip(first_result).map(String::as_str) {
-            if name != "none" {
-                visit(name);
-            }
+        for (index, name) in args.iter().enumerate().skip(first_result) {
+            visit(SimpleIrResult {
+                name: (name != "none").then_some(name.as_str()),
+                field: SimpleIrResultField::Arg(index),
+            });
         }
     }
+}
+
+/// Project the ordinary output's value role without reinterpreting metadata
+/// or a binding-only destination as a runtime result.
+pub fn simple_ir_out_result(op: &OpIR) -> Option<&str> {
+    let mut name = None;
+    visit_simple_ir_results(op, |result| {
+        if result.field == SimpleIrResultField::Out {
+            name = result.name;
+        }
+    });
+    name
+}
+
+/// Visit live result definitions without allocating. Consumers requiring ABI
+/// positions use `visit_simple_ir_results`, not this filtered name projection.
+pub fn visit_simple_ir_result_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
+    visit_simple_ir_results(op, |result| {
+        if let Some(name) = result.name {
+            visit(name);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -356,6 +397,106 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn positional_result_fields_keep_discarded_sibling_positions() {
+        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+            for discarded in [None, Some("none")] {
+                for discard_first in [true, false] {
+                    let mut multi = op(kind);
+                    multi.var = if discard_first {
+                        discarded
+                    } else {
+                        Some("primary")
+                    }
+                    .map(str::to_string);
+                    multi.out = if discard_first {
+                        Some("secondary")
+                    } else {
+                        discarded
+                    }
+                    .map(str::to_string);
+                    let mut results = Vec::new();
+                    visit_simple_ir_results(&multi, |result| results.push(result));
+                    assert_eq!(
+                        results,
+                        [
+                            SimpleIrResult {
+                                field: SimpleIrResultField::Var,
+                                name: (!discard_first).then_some("primary")
+                            },
+                            SimpleIrResult {
+                                field: SimpleIrResultField::Out,
+                                name: discard_first.then_some("secondary")
+                            },
+                        ],
+                        "{kind}"
+                    );
+                    assert_eq!(
+                        simple_ir_result_names(&multi),
+                        [if discard_first {
+                            "secondary"
+                        } else {
+                            "primary"
+                        }]
+                    );
+                }
+            }
+        }
+        let mut unpack = op("unpack_sequence");
+        unpack.args = Some(vec![
+            "source".into(),
+            "first".into(),
+            "none".into(),
+            "third".into(),
+        ]);
+        let mut arguments = Vec::new();
+        visit_simple_ir_results(&unpack, |result| {
+            if matches!(result.field, SimpleIrResultField::Arg(_)) {
+                arguments.push(result);
+            }
+        });
+        assert_eq!(
+            arguments,
+            [
+                SimpleIrResult {
+                    field: SimpleIrResultField::Arg(1),
+                    name: Some("first")
+                },
+                SimpleIrResult {
+                    field: SimpleIrResultField::Arg(2),
+                    name: None
+                },
+                SimpleIrResult {
+                    field: SimpleIrResultField::Arg(3),
+                    name: Some("third")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn ordinary_result_projection_excludes_metadata_and_binding_only_destinations() {
+        for kind in [
+            "store_index",
+            "store",
+            "guarded_field_set",
+            "raise",
+            "store_var",
+        ] {
+            let mut effect = op(kind);
+            effect.out = Some("existing".into());
+            assert_eq!(simple_ir_out_result(&effect), None, "{kind}");
+        }
+        let mut binding = op("store_var");
+        binding.var = Some("slot".into());
+        binding.out = Some("snapshot".into());
+        assert_eq!(simple_ir_out_result(&binding), Some("snapshot"));
+        let mut checked = op("checked_add");
+        checked.var = Some("value".into());
+        checked.out = Some("overflow".into());
+        assert_eq!(simple_ir_out_result(&checked), Some("overflow"));
     }
 
     #[test]

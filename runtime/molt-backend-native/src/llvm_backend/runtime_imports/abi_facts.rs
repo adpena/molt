@@ -114,7 +114,9 @@ pub(crate) fn runtime_import_return_abi(
             // signatures. Do not mirror the callable registry in a native list.
             molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(name, param_count).map(|abi| {
                 match abi.result {
-                    molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::OwnedValue => {
+                    molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::OwnedValue
+                    | molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::BorrowedValue
+                    | molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::PollValue => {
                         RuntimeReturnAbi::I64
                     }
                     molt_ir::runtime_boxed_abi_generated::RuntimeBoxedReturn::Void => {

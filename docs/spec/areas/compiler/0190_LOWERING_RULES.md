@@ -358,6 +358,65 @@ destination. Raw native, WASM and source-backend stores preserve the incoming
 snapshot independently of later binding changes; SSA/LLVM consumers use the
 same single semantic result. Backend-local `out.or(var)` result classifiers
 must not reinterpret this contract.
+In WASM frames the reserved `none` operand reads the initialized constant-cache
+singleton; discarded result fields write only to the typed dead-result sink.
+Result-slot selection must not use the operand lookup. Owned runtime results
+are released when their name is absent, `none`, or allocated to a dead-result
+sink, rather than published. Discarded internal calls cannot become tail
+returns of their unobserved result. Physical-slot constant facts are invalidated
+by every canonical definition before emitter dispatch and at generated control
+boundaries; early-returning handlers cannot preserve stale facts across writes.
+
+Runtime import return custody is generated from the shared boxed-call ABI and
+explicit non-boxed import declarations in `wasm_abi_manifest.toml`. An `i64`
+carrier alone does not imply an object or a borrowed result. WASM direct,
+generated and manual sinks consume `WasmRuntimeReturn`; native and LLVM boxed
+calls consume the same owned/borrowed/poll facts. A bound borrowed return is
+retained before releasing temporary arguments; discarding it releases no owner.
+Poll returns own ready values, while the pending immediate is not a heap pointer.
+Poll-table membership establishes that protocol for scheduler callbacks; direct
+channel/network calls declare the same protocol without acquiring a table slot.
+Raw status flags, invocation-depth tokens and GPU primitive handles are excluded
+from Python-callable admission even when their machine signatures use i64.
+Object-facing send wrappers box ready success at that boundary and preserve
+Pending and raised errors; the underlying raw transport ABI is unchanged.
+Unpublished allocations, sized scratch storage and execution tokens require
+their specific publication/free/leave protocol, never the generic object sink.
+Actual emitted reference operations determine import roots.
+
+Public channel, stream and WebSocket-pair constructors share boxed integer
+capacity admission, including the index protocol, negative rejection and checked
+target-width conversion. Host adapters box capacities through the runtime and
+retire the borrowed argument's temporary owner. Raw transport entrypoints retain
+their explicitly raw ABI. Unpublished opaque stream/WebSocket handles use their
+resource-specific drop operation, including rollback after tuple allocation or
+host argument-cleanup failure; generic object decref cannot release them.
+The generated host-export and final-output essential-export policies retain
+that complete host stream protocol even without direct guest stream imports.
+This retains stream-core reachability, not optional network/crypto features.
+
+Multi-call constructors preserve their owner through initialization and release
+unobserved results afterward. Dict/set/frozenset insertion results never replace
+the container owner: failed allocation skips entries, and a failed insertion
+releases the partial container and temporary scalar boxes, preserves the pending
+exception, and skips later boxing/hash/equality calls. Native, WASM and LLVM
+construction follow this same transaction. Fixed boxed LLVM container operations use the shared runtime
+call emitter; specialized builders and out-buffer protocols retain explicit
+custody for their additional resources.
+Native and WASM scalar parsing use the same object parser for literal and dynamic inputs.
+The runtime alone owns input-type admission and exceptions; lowering must not
+reparse raw literal bytes through a second, name-based path. This removes the
+redundant out-buffer allocation and its ownership/exception transitions.
+
+`visit_simple_ir_results` retains the positional `Var`, `Out`, or trailing
+argument role even when a result has no retained name. Def/use consumers filter
+that view to live names; SSA allocation and multi-result emitters must not pack
+live names and infer their roles from the shortened sequence. Discarding a checked
+arithmetic value or iterator value does not turn the overflow/done flag into the
+first result. Unpack admission still requires all declared results to be named.
+Single-result sinks use the ordinary-output projection of that same visitor.
+An effect's output metadata cannot publish or retain its runtime return, even
+when its spelling matches a live operand or binding.
 
 Iterator fusion has one shared SSA authority. Native lowering consumes the
 declared iterator, value/done and unpack operations; it must not scan a later

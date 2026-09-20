@@ -11,6 +11,7 @@ use crate::tir::op_kinds_generated::{
 };
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::passes::typed_slot_access::{self, TypedSlotStoreMode};
+use crate::tir::simple_def_use::simple_ir_binding;
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
@@ -818,6 +819,13 @@ impl ScalarRepresentationPlan {
         while changed {
             changed = false;
             changed |= self.propagate_integer_store_targets(fact_index);
+            for (out, source) in fact_index.alias_edges() {
+                if self.integer_family_names.contains(source)
+                    && self.integer_family_names.insert(out.to_string())
+                {
+                    changed = true;
+                }
+            }
             for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
@@ -1070,29 +1078,17 @@ impl ScalarRepresentationPlan {
         let mut changed = true;
         while changed {
             changed = propagate_store_var_targets_in(fact_index, &mut lane_outputs);
+            for (out, source) in fact_index.alias_edges() {
+                if lane_outputs.contains(source) && lane_outputs.insert(out.to_string()) {
+                    changed = true;
+                }
+            }
             for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
                 };
                 let inferred_lane = self.infer_scalar_lane_with_overrides(op, lane, &lane_outputs);
-                let first_arg_is_lane = op
-                    .args
-                    .as_ref()
-                    .and_then(|args| args.first())
-                    .is_some_and(|src| lane_outputs.contains(src));
-                let var_source_is_lane = op
-                    .var
-                    .as_ref()
-                    .is_some_and(|src| lane_outputs.contains(src));
-                let is_lane_alias = matches!(
-                    op.kind.as_str(),
-                    "copy_var" | "copy" | "load_var" | "identity_alias" | "binding_alias"
-                ) && first_arg_is_lane
-                    || matches!(op.kind.as_str(), "copy_var" | "load_var") && var_source_is_lane;
-
-                if (inferred_lane == Some(lane) || is_lane_alias)
-                    && lane_outputs.insert(out.clone())
-                {
+                if inferred_lane == Some(lane) && lane_outputs.insert(out.clone()) {
                     changed = true;
                 }
             }
@@ -1527,10 +1523,10 @@ impl ScalarRepresentationPlan {
                     }
                 }
                 "delete_var" => {
-                    if let Some(target) = op.var.as_ref().or(op.out.as_ref())
-                        && self.name_is_slot_scalar(target)
+                    if let Some(binding) = simple_ir_binding(op)
+                        && self.name_is_slot_scalar(binding.destination)
                     {
-                        unsafe_set.insert(target.clone());
+                        unsafe_set.insert(binding.destination.to_string());
                     }
                 }
                 _ => {}
@@ -1597,8 +1593,8 @@ impl ScalarRepresentationPlan {
             "const_float" => Some(ScalarKind::Float),
             "const_str" => Some(ScalarKind::Str),
             "float_from_obj" => Some(ScalarKind::Float),
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => first_source()
-                .and_then(|src| {
+            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
+                alias_source_name(op).and_then(|src| {
                     if has_kind(src, ScalarKind::Int) {
                         Some(ScalarKind::Int)
                     } else if has_kind(src, ScalarKind::Bool) {
@@ -1610,7 +1606,8 @@ impl ScalarRepresentationPlan {
                     } else {
                         None
                     }
-                }),
+                })
+            }
             "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(ScalarKind::Bool),
             "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
                 first_source().and_then(|src| {

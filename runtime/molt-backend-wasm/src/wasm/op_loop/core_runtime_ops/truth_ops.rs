@@ -1,3 +1,4 @@
+use super::super::result_sink::{store_borrowed_value, store_result_or_drop};
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
@@ -19,8 +20,7 @@ pub(super) fn emit_truth_runtime_op(
         "bool" | "cast_bool" | "builtin_bool" => {
             emit_bool_like(func, op, import_ids, locals, scalar_plan, reloc_enabled)
         }
-        "and" => emit_and(func, op, import_ids, locals, reloc_enabled),
-        "or" => emit_or(func, op, import_ids, locals, reloc_enabled),
+        "and" | "or" => emit_selected_operand(func, op, import_ids, locals, reloc_enabled),
         _ => return false,
     }
     true
@@ -46,15 +46,10 @@ fn emit_bool_like(
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
     emit_box_bool_from_i32(func);
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_result_or_drop(func, op, locals);
 }
 
-fn emit_and(
+fn emit_selected_operand(
     func: &mut Function,
     op: &OpIR,
     import_ids: &TrackedImportIds,
@@ -64,6 +59,11 @@ fn emit_and(
     let args = op.args.as_ref().unwrap();
     let lhs = locals[&args[0]];
     let rhs = locals[&args[1]];
+    let (truthy, falsey) = if op.kind == "and" {
+        (rhs, lhs)
+    } else {
+        (lhs, rhs)
+    };
     func.instruction(&Instruction::LocalGet(lhs));
     emit_call(
         func,
@@ -73,61 +73,17 @@ fn emit_and(
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-    func.instruction(&Instruction::LocalGet(rhs));
+    func.instruction(&Instruction::LocalGet(truthy));
     func.instruction(&Instruction::Else);
-    func.instruction(&Instruction::LocalGet(lhs));
+    func.instruction(&Instruction::LocalGet(falsey));
     func.instruction(&Instruction::End);
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        debug_assert!(
-            crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("and")
-        );
-        func.instruction(&Instruction::LocalTee(res));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-        );
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
-}
-
-fn emit_or(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let lhs = locals[&args[0]];
-    let rhs = locals[&args[1]];
-    func.instruction(&Instruction::LocalGet(lhs));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IsTruthy],
+    debug_assert!(
+        crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(&op.kind)
     );
-    func.instruction(&Instruction::I64Const(0));
-    func.instruction(&Instruction::I64Ne);
-    func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-    func.instruction(&Instruction::LocalGet(lhs));
-    func.instruction(&Instruction::Else);
-    func.instruction(&Instruction::LocalGet(rhs));
-    func.instruction(&Instruction::End);
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        debug_assert!(
-            crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("or")
-        );
-        func.instruction(&Instruction::LocalTee(res));
-        emit_call(
-            func,
-            reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-        );
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_borrowed_value(
+        func,
+        locals.bound_op_result_slot(op),
+        import_ids,
+        reloc_enabled,
+    );
 }

@@ -45,6 +45,7 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_exception_kind",
     "molt_exception_last",
     "molt_exception_message",
+    "molt_exception_pending_fast",
     "molt_float_as_f64",
     "molt_float_from_f64",
     "molt_gil_acquire",
@@ -137,6 +138,10 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_sequence_setitem",
     "molt_set_wasm_table_base",
     "molt_shutdown",
+    "molt_stream_new",
+    "molt_stream_send",
+    "molt_stream_close",
+    "molt_stream_drop",
     "molt_string_as_ptr",
     "molt_string_from",
     "molt_string_from_bytes",
@@ -368,6 +373,11 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
     RuntimeHostExportSignature {
         name: "molt_exception_message",
         params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_exception_pending_fast",
+        params: &[],
         results: &[ValType::I64],
     },
     RuntimeHostExportSignature {
@@ -936,6 +946,26 @@ pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] =
         name: "molt_shutdown",
         params: &[],
         results: &[ValType::I32],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_stream_new",
+        params: &[ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_stream_send",
+        params: &[ValType::I64, ValType::I32, ValType::I64],
+        results: &[ValType::I64],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_stream_close",
+        params: &[ValType::I64],
+        results: &[],
+    },
+    RuntimeHostExportSignature {
+        name: "molt_stream_drop",
+        params: &[ValType::I64],
+        results: &[],
     },
     RuntimeHostExportSignature {
         name: "molt_string_as_ptr",

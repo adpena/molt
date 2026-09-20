@@ -1,5 +1,92 @@
 use super::*;
 
+#[test]
+fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
+    use MergeRebindStorageKind::{BoxedI64, RawBool, RawF64, RawI64};
+    for source_storage in [RawI64, RawF64, RawBool, BoxedI64] {
+        for homes in [
+            [source_storage, source_storage],
+            [source_storage, BoxedI64],
+            [BoxedI64, source_storage],
+            [BoxedI64, BoxedI64],
+        ] {
+            let mut backend = SimpleBackend::new();
+            let mut sig = Signature::new(CallConv::SystemV);
+            for home in homes {
+                sig.returns
+                    .push(AbiParam::new(merge_rebind_storage_clif_type(home)));
+            }
+            let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+            let mut context = FunctionBuilderContext::new();
+            let mut refs = BTreeMap::new();
+            {
+                let mut builder = FunctionBuilder::new(&mut func, &mut context);
+                let entry = builder.create_block();
+                builder.switch_to_block(entry);
+                builder.seal_block(entry);
+                let original = if source_storage == RawF64 {
+                    builder.ins().f64const(-0.0)
+                } else {
+                    builder.ins().iconst(
+                        types::I64,
+                        if source_storage == RawBool {
+                            1
+                        } else {
+                            1_i64 << 62
+                        },
+                    )
+                };
+                let mut incoming = CapturedScalarTransport::new(original, source_storage);
+                let mut sealed = BTreeSet::from([entry]);
+                let values = homes.map(|home| {
+                    incoming.value_for_storage(
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        &mut builder,
+                        &mut refs,
+                        &mut sealed,
+                        &crate::NanBoxConsts::new(),
+                        home,
+                    )
+                });
+                for (home, value) in homes.into_iter().zip(values) {
+                    if home == source_storage {
+                        assert_eq!(
+                            value, original,
+                            "same-representation transfer must preserve original bits"
+                        );
+                    }
+                }
+                if homes[0] == homes[1] {
+                    assert_eq!(
+                        values[0], values[1],
+                        "sibling boxed outputs must share identity"
+                    );
+                }
+                if homes.contains(&BoxedI64) {
+                    assert_eq!(incoming.take_boxed_owner(), source_storage != BoxedI64);
+                    assert!(
+                        !incoming.take_boxed_owner(),
+                        "a materialization supplies exactly one credit"
+                    );
+                }
+                builder.ins().return_(&values);
+                builder.finalize();
+            }
+            verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
+            let box_calls = refs.get("molt_int_from_i64").map_or(0, |box_fn| {
+                func.layout.blocks().flat_map(|block| func.layout.block_insts(block)).filter(|inst| {
+                    matches!(func.dfg.insts[*inst], cranelift_codegen::ir::InstructionData::Call { func_ref, .. } if func_ref == *box_fn)
+                }).count()
+            });
+            assert_eq!(
+                box_calls,
+                usize::from(source_storage == RawI64 && homes.contains(&BoxedI64))
+            );
+        }
+    }
+}
+
 fn lower_unary_numeric_carrier_fixture(
     kind: &str,
     source: &str,

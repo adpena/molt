@@ -65,8 +65,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .get_function("molt_list_builder_append")
             .unwrap();
         for (index, &item_id) in op.operands.iter().enumerate() {
-            let owns_box = matches!(self.value_types.get(&item_id), Some(TirType::I64));
-            let item_i64 = self.materialize_dynbox_operand(item_id);
+            let (item_i64, owns_box) =
+                self.materialize_dynbox_operand_with_temporary_owner(item_id);
             let status = self
                 .backend
                 .builder
@@ -136,10 +136,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_phi(i64_ty, "sequence_builder_result")
             .unwrap();
         result.add_incoming(&[(&list, finished), (&none, abort)]);
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result.as_basic_value());
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result.as_basic_value());
     }
 
     pub(super) fn emit_build_dict(&mut self, op: &TirOp) {
@@ -148,7 +145,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             0,
             "dict literal needs complete pairs"
         );
-        self.emit_owned_hash_aggregate(op, true);
+        self.emit_owned_hash_aggregate(op, "molt_dict_new", "molt_dict_set", 2);
     }
 
     pub(super) fn emit_build_tuple(&mut self, op: &TirOp) {
@@ -156,16 +153,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_build_set(&mut self, op: &TirOp) {
-        self.emit_owned_hash_aggregate(op, false);
+        self.emit_owned_hash_aggregate(op, "molt_set_new", "molt_set_add", 1);
     }
 
-    /// Direct construction owns the actual dict/set from allocation to commit.
+    pub(super) fn emit_build_frozenset(&mut self, op: &TirOp) {
+        self.emit_owned_hash_aggregate(op, "molt_frozenset_new", "molt_frozenset_add", 1);
+    }
+
+    /// Direct construction owns the actual dict/set/frozenset from allocation to commit.
     /// Mutators borrow every operand; fresh scalar boxes are transaction-local
     /// owners. No scratch heap kind, borrowed-edge builder or finish lane exists.
-    fn emit_owned_hash_aggregate(&mut self, op: &TirOp, dict: bool) {
+    fn emit_owned_hash_aggregate(
+        &mut self,
+        op: &TirOp,
+        new_symbol: &str,
+        mutate_symbol: &str,
+        width: usize,
+    ) {
         let i64_ty = self.backend.context.i64_type();
         let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-        let width = if dict { 2 } else { 1 };
         let temp_slots: Vec<_> = (0..width)
             .map(|_| self.build_entry_i64_alloca("aggregate_temporary_owner"))
             .collect();
@@ -174,14 +180,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         let capacity = (op.operands.len() / width) as u64;
         // Hash-aggregate constructors share one raw usize-capacity ABI.
-        let new_fn = self.ensure_runtime_i64_fn(
-            if dict {
-                "molt_dict_new"
-            } else {
-                "molt_set_new"
-            },
-            1,
-        );
+        let new_fn = self.ensure_runtime_i64_fn(new_symbol, 1);
         let aggregate = self
             .backend
             .builder
@@ -227,21 +226,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(source, ready);
         self.record_llvm_edge(source, abort);
         self.backend.builder.position_at_end(ready);
-        let mutate = self.ensure_runtime_i64_fn(
-            if dict {
-                "molt_dict_set"
-            } else {
-                "molt_set_add"
-            },
-            width + 1,
-        );
+        let mutate = self.ensure_runtime_i64_fn(mutate_symbol, width + 1);
+        let mutation_return = runtime_boxed_abi(mutate_symbol, width + 1)
+            .unwrap_or_else(|| panic!("hash aggregate mutator {mutate_symbol} has no boxed ABI"))
+            .result;
         let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
         for (index, operands) in op.operands.chunks(width).enumerate() {
             let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
                 vec![aggregate.into()];
             for (position, &operand) in operands.iter().enumerate() {
-                let bits = self.materialize_dynbox_operand(operand);
-                if matches!(self.value_types.get(&operand), Some(TirType::I64)) {
+                let (bits, owns_temporary) =
+                    self.materialize_dynbox_operand_with_temporary_owner(operand);
+                if owns_temporary {
                     self.backend
                         .builder
                         .build_store(temp_slots[position], bits)
@@ -253,12 +249,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &format!("aggregate_operand{suffix}_{index}_{position}"),
                 );
             }
-            // Keep the original owner: set_add returns None even on success,
-            // and dict_set can return the dict while recording a pending error.
-            self.backend
+            // Keep the original aggregate owner. Generated boxed-return facts
+            // retire owned set/frozenset mutator results; dict_set's borrowed
+            // aggregate alias acquires no owner and is simply ignored.
+            let mutation_result = self
+                .backend
                 .builder
                 .build_call(mutate, &args, "aggregate_insert")
-                .unwrap();
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_basic();
+            match mutation_return {
+                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue => {
+                    self.backend
+                        .builder
+                        .build_call(
+                            release,
+                            &[mutation_result.into()],
+                            "aggregate_insert_release",
+                        )
+                        .unwrap();
+                }
+                RuntimeBoxedReturn::BorrowedValue => {}
+                RuntimeBoxedReturn::Void => {
+                    panic!("hash aggregate mutator {mutate_symbol} cannot return void")
+                }
+            }
             for slot in &temp_slots {
                 let bits = self
                     .backend
@@ -310,10 +326,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_phi(i64_ty, "aggregate_result")
             .unwrap();
         result.add_incoming(&[(&aggregate, committed), (&none, abort)]);
-        if let Some(&id) = op.results.first() {
-            self.values.insert(id, result.as_basic_value());
-            self.value_types.insert(id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result.as_basic_value());
     }
 
     fn aggregate_continue_unless_pending(&mut self, abort: BasicBlock<'ctx>, name: &str) {
@@ -380,44 +393,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        self.bind_owned_runtime_result(op, result);
     }
 
     pub(super) fn emit_get_iter(&mut self, op: &TirOp) {
-        let obj = self.resolve(op.operands[0]);
-        let obj_i64 = self.ensure_i64(obj);
-        let get_iter_fn = self.ensure_runtime_i64_fn("molt_iter_checked", 1);
-        let result = self
-            .backend
-            .builder
-            .build_call(get_iter_fn, &[obj_i64.into()], "iter_checked")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        let abi = runtime_boxed_abi("molt_iter_checked", 1)
+            .expect("molt_iter_checked must have a generated boxed ABI");
+        self.emit_boxed_runtime_call(op, abi);
     }
 
     pub(super) fn emit_iter_next(&mut self, op: &TirOp) {
-        let iter = self.resolve(op.operands[0]);
-        let iter_i64 = self.ensure_i64(iter);
-        let iter_next_fn = self.backend.module.get_function("molt_iter_next").unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(iter_next_fn, &[iter_i64.into()], "iter_next")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        let abi = runtime_boxed_abi("molt_iter_next", 1)
+            .expect("molt_iter_next must have a generated boxed ABI");
+        self.emit_boxed_runtime_call(op, abi);
     }
 
     pub(super) fn emit_for_iter(&mut self, op: &TirOp) {
@@ -435,20 +423,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // the back-edge `BranchInst` would be needed.
         let _ = has_attr(op, "vectorize");
 
-        let iter = self.resolve(op.operands[0]);
-        let iter_i64 = self.ensure_i64(iter);
-        let for_iter_fn = self.backend.module.get_function("molt_iter_next").unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(for_iter_fn, &[iter_i64.into()], "for_iter_next")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        let abi = runtime_boxed_abi("molt_iter_next", 1)
+            .expect("molt_iter_next must have a generated boxed ABI");
+        self.emit_boxed_runtime_call(op, abi);
     }
 
     pub(super) fn emit_iter_next_unboxed_results(&mut self, op: &TirOp) -> bool {
@@ -458,7 +435,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if op.operands.len() != 1 {
             return false;
         }
-        let iter_bits = self.materialize_dynbox_operand(iter_id);
+        let (iter_bits, owns_iter_temporary) =
+            self.materialize_dynbox_operand_with_temporary_owner(iter_id);
         let i64_ty = self.backend.context.i64_type();
         let val_ptr = self
             .backend
@@ -487,13 +465,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_load(i64_ty, val_ptr, "iter_next_unboxed_value_load")
             .unwrap();
+        let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+        if owns_iter_temporary {
+            self.backend
+                .builder
+                .build_call(release, &[iter_bits.into()], "iter_input_release")
+                .unwrap();
+        }
         if let Some(&value_id) = op.results.first() {
             self.values.insert(value_id, value_bits);
             self.value_types.insert(value_id, TirType::DynBox);
+        } else {
+            self.backend
+                .builder
+                .build_call(release, &[value_bits.into()], "iter_value_release")
+                .unwrap();
         }
         if let Some(&done_id) = op.results.get(1) {
             self.values.insert(done_id, done_bits);
             self.value_types.insert(done_id, TirType::DynBox);
+        } else {
+            self.backend
+                .builder
+                .build_call(release, &[done_bits.into()], "iter_done_release")
+                .unwrap();
         }
         true
     }

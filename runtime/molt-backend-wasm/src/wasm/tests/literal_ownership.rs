@@ -1,4 +1,128 @@
 use super::support::*;
+use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use serde_json::json;
+use std::{fs, path::PathBuf};
+
+#[test]
+fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "hash constructor ownership",
+    )
+    .expect("Node is required to prove emitted constructor ownership");
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let mut cases = Vec::new();
+    for (kind, insert, width) in [
+        ("dict_new", "dict_set", 2),
+        ("set_new", "set_add", 1),
+        ("frozenset_new", "frozenset_add", 1),
+    ] {
+        for (shape, out) in [
+            ("absent", None),
+            ("none", Some("none")),
+            ("dead", Some("unused")),
+            ("live", Some("result")),
+        ] {
+            let bound = shape == "live";
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+                functions: vec![wasm_test_function(
+                    "molt_main",
+                    vec!["value"],
+                    None,
+                    vec![
+                        wasm_test_op(kind, out, vec!["value"; 2 * width]),
+                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                    ],
+                )],
+                profile: None,
+            })
+            .wasm;
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
+            let path = temp.join(format!("{kind}-{shape}.wasm"));
+            fs::write(&path, wasm).unwrap();
+            cases.push(json!({"name":format!("{kind}/{shape}"), "constructor":kind,
+                "insert":insert, "width":width, "bound":bound, "path":path,
+                "memory_pages":memory_pages, "table_entries":table_entries}));
+        }
+    }
+    let config = temp.join("hash-construction.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "cases":cases, "none":molt_codegen_abi::box_none_bits().to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const none = BigInt(config.none), owner = 777n, value = 23n;
+for (const test of config.cases) {
+  const module = new WebAssembly.Module(fs.readFileSync(test.path));
+  for (const failure of ['success', 'allocate', 'first', 'second']) {
+    const name = test.name + '/' + failure;
+    let owners = 0, inserted = 0, pending = false, allocations = 0;
+    const imports = {env: {
+      memory: new WebAssembly.Memory({initial:test.memory_pages}),
+      __indirect_function_table: new WebAssembly.Table({initial:test.table_entries, element:'anyfunc'}),
+    }};
+    const providers = {
+      [test.constructor]: capacity => {
+        assert.equal(capacity, 2n, name);
+        allocations++;
+        if (failure === 'allocate') { pending = true; return none; }
+        owners++;
+        return owner;
+      },
+      [test.insert]: (receiver, ...args) => {
+        assert.equal(receiver, owner, name + ': lost container identity');
+        assert.equal(owners, 1, name + ': container must remain alive');
+        assert.equal(pending, false, name + ': called after failure');
+        assert.equal(args.length, test.width, name);
+        for (const arg of args) assert.equal(arg, value, name);
+        inserted++;
+        pending = (failure === 'first' && inserted === 1) || (failure === 'second' && inserted === 2);
+        return test.insert === 'dict_set' && !pending ? owner : none;
+      },
+      exception_pending: () => pending ? 1n : 0n,
+      dec_ref_obj: bits => {
+        if (bits === none) return;
+        assert.equal(bits, owner, name + ': unexpected release');
+        assert.equal(owners, 1, name + ': duplicate release');
+        owners--;
+      },
+    };
+    for (const entry of WebAssembly.Module.imports(module)) {
+      imports[entry.module] ??= {};
+      if (entry.kind !== 'function') {
+        assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
+        continue;
+      }
+      imports[entry.module][entry.name] = providers[entry.name] ??
+        (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
+    }
+    const app = new WebAssembly.Instance(module, imports).exports;
+    const result = app.molt_main(value);
+    const retained = test.bound && failure === 'success';
+    assert.equal(result, retained ? owner : none, name + ': result');
+    assert.equal(allocations, 1, name);
+    assert.equal(inserted, failure === 'allocate' ? 0 : failure === 'first' ? 1 : 2, name);
+    assert.equal(pending, failure !== 'success', name + ': exception preserved');
+    assert.equal(owners, retained ? 1 : 0, name + ': owner balance');
+    if (retained) providers.dec_ref_obj(result);
+    assert.equal(owners, 0, name + ': caller releases final owner');
+  }
+}
+"#,
+        &[&config],
+        "WASM hash constructor ownership and failure atomicity",
+    );
+}
 
 fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTreeMap<String, u32>) {
     let ir = SimpleIR {
@@ -6,6 +130,9 @@ fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTre
         profile: None,
     };
     let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir);
+    wasmparser::Validator::new()
+        .validate_all(&output.wasm)
+        .unwrap();
     (
         wasm_operator_debug_for_export(&output.wasm, "molt_main"),
         wasm_function_import_indices(&output.wasm),
@@ -21,6 +148,347 @@ fn call_count(operators: &[String], function_index: u32) -> usize {
 }
 
 #[test]
+fn raw_allocations_publish_before_binding_or_releasing_the_result() {
+    for kind in ["alloc", "alloc_class"] {
+        for result in [None, Some("none"), Some("result")] {
+            let mut allocation = wasm_test_op(
+                kind,
+                result,
+                if kind == "alloc_class" {
+                    vec!["class"]
+                } else {
+                    vec![]
+                },
+            );
+            allocation.value = Some(8);
+            let (operators, imports) = compile_literal_body(
+                vec!["class"],
+                vec![
+                    allocation,
+                    wasm_test_op(
+                        "ret",
+                        None,
+                        vec![result.filter(|name| *name != "none").unwrap_or("none")],
+                    ),
+                ],
+            );
+            let allocate = imports[kind];
+            let publish = imports["object_publish_initialized"];
+            let position = operators
+                .iter()
+                .position(|operator| operator == &format!("Call {{ function_index: {allocate} }}"))
+                .expect("allocation must be emitted");
+            assert_eq!(
+                operators[position + 1],
+                format!("Call {{ function_index: {publish} }}")
+            );
+            assert_eq!(call_count(&operators, publish), 1, "{kind} {result:?}");
+            let releases = imports
+                .get("dec_ref_obj")
+                .map_or(0, |&index| call_count(&operators, index));
+            assert_eq!(
+                releases,
+                usize::from(result != Some("result")),
+                "{kind} {result:?}: {operators:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn owned_runtime_and_constructor_results_release_every_discard_shape() {
+    for (kind, argc, temporary_releases) in [
+        ("list_new", 0, 0),
+        ("tuple_new", 0, 0),
+        ("dict_new", 0, 0),
+        ("set_new", 0, 0),
+        ("frozenset_new", 0, 0),
+        ("dataclass_new", 4, 0),
+        ("dataclass_new_values", 3, 1),
+        ("tuple_index", 2, 0),
+        ("get_attr_name", 2, 0),
+        ("class_new", 1, 0),
+        ("gen_send", 2, 0),
+        ("gen_throw", 2, 0),
+        ("gen_close", 1, 0),
+        ("iter_next", 1, 0),
+        ("add", 2, 0),
+        ("neg", 1, 0),
+        ("gpu_thread_id", 0, 0),
+    ] {
+        for result in [None, Some("none"), Some("unused"), Some("result")] {
+            let retained = result == Some("result");
+            let (operators, imports) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    wasm_test_op(kind, result, vec!["value"; argc]),
+                    wasm_test_op("ret", None, vec![if retained { "result" } else { "none" }]),
+                ],
+            );
+            let releases = imports
+                .get("dec_ref_obj")
+                .map_or(0, |&index| call_count(&operators, index));
+            assert_eq!(
+                releases,
+                temporary_releases + usize::from(!retained),
+                "{kind} {result:?}: {operators:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
+    for (kind, argc, borrowed) in [("call", 1, false), ("guard_tag", 2, true)] {
+        for result in [None, Some("none"), Some("unused"), Some("result")] {
+            let retained = result == Some("result");
+            let mut operation = wasm_test_op(kind, result, vec!["value"; argc]);
+            if kind == "call" {
+                operation.s_value = Some("molt_int_as_i64".into());
+            }
+            let (operators, imports) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    operation,
+                    wasm_test_op("ret", None, vec![if retained { "result" } else { "none" }]),
+                ],
+            );
+            let releases = imports
+                .get("dec_ref_obj")
+                .map_or(0, |&index| call_count(&operators, index));
+            let retains = imports
+                .get("inc_ref_obj")
+                .map_or(0, |&index| call_count(&operators, index));
+            assert_eq!(releases, 0, "{kind} {result:?}: {operators:?}");
+            assert_eq!(
+                retains,
+                usize::from(borrowed && retained),
+                "{kind} {result:?}: {operators:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
+    for (kind, argc, import) in [
+        ("closure_load", 1, "closure_load"),
+        ("closure_store", 2, "closure_store"),
+        ("load", 1, "object_field_get"),
+        ("guarded_load", 1, "object_field_get"),
+        ("store", 2, "object_field_set"),
+        ("guarded_field_get", 3, "guarded_field_get"),
+        ("guarded_field_set", 4, "guarded_field_set"),
+    ] {
+        for result in [None, Some("none"), Some("unused"), Some("result")] {
+            let bound = result == Some("result") && !matches!(kind, "store" | "guarded_field_set");
+            let mut op = wasm_test_op(kind, result, vec!["value"; argc]);
+            op.value = Some(0);
+            op.s_value = Some("attribute".into());
+            let (operators, imports) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    op,
+                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                ],
+            );
+            let call = format!("Call {{ function_index: {} }}", imports[import]);
+            let mut found = false;
+            for (index, operator) in operators.iter().enumerate() {
+                if operator != &call {
+                    continue;
+                }
+                found = true;
+                if bound {
+                    assert!(
+                        operators[index + 1].starts_with("LocalSet {"),
+                        "{kind}: {operators:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        operators[index + 1],
+                        format!("Call {{ function_index: {} }}", imports["dec_ref_obj"]),
+                        "{kind} {result:?}: {operators:?}"
+                    );
+                }
+            }
+            assert!(found, "{kind}: runtime path must remain");
+        }
+    }
+}
+
+#[test]
+fn representation_aliases_retain_only_observable_results() {
+    for kind in [
+        "box",
+        "unbox",
+        "cast",
+        "widen",
+        "binding_alias",
+        "and",
+        "or",
+    ] {
+        for result in [None, Some("none"), Some("unused"), Some("result")] {
+            let bound = result == Some("result");
+            let (operators, imports) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    wasm_test_op(
+                        kind,
+                        result,
+                        vec!["value"; if matches!(kind, "and" | "or") { 2 } else { 1 }],
+                    ),
+                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                ],
+            );
+            let retains = imports
+                .get("inc_ref_obj")
+                .map_or(0, |&i| call_count(&operators, i));
+            assert_eq!(
+                retains,
+                usize::from(bound),
+                "{kind} {result:?}: {operators:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn effect_output_metadata_cannot_publish_a_runtime_value() {
+    for (kind, argc, import, borrowed) in [
+        ("store_index", 3, "store_index", true),
+        ("store", 2, "object_field_set", false),
+        ("set_attr_name", 3, "set_attr_name", false),
+    ] {
+        let mut effect = wasm_test_op(kind, Some("value"), vec!["value"; argc]);
+        effect.value = Some(0);
+        let (operators, imports) = compile_literal_body(
+            vec!["value"],
+            vec![effect, wasm_test_op("ret", None, vec!["value"])],
+        );
+        let call = format!("Call {{ function_index: {} }}", imports[import]);
+        let expected = if borrowed {
+            "Drop".to_string()
+        } else {
+            format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])
+        };
+        for index in operators
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| (op == &call).then_some(i))
+        {
+            assert_eq!(operators[index + 1], expected, "{kind}: {operators:?}");
+        }
+        let retains = imports
+            .get("inc_ref_obj")
+            .map_or(0, |&i| call_count(&operators, i));
+        assert_eq!(retains, 0, "{kind}: metadata must not acquire an owner");
+    }
+}
+
+#[test]
+fn effect_refcount_metadata_never_overwrites_an_existing_local() {
+    for (kind, import) in [("inc_ref", "inc_ref_obj"), ("dec_ref", "dec_ref_obj")] {
+        for output in [None, Some("none"), Some("value")] {
+            let (operators, imports) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    wasm_test_op(kind, output, vec!["value"]),
+                    wasm_test_op("ret", None, vec!["value"]),
+                ],
+            );
+            assert_eq!(call_count(&operators, imports[import]), 1, "{kind}");
+            assert!(
+                !operators
+                    .iter()
+                    .any(|op| op.starts_with("LocalSet { local_index: 0 }")
+                        || op.starts_with("LocalTee { local_index: 0 }")),
+                "{kind} {output:?}: effect metadata cannot overwrite the input: {operators:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn loop_index_copies_accept_all_result_shapes() {
+    for kind in ["loop_index_start", "loop_index_next"] {
+        for output in [None, Some("none"), Some("unused"), Some("result")] {
+            let bound = output == Some("result");
+            let (operators, _) = compile_literal_body(
+                vec!["value"],
+                vec![
+                    wasm_test_op(kind, output, vec!["value"]),
+                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                ],
+            );
+            assert!(!operators.is_empty());
+        }
+    }
+}
+
+#[test]
+fn scalar_parse_families_share_object_admission_and_owned_result_sinks() {
+    for kind in ["json_parse", "msgpack_parse", "cbor_parse"] {
+        for literal in [None, Some("const_str"), Some("const_bytes")] {
+            for result in [None, Some("none"), Some("unused"), Some("result")] {
+                let bound = result == Some("result");
+                let mut ops = Vec::new();
+                if let Some(literal) = literal {
+                    let mut input = wasm_test_op(literal, Some("input"), vec![]);
+                    input.bytes = Some(b"23".to_vec());
+                    ops.push(input);
+                }
+                ops.push(wasm_test_op(kind, result, vec!["input"]));
+                if literal.is_some() {
+                    ops.push(wasm_test_op("dec_ref", None, vec!["input"]));
+                }
+                ops.push(wasm_test_op(
+                    "ret",
+                    None,
+                    vec![if bound { "result" } else { "none" }],
+                ));
+                let (operators, imports) = compile_literal_body(
+                    if literal.is_some() {
+                        vec![]
+                    } else {
+                        vec!["input"]
+                    },
+                    ops,
+                );
+                assert!(
+                    !imports.contains_key("alloc"),
+                    "{kind}: parser buffer is not a language object"
+                );
+                assert!(
+                    !imports.contains_key("handle_resolve"),
+                    "{kind}: parser buffer is a raw pointer"
+                );
+                assert!(!imports.contains_key("scratch_alloc"));
+                assert!(!imports.contains_key("scratch_free"));
+                assert!(!imports.contains_key(&format!("{kind}_scalar")));
+                let return_call = format!(
+                    "Call {{ function_index: {} }}",
+                    imports[&format!("{kind}_scalar_obj")]
+                );
+                let index = operators.iter().position(|op| op == &return_call).unwrap();
+                assert_eq!(
+                    call_count(&operators, imports[&format!("{kind}_scalar_obj")]),
+                    1
+                );
+                if bound {
+                    assert!(operators[index + 1].starts_with("LocalSet {"));
+                } else {
+                    assert_eq!(
+                        operators[index + 1],
+                        format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn direct_calls_release_only_owned_value_results() {
     for (kind, target, argc, owns_result, returns_value) in [
         ("call", "molt_classmethod_new", 1, true, true),
@@ -32,11 +500,12 @@ fn direct_calls_release_only_owned_value_results() {
         ("call_internal", "external_owned_target", 1, true, true),
         ("call_internal", "external_void_target", 0, false, false),
     ] {
-        for bound in [false, true] {
+        for result in [None, Some("none"), Some("result")] {
+            let bound = result == Some("result");
             if target == "molt_print_newline" && bound {
                 continue;
             }
-            let mut call = wasm_test_op(kind, bound.then_some("result"), vec!["value"; argc]);
+            let mut call = wasm_test_op(kind, result, vec!["value"; argc]);
             call.s_value = Some(target.into());
             let mut external_owned = wasm_test_function(
                 "external_owned_target",
@@ -95,7 +564,11 @@ fn direct_calls_release_only_owned_value_results() {
             let retains = imports
                 .get("inc_ref_obj")
                 .map_or(0, |&index| call_count(&operators, index));
-            assert_eq!(retains, 0, "{kind} {target}, bound={bound}: {operators:?}");
+            assert_eq!(
+                retains,
+                usize::from(target == "molt_function_closure_bits" && bound),
+                "{kind} {target}, bound={bound}: {operators:?}"
+            );
             if !owns_result && returns_value && !bound {
                 let target_import = imports["function_closure_bits"];
                 let position = operators
@@ -111,6 +584,34 @@ fn direct_calls_release_only_owned_value_results() {
 }
 
 #[test]
+fn runtime_bootstrap_does_not_retain_live_locals() {
+    let compile = |bootstrap: bool| {
+        let mut ops = Vec::new();
+        if bootstrap {
+            let mut init = wasm_test_op("call", None, vec![]);
+            init.s_value = Some("molt_runtime_init".into());
+            ops.push(init);
+        }
+        ops.push(wasm_test_op("ret", None, vec!["value"]));
+        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+            functions: vec![wasm_test_function("molt_main", vec!["value"], None, ops)],
+            profile: None,
+        });
+        wasmparser::Validator::new()
+            .validate_all(&output.wasm)
+            .unwrap();
+        let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
+        let imports = wasm_function_import_indices(&output.wasm);
+        ["inc_ref_obj", "dec_ref_obj"].map(|name| {
+            imports
+                .get(name)
+                .map_or(0, |&index| call_count(&operators, index))
+        })
+    };
+    assert_eq!(compile(true), compile(false));
+}
+
+#[test]
 fn dynamic_calls_release_discarded_owned_results() {
     for (kind, argc, target) in [
         ("call_func", 1, None),
@@ -119,12 +620,19 @@ fn dynamic_calls_release_discarded_owned_results() {
         ("call_guarded", 2, Some("owned_call_target")),
         ("call_method", 1, None),
         ("call_method", 1, Some("BoundMethod:str:upper")),
+        ("call_method", 1, Some("BoundMethod:str:lower")),
+        ("call_method", 1, Some("BoundMethod:str:strip")),
+        ("call_method", 2, Some("BoundMethod:list:append")),
+        ("call_method", 2, Some("BoundMethod:str:join")),
+        ("call_method", 2, Some("BoundMethod:str:startswith")),
+        ("call_method", 3, Some("BoundMethod:dict:get")),
         ("call_method_ic", 1, Some("method")),
         ("call_super_method_ic", 2, Some("method")),
         ("invoke_ffi", 1, None),
     ] {
-        for bound in [false, true] {
-            let mut call = wasm_test_op(kind, bound.then_some("result"), vec!["value"; argc]);
+        for result in [None, Some("none"), Some("result")] {
+            let bound = result == Some("result");
+            let mut call = wasm_test_op(kind, result, vec!["value"; argc]);
             call.s_value = target.map(str::to_string);
             let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
                 functions: vec![
@@ -161,7 +669,15 @@ fn dynamic_calls_release_discarded_owned_results() {
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
-                usize::from(!bound),
+                usize::from(!bound)
+                    + ["frame_invocation_exit", "callargs_push_pos"]
+                        .iter()
+                        .map(|name| {
+                            imports
+                                .get(*name)
+                                .map_or(0, |&index| call_count(&operators, index))
+                        })
+                        .sum::<usize>(),
                 "{kind} {target:?}, bound={bound}: {operators:?}"
             );
         }
@@ -176,9 +692,9 @@ fn native_symbol_results_preserve_owned_and_raw_abis() {
         ("molt.forward_f32_v1", 1, true),
         ("molt.pyinit_module_v1", 0, false),
     ] {
-        for bound in [false, true] {
-            let mut call =
-                wasm_test_op("invoke_ffi", bound.then_some("result"), vec!["value"; argc]);
+        for result in [None, Some("none"), Some("result")] {
+            let bound = result == Some("result");
+            let mut call = wasm_test_op("invoke_ffi", result, vec!["value"; argc]);
             call.native_callable_export = Some("native.probe".into());
             call.native_callable_binding = Some("direct_symbol".into());
             call.native_callable_symbol = Some("native_probe".into());
@@ -254,9 +770,9 @@ fn callable_constructors_release_only_discarded_owned_results() {
         ("bound_method_new", 2),
         ("asyncgen_new", 1),
     ] {
-        for bound in [false, true] {
-            let mut constructor =
-                wasm_test_op(kind, bound.then_some("created"), vec!["value"; argc]);
+        for result in [None, Some("none"), Some("created")] {
+            let bound = result == Some("created");
+            let mut constructor = wasm_test_op(kind, result, vec!["value"; argc]);
             if matches!(kind, "func_new" | "func_new_closure") {
                 constructor.s_value = Some("callable_result_target".into());
                 constructor.value = Some(0);
@@ -342,18 +858,15 @@ fn callable_constructors_release_only_discarded_owned_results() {
 
 #[test]
 fn closure_extraction_retains_only_bound_borrowed_results() {
-    for bound in [false, true] {
+    for result in [None, Some("none"), Some("closure")] {
+        let bound = result == Some("closure");
         let ir = SimpleIR {
             functions: vec![wasm_test_function(
                 "molt_main",
                 vec!["callee"],
                 None,
                 vec![
-                    wasm_test_op(
-                        "function_closure_bits",
-                        bound.then_some("closure"),
-                        vec!["callee"],
-                    ),
+                    wasm_test_op("function_closure_bits", result, vec!["callee"]),
                     if bound {
                         wasm_test_op("ret", None, vec!["closure"])
                     } else {
@@ -385,15 +898,11 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
         let position = operators.iter().position(|op| op == &extract_call).unwrap();
         if bound {
             assert!(
-                operators[position + 1].starts_with("LocalSet {"),
-                "{operators:?}"
-            );
-            assert!(
-                operators[position + 2].starts_with("LocalGet {"),
+                operators[position + 1].starts_with("LocalTee {"),
                 "{operators:?}"
             );
             assert_eq!(
-                operators[position + 3],
+                operators[position + 2],
                 format!("Call {{ function_index: {} }}", imports["inc_ref_obj"]),
                 "{operators:?}"
             );
@@ -470,6 +979,25 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
         "each original literal op must mint its own result owner from the shared anchor; operators={operators:?}"
     );
     assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 2);
+}
+
+#[test]
+fn discarded_literal_results_release_their_owner_without_writing_none() {
+    for out in ["unused", "none"] {
+        let mut literal = wasm_test_op("const_str", Some(out), vec![]);
+        literal.s_value = Some("discarded-payload".into());
+        let (operators, imports) = compile_literal_body(
+            vec![],
+            vec![literal, wasm_test_op("ret", None, vec!["none"])],
+        );
+        assert_eq!(call_count(&operators, imports["inc_ref_obj"]), 1);
+        let exits = assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 1);
+        assert_eq!(
+            call_count(&operators, imports["dec_ref_obj"]),
+            exits + 1,
+            "{out}: discard must release the site owner as well as its anchor"
+        );
+    }
 }
 
 #[test]

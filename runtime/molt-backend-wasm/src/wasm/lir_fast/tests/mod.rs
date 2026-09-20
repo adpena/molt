@@ -311,4 +311,5 @@ mod name_attrs;
 mod owned_materialization;
 mod peephole;
 mod refcount;
+mod runtime_return_contracts;
 mod runtime_service;

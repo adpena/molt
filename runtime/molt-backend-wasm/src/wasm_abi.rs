@@ -5,8 +5,8 @@ pub(crate) use crate::wasm_abi_generated::{
     CALL_INDIRECT_IMPORTS, CALL_INDIRECT_MAX_ARITY, IMPORT_REGISTRY, POLL_TABLE_IMPORTS,
     RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,
     ReservedRuntimeCallableDispatch, RuntimeCallableResult, RuntimeImportSpec, STATIC_FUNC_TYPES,
-    STATIC_TYPE_COUNT, WasmRuntimeImport, poll_table_import_slot, runtime_callable_arity,
-    runtime_callable_import, wasm_runtime_export_name, wasm_runtime_import,
+    STATIC_TYPE_COUNT, WasmRuntimeImport, WasmRuntimeReturn, poll_table_import_slot,
+    runtime_callable_arity, runtime_callable_import, wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use molt_codegen_abi::{
     GENERATOR_CONTROL_BYTES as GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE,
@@ -100,6 +100,21 @@ pub(crate) fn static_func_type_idx(params: &[ValType], results: &[ValType]) -> O
         .map(|idx| idx as u32)
 }
 
+/// Generic direct calls transport i64 locals only. Dedicated emitters own
+/// mixed-width runtime ABIs; return ownership never authorizes a width cast.
+pub(crate) fn assert_runtime_i64_call(import: WasmRuntimeImport, arg_count: usize) {
+    let signature = &STATIC_FUNC_TYPES[import.type_idx() as usize];
+    assert!(
+        signature.params.len() == arg_count
+            && signature.params.iter().all(|param| *param == ValType::I64)
+            && (signature.results.is_empty() || signature.results == [ValType::I64]),
+        "generic direct runtime call {} supplies {arg_count} i64 operands; canonical ABI {:?} -> {:?} requires exact arity and i64-only operands with an i64 or void result",
+        import.runtime_export_name(),
+        signature.params,
+        signature.results
+    );
+}
+
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
 
 #[cfg(test)]
@@ -111,6 +126,161 @@ mod tests {
     };
     use wasm_encoder::{Module, TypeSection};
     use wasmparser::{CompositeInnerType, Parser, Payload};
+
+    #[test]
+    fn generic_runtime_calls_validate_the_canonical_machine_signature() {
+        for (import, arity) in [
+            (WasmRuntimeImport::IntFromI64, 1),
+            (WasmRuntimeImport::IntAsI64, 1),
+            (WasmRuntimeImport::DictSet, 3),
+            (WasmRuntimeImport::PrintNewline, 0),
+            (WasmRuntimeImport::DecRefObj, 1),
+        ] {
+            super::assert_runtime_i64_call(import, arity);
+            assert!(
+                std::panic::catch_unwind(|| super::assert_runtime_i64_call(import, arity + 1))
+                    .is_err()
+            );
+        }
+        for (import, arity) in [
+            (WasmRuntimeImport::ArenaNew, 0),
+            (WasmRuntimeImport::ArenaAllocObject, 2),
+            (WasmRuntimeImport::ArenaFree, 1),
+            (WasmRuntimeImport::HandleResolve, 1),
+            (WasmRuntimeImport::CallMethodIc0, 4),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| super::assert_runtime_i64_call(import, arity)).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn import_return_contracts_agree_with_machine_and_shared_boxed_abis() {
+        use super::{STATIC_FUNC_TYPES, WasmRuntimeReturn};
+        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+        use wasm_encoder::ValType;
+
+        for spec in IMPORT_REGISTRY {
+            let signature = &STATIC_FUNC_TYPES[spec.type_idx as usize];
+            let contract = spec.import.return_contract();
+            if signature.results.is_empty() {
+                assert_eq!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
+            } else if signature.results != [ValType::I64] {
+                assert_eq!(contract, WasmRuntimeReturn::RawBits, "{}", spec.name);
+            } else {
+                assert_ne!(contract, WasmRuntimeReturn::Void, "{}", spec.name);
+            }
+            if let Some(boxed) =
+                runtime_boxed_abi(spec.import.runtime_export_name(), signature.params.len())
+            {
+                let expected = match boxed.result {
+                    RuntimeBoxedReturn::OwnedValue => WasmRuntimeReturn::OwnedObject,
+                    RuntimeBoxedReturn::BorrowedValue => WasmRuntimeReturn::BorrowedObject,
+                    RuntimeBoxedReturn::PollValue => WasmRuntimeReturn::PollResult,
+                    RuntimeBoxedReturn::Void => WasmRuntimeReturn::Void,
+                };
+                assert_eq!(contract, expected, "{}", spec.name);
+            }
+        }
+    }
+
+    #[test]
+    fn import_return_contract_preserves_provider_ownership_and_protocols() {
+        use super::WasmRuntimeReturn;
+        for (import, expected) in [
+            (
+                WasmRuntimeImport::IntFromI64,
+                WasmRuntimeReturn::OwnedObject,
+            ),
+            (WasmRuntimeImport::IntAsI64, WasmRuntimeReturn::RawBits),
+            (
+                WasmRuntimeImport::ExceptionPending,
+                WasmRuntimeReturn::RawBits,
+            ),
+            (
+                WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
+                WasmRuntimeReturn::RawBits,
+            ),
+            (
+                WasmRuntimeImport::FrameInvocationEnter,
+                WasmRuntimeReturn::RawBits,
+            ),
+            (
+                WasmRuntimeImport::FrameInvocationExit,
+                WasmRuntimeReturn::OwnedObject,
+            ),
+            (
+                WasmRuntimeImport::DictSet,
+                WasmRuntimeReturn::BorrowedObject,
+            ),
+            (
+                WasmRuntimeImport::StoreIndex,
+                WasmRuntimeReturn::BorrowedObject,
+            ),
+            (
+                WasmRuntimeImport::GuardType,
+                WasmRuntimeReturn::BorrowedObject,
+            ),
+            (
+                WasmRuntimeImport::AllocClass,
+                WasmRuntimeReturn::UnpublishedObject,
+            ),
+            (
+                WasmRuntimeImport::ScratchAlloc,
+                WasmRuntimeReturn::ScratchAllocation,
+            ),
+            (
+                WasmRuntimeImport::RuntimeExecutionEnter,
+                WasmRuntimeReturn::ExecutionToken,
+            ),
+            (WasmRuntimeImport::FuturePoll, WasmRuntimeReturn::PollResult),
+            (WasmRuntimeImport::IoWait, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::ChanRecvBlocking,
+                WasmRuntimeReturn::PollResult,
+            ),
+            (WasmRuntimeImport::ChanSend, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::StreamReaderRead,
+                WasmRuntimeReturn::PollResult,
+            ),
+            (
+                WasmRuntimeImport::StreamReaderReadline,
+                WasmRuntimeReturn::PollResult,
+            ),
+            (
+                WasmRuntimeImport::StreamSendObj,
+                WasmRuntimeReturn::PollResult,
+            ),
+            (WasmRuntimeImport::WsSendObj, WasmRuntimeReturn::PollResult),
+            (
+                WasmRuntimeImport::GpuThreadId,
+                WasmRuntimeReturn::OwnedObject,
+            ),
+            (WasmRuntimeImport::PrintNewline, WasmRuntimeReturn::Void),
+        ] {
+            assert_eq!(import.return_contract(), expected, "{}", import.name());
+        }
+        for spec in super::POLL_TABLE_IMPORTS {
+            assert_eq!(spec.import.return_contract(), WasmRuntimeReturn::PollResult);
+        }
+        let dropped = op_loop_runtime_call("chan_drop", false).expect("effect-only channel drop");
+        assert!(dropped.discard_result);
+        assert!(op_loop_runtime_call("alloc_class", false).is_none());
+        let owned = op_loop_runtime_call("asyncgen_new", false).expect("owned async generator");
+        assert!(
+            !owned
+                .required_imports
+                .contains(&WasmRuntimeImport::DecRefObj)
+        );
+        let borrowed = op_loop_runtime_call("guard_tag", false).expect("borrowed guard result");
+        assert!(
+            !borrowed
+                .required_imports
+                .contains(&WasmRuntimeImport::IncRefObj)
+        );
+    }
 
     fn static_type_section_signatures() -> Vec<(usize, usize)> {
         let mut types = TypeSection::new();

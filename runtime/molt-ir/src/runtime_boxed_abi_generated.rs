@@ -4,12 +4,14 @@
 // DO NOT EDIT BY HAND.
 
 //! Target-neutral direct runtime calls whose operands are object values.
-//! Results transfer an object owner; borrowed/raw entrypoints are excluded.
+//! Returns carry owned, borrowed, or pending-or-owned semantics; raw entrypoints are excluded.
 //! Machine i64 signatures alone never authorize this contract.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeBoxedReturn {
     OwnedValue,
+    BorrowedValue,
+    PollValue,
     Void,
 }
 
@@ -313,11 +315,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_async_work_poll_and_exception_last_pending",
-        arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_async_work_poll_and_exception_pending",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },
@@ -1684,17 +1681,17 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_chan_recv",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_chan_recv_blocking",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_chan_send",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_chan_send_blocking",
@@ -1704,12 +1701,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_chan_try_recv",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_chan_try_send",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_chr",
@@ -3859,7 +3856,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_dict_set",
         arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::BorrowedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_dict_setdefault",
@@ -3894,7 +3891,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_dict_update_missing",
         arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::BorrowedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_dict_values",
@@ -4532,11 +4529,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_exception_pending",
-        arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_exception_resolve_captured",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -4957,16 +4949,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_frame_invocation_enter",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_frame_invocation_exit",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_frozenset_add",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -5319,36 +5301,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_gpu_permute_contiguous",
         arity: 5,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_contiguous",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_dtype",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_free",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_nbytes",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_numel",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_gpu_prim_realize",
-        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -6584,7 +6536,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_io_wait",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_io_wait_new",
@@ -9654,7 +9606,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_process_poll",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_process_returncode",
@@ -11614,7 +11566,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_store_index",
         arity: 3,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::BorrowedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_str_contains",
@@ -11669,22 +11621,22 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_stream_reader_read",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_reader_readline",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_recv",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_stream_send_obj",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_string_capitalize",
@@ -13729,12 +13681,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_ws_recv",
         arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_ws_send_obj",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
+        result: RuntimeBoxedReturn::PollValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_ws_wait_new",

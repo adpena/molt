@@ -12,33 +12,27 @@ fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
     let first = locals.ensure_literal_scratch(
         "payload",
         WasmConstLiteralPayload::String,
-        true,
         &mut local_types,
         &mut local_count,
     );
     let second = locals.ensure_literal_scratch(
         "payload",
         WasmConstLiteralPayload::String,
-        true,
         &mut local_types,
         &mut local_count,
     );
     let looked_up = locals.literal_scratch("payload");
     let maybe_lookup = locals.try_literal_scratch("payload");
-    let parse_lookup = locals.try_parse_scalar_literal_scratch("payload");
 
     assert_eq!(first.ptr_local(), 0);
     assert_eq!(first.len_local(), 1);
     assert_eq!(first.payload(), WasmConstLiteralPayload::String);
-    assert!(first.parse_scalar_eligible());
     assert_eq!(second.ptr_local(), first.ptr_local());
     assert_eq!(second.len_local(), first.len_local());
     assert_eq!(looked_up.ptr_local(), first.ptr_local());
     assert_eq!(looked_up.len_local(), first.len_local());
     assert_eq!(maybe_lookup.map(|scratch| scratch.ptr_local()), Some(0));
-    assert_eq!(parse_lookup.map(|scratch| scratch.len_local()), Some(1));
     assert!(locals.try_literal_scratch("missing").is_none());
-    assert!(locals.try_parse_scalar_literal_scratch("missing").is_none());
     assert_eq!(
         locals.local_kind("payload_ptr"),
         Some(WasmFrameLocalKind::LiteralScratchPtr)
@@ -64,7 +58,7 @@ fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
 }
 
 #[test]
-fn literal_scratch_policy_controls_scalar_parse_eligibility() {
+fn literal_scratch_policy_preserves_typed_payloads() {
     let mut locals = WasmFrameLocals::new();
     let mut local_types = Vec::new();
     let mut local_count = 0;
@@ -101,19 +95,13 @@ fn literal_scratch_policy_controls_scalar_parse_eligibility() {
     );
 
     assert_eq!(string_scratch.payload(), WasmConstLiteralPayload::String);
-    assert!(string_scratch.parse_scalar_eligible());
     assert_eq!(
         bigint_scratch.payload(),
         WasmConstLiteralPayload::BigintDecimal
     );
-    assert!(!bigint_scratch.parse_scalar_eligible());
     assert_eq!(bytes_scratch.payload(), WasmConstLiteralPayload::Bytes);
-    assert!(bytes_scratch.parse_scalar_eligible());
     assert!(none_scratch.is_none());
-    assert!(locals.try_parse_scalar_literal_scratch("text").is_some());
-    assert!(locals.try_parse_scalar_literal_scratch("blob").is_some());
     assert!(locals.try_literal_scratch("digits").is_some());
-    assert!(locals.try_parse_scalar_literal_scratch("digits").is_none());
     assert_eq!(
         locals
             .try_literal_scratch("digits")

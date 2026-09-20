@@ -6,9 +6,10 @@ mod synthetic_locals;
 
 pub(in crate::wasm) use anonymous_locals::WasmFrameAnonymousLocal;
 pub(in crate::wasm) use dispatch_locals::WasmDispatchFrameLocals;
-pub(in crate::wasm) use literal_scratch::{WasmLiteralScratchLocals, WasmLiteralScratchPolicy};
+pub(in crate::wasm) use literal_scratch::WasmLiteralScratchLocals;
 pub(in crate::wasm) use synthetic_locals::WasmFrameSyntheticLocal;
 
+use crate::wasm_abi_generated::WasmConstLiteralPayload;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ops::Index;
@@ -19,7 +20,7 @@ pub(in crate::wasm) struct WasmFrameLocals {
     slots: BTreeMap<String, u32>,
     name_kinds: BTreeMap<String, WasmFrameLocalKind>,
     anonymous_kinds: BTreeMap<u32, WasmFrameAnonymousLocal>,
-    literal_scratch_policies: BTreeMap<String, WasmLiteralScratchPolicy>,
+    literal_scratch_payloads: BTreeMap<String, WasmConstLiteralPayload>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +90,36 @@ impl WasmFrameLocals {
         Q: Ord + ?Sized,
     {
         self.slots.get(name)
+    }
+
+    /// Result fields use `none` as a discard marker, whereas input fields use
+    /// it as the immutable Python singleton. Never write through the read slot.
+    pub(in crate::wasm) fn result_slot(&self, name: &str) -> u32 {
+        self.result_or_sink_slot(Some(name))
+    }
+
+    pub(in crate::wasm) fn result_or_sink_slot(&self, name: Option<&str>) -> u32 {
+        self.bound_result_slot(name)
+            .unwrap_or_else(|| self.synthetic(WasmFrameSyntheticLocal::DeadSink))
+    }
+
+    pub(in crate::wasm) fn bound_op_result_slot(&self, op: &crate::OpIR) -> Option<u32> {
+        self.bound_result_slot(molt_tir::tir::simple_def_use::simple_ir_out_result(op))
+    }
+
+    pub(in crate::wasm) fn op_result_or_sink_slot(&self, op: &crate::OpIR) -> u32 {
+        self.result_or_sink_slot(molt_tir::tir::simple_def_use::simple_ir_out_result(op))
+    }
+
+    pub(in crate::wasm) fn bound_result_slot(&self, name: Option<&str>) -> Option<u32> {
+        name.filter(|name| {
+            *name != Self::NONE_NAME
+                && self.local_kind(name)
+                    != Some(WasmFrameLocalKind::FixedSynthetic(
+                        WasmFrameSyntheticLocal::DeadSink,
+                    ))
+        })
+        .map(|name| self[name])
     }
 
     pub(in crate::wasm) fn local_kind(&self, name: &str) -> Option<WasmFrameLocalKind> {
@@ -174,7 +205,7 @@ impl From<BTreeMap<String, u32>> for WasmFrameLocals {
             slots,
             name_kinds,
             anonymous_kinds: BTreeMap::new(),
-            literal_scratch_policies: BTreeMap::new(),
+            literal_scratch_payloads: BTreeMap::new(),
         }
     }
 }

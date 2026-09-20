@@ -5,6 +5,7 @@ use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerStorageFact, ContainerStorageKind, ScalarKind};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -235,24 +236,25 @@ impl<'a> FunctionFactIndex<'a> {
         let mut delete_targets = plan_hash_set(func_ir.ops.len() / 8 + 1);
 
         for op in &func_ir.ops {
-            if let Some(target) = store_var_target_name(op) {
+            if let Some(binding) = simple_ir_binding(op) {
+                let source = store_var_source_name(op);
                 stores.push(StoreVarEdge {
-                    target,
-                    source: store_var_source_name(op),
+                    target: binding.destination,
+                    source,
                 });
-            }
-            if op.kind == "delete_var"
-                && let Some(target) = op.var.as_ref().or(op.out.as_ref())
-            {
-                delete_targets.insert(target.clone());
+                if op.kind == "delete_var" {
+                    delete_targets.insert(binding.destination.to_string());
+                }
+                if let (Some(out), Some(source)) = (binding.result, source) {
+                    aliases.push(AliasEdge { out, source });
+                }
+                continue;
             }
             if let Some(out) = op.out.as_deref() {
                 if op.kind == "missing" {
                     sentinel_outputs.insert(out.to_string());
                 }
-                if !matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                    data_ops.push(op);
-                }
+                data_ops.push(op);
                 if let Some(source) = alias_source_name(op) {
                     aliases.push(AliasEdge { out, source });
                 }
@@ -1258,11 +1260,11 @@ pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
 pub(super) fn alias_source_name(op: &OpIR) -> Option<&str> {
     match op.kind.as_str() {
         "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
-            op.var.as_deref().or_else(|| {
-                op.args
-                    .as_ref()
-                    .and_then(|args| args.first().map(String::as_str))
-            })
+            let mut source = None;
+            visit_simple_ir_reads(op, |read| {
+                source.get_or_insert(read.name);
+            });
+            source
         }
         _ => None,
     }
@@ -1302,14 +1304,6 @@ pub(super) fn container_constructor_result_ty(kind: &str) -> Option<TirType> {
     }
 }
 
-fn store_var_target_name(op: &OpIR) -> Option<&str> {
-    if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-        op.var.as_deref().or(op.out.as_deref())
-    } else {
-        None
-    }
-}
-
 fn store_var_source_name(op: &OpIR) -> Option<&str> {
     if op.kind == "delete_var" {
         return None;
@@ -1323,6 +1317,54 @@ fn store_var_source_name(op: &OpIR) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::tir::lir::LirRepr;
+
+    #[test]
+    fn binding_index_distinguishes_storage_snapshots_and_delete_metadata() {
+        use super::super::test_fixtures::{function, op};
+        for kind in ["store_var", "store_fast"] {
+            let func = function(
+                "binding_index",
+                &[],
+                None,
+                vec![
+                    op(kind, Some("snapshot"), Some("local"), &["source"]),
+                    op(kind, Some("out_only"), None, &["source"]),
+                    op(kind, Some("same"), Some("same"), &["source"]),
+                    op(kind, Some("none"), Some("reserved_result"), &["source"]),
+                    op(
+                        "delete_var",
+                        Some("metadata"),
+                        Some("local"),
+                        &["missing", "snapshot"],
+                    ),
+                ],
+            );
+            let index = FunctionFactIndex::for_function(&func);
+            assert_eq!(
+                index.store_edges().collect::<Vec<_>>(),
+                [
+                    ("local", Some("source")),
+                    ("out_only", Some("source")),
+                    ("same", Some("source")),
+                    ("reserved_result", Some("source")),
+                    ("local", None),
+                ]
+            );
+            assert_eq!(
+                index.alias_edges().collect::<Vec<_>>(),
+                [("snapshot", "source")]
+            );
+            assert_eq!(
+                index
+                    .delete_targets
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["local"]
+            );
+            assert!(index.data_ops.is_empty());
+        }
+    }
 
     fn graph_fact_test_index() -> (IndexedFunctionFactIndex<'static>, NameId) {
         let mut names = FunctionNameIndex::with_capacity(1);

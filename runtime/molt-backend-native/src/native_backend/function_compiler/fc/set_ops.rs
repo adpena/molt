@@ -43,6 +43,8 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -72,99 +74,20 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
         )
     };
     match op.kind.as_str() {
-        "set_new" => {
-            let empty_args: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args);
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            let size = builder.ins().iconst(types::I64, args.len() as i64);
-
-            let new_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_set_new",
-                &[types::I64],
-                &[types::I64],
+        "set_new" | "frozenset_new" => {
+            emit_hash_container_constructor(
+                op,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let new_local = module.declare_func_in_func(new_callee, builder.func);
-            let new_call = builder.ins().call(new_local, &[size]);
-            let set_bits = builder.inst_results(new_call)[0];
-
-            if !args.is_empty() {
-                let add_callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_set_add",
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
-                let add_local = module.declare_func_in_func(add_callee, builder.func);
-                for name in args {
-                    let val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .unwrap_or_else(|| panic!("Set elem not found in {} op {}", func_name, op_idx));
-                    builder.ins().call(add_local, &[set_bits, *val]);
-                }
-            }
-
-            def_var_named(&mut *builder, vars, out_name, set_bits);
-        }
-        "frozenset_new" => {
-            let empty_args: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args);
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            let size = builder.ins().iconst(types::I64, args.len() as i64);
-
-            let new_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_frozenset_new",
-                &[types::I64],
-                &[types::I64],
-            );
-            let new_local = module.declare_func_in_func(new_callee, builder.func);
-            let new_call = builder.ins().call(new_local, &[size]);
-            let set_bits = builder.inst_results(new_call)[0];
-
-            if !args.is_empty() {
-                let add_callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_frozenset_add",
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
-                let add_local = module.declare_func_in_func(add_callee, builder.func);
-                for name in args {
-                    let val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .unwrap_or_else(|| {
-                        panic!("Frozenset elem not found in {} op {}", func_name, op_idx)
-                    });
-                    builder.ins().call(add_local, &[set_bits, *val]);
-                }
-            }
-
-            def_var_named(&mut *builder, vars, out_name, set_bits);
         }
         "set_add" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

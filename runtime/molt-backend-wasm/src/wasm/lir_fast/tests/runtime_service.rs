@@ -137,11 +137,11 @@ fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
         );
         assert_eq!(
             output
-                .instructions
+                .runtime_calls
                 .iter()
-                .any(|i| matches!(i, Instruction::Drop)),
+                .any(|call| *call == "dec_ref_obj"),
             !has_result,
-            "{name} must drop the runtime sentinel exactly when TIR has no result"
+            "{name} must release the owned runtime result exactly when TIR has no result"
         );
     }
 }

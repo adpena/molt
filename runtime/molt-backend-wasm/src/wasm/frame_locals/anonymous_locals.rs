@@ -65,6 +65,7 @@ mod tests {
         assert_eq!(const_cache.int_min, Some(1));
         assert_eq!(const_cache.int_max, Some(2));
         assert_eq!(const_cache.none_bits, Some(3));
+        assert_eq!(locals[WasmFrameLocals::NONE_NAME], 3);
         assert_eq!(const_cache.qnan_tag_mask, Some(4));
         assert_eq!(const_cache.qnan_tag_ptr, Some(5));
         assert_eq!(
@@ -122,5 +123,32 @@ mod tests {
             ]
         );
         assert_eq!(local_count, 13);
+    }
+
+    #[test]
+    fn singleton_operand_and_discard_result_have_distinct_slots() {
+        use crate::wasm::WasmFrameSyntheticLocal;
+
+        let mut locals = WasmFrameLocals::new();
+        let mut local_types = Vec::new();
+        let mut local_count = 0;
+        let sink = locals.ensure_synthetic(
+            WasmFrameSyntheticLocal::DeadSink,
+            &mut local_types,
+            &mut local_count,
+        );
+        let cache = locals.allocate_constant_cache(0, &mut local_types, &mut local_count);
+        let singleton = locals[WasmFrameLocals::NONE_NAME];
+        assert_eq!(Some(singleton), cache.none_bits);
+        assert_ne!(singleton, sink);
+        assert_eq!(locals.result_slot(WasmFrameLocals::NONE_NAME), sink);
+        locals.insert("value".into(), local_count);
+        assert_eq!(locals.result_slot("value"), locals["value"]);
+        locals.insert_dead_sink_alias("unused".into(), sink);
+        assert_eq!(locals.bound_result_slot(Some("unused")), None);
+        assert_eq!(locals.bound_result_slot(Some("none")), None);
+        assert_eq!(locals.bound_result_slot(None), None);
+        assert_eq!(locals.result_or_sink_slot(None), sink);
+        assert_eq!(locals.result_or_sink_slot(Some("unused")), sink);
     }
 }

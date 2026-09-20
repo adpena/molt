@@ -1,6 +1,6 @@
 use super::super::common::{
     BinaryOperands, IntBinaryTemps, binary_operands, emit_boxed_binary_call,
-    emit_guarded_int_binary_result_or_boxed, int_binary_temps, store_numeric_result,
+    emit_guarded_int_binary_result_or_boxed, int_binary_temps, store_runtime_result,
 };
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
@@ -62,7 +62,14 @@ pub(super) fn emit_shift_op(
         numeric_lane_stats.record_op_loop_bitwise_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
-    store_numeric_result(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        selection.import,
+    );
 }
 
 fn emit_shift_fast_path(

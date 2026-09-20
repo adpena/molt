@@ -52,7 +52,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bit_not(
         } else {
             emit_get_boxed_for_repr(ctx, src);
             ctx.emit_runtime_call(numeric_lir_runtime_call(selection));
-            emit_lir_runtime_result(ctx, op);
+            emit_lir_runtime_result(ctx, op, numeric_lir_runtime_call(selection));
         }
     }
 }
@@ -97,6 +97,6 @@ fn emit_lir_i64_binary_or_boxed(
         emit_get_boxed_for_repr(ctx, lhs);
         emit_get_boxed_for_repr(ctx, rhs);
         ctx.emit_runtime_call(boxed_runtime_call);
-        emit_lir_runtime_result(ctx, op);
+        emit_lir_runtime_result(ctx, op, boxed_runtime_call);
     }
 }

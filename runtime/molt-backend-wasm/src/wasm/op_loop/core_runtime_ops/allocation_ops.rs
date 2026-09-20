@@ -1,3 +1,4 @@
+use super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
@@ -46,10 +47,13 @@ pub(super) fn emit_allocation_runtime_op(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectPublishInitialized],
     );
-    if let Some(out) = op.out.as_ref() {
-        func.instruction(&Instruction::LocalSet(locals[out]));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ObjectPublishInitialized,
+    );
     true
 }

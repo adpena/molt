@@ -1,4 +1,4 @@
-use super::super::super::result_sink::{store_owned_result_or_release, store_result_or_drop};
+use super::super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -23,7 +23,14 @@ pub(super) fn emit_method_descriptor_op(
                 reloc_enabled,
                 import_ids[WasmRuntimeImport::ClassmethodNew],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::ClassmethodNew,
+            );
         }
         "staticmethod_new" => {
             let args = op.args.as_ref().unwrap();
@@ -34,7 +41,14 @@ pub(super) fn emit_method_descriptor_op(
                 reloc_enabled,
                 import_ids[WasmRuntimeImport::StaticmethodNew],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::StaticmethodNew,
+            );
         }
         "property_new" => {
             let args = op.args.as_ref().unwrap();
@@ -49,7 +63,14 @@ pub(super) fn emit_method_descriptor_op(
                 reloc_enabled,
                 import_ids[WasmRuntimeImport::PropertyNew],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::PropertyNew,
+            );
         }
         "bound_method_new" => {
             let args = op.args.as_ref().unwrap();
@@ -62,7 +83,14 @@ pub(super) fn emit_method_descriptor_op(
                 reloc_enabled,
                 import_ids[WasmRuntimeImport::BoundMethodNew],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::BoundMethodNew,
+            );
         }
         "is_bound_method" => {
             let args = op.args.as_ref().unwrap();
@@ -73,7 +101,14 @@ pub(super) fn emit_method_descriptor_op(
                 reloc_enabled,
                 import_ids[WasmRuntimeImport::IsBoundMethod],
             );
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::IsBoundMethod,
+            );
         }
         _ => return false,
     }

@@ -1,4 +1,4 @@
-use super::super::result_sink::store_owned_result_or_release;
+use super::super::result_sink::store_runtime_result;
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -43,13 +43,19 @@ pub(super) fn emit_function_object_call_op(
         }
         "builtin_func" => emit_builtin_func(call_ctx, func, op),
         "missing" => {
-            let out = call_ctx.locals[op.out.as_ref().unwrap()];
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
                 call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Missing],
             );
-            func.instruction(&Instruction::LocalSet(out));
+            store_runtime_result(
+                func,
+                op,
+                call_ctx.locals,
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+                WasmRuntimeImport::Missing,
+            );
             CallOpEmission::Handled
         }
         "function_closure_bits" => {
@@ -62,19 +68,14 @@ pub(super) fn emit_function_object_call_op(
                 call_ctx.import_ids
                     [crate::wasm_abi_generated::WasmRuntimeImport::FunctionClosureBits],
             );
-            if let Some(out) = op.out.as_ref() {
-                let out = call_ctx.locals[out];
-                func.instruction(&Instruction::LocalSet(out));
-                func.instruction(&Instruction::LocalGet(out));
-                emit_call(
-                    func,
-                    call_ctx.reloc_enabled,
-                    call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-                );
-            } else {
-                // Discard the borrowed bits, not an owned object reference.
-                func.instruction(&Instruction::Drop);
-            }
+            store_runtime_result(
+                func,
+                op,
+                call_ctx.locals,
+                call_ctx.import_ids,
+                call_ctx.reloc_enabled,
+                WasmRuntimeImport::FunctionClosureBits,
+            );
             CallOpEmission::Handled
         }
         _ => CallOpEmission::NotHandled,
@@ -149,11 +150,12 @@ fn emit_function_constructor(
         func.instruction(&Instruction::LocalGet(local));
     }
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    store_owned_result_or_release(
+    store_runtime_result(
         func,
         op,
         call_ctx.locals,
         call_ctx.import_ids,
         call_ctx.reloc_enabled,
+        import,
     );
 }

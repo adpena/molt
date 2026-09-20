@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_result_or_drop;
+use super::super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
@@ -22,7 +22,14 @@ pub(super) fn emit_isinstance(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Isinstance],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::Isinstance,
+    );
 }
 
 pub(super) fn emit_exception_match_builtin(
@@ -42,7 +49,14 @@ pub(super) fn emit_exception_match_builtin(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionMatchBuiltin],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ExceptionMatchBuiltin,
+    );
 }
 
 pub(super) fn emit_issubclass(
@@ -62,5 +76,12 @@ pub(super) fn emit_issubclass(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Issubclass],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::Issubclass,
+    );
 }

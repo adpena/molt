@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_result_or_drop;
+use super::super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::class_def_layout::ClassDefLayout;
@@ -22,7 +22,14 @@ pub(super) fn emit_class_new(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassNew],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassNew,
+    );
 }
 
 pub(super) fn emit_class_def(
@@ -103,7 +110,14 @@ pub(super) fn emit_class_def(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardedClassDef],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::GuardedClassDef,
+    );
     for arg_name in args.iter().rev() {
         let arg = locals[arg_name];
         func.instruction(&Instruction::LocalGet(arg));
@@ -132,7 +146,14 @@ pub(super) fn emit_class_set_base(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetBase],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassSetBase,
+    );
 }
 
 pub(super) fn emit_class_apply_set_name(
@@ -150,5 +171,12 @@ pub(super) fn emit_class_apply_set_name(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassApplySetName],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ClassApplySetName,
+    );
 }

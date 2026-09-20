@@ -66,6 +66,12 @@ non_runtime_callable_intrinsic = [
   "molt_dict_getitem_borrowed",
   "molt_list_getitem_borrowed",
   "molt_tuple_getitem_borrowed",
+  # Machine statuses and invocation tokens are direct compiler protocols,
+  # not Python object values even when their carriers are i64.
+  "molt_exception_pending",
+  "molt_async_work_poll_and_exception_pending",
+  "molt_frame_invocation_enter",
+  "molt_frame_invocation_exit",
   "molt_gpu_prim_create_tensor",
   "molt_gpu_prim_create_tensor_raw",
   "molt_gpu_prim_zeros",
@@ -85,6 +91,12 @@ non_runtime_callable_intrinsic = [
   "molt_gpu_prim_flip",
   "molt_gpu_prim_shape",
   "molt_gpu_prim_device",
+  "molt_gpu_prim_dtype",
+  "molt_gpu_prim_nbytes",
+  "molt_gpu_prim_free",
+  "molt_gpu_prim_numel",
+  "molt_gpu_prim_realize",
+  "molt_gpu_prim_contiguous",
   "molt_json_parse_scalar",
 ]
 
@@ -281,6 +293,12 @@ callable_arity = 5
 callable_dispatch = "trampoline"
 
 
+# Return contracts derive from boxed-call semantics, poll-table membership,
+# or an unambiguous void/non-i64 machine result. Compiler-only i64 returns
+# declare their provider-backed contract here; the generator rejects omissions.
+# Borrowed declarations refine boxed-return semantics across every backend.
+# Unpublished objects, scratch allocations and execution tokens require their
+# dedicated publication/free/leave protocol, never the generic result sink.
 [[import]]
 name = "types_bootstrap"
 type = 0
@@ -493,10 +511,12 @@ callable_arity = 1
 
 [[import]]
 name = "alloc"
+return_contract = "unpublished_object"
 type = 2
 
 [[import]]
 name = "alloc_class"
+return_contract = "unpublished_object"
 type = 3
 
 [[import]]
@@ -511,6 +531,7 @@ type = 48
 
 [[import]]
 name = "arena_alloc_object"
+return_contract = "owned_object"
 type = 16
 
 [[import]]
@@ -527,6 +548,7 @@ type = 1
 
 [[import]]
 name = "obj_get_state"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
@@ -535,10 +557,12 @@ type = 6
 
 [[import]]
 name = "resource_on_allocate"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "resource_on_free"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -557,11 +581,13 @@ callable_arity = 2
 
 [[import]]
 name = "module_registry_install"
+return_contract = "raw_bits"
 type = 14
 runtime_name = "molt_module_registry_install"
 
 [[import]]
 name = "module_ensure"
+return_contract = "owned_object"
 type = 2
 runtime_name = "molt_module_ensure"
 
@@ -661,6 +687,7 @@ type = 0
 
 [[import]]
 name = "exception_match_builtin"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -677,14 +704,17 @@ type = 3
 
 [[import]]
 name = "exception_new_builtin"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "exception_new_builtin_empty"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "exception_new_builtin_one"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -693,18 +723,22 @@ type = 3
 
 [[import]]
 name = "exception_pending"
+return_contract = "raw_bits"
 type = 0
 
 [[import]]
 name = "async_work_poll_and_exception_pending"
+return_contract = "raw_bits"
 type = 0
 
 [[import]]
 name = "exception_pop"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "exception_push"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
@@ -753,10 +787,12 @@ callable_arity = 2
 
 [[import]]
 name = "raise"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "builtin_type"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -767,6 +803,7 @@ callable_arity = 1
 
 [[import]]
 name = "class_layout_version"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -789,6 +826,7 @@ callable_arity = 2
 
 [[import]]
 name = "class_set_layout_version"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -809,30 +847,37 @@ callable_arity = 2
 
 [[import]]
 name = "object_field_get"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "object_field_get_ptr"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "object_field_init"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "object_field_init_ptr"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "object_field_set"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "object_field_set_ptr"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "object_new"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
@@ -841,6 +886,7 @@ type = 2
 
 [[import]]
 name = "object_set_class"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -859,14 +905,17 @@ callable_arity = 2
 
 [[import]]
 name = "super_new"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "type_of"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "type_of_borrowed"
+return_contract = "borrowed_object"
 type = 2
 
 [[import]]
@@ -876,18 +925,22 @@ boxed_call = true
 
 [[import]]
 name = "closure_load"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "closure_store"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "func_new"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "func_new_builtin"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -898,14 +951,17 @@ callable_arity = 4
 
 [[import]]
 name = "func_new_closure"
+return_contract = "owned_object"
 type = 7
 
 [[import]]
 name = "function_closure_bits"
+return_contract = "borrowed_object"
 type = 2
 
 [[import]]
 name = "function_default_kind"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
@@ -914,10 +970,12 @@ type = 2
 
 [[import]]
 name = "function_is_coroutine"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "function_is_generator"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -1012,22 +1070,27 @@ callable_arity = 3
 
 [[import]]
 name = "gpu_thread_id"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_block_id"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_block_dim"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_grid_dim"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_barrier"
+return_contract = "owned_object"
 type = 0
 
 [[import]]
@@ -1044,6 +1107,7 @@ callable_arity = 2
 
 [[import]]
 name = "set_app_callable_resolver"
+return_contract = "raw_bits"
 type = 2
 runtime_name = "molt_set_app_callable_resolver"
 
@@ -1060,10 +1124,12 @@ boxed_call = true
 
 [[import]]
 name = "is_function_obj"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "function_direct_call_eligible"
+return_contract = "raw_bits"
 type = 5
 
 [[import]]
@@ -1090,54 +1156,67 @@ callable_arity = 0
 
 [[import]]
 name = "call_arity_error"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "call_bind"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "call_bind_ic"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "call_method_ic0"
+return_contract = "owned_object"
 type = 37
 
 [[import]]
 name = "call_method_ic1"
+return_contract = "owned_object"
 type = 38
 
 [[import]]
 name = "call_method_ic2"
+return_contract = "owned_object"
 type = 39
 
 [[import]]
 name = "call_method_ic3"
+return_contract = "owned_object"
 type = 40
 
 [[import]]
 name = "call_method_ic4"
+return_contract = "owned_object"
 type = 41
 
 [[import]]
 name = "call_super_method_ic0"
+return_contract = "owned_object"
 type = 42
 
 [[import]]
 name = "call_super_method_ic1"
+return_contract = "owned_object"
 type = 43
 
 [[import]]
 name = "call_super_method_ic2"
+return_contract = "owned_object"
 type = 44
 
 [[import]]
 name = "call_super_method_ic3"
+return_contract = "owned_object"
 type = 45
 
 [[import]]
 name = "call_super_method_ic4"
+return_contract = "owned_object"
 type = 46
 
 # Method inline-cache arity selector. Extra arguments are capped at the highest
@@ -1196,10 +1275,12 @@ import_name = "call_super_method_ic4"
 
 [[import]]
 name = "call_func_dispatch"
+return_contract = "owned_object"
 type = 7
 
 [[import]]
 name = "call_indirect_ic"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -1212,6 +1293,7 @@ type = 3
 
 [[import]]
 name = "callargs_new"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -1228,58 +1310,72 @@ type = 13
 
 [[import]]
 name = "invoke_ffi_ic"
+return_contract = "owned_object"
 type = 7
 
 [[import]]
 name = "fast_dict_get"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "fast_list_append"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "fast_str_join"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "fast_str_startswith"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "fast_str_upper"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "fast_str_lower"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "fast_str_strip"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "guard_layout"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "guard_type"
+return_contract = "borrowed_object"
 type = 3
 
 [[import]]
 name = "guarded_field_get"
+return_contract = "owned_object"
 type = 9
 
 [[import]]
 name = "guarded_field_init_ptr"
+return_contract = "owned_object"
 type = 10
 
 [[import]]
 name = "guarded_field_set"
+return_contract = "owned_object"
 type = 10
 
 [[import]]
 name = "guarded_class_def"
+return_contract = "owned_object"
 type = 28
 
 [[import]]
@@ -1294,14 +1390,17 @@ type = 3
 
 [[import]]
 name = "int_from_i64"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "int_as_i64"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
 name = "str_concat"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -1468,6 +1567,7 @@ type = 3
 
 [[import]]
 name = "ellipsis"
+return_contract = "borrowed_object"
 type = 0
 
 [[import]]
@@ -1478,6 +1578,7 @@ callable_arity = 0
 
 [[import]]
 name = "not_implemented"
+return_contract = "borrowed_object"
 type = 0
 
 [[import]]
@@ -1500,22 +1601,27 @@ type = 2
 
 [[import]]
 name = "is_truthy"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
 name = "is_truthy_bool"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
 name = "is_truthy_bool_nogil"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
 name = "is_truthy_int"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
 name = "is_truthy_int_nogil"
+return_contract = "raw_bits"
 type = 2
 
 [[import]]
@@ -1568,19 +1674,18 @@ type = 2
 
 [[import]]
 name = "frame_locals_set"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "frame_invocation_enter"
 type = 2
-runtime_name = "molt_frame_invocation_enter"
-callable_arity = 1
+return_contract = "raw_bits"
 
 [[import]]
 name = "frame_invocation_exit"
 type = 2
-runtime_name = "molt_frame_invocation_exit"
-callable_arity = 1
+return_contract = "owned_object"
 
 [[import]]
 name = "trace_enter_slot"
@@ -1602,11 +1707,13 @@ callable_arity = 1
 
 [[import]]
 name = "runtime_init"
+return_contract = "raw_bits"
 type = 0
 runtime_name = "molt_runtime_init"
 
 [[import]]
 name = "runtime_execution_enter"
+return_contract = "execution_token"
 type = 0
 runtime_name = "molt_runtime_execution_enter"
 
@@ -1617,6 +1724,7 @@ runtime_name = "molt_runtime_execution_leave"
 
 [[import]]
 name = "runtime_shutdown"
+return_contract = "raw_bits"
 type = 0
 runtime_name = "molt_runtime_shutdown"
 
@@ -1649,6 +1757,7 @@ callable_arity = 1
 
 [[import]]
 name = "gen_locals_register"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -1677,18 +1786,22 @@ callable_arity = 0
 
 [[import]]
 name = "future_poll"
+return_contract = "poll_result"
 type = 2
 
 [[import]]
 name = "generator_close"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "generator_send"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "generator_throw"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -1716,6 +1829,7 @@ callable_arity = 1
 
 [[import]]
 name = "sleep_register"
+return_contract = "raw_bits"
 type = 27
 
 [[import]]
@@ -1724,6 +1838,7 @@ type = 1
 
 [[import]]
 name = "task_new"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -1732,6 +1847,7 @@ type = 3
 
 [[import]]
 name = "recursion_guard_enter"
+return_contract = "raw_bits"
 type = 0
 
 [[import]]
@@ -1740,10 +1856,12 @@ type = 8
 
 [[import]]
 name = "set_intrinsic_manifest"
+return_contract = "raw_bits"
 type = 3
 
 [[import]]
 name = "del_attr_generic"
+return_contract = "owned_object"
 type = 23
 
 [[import]]
@@ -1754,14 +1872,17 @@ callable_arity = 2
 
 [[import]]
 name = "del_attr_object"
+return_contract = "owned_object"
 type = 18
 
 [[import]]
 name = "del_attr_ptr"
+return_contract = "owned_object"
 type = 23
 
 [[import]]
 name = "get_attr_generic"
+return_contract = "owned_object"
 type = 23
 
 [[import]]
@@ -1770,22 +1891,27 @@ type = 3
 
 [[import]]
 name = "get_attr_name_default"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "get_attr_object"
+return_contract = "owned_object"
 type = 18
 
 [[import]]
 name = "get_attr_object_ic"
+return_contract = "owned_object"
 type = 25
 
 [[import]]
 name = "get_attr_ptr"
+return_contract = "owned_object"
 type = 23
 
 [[import]]
 name = "get_attr_special"
+return_contract = "owned_object"
 type = 18
 
 [[import]]
@@ -1802,6 +1928,7 @@ callable_arity = 2
 
 [[import]]
 name = "set_attr_generic"
+return_contract = "owned_object"
 type = 24
 
 [[import]]
@@ -1812,10 +1939,12 @@ callable_arity = 3
 
 [[import]]
 name = "set_attr_object"
+return_contract = "owned_object"
 type = 25
 
 [[import]]
 name = "set_attr_ptr"
+return_contract = "owned_object"
 type = 24
 
 [[import]]
@@ -1852,6 +1981,7 @@ type = 3
 
 [[import]]
 name = "dict_getitem_borrowed"
+return_contract = "borrowed_object"
 type = 3
 
 [[import]]
@@ -1868,6 +1998,7 @@ type = 2
 
 [[import]]
 name = "dict_new"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -1880,6 +2011,7 @@ type = 2
 
 [[import]]
 name = "dict_set"
+return_contract = "borrowed_object"
 type = 5
 
 [[import]]
@@ -1908,6 +2040,7 @@ type = 3
 
 [[import]]
 name = "dict_update_missing"
+return_contract = "borrowed_object"
 type = 5
 
 [[import]]
@@ -1936,6 +2069,7 @@ type = 3
 
 [[import]]
 name = "frozenset_new"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -1944,6 +2078,7 @@ type = 3
 
 [[import]]
 name = "unpack_sequence"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -2008,6 +2143,7 @@ type = 3
 
 [[import]]
 name = "list_getitem_borrowed"
+return_contract = "borrowed_object"
 type = 3
 
 [[import]]
@@ -2020,10 +2156,12 @@ type = 3
 
 [[import]]
 name = "list_builder_finish"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
 name = "list_builder_new"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -2036,18 +2174,22 @@ type = 3
 
 [[import]]
 name = "list_int_getitem_raw"
+return_contract = "raw_bits"
 type = 3
 
 [[import]]
 name = "list_int_getitem_raw_checked"
+return_contract = "raw_bits"
 type = 3
 
 [[import]]
 name = "list_int_getitem_truthy"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "list_int_len"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -2104,6 +2246,7 @@ type = 2
 
 [[import]]
 name = "list_sort"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
@@ -2148,6 +2291,7 @@ type = 3
 
 [[import]]
 name = "set_new"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -2194,6 +2338,7 @@ callable_arity = 3
 
 [[import]]
 name = "scratch_alloc"
+return_contract = "scratch_allocation"
 type = 2
 
 [[import]]
@@ -2202,10 +2347,12 @@ type = 6
 
 [[import]]
 name = "store_index"
+return_contract = "borrowed_object"
 type = 5
 
 [[import]]
 name = "tuple_builder_finish"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -2222,6 +2369,7 @@ type = 3
 
 [[import]]
 name = "tuple_getitem_borrowed"
+return_contract = "borrowed_object"
 type = 3
 
 [[import]]
@@ -2243,6 +2391,7 @@ callable_arity = 1
 
 [[import]]
 name = "bigint_from_str"
+return_contract = "owned_object"
 type = 16
 
 [[import]]
@@ -2559,6 +2708,7 @@ boxed_call = true
 
 [[import]]
 name = "dataclass_new"
+return_contract = "owned_object"
 type = 7
 
 [[import]]
@@ -2583,18 +2733,21 @@ callable_arity = 1
 
 [[import]]
 name = "chan_recv"
+return_contract = "poll_result"
 type = 2
 runtime_name = "molt_chan_recv"
 callable_arity = 1
 
 [[import]]
 name = "chan_recv_blocking"
+return_contract = "poll_result"
 type = 2
 runtime_name = "molt_chan_recv_blocking"
 callable_arity = 1
 
 [[import]]
 name = "chan_send"
+return_contract = "poll_result"
 type = 3
 runtime_name = "molt_chan_send"
 callable_arity = 2
@@ -2607,12 +2760,14 @@ callable_arity = 2
 
 [[import]]
 name = "chan_try_recv"
+return_contract = "poll_result"
 type = 2
 runtime_name = "molt_chan_try_recv"
 callable_arity = 1
 
 [[import]]
 name = "chan_try_send"
+return_contract = "poll_result"
 type = 3
 runtime_name = "molt_chan_try_send"
 callable_arity = 2
@@ -2651,98 +2806,122 @@ callable_arity = 1
 
 [[import]]
 name = "vec_max_int"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_max_int_range"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_max_int_range_trusted"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_max_int_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_min_int"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_min_int_range"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_min_int_range_trusted"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_min_int_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_prod_int"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_prod_int_range"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_prod_int_range_trusted"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_prod_int_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_float"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_float_range"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_sum_float_range_iter"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_float_range_iter_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_float_range_trusted"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_sum_float_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_int"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_int_range"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_sum_int_range_iter"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_int_range_iter_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
 name = "vec_sum_int_range_trusted"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "vec_sum_int_trusted"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -2822,10 +3001,12 @@ callable_arity = 1
 
 [[import]]
 name = "asyncgen_locals_register"
+return_contract = "owned_object"
 type = 5
 
 [[import]]
 name = "asyncgen_new"
+return_contract = "owned_object"
 type = 2
 
 [[import]]
@@ -3211,6 +3392,7 @@ type = 3
 
 [[import]]
 name = "importlib_import_transaction"
+return_contract = "owned_object"
 type = 12
 
 [[import]]
@@ -3601,17 +3783,30 @@ runtime_name = "molt_stream_new"
 callable_arity = 1
 
 [[import]]
+name = "stream_reader_read"
+type = 3
+return_contract = "poll_result"
+
+[[import]]
+name = "stream_reader_readline"
+type = 2
+return_contract = "poll_result"
+
+[[import]]
 name = "stream_recv"
+return_contract = "poll_result"
 type = 2
 runtime_name = "molt_stream_recv"
 callable_arity = 1
 
 [[import]]
 name = "stream_send"
+return_contract = "raw_bits"
 type = 18
 
 [[import]]
 name = "stream_send_obj"
+return_contract = "poll_result"
 type = 3
 runtime_name = "molt_stream_send_obj"
 callable_arity = 2
@@ -4509,6 +4704,7 @@ type = 9
 
 [[import]]
 name = "string_format"
+return_contract = "owned_object"
 type = 3
 
 [[import]]
@@ -5054,16 +5250,19 @@ callable_arity = 1
 
 [[import]]
 name = "ws_recv"
+return_contract = "poll_result"
 type = 2
 runtime_name = "molt_ws_recv"
 callable_arity = 1
 
 [[import]]
 name = "ws_send"
+return_contract = "raw_bits"
 type = 18
 
 [[import]]
 name = "ws_send_obj"
+return_contract = "poll_result"
 type = 3
 runtime_name = "molt_ws_send_obj"
 callable_arity = 2
@@ -6115,37 +6314,31 @@ import_name = "len_set"
 kind = "gpu_thread_id"
 import_name = "gpu_thread_id"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gpu_block_id"
 import_name = "gpu_block_id"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gpu_block_dim"
 import_name = "gpu_block_dim"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gpu_grid_dim"
 import_name = "gpu_grid_dim"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gpu_barrier"
 import_name = "gpu_barrier"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "import"
 import_name = "module_import"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "ModuleImport"
 lir_operand_count = 1
 
@@ -6153,13 +6346,11 @@ lir_operand_count = 1
 kind = "module_import"
 import_name = "module_import"
 args = ["local:0"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "module_import_star"
 import_name = "module_import_star"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ModuleImportStar"
 lir_operand_count = 2
 
@@ -6167,7 +6358,6 @@ lir_operand_count = 2
 kind = "module_new"
 import_name = "module_new"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "ModuleNew"
 lir_operand_count = 1
 
@@ -6175,7 +6365,6 @@ lir_operand_count = 1
 kind = "function_defaults_version"
 import_name = "function_defaults_version"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "FunctionDefaultsVersion"
 lir_operand_count = 1
 
@@ -6183,7 +6372,6 @@ lir_operand_count = 1
 kind = "module_cache_get"
 import_name = "module_cache_get"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "ModuleCacheGet"
 lir_operand_count = 1
 
@@ -6191,7 +6379,6 @@ lir_operand_count = 1
 kind = "module_cache_set"
 import_name = "module_cache_set"
 args = ["local:0", "local:1"]
-sink = "non_none_result_or_drop"
 lir_variant = "ModuleCacheSet"
 lir_operand_count = 2
 
@@ -6199,7 +6386,6 @@ lir_operand_count = 2
 kind = "module_cache_del"
 import_name = "module_cache_del"
 args = ["local:0"]
-sink = "non_none_result_or_drop"
 lir_variant = "ModuleCacheDel"
 lir_operand_count = 1
 
@@ -6207,7 +6393,6 @@ lir_operand_count = 1
 kind = "module_get_attr"
 import_name = "module_get_attr"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ModuleGetAttr"
 lir_operand_count = 2
 
@@ -6215,7 +6400,6 @@ lir_operand_count = 2
 kind = "module_import_from"
 import_name = "module_import_from"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ModuleImportFrom"
 lir_operand_count = 2
 
@@ -6223,7 +6407,6 @@ lir_operand_count = 2
 kind = "module_get_global"
 import_name = "module_get_global"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ModuleGetGlobal"
 lir_operand_count = 2
 
@@ -6231,7 +6414,6 @@ lir_operand_count = 2
 kind = "module_get_name"
 import_name = "module_get_name"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ModuleGetName"
 lir_operand_count = 2
 
@@ -6239,7 +6421,6 @@ lir_operand_count = 2
 kind = "module_set_attr"
 import_name = "module_set_attr"
 args = ["local:0", "local:1", "local:2"]
-sink = "non_none_result_or_drop"
 lir_variant = "ModuleSetAttr"
 lir_operand_count = 3
 
@@ -6247,7 +6428,6 @@ lir_operand_count = 3
 kind = "module_del_global"
 import_name = "module_del_global"
 args = ["local:0", "local:1"]
-sink = "non_none_result_or_drop"
 lir_variant = "ModuleDelGlobal"
 lir_operand_count = 2
 
@@ -6255,7 +6435,6 @@ lir_operand_count = 2
 kind = "module_del_global_if_present"
 import_name = "module_del_global_if_present"
 args = ["local:0", "local:1"]
-sink = "non_none_result_or_drop"
 lir_variant = "ModuleDelGlobalIfPresent"
 lir_operand_count = 2
 
@@ -6263,7 +6442,6 @@ lir_operand_count = 2
 kind = "bridge_unavailable"
 import_name = "bridge_unavailable"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "BridgeUnavailable"
 lir_operand_count = 1
 
@@ -6271,7 +6449,6 @@ lir_operand_count = 1
 kind = "context_null"
 import_name = "context_null"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "ContextNull"
 lir_operand_count = 1
 
@@ -6279,7 +6456,6 @@ lir_operand_count = 1
 kind = "context_enter"
 import_name = "context_enter"
 args = ["local:0"]
-sink = "result_or_drop"
 required_imports = [
   "context_enter",
   "context_exit",
@@ -6296,7 +6472,6 @@ lir_operand_count = 1
 kind = "context_exit"
 import_name = "context_exit"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 required_imports = [
   "context_exit",
   "context_depth",
@@ -6309,7 +6484,6 @@ lir_operand_count = 2
 kind = "context_unwind"
 import_name = "context_unwind"
 args = ["local:0"]
-sink = "result_or_drop"
 required_imports = [
   "context_unwind",
   "context_unwind_to",
@@ -6322,7 +6496,6 @@ lir_operand_count = 1
 kind = "context_depth"
 import_name = "context_depth"
 args = []
-sink = "result_or_drop"
 lir_variant = "ContextDepth"
 lir_operand_count = 0
 
@@ -6330,7 +6503,6 @@ lir_operand_count = 0
 kind = "context_unwind_to"
 import_name = "context_unwind_to"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 lir_variant = "ContextUnwindTo"
 lir_operand_count = 2
 
@@ -6338,7 +6510,6 @@ lir_operand_count = 2
 kind = "context_closing"
 import_name = "context_closing"
 args = ["local:0"]
-sink = "result_or_drop"
 lir_variant = "ContextClosing"
 lir_operand_count = 1
 
@@ -6346,102 +6517,88 @@ lir_operand_count = 1
 kind = "abs"
 import_name = "abs_builtin"
 args = ["local:0"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "guard_tag"
 import_name = "guard_type"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
-
-[[op_loop_runtime_call]]
-kind = "alloc_class"
-import_name = "alloc_class"
-args = ["op_value_i64:alloc_class missing payload size", "local:0"]
-sink = "result_or_drop"
-required_imports = [
-  "alloc_class",
-  "object_publish_initialized",
-  "class_new",
-  "class_set_base",
-  "class_apply_set_name",
-  "class_layout_version",
-  "class_merge_layout",
-  "class_set_layout_version",
-]
 
 [[op_loop_runtime_call]]
 kind = "string_format"
 import_name = "format_builtin"
 args = ["local:0", "local:1"]
-sink = "non_none_result_or_drop"
+
+[[op_loop_runtime_call]]
+kind = "json_parse"
+import_name = "json_parse_scalar_obj"
+args = ["local:0"]
+
+[[op_loop_runtime_call]]
+kind = "msgpack_parse"
+import_name = "msgpack_parse_scalar_obj"
+args = ["local:0"]
+
+[[op_loop_runtime_call]]
+kind = "cbor_parse"
+import_name = "cbor_parse_scalar_obj"
+args = ["local:0"]
 
 [[op_loop_runtime_call]]
 kind = "exception_finally_pending_observer"
 import_name = "exception_last_pending"
 marked_import_name = "async_work_poll_and_exception_last_pending"
 args = []
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "exception_new_builtin"
 import_name = "exception_new_builtin"
 args = ["op_value_i64:exception_new_builtin missing tag value", "local:0"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "exception_new_builtin_empty"
 import_name = "exception_new_builtin_empty"
 args = ["op_value_i64:exception_new_builtin_empty missing tag value"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "exception_new_builtin_one"
 import_name = "exception_new_builtin_one"
 args = ["op_value_i64:exception_new_builtin_one missing tag value", "local:0"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gen_send"
 import_name = "generator_send"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gen_throw"
 import_name = "generator_throw"
 args = ["local:0", "local:1"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "gen_close"
 import_name = "generator_close"
 args = ["local:0"]
-sink = "result_or_drop"
 
 [[op_loop_runtime_call]]
 kind = "chan_drop"
 import_name = "chan_drop"
+discard_result = true
 args = ["local:0"]
-sink = "drop"
 
 [[op_loop_runtime_call]]
 kind = "spawn"
 import_name = "spawn"
 args = ["local:0"]
-sink = "none"
 
 [[op_loop_runtime_call]]
 kind = "print_newline"
 import_name = "print_newline"
 args = []
-sink = "none"
 
 [[op_loop_runtime_call]]
 kind = "asyncgen_new"
 import_name = "asyncgen_new"
 args = ["local:0"]
-sink = "owned_result_or_release"
 required_imports = [
   "asyncgen_hooks_get",
   "asyncgen_hooks_set",
@@ -6455,14 +6612,12 @@ required_imports = [
 kind = "thread_submit"
 import_name = "thread_submit"
 args = ["local:0", "local:1", "local:2"]
-sink = "result_or_drop"
 required_imports = [
   "thread_poll",
   "thread_submit",
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 0
 boxed_call = true
 kinds = [
@@ -6483,7 +6638,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 1
 boxed_call = true
 kinds = [
@@ -6533,7 +6687,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 2
 boxed_call = true
 kinds = [
@@ -6576,7 +6729,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 3
 boxed_call = true
 kinds = [
@@ -6596,7 +6748,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 4
 boxed_call = true
 kinds = [
@@ -6605,7 +6756,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "result_or_drop"
 arg_count = 2
 boxed_call = true
 kinds = [
@@ -6615,7 +6765,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 1
 boxed_call = true
 kinds = [
@@ -6636,7 +6785,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 2
 boxed_call = true
 kinds = [
@@ -6665,7 +6813,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 3
 boxed_call = true
 kinds = [
@@ -6690,7 +6837,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 4
 boxed_call = true
 kinds = [
@@ -6706,7 +6852,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 5
 boxed_call = true
 kinds = [
@@ -6716,7 +6861,6 @@ kinds = [
 ]
 
 [[op_loop_runtime_call_group]]
-sink = "non_none_result_or_drop"
 arg_count = 6
 boxed_call = true
 kinds = [
@@ -6967,6 +7111,11 @@ essential_exports = [
   "molt_runtime_shutdown",
   "molt_scratch_alloc",
   "molt_scratch_free",
+  # DB/process host adapters construct, feed, close and roll back opaque streams.
+  "molt_stream_new",
+  "molt_stream_send",
+  "molt_stream_close",
+  "molt_stream_drop",
   "molt_string_as_ptr",
   "molt_string_from_bytes",
   "molt_table",
@@ -7016,6 +7165,7 @@ host_exports = [
   "molt_exception_kind",
   "molt_exception_last",
   "molt_exception_message",
+  "molt_exception_pending_fast",
   "molt_float_as_f64",
   "molt_float_from_f64",
   "molt_gil_acquire",
@@ -7108,6 +7258,10 @@ host_exports = [
   "molt_sequence_setitem",
   "molt_set_wasm_table_base",
   "molt_shutdown",
+  "molt_stream_new",
+  "molt_stream_send",
+  "molt_stream_close",
+  "molt_stream_drop",
   "molt_string_as_ptr",
   "molt_string_from",
   "molt_string_from_bytes",
@@ -7968,7 +8122,6 @@ kind = "const_str"
 materializer_import = "string_from_bytes"
 literal_payload = "string"
 dispatch_runtime_seed = true
-parse_scalar_literal = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
 
@@ -7977,7 +8130,6 @@ kind = "const_bigint"
 materializer_import = "bigint_from_str"
 literal_payload = "bigint_decimal"
 dispatch_runtime_seed = true
-parse_scalar_literal = false
 raw_int_effect = "clear"
 lir_fast = "materialize"
 
@@ -7986,6 +8138,5 @@ kind = "const_bytes"
 materializer_import = "bytes_from_bytes"
 literal_payload = "bytes"
 dispatch_runtime_seed = true
-parse_scalar_literal = true
 raw_int_effect = "clear"
 lir_fast = "materialize"

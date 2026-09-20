@@ -503,23 +503,14 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("iterator source not found");
+            use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
             let mut results = [None, None];
-            let mut result_count = 0;
-            crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-                assert!(
-                    result_count < results.len(),
-                    "iter_next_unboxed requires two results"
-                );
-                results[result_count] = Some(name);
-                result_count += 1;
+            visit_simple_ir_results(op, |result| match result.field {
+                SimpleIrResultField::Var => results[0] = result.name,
+                SimpleIrResultField::Out => results[1] = result.name,
+                SimpleIrResultField::Arg(_) => unreachable!("iterator has fixed result roles"),
             });
-            assert_eq!(
-                result_count, 2,
-                "iter_next_unboxed requires value and done results"
-            );
-            let [Some(value_name), Some(done_name)] = results else {
-                unreachable!("verified iterator result pair")
-            };
+            let [value_name, done_name] = results;
 
             let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -539,18 +530,23 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             let call = builder.ins().call(callee, &[*iter, value_ptr]);
             let done = builder.inst_results(call)[0];
             let value = builder.ins().stack_load(types::I64, value_slot, 0);
+            if value_name.is_none() {
+                bind_owned_runtime_result_name(None, value, module, import_ids, builder, vars);
+            }
             for (name, bits) in [(value_name, value), (done_name, done)] {
-                def_var_from_boxed_transport(
-                    module,
-                    import_ids,
-                    builder,
-                    import_refs,
-                    vars,
-                    representation_plan,
-                    nbc,
-                    name,
-                    bits,
-                );
+                if let Some(name) = name {
+                    def_var_from_boxed_transport(
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        vars,
+                        representation_plan,
+                        nbc,
+                        name,
+                        bits,
+                    );
+                }
             }
         }
         "iter_next" => {
@@ -567,7 +563,6 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 representation_plan,
             )
             .expect("iterator source not found");
-            let pair_name = op.out.as_ref().expect("iter_next requires its pair result");
             let callee = import_func_ref(
                 module,
                 import_ids,
@@ -579,7 +574,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             );
             let call = builder.ins().call(callee, &[*iter]);
             let pair = builder.inst_results(call)[0];
-            def_var_named(builder, vars, pair_name, pair);
+            bind_owned_runtime_result(op, pair, module, import_ids, builder, vars);
         }
         _ => unreachable!("non-sequence op routed to handle_sequence_op"),
     }

@@ -100,7 +100,8 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         ),
     ] {
         let ctx = Context::create();
-        let backend = make_backend(&ctx);
+        let mut backend = make_backend(&ctx);
+        backend.runtime_callable_symbols.insert(expected.into());
         let mut func = TirFunction::new(format!("iterator_{call_name}"), vec![], TirType::DynBox);
         let operand = func.fresh_value();
         let result = func.fresh_value();

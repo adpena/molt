@@ -189,11 +189,11 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source(
     // when their boxed bits equal the operand.
     crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(&op.kind)
         .then(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first())
-                .map(String::as_str)
-                .or(op.var.as_deref())
+            let mut source = None;
+            crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+                source.get_or_insert(read.name);
+            });
+            source
         })
         .flatten()
 }

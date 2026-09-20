@@ -1,4 +1,7 @@
-use super::super::result_sink::{store_owned_result_or_release, store_result_or_drop};
+use super::super::result_sink::{
+    finish_owned_local_result, store_owned_result_or_release, store_result_or_drop,
+    store_runtime_result,
+};
 use super::site::{
     collect_live_object_locals_for_call, push_call_args, release_live_object_locals,
     retain_live_object_locals,
@@ -9,10 +12,9 @@ use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
-use crate::wasm_abi_generated::{STATIC_FUNC_TYPES, wasm_runtime_import};
+use crate::wasm_abi_generated::wasm_runtime_import;
 use crate::wasm_binary::{emit_call, emit_return_call};
 use crate::wasm_values::emit_boxed_none;
-use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 use molt_tir::trampolines::TaskConstructorLayout;
 use wasm_encoder::{Function, Instruction};
 
@@ -58,11 +60,7 @@ fn emit_call_async(
         &table_target,
         payload_size,
     );
-    let out = op
-        .out
-        .as_ref()
-        .expect("call_async requires an owned result");
-    let res = locals[out];
+    let res = locals.op_result_or_sink_slot(op);
     func.instruction(&Instruction::LocalSet(res));
     if let Some(args) = op.args.as_ref()
         && !args.is_empty()
@@ -86,6 +84,7 @@ fn emit_call_async(
         }
         func.instruction(&Instruction::End);
     }
+    finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, res);
     CallOpEmission::Handled
 }
 
@@ -104,41 +103,37 @@ fn emit_plain_call(
     let target_name = op.s_value.as_ref().unwrap();
     let args_names = op.args.as_deref().unwrap_or(&[]);
     let runtime_import = wasm_runtime_import(target_name);
-    let runtime_result = runtime_import.and_then(|import| {
-        runtime_boxed_abi(import.runtime_export_name(), args_names.len()).map(|abi| abi.result)
-    });
-    assert!(
-        runtime_result != Some(RuntimeBoxedReturn::Void) || op.out.is_none(),
-        "runtime void call cannot bind an output: {target_name}"
-    );
-    let abi_returns_value = runtime_import.map_or_else(
-        || call_site_abi.function_abi_returns_value(target_name),
-        |import| {
-            !STATIC_FUNC_TYPES[import.type_idx() as usize]
-                .results
-                .is_empty()
-        },
-    );
-    let live_object_locals =
-        collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
-    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+    if let Some(import) = runtime_import {
+        crate::wasm_abi::assert_runtime_i64_call(import, args_names.len());
+    }
     let func_idx = call_site_abi.function_index(target_name, "call");
-    let owns_result = runtime_import.map_or_else(
-        || call_site_abi.positional_arity(target_name).is_some() && abi_returns_value,
-        |_| runtime_result == Some(RuntimeBoxedReturn::OwnedValue),
-    );
     let bootstrap_call =
         func_idx == import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit];
     if bootstrap_call {
         push_call_args(func, locals, args_names);
         emit_call(func, reloc_enabled, func_idx);
-        store_result_or_drop(func, op, locals);
+        store_runtime_result(
+            func,
+            op,
+            locals,
+            import_ids,
+            reloc_enabled,
+            runtime_import.expect("runtime_init import"),
+        );
         return CallOpEmission::Handled;
     }
 
+    let live_object_locals =
+        collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
+    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
-    finish_direct_call_result(call_ctx, func, op, abi_returns_value, owns_result);
+    if let Some(import) = runtime_import {
+        store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
+    } else {
+        let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
+        finish_direct_call_result(call_ctx, func, op, abi_returns_value);
+    }
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
 }
@@ -169,6 +164,7 @@ fn emit_internal_call(
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     let func_idx = call_site_abi.function_index(target_name, "call_internal");
     let is_tail_call = abi_returns_value
+        && locals.bound_op_result_slot(op).is_some()
         && op.out.as_deref().is_some_and(|out_name| {
             is_tail_call_candidate(call_ctx, target_name, args_names, out_name)
         });
@@ -185,7 +181,7 @@ fn emit_internal_call(
 
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
-    finish_direct_call_result(call_ctx, func, op, abi_returns_value, abi_returns_value);
+    finish_direct_call_result(call_ctx, func, op, abi_returns_value);
     release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
     CallOpEmission::Handled
 }
@@ -195,14 +191,13 @@ fn finish_direct_call_result(
     func: &mut Function,
     op: &OpIR,
     abi_returns_value: bool,
-    owns_result: bool,
 ) {
     if !abi_returns_value {
-        if op.out.is_some() {
+        if call_ctx.locals.bound_op_result_slot(op).is_some() {
             emit_boxed_none(func);
             store_result_or_drop(func, op, call_ctx.locals);
         }
-    } else if owns_result {
+    } else {
         store_owned_result_or_release(
             func,
             op,
@@ -210,8 +205,6 @@ fn finish_direct_call_result(
             call_ctx.import_ids,
             call_ctx.reloc_enabled,
         );
-    } else {
-        store_result_or_drop(func, op, call_ctx.locals);
     }
 }
 

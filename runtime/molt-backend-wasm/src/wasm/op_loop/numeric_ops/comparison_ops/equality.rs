@@ -1,6 +1,6 @@
 use super::super::common::{
     binary_operands, emit_boxed_binary_result, emit_guarded_int_binary_result_or_boxed,
-    store_numeric_result,
+    store_runtime_result,
 };
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
@@ -55,5 +55,12 @@ pub(super) fn emit_equality_compare_op(
         emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);
         return;
     }
-    store_numeric_result(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        selection.import,
+    );
 }

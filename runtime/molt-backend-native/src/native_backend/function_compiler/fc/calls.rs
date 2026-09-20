@@ -414,16 +414,17 @@ fn handle_call_direct_op(
         declared_func_arities,
     );
     let runtime_result = runtime_boxed_abi(target_name, sig_arity).map(|abi| abi.result);
+    let bound_result = crate::tir::simple_def_use::simple_ir_out_result(op);
     assert!(
-        runtime_result != Some(RuntimeBoxedReturn::Void) || op.out.is_none(),
+        runtime_result != Some(RuntimeBoxedReturn::Void) || bound_result.is_none(),
         "runtime void call cannot bind an output: {target_name}"
     );
     let target_ret = runtime_result.map_or_else(
         || function_has_ret.get(target_name).copied().unwrap_or(true),
-        |result| result == RuntimeBoxedReturn::OwnedValue,
+        |result| result != RuntimeBoxedReturn::Void,
     );
-    let owns_result = runtime_result == Some(RuntimeBoxedReturn::OwnedValue)
-        || (runtime_result.is_none() && function_has_ret.contains_key(target_name) && target_ret);
+    let owns_result =
+        runtime_result.is_none() && function_has_ret.contains_key(target_name) && target_ret;
     let mut target_sig = module.make_signature();
     for _ in 0..sig_arity {
         target_sig.params.push(AbiParam::new(types::I64));
@@ -544,6 +545,21 @@ fn handle_call_direct_op(
         call_res
     };
 
+    // A borrowed return may alias a temporary boxed argument. Acquire its
+    // independent result owner before any argument or call-boundary cleanup.
+    if runtime_result.is_some() {
+        bind_runtime_import_result(
+            op,
+            res,
+            target_name,
+            sig_arity,
+            module,
+            import_ids,
+            builder,
+            vars,
+        );
+    }
+
     // Tracked-value cleanup (stays inline — varies per site).
     // Re-attach surviving tracked values to the current block.
     if let Some(cur_block) = builder.current_block() {
@@ -578,10 +594,13 @@ fn handle_call_direct_op(
     }
     // Keep sibling inventories intact. The SSA token, not mutation of global
     // name lists, records that this path has released these owners.
-    if owns_result {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
-    } else if let Some(out__) = op.out.as_ref() {
-        def_var_named(&mut *builder, vars, out__, res);
+    if runtime_result.is_none() {
+        // Imported results were already consumed before operand cleanup.
+        if owns_result {
+            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        } else if let Some(out__) = bound_result {
+            def_var_named(&mut *builder, vars, out__, res);
+        }
     }
 }
 

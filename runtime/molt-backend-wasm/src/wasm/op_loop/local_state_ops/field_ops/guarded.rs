@@ -64,25 +64,19 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
     emit_i64_load(func);
     func.instruction(&Instruction::LocalSet(tmp_val));
 
-    emit_inline_field_value_to_output(
-        context,
-        func,
-        tmp_val,
-        op.out.as_deref(),
-        |context, func| {
-            emit_guarded_runtime_get(
-                context,
-                func,
-                op,
-                obj,
-                class_bits,
-                expected,
-                offset,
-                data,
-                bytes.len(),
-            );
-        },
-    );
+    emit_inline_field_value_to_output(context, func, tmp_val, op, |context, func| {
+        emit_guarded_runtime_get(
+            context,
+            func,
+            op,
+            obj,
+            class_bits,
+            expected,
+            offset,
+            data,
+            bytes.len(),
+        );
+    });
 
     func.instruction(&Instruction::End);
 
@@ -166,7 +160,7 @@ fn emit_runtime_ptr_field_write(
         context.reloc_enabled,
         context.import_ids[WasmRuntimeImport::ObjectFieldSetPtr],
     );
-    emit_runtime_output(context, func, op);
+    emit_runtime_output(context, func, op, WasmRuntimeImport::ObjectFieldSetPtr);
 }
 
 fn emit_guarded_runtime_get(
@@ -193,7 +187,7 @@ fn emit_guarded_runtime_get(
         context.reloc_enabled,
         context.import_ids[WasmRuntimeImport::GuardedFieldGet],
     );
-    emit_runtime_output(context, func, op);
+    emit_runtime_output(context, func, op, WasmRuntimeImport::GuardedFieldGet);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -223,5 +217,5 @@ fn emit_guarded_runtime_write(
         context.reloc_enabled,
         context.import_ids[WasmRuntimeImport::GuardedFieldSet],
     );
-    emit_runtime_output(context, func, op);
+    emit_runtime_output(context, func, op, WasmRuntimeImport::GuardedFieldSet);
 }

@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_result_or_drop;
+use super::super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -18,7 +18,14 @@ pub(super) fn emit_object_new(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectNew],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ObjectNew,
+    );
 }
 
 pub(super) fn emit_object_new_bound(
@@ -39,7 +46,14 @@ pub(super) fn emit_object_new_bound(
         reloc_enabled,
         import_ids[WasmRuntimeImport::ObjectNewBound],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::ObjectNewBound,
+    );
 }
 
 pub(super) fn emit_object_set_class(
@@ -65,5 +79,12 @@ pub(super) fn emit_object_set_class(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ObjectSetClass],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        crate::wasm_abi_generated::WasmRuntimeImport::ObjectSetClass,
+    );
 }

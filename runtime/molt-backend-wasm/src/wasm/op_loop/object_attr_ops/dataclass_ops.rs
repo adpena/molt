@@ -1,5 +1,5 @@
 use super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
-use super::super::result_sink::store_result_or_drop;
+use super::super::result_sink::{finish_owned_local_result, store_runtime_result};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
@@ -30,14 +30,21 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
             );
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew,
+            );
         }
         "dataclass_new_values" => {
             let args = op.args.as_ref().unwrap();
             let name = locals[&args[0]];
             let fields = locals[&args[1]];
             let flags = locals[&args[2]];
-            let out = locals[op.out.as_ref().unwrap()];
+            let out = locals.op_result_or_sink_slot(op);
             emit_sequence_builder_from_args(
                 func,
                 &args[3..],
@@ -70,6 +77,7 @@ pub(super) fn emit_dataclass_op(
             );
             func.instruction(&Instruction::LocalSet(out));
             func.instruction(&Instruction::End);
+            finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
         "dataclass_get" => {
             let args = op.args.as_ref().unwrap();
@@ -82,7 +90,14 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassGet],
             );
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::DataclassGet,
+            );
         }
         "dataclass_set" => {
             let args = op.args.as_ref().unwrap();
@@ -97,7 +112,14 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassSet],
             );
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::DataclassSet,
+            );
         }
         "dataclass_set_class" => {
             let args = op.args.as_ref().unwrap();
@@ -110,7 +132,14 @@ pub(super) fn emit_dataclass_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassSetClass],
             );
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::DataclassSetClass,
+            );
         }
         _ => return false,
     }

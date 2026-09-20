@@ -70,6 +70,12 @@ impl WasmFunctionFramePlan {
             &mut local_count,
         );
 
+        let const_cache = locals.allocate_constant_cache(
+            requirements.fast_int_count(),
+            &mut local_types,
+            &mut local_count,
+        );
+
         let mut seed_plan = FrameConstSeedPlan::default();
         let allocation_policy = FrameLocalAllocationPolicy {
             read_vars: &read_vars,
@@ -103,14 +109,18 @@ impl WasmFunctionFramePlan {
                 }
             }
             if let Some(out) = &op.out {
-                let out_local_idx = ensure_frame_local(
-                    &mut locals,
-                    &mut local_types,
-                    &mut local_count,
-                    allocation_policy,
-                    out,
-                    true,
-                );
+                let out_local_idx = if out == WasmFrameLocals::NONE_NAME {
+                    locals.result_slot(out)
+                } else {
+                    ensure_frame_local(
+                        &mut locals,
+                        &mut local_types,
+                        &mut local_count,
+                        allocation_policy,
+                        out,
+                        true,
+                    )
+                };
                 let is_dead = out_local_idx == dead_sink_idx;
                 seed_plan.observe_const_output(
                     op_idx,
@@ -138,12 +148,6 @@ impl WasmFunctionFramePlan {
         for scratch in WasmFrameSyntheticLocal::MOLT_SCRATCH {
             locals.ensure_synthetic(scratch, &mut local_types, &mut local_count);
         }
-
-        let const_cache = locals.allocate_constant_cache(
-            requirements.fast_int_count(),
-            &mut local_types,
-            &mut local_count,
-        );
 
         let stateful = requirements.stateful();
         let jumpful = requirements.jumpful();

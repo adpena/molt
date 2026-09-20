@@ -10,8 +10,6 @@ use wasm_encoder::Function;
 mod aggregate_ops;
 #[path = "core_runtime_ops/allocation_ops.rs"]
 mod allocation_ops;
-#[path = "core_runtime_ops/data_runtime_ops.rs"]
-mod data_runtime_ops;
 #[path = "core_runtime_ops/guard_ops.rs"]
 mod guard_ops;
 #[path = "core_runtime_ops/runtime_effect_ops.rs"]
@@ -57,19 +55,6 @@ pub(super) fn emit_core_runtime_op(
         return true;
     }
     if sequence_ops::emit_sequence_runtime_op(
-        func,
-        op,
-        func_ir,
-        import_ids,
-        locals,
-        scalar_plan,
-        reloc_enabled,
-        ops,
-        op_idx,
-    ) {
-        return true;
-    }
-    if data_runtime_ops::emit_data_runtime_op(
         func,
         op,
         func_ir,

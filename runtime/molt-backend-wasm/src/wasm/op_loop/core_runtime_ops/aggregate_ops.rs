@@ -9,14 +9,12 @@ use wasm_encoder::Function;
 mod callargs_ops;
 #[path = "aggregate_ops/container_query_ops.rs"]
 mod container_query_ops;
-#[path = "aggregate_ops/dict_ops.rs"]
-mod dict_ops;
+#[path = "aggregate_ops/hash_container_ops.rs"]
+mod hash_container_ops;
 #[path = "aggregate_ops/iterator_generator_ops.rs"]
 mod iterator_generator_ops;
 #[path = "aggregate_ops/list_tuple_ops/mod.rs"]
 mod list_tuple_ops;
-#[path = "aggregate_ops/set_ops.rs"]
-mod set_ops;
 
 pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) func_ir: &'a FunctionIR,
@@ -64,10 +62,7 @@ pub(super) fn emit_aggregate_runtime_op(
     if list_tuple_ops::emit_list_tuple_op(func, op, &ctx) {
         return true;
     }
-    if dict_ops::emit_dict_op(func, op, &ctx) {
-        return true;
-    }
-    if set_ops::emit_set_op(func, op, &ctx) {
+    if hash_container_ops::emit_hash_container_op(func, op, &ctx) {
         return true;
     }
     if iterator_generator_ops::emit_iterator_generator_op(func, op, &ctx) {

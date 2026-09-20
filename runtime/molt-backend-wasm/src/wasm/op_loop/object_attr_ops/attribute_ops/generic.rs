@@ -1,4 +1,4 @@
-use crate::wasm::op_loop::result_sink::store_result_or_drop;
+use crate::wasm::op_loop::result_sink::store_runtime_result;
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
@@ -97,7 +97,14 @@ fn emit_get_attr_generic_ptr(
         reloc_enabled,
         import_ids[WasmRuntimeImport::GetAttrPtr],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GetAttrPtr,
+    );
 }
 
 fn emit_get_attr_generic_obj(
@@ -128,7 +135,14 @@ fn emit_get_attr_generic_obj(
         reloc_enabled,
         import_ids[WasmRuntimeImport::GetAttrObjectIc],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GetAttrObjectIc,
+    );
 }
 
 fn emit_get_attr_special_obj(
@@ -150,7 +164,14 @@ fn emit_get_attr_special_obj(
         reloc_enabled,
         import_ids[WasmRuntimeImport::GetAttrSpecial],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GetAttrSpecial,
+    );
 }
 
 fn emit_set_attr_generic_object(
@@ -178,7 +199,14 @@ fn emit_set_attr_generic_object(
         reloc_enabled,
         import_ids[WasmRuntimeImport::SetAttrObject],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::SetAttrObject,
+    );
 }
 
 fn emit_del_attr_generic_object(
@@ -202,7 +230,14 @@ fn emit_del_attr_generic_object(
         reloc_enabled,
         import_ids[WasmRuntimeImport::DelAttrObject],
     );
-    store_result_or_drop(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::DelAttrObject,
+    );
 }
 
 fn staged_attr_name(

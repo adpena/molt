@@ -32,13 +32,14 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
+pub(crate) use import_metadata::WasmRuntimeReturn;
 pub(crate) use import_registry::{
     IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_export_name, wasm_runtime_import,
 };
 pub(crate) use import_tokens::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
-    OpLoopRuntimeSinkSpec, lir_fixed_runtime_call, op_loop_runtime_call,
+    lir_fixed_runtime_call, op_loop_runtime_call,
 };
 pub(crate) use method_ic_selector::{
     WasmMethodIcFamily, WasmMethodIcSelection, wasm_method_ic_selection,

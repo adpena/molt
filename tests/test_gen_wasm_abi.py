@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -205,7 +206,6 @@ def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) ->
             {
                 "kinds": ["example"],
                 "arg_count": 1,
-                "sink": "result_or_drop",
                 "boxed_call": True,
             }
         ]
@@ -227,7 +227,6 @@ def test_runtime_boxed_abi_does_not_promote_transport_only_contracts() -> None:
             "kind": "example",
             "import_name": "example",
             "args": ["local:0"],
-            "sink": "result_or_drop",
         }
     ]
     assert manifest.runtime_boxed_call_specs(data) == []
@@ -253,24 +252,20 @@ def test_runtime_boxed_abi_rejects_inconsistent_callable_shapes(
 
 
 @pytest.mark.parametrize(
-    "args,sink",
+    "args",
     [
-        (["op_value_i64:raw"], "result_or_drop"),
-        (["local:1"], "result_or_drop"),
-        (["local:0"], "drop"),
-        (["local:0"], "none"),
+        ["op_value_i64:raw"],
+        ["local:1"],
+        ["local:0", "local:1"],
     ],
 )
-def test_runtime_boxed_abi_rejects_inconsistent_op_loop_shapes(
-    args: list[str], sink: str
-) -> None:
+def test_runtime_boxed_abi_rejects_inconsistent_op_loop_shapes(args: list[str]) -> None:
     data = _boxed_abi_fixture()
     data["op_loop_runtime_call"] = [
         {
             "kind": "example",
             "import_name": "example",
             "args": args,
-            "sink": sink,
             "boxed_call": True,
         }
     ]
@@ -285,6 +280,206 @@ def test_runtime_boxed_abi_keeps_real_void_distinct_from_boxed_none() -> None:
     data["lir_runtime_call"] = [{"import_name": "example", "boxed_operand_count": 1}]
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed LIR shape"):
         manifest.runtime_boxed_call_specs(data)
+
+
+def test_runtime_return_contract_requires_semantics_for_every_i64_import() -> None:
+    data = _boxed_abi_fixture()
+    with pytest.raises(manifest.WasmAbiManifestError, match="unclassified i64 return"):
+        manifest.runtime_import_return_specs(data)
+    for contract in (
+        "owned_object",
+        "borrowed_object",
+        "raw_bits",
+        "unpublished_object",
+        "scratch_allocation",
+        "execution_token",
+        "poll_result",
+    ):
+        data["import"][0]["return_contract"] = contract
+        assert manifest.runtime_import_return_specs(data) == {"example": contract}
+
+
+@pytest.mark.parametrize("contract", ["void", "unknown", [], True])
+def test_runtime_return_contract_rejects_invalid_or_contradictory_i64_declarations(
+    contract,
+) -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0]["return_contract"] = contract
+    with pytest.raises(manifest.WasmAbiManifestError, match="return_contract"):
+        manifest.runtime_import_return_specs(data)
+
+
+@pytest.mark.parametrize(
+    "results, expected",
+    [([], "void"), (["i32"], "raw_bits"), (["f32"], "raw_bits"), (["f64"], "raw_bits")],
+)
+def test_runtime_return_contract_derives_unambiguous_machine_results(
+    results, expected
+) -> None:
+    data = _boxed_abi_fixture()
+    data["static_type"][0]["results"] = results
+    assert manifest.runtime_import_return_specs(data) == {"example": expected}
+    data["import"][0]["return_contract"] = expected
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicates or contradicts"
+    ):
+        manifest.runtime_import_return_specs(data)
+
+
+@pytest.mark.parametrize("contract", ["borrowed_object", "poll_result"])
+def test_runtime_return_contract_refines_one_shared_boxed_authority(
+    contract: str,
+) -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0]["boxed_call"] = True
+    assert manifest.runtime_import_return_specs(data) == {"example": "owned_object"}
+    data["import"][0]["return_contract"] = contract
+    assert manifest.runtime_import_return_specs(data) == {"example": contract}
+    assert manifest.runtime_boxed_call_specs(data)[0]["ownership"] == contract
+    for contract in ("owned_object", "raw_bits", "void", "unpublished_object"):
+        data["import"][0]["return_contract"] = contract
+        with pytest.raises(
+            manifest.WasmAbiManifestError, match="boxed return authority"
+        ):
+            manifest.runtime_import_return_specs(data)
+
+
+def test_runtime_return_contract_uses_poll_membership_without_another_list() -> None:
+    data = _boxed_abi_fixture()
+    data["import"][0]["poll_table_slot"] = 1
+    assert manifest.runtime_import_return_specs(data) == {"example": "poll_result"}
+    data["import"][0]["boxed_call"] = True
+    assert manifest.runtime_boxed_call_specs(data)[0]["ownership"] == "poll_result"
+    data["import"][0]["return_contract"] = "poll_result"
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed return authority"):
+        manifest.runtime_import_return_specs(data)
+    data["import"][0].pop("return_contract")
+    data["import"][0]["type"] = 1
+    with pytest.raises(manifest.WasmAbiManifestError, match="boxed call|poll table"):
+        manifest.runtime_import_return_specs(data)
+    data["import"][0].pop("boxed_call")
+    with pytest.raises(manifest.WasmAbiManifestError, match="poll table"):
+        manifest.runtime_import_return_specs(data)
+
+
+def test_runtime_return_contract_rejects_multiple_results() -> None:
+    data = _boxed_abi_fixture()
+    data["static_type"][0]["results"] = ["i64", "i64"]
+    with pytest.raises(manifest.WasmAbiManifestError, match="multiple return values"):
+        manifest.runtime_import_return_specs(data)
+
+
+@pytest.mark.parametrize(
+    "section", ["op_loop_runtime_call", "op_loop_runtime_call_group"]
+)
+def test_op_loop_cannot_redeclare_return_sink_policy(section: str) -> None:
+    row = {"kind": "example", "sink": "owned_result_or_release"}
+    if section.endswith("group"):
+        row.update(kinds=["example"], arg_count=1)
+    with pytest.raises(manifest.WasmAbiManifestError, match="sink policy is derived"):
+        manifest._expand_op_loop_runtime_calls({section: [row]})
+
+
+def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_projection() -> (
+    None
+):
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    contracts = manifest.runtime_import_return_specs(data)
+    assert len(contracts) == len(data["import"])
+    assert contracts["alloc_class"] == "unpublished_object"
+    assert contracts["scratch_alloc"] == "scratch_allocation"
+    assert contracts["runtime_execution_enter"] == "execution_token"
+    assert contracts["int_from_i64"] == "owned_object"
+    assert contracts["int_as_i64"] == "raw_bits"
+    assert contracts["guard_type"] == "borrowed_object"
+    assert contracts["dict_set"] == "borrowed_object"
+    assert contracts["store_index"] == "borrowed_object"
+    assert contracts["io_wait"] == "poll_result"
+    assert contracts["future_poll"] == "poll_result"
+    assert contracts["gpu_thread_id"] == "owned_object"
+    for name in (
+        "exception_pending",
+        "async_work_poll_and_exception_pending",
+        "frame_invocation_enter",
+    ):
+        assert contracts[name] == "raw_bits"
+        entry = next(entry for entry in data["import"] if entry["name"] == name)
+        assert "callable_arity" not in entry
+    assert contracts["frame_invocation_exit"] == "owned_object"
+    boxed_names = {
+        row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)
+    }
+    assert "molt_frame_invocation_exit" not in boxed_names
+    for name in ("dtype", "nbytes", "free", "numel", "realize", "contiguous"):
+        runtime_name = f"molt_gpu_prim_{name}"
+        assert runtime_name in data["non_runtime_callable_intrinsic"]
+        assert runtime_name not in boxed_names
+    for name in (
+        "chan_recv",
+        "chan_recv_blocking",
+        "chan_send",
+        "chan_try_recv",
+        "chan_try_send",
+        "stream_recv",
+        "ws_recv",
+        "stream_reader_read",
+        "stream_reader_readline",
+        "stream_send_obj",
+        "ws_send_obj",
+    ):
+        assert contracts[name] == "poll_result"
+    assert contracts["chan_send_blocking"] == "owned_object"
+    modules = gen.render_rs_modules(data)
+    variants = gen._runtime_import_variants(data)
+    return_body = modules["import_metadata.rs"].split(
+        "pub(crate) const fn return_contract(self) -> WasmRuntimeReturn {", 1
+    )[1]
+    # rustfmt may turn a long expression arm into a braced block. Parse both
+    # shapes, then require exactly one matching return fact for every import.
+    arms = re.findall(
+        r"Self::(\w+)\s*=>\s*(?:WasmRuntimeReturn::(\w+)\s*,"
+        r"|\{\s*WasmRuntimeReturn::(\w+)\s*\}\s*,?)",
+        return_body,
+    )
+    expected = {
+        variants[name]: manifest.RUNTIME_RETURN_CONTRACTS[contract]
+        for name, contract in contracts.items()
+    }
+    assert len(arms) == len(expected)
+    assert {variant: inline or block for variant, inline, block in arms} == expected
+    assert "OpLoopRuntimeSinkSpec" not in modules["lir_runtime_calls.rs"]
+    shared = gen.render_runtime_boxed_abi_rs(data)
+    assert "RuntimeBoxedReturn::BorrowedValue" in shared
+    assert "RuntimeBoxedReturn::PollValue" in shared
+
+
+@pytest.mark.parametrize(
+    "import_name", ["alloc", "alloc_class", "scratch_alloc", "runtime_execution_enter"]
+)
+def test_op_loop_rejects_returns_that_require_a_dedicated_lifetime_protocol(
+    import_name: str,
+) -> None:
+    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    data["op_loop_runtime_call"].append(
+        {"kind": "synthetic_forbidden_sink", "import_name": import_name, "args": []}
+    )
+    with pytest.raises(manifest.WasmAbiManifestError, match="cannot sink"):
+        manifest.validate_loaded_manifest(data)
+
+
+def test_op_loop_rejects_a_marked_import_with_a_different_return_contract() -> None:
+    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    observer = next(
+        row
+        for row in data["op_loop_runtime_call"]
+        if row["kind"] == "exception_finally_pending_observer"
+    )
+    observer["marked_import_name"] = "runtime_init"
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="marked import return contract"
+    ):
+        manifest.validate_loaded_manifest(data)
 
 
 def _install_gen_cache(gen) -> None:
@@ -437,7 +632,13 @@ def test_rust_render_derives_import_variants_once_per_transaction(
     assert calls == 1
     assert "WasmRuntimeImport" in first["import_tokens.rs"]
     # A mutable manifest must not acquire a stale identity-keyed derived cache.
-    data["import"].append({"name": "render_transaction_extra_import", "type": 0})
+    data["import"].append(
+        {
+            "name": "render_transaction_extra_import",
+            "type": 0,
+            "return_contract": "raw_bits",
+        }
+    )
     second = gen.render_rs_modules(data)
     assert calls == 2
     assert "RenderTransactionExtraImport" not in first["import_tokens.rs"]
@@ -872,6 +1073,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["importlib_import_transaction"]["type"] == 12
     assert imports["importlib_import_transaction"] == {
         "name": "importlib_import_transaction",
+        "return_contract": "owned_object",
         "type": 12,
     }
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
@@ -1517,8 +1719,20 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     assert op_loop_calls["module_import_star"]["lir_operand_count"] == 2
     assert op_loop_calls["context_depth"]["lir_variant"] == "ContextDepth"
     assert op_loop_calls["context_depth"]["lir_operand_count"] == 0
-    assert op_loop_calls["asyncgen_new"]["sink"] == "owned_result_or_release"
-    assert "dec_ref_obj" in op_loop_calls["asyncgen_new"]["required_imports"]
+    for kind, import_name in (
+        ("json_parse", "json_parse_scalar_obj"),
+        ("msgpack_parse", "msgpack_parse_scalar_obj"),
+        ("cbor_parse", "cbor_parse_scalar_obj"),
+    ):
+        assert op_loop_calls[kind] == {
+            "kind": kind,
+            "import_name": import_name,
+            "args": ["local:0"],
+            "required_imports": [import_name],
+        }
+    assert "sink" not in op_loop_calls["asyncgen_new"]
+    assert "dec_ref_obj" not in op_loop_calls["asyncgen_new"]["required_imports"]
+    assert op_loop_calls["chan_drop"]["discard_result"] is True
     finally_observer = op_loop_calls["exception_finally_pending_observer"]
     assert finally_observer["import_name"] == "exception_last_pending"
     assert (
@@ -1531,20 +1745,19 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         "import_name": "gpu_thread_id",
         "args": [],
         "required_imports": ["gpu_thread_id"],
-        "sink": "result_or_drop",
     }
     assert op_loop_calls["gpu_barrier"] == {
         "kind": "gpu_barrier",
         "import_name": "gpu_barrier",
         "args": [],
         "required_imports": ["gpu_barrier"],
-        "sink": "result_or_drop",
     }
 
     rendered_rs_modules = gen.render_rs_modules(data)
     rendered_lir_rs = rendered_rs_modules["lir_runtime_calls.rs"]
     assert "enum LirRuntimeCall" in rendered_lir_rs
-    assert "OwnedResultOrRelease" in rendered_lir_rs
+    assert "OpLoopRuntimeSinkSpec" not in rendered_lir_rs
+    assert "discard_result: bool" in rendered_lir_rs
     assert "use super::import_tokens::WasmRuntimeImport;" in rendered_lir_rs
     assert "pub(crate) const fn import(self) -> WasmRuntimeImport" in rendered_lir_rs
     assert "Self::FloorDiv => WasmRuntimeImport::Floordiv" in rendered_lir_rs
@@ -1613,15 +1826,23 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
     with pytest.raises(manifest.WasmAbiManifestError, match="boxed_operand_count"):
         manifest.validate_loaded_manifest(broken_count)
 
-    missing_release_import = copy.deepcopy(data)
-    owned_call = next(
-        entry
-        for entry in missing_release_import["op_loop_runtime_call"]
-        if entry["kind"] == "asyncgen_new"
-    )
-    owned_call["required_imports"].remove("dec_ref_obj")
-    with pytest.raises(manifest.WasmAbiManifestError, match="dec_ref_obj"):
-        manifest.validate_loaded_manifest(missing_release_import)
+    for helper in ("dec_ref_obj", "inc_ref_obj"):
+        missing_refcount_import = copy.deepcopy(data)
+        missing_refcount_import["import"] = [
+            entry
+            for entry in missing_refcount_import["import"]
+            if entry["name"] != helper
+        ]
+        missing_refcount_import["lir_runtime_call"] = [
+            entry
+            for entry in missing_refcount_import["lir_runtime_call"]
+            if entry["import_name"] != helper
+        ]
+        with pytest.raises(
+            manifest.WasmAbiManifestError,
+            match=f"runtime return contracts require {helper}",
+        ):
+            manifest.validate_loaded_manifest(missing_refcount_import)
 
     broken_marked_import = copy.deepcopy(data)
     next(
@@ -2023,7 +2244,6 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
         "raw_int_effect": "set_int",
         "lir_fast": "lower",
         "materializer_import": "int_from_i64",
-        "parse_scalar_literal": False,
         "dispatch_runtime_seed": True,
     }
     assert policies["const_bool"]["scalar_payload"] == "bool"
@@ -2032,16 +2252,14 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert policies["const_str"]["materializer_import"] == "string_from_bytes"
     assert policies["const_str"]["literal_payload"] == "string"
     assert policies["const_str"]["scalar_payload"] == "none"
-    assert policies["const_str"]["parse_scalar_literal"] is True
     assert policies["const_str"]["lir_fast"] == "materialize"
     assert policies["const_bytes"]["materializer_import"] == "bytes_from_bytes"
     assert policies["const_bytes"]["literal_payload"] == "bytes"
-    assert policies["const_bytes"]["parse_scalar_literal"] is True
     assert policies["const_bytes"]["lir_fast"] == "materialize"
     assert policies["const_bigint"]["materializer_import"] == "bigint_from_str"
     assert policies["const_bigint"]["literal_payload"] == "bigint_decimal"
-    assert policies["const_bigint"]["parse_scalar_literal"] is False
     assert policies["const_bigint"]["lir_fast"] == "materialize"
+    assert all("parse_scalar_literal" not in policy for policy in policies.values())
 
     rendered_rs = _rendered_rs(gen, data)
     rendered_py = gen.render_py(data)
@@ -2054,6 +2272,20 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "opcode_canonical_kind_table(opcode)" in rendered_rs
     assert "PlaceholderZero" not in rendered_rs
     assert "WASM_CONST_OP_POLICIES" in rendered_py
+    assert "parse_scalar_literal" not in rendered_rs
+    assert "parse_scalar_literal" not in rendered_py
+
+
+def test_wasm_abi_manifest_rejects_retired_parse_scalar_literal_policy() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    broken = copy.deepcopy(data)
+    broken["const_op_policy"][0]["parse_scalar_literal"] = False
+
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="parse_scalar_literal is retired"
+    ):
+        manifest.validate_loaded_manifest(broken)
 
 
 def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matchers() -> (
@@ -2313,6 +2545,20 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
     assert "WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in rendered_py
     assert "WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in rendered_py
     assert "WASM_ESSENTIAL_EXPORTS" in rendered_py
+
+    # Host construction and rollback are one contract in both the Cargo
+    # export surface and final-output retention, including minimal runtimes.
+    stream_host_exports = {
+        "molt_stream_new",
+        "molt_stream_send",
+        "molt_stream_close",
+        "molt_stream_drop",
+        "molt_int_from_i64",
+        "molt_exception_pending_fast",
+        "molt_dec_ref_obj",
+    }
+    assert stream_host_exports <= set(policy["essential_exports"])
+    assert stream_host_exports <= set(data["runtime_export_policy"]["host_exports"])
 
     link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
     assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format

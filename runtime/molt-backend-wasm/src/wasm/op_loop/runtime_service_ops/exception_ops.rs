@@ -1,4 +1,4 @@
-use super::super::result_sink::store_result_or_drop;
+use super::super::result_sink::{discard_runtime_result, store_runtime_result};
 use super::RuntimeServiceOpContext;
 use crate::OpIR;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
@@ -28,7 +28,14 @@ pub(super) fn emit_exception_runtime_op(
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPush],
                 );
             }
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPush,
+            );
         }
         "exception_pop" => {
             if native_eh_enabled {
@@ -40,7 +47,14 @@ pub(super) fn emit_exception_runtime_op(
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPop],
                 );
             }
-            store_result_or_drop(func, op, locals);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPop,
+            );
         }
         "raise" => {
             let args = op.args.as_ref().unwrap();
@@ -54,7 +68,12 @@ pub(super) fn emit_exception_runtime_op(
                     reloc_enabled,
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Raise],
                 );
-                func.instruction(&Instruction::Drop);
+                discard_runtime_result(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    crate::wasm_abi_generated::WasmRuntimeImport::Raise,
+                );
                 if context.raise_exits_function {
                     context
                         .frame
@@ -68,7 +87,14 @@ pub(super) fn emit_exception_runtime_op(
                     reloc_enabled,
                     import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Raise],
                 );
-                store_result_or_drop(func, op, locals);
+                store_runtime_result(
+                    func,
+                    op,
+                    locals,
+                    import_ids,
+                    reloc_enabled,
+                    crate::wasm_abi_generated::WasmRuntimeImport::Raise,
+                );
             }
         }
         _ => return false,

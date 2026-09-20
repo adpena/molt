@@ -1,5 +1,7 @@
+use super::super::super::result_sink::store_runtime_result;
 use super::super::LocalStateOpContext;
 use crate::OpIR;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::{POINTER_MASK, box_bool};
 use molt_codegen_abi::{HEADER_FLAG_HAS_PTRS, HEADER_FLAGS_OFFSET};
@@ -82,15 +84,16 @@ pub(super) fn emit_runtime_output(
     context: &LocalStateOpContext<'_>,
     func: &mut Function,
     op: &OpIR,
+    import: WasmRuntimeImport,
 ) {
-    match op.out.as_deref() {
-        Some("none") | None => {
-            func.instruction(&Instruction::Drop);
-        }
-        Some(out) => {
-            func.instruction(&Instruction::LocalSet(context.locals[out]));
-        }
-    }
+    store_runtime_result(
+        func,
+        op,
+        context.locals,
+        context.import_ids,
+        context.reloc_enabled,
+        import,
+    );
 }
 
 pub(super) fn emit_none_result_for_output(
@@ -98,11 +101,9 @@ pub(super) fn emit_none_result_for_output(
     func: &mut Function,
     op: &OpIR,
 ) {
-    if let Some(out) = op.out.as_deref()
-        && out != "none"
-    {
+    if let Some(out) = context.locals.bound_op_result_slot(op) {
         context.const_cache.emit_none(func);
-        func.instruction(&Instruction::LocalSet(context.locals[out]));
+        func.instruction(&Instruction::LocalSet(out));
     }
 }
 
@@ -158,7 +159,7 @@ pub(super) fn emit_inline_field_value_to_output(
     context: &mut LocalStateOpContext<'_>,
     func: &mut Function,
     tmp_val: u32,
-    out: Option<&str>,
+    op: &OpIR,
     runtime: impl FnOnce(&mut LocalStateOpContext<'_>, &mut Function),
 ) {
     func.instruction(&Instruction::LocalGet(tmp_val));
@@ -167,9 +168,9 @@ pub(super) fn emit_inline_field_value_to_output(
     runtime(context, func);
     func.instruction(&Instruction::Else);
     func.instruction(&Instruction::LocalGet(tmp_val));
-    match out {
-        Some(out) if out != "none" => {
-            func.instruction(&Instruction::LocalSet(context.locals[out]));
+    match context.locals.bound_op_result_slot(op) {
+        Some(out) => {
+            func.instruction(&Instruction::LocalSet(out));
         }
         _ => {
             func.instruction(&Instruction::Drop);
