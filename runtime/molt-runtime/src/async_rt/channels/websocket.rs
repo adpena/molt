@@ -10,7 +10,7 @@ use super::super::poll::ws_wait_poll_fn_addr;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use super::super::sockets::require_net_capability;
 use super::super::sockets::{SendData, send_data_from_bits};
-use super::stream::{bytes_channel, send_result_into_object};
+use super::stream::bytes_channel;
 #[cfg(molt_has_net_io)]
 use crate::GilReleaseGuard;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -1478,7 +1478,9 @@ pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
         };
         let _owned_guard = owned;
         // SAFETY: pointer/length pair comes from validated bytes-like object.
-        send_result_into_object(unsafe { molt_ws_send(ws_bits, data_ptr, data_len as u64) })
+        super::send_result_into_object(_py, unsafe {
+            molt_ws_send(ws_bits, data_ptr, data_len as u64)
+        })
     })
 }
 
@@ -1580,9 +1582,12 @@ mod host_send_result_tests {
                 assert_eq!(unsafe { super::molt_ws_pair(0, &mut left, &mut right) }, 0);
                 assert!(!crate::ptr_from_bits(left).is_null());
                 assert!(!crate::ptr_from_bits(right).is_null());
-                if preserve_error {
+                let preserved_error = if preserve_error {
                     crate::raise_exception::<()>(py, "ValueError", "preserve caller failure");
-                }
+                    Some(crate::builtins::exceptions::molt_exception_last_pending())
+                } else {
+                    None
+                };
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
                     max_allocations: Some(0),
@@ -1594,16 +1599,23 @@ mod host_send_result_tests {
                 assert_eq!(result, crate::MoltObject::none().bits());
                 assert!(crate::ptr_from_bits(left).is_null());
                 assert!(crate::ptr_from_bits(right).is_null());
+                assert!(crate::exception_pending(py));
                 let error = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                    py,
-                    error,
-                    if preserve_error {
+                if let Some(preserved_error) = preserved_error {
+                    assert_eq!(error, preserved_error);
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
                         "ValueError"
-                    } else {
-                        "MemoryError"
-                    }
-                ));
+                    ));
+                    crate::dec_ref_bits(py, preserved_error);
+                } else {
+                    // Allocation denial records the canonical nonallocating
+                    // emergency MemoryError marker. It is pending, but object
+                    // retrieval deliberately returns None because materializing
+                    // an exception object would allocate recursively.
+                    assert_eq!(error, crate::MoltObject::none().bits());
+                }
                 crate::clear_exception(py);
                 crate::dec_ref_bits(py, error);
             }
@@ -1652,16 +1664,6 @@ mod host_send_result_tests {
 
     #[test]
     fn websocket_send_object_preserves_hook_closed_and_exception_results() {
-        extern "C" fn send_hook(ctx: *mut u8, _data: *const u8, _len: usize) -> i64 {
-            if ctx.is_null() {
-                crate::MoltObject::none().bits() as i64
-            } else {
-                crate::with_gil_entry_nopanic!(_py, {
-                    crate::raise_exception::<i64>(_py, "OSError", "send failed")
-                })
-            }
-        }
-
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let payload = crate::alloc_bytes(_py, b"payload");
@@ -1669,12 +1671,25 @@ mod host_send_result_tests {
             let payload_bits = crate::MoltObject::from_ptr(payload).bits();
             let mut marker = 0u8;
             for ctx in [std::ptr::null_mut(), &mut marker as *mut u8] {
-                let ws = super::molt_ws_new_with_hooks(send_hook as *const () as usize, 0, 0, ctx);
+                let hook_addr = super::super::send_hook_result_fixture as *const () as usize;
+                assert_ne!(hook_addr, 0);
+                let ws = super::molt_ws_new_with_hooks(hook_addr, 0, 0, ctx);
+                assert!(!ws.is_null());
                 let ws_bits = crate::opaque_handle_bits(ws);
-                let result = unsafe { super::molt_ws_send_obj(ws_bits, payload_bits) };
-                assert_eq!(result, crate::MoltObject::none().bits());
-                assert_eq!(crate::exception_pending(_py), !ctx.is_null());
-                crate::clear_exception(_py);
+                assert_eq!(crate::ptr_from_bits(ws_bits), ws);
+                let configured = unsafe { &*(ws as *mut super::MoltWebSocket) };
+                assert_eq!(
+                    configured.send_hook.map(|hook| hook as usize),
+                    Some(hook_addr)
+                );
+                assert_eq!(configured.hook_ctx, ctx);
+
+                super::super::assert_send_hook_result_paths(
+                    _py,
+                    ctx,
+                    || unsafe { super::molt_ws_send(ws_bits, b"raw".as_ptr(), 3) },
+                    || unsafe { super::molt_ws_send_obj(ws_bits, payload_bits) },
+                );
                 unsafe { super::molt_ws_drop(ws_bits) };
             }
             crate::dec_ref_bits(_py, payload_bits);

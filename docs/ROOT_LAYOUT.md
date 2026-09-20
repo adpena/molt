@@ -60,6 +60,25 @@ The following do not belong at root:
 
 ## Review Rule
 
+This layout separates local artifact locations from publishable source. `logs/`,
+`tmp/`, process/guard traces, agent handoffs, and one-off investigation plans must
+not be tracked or force-added. Preserve their useful evidence outside the source
+checkout or in ignored local artifacts. A directory being a canonical artifact
+home does not make its contents public repository material.
+
+Public documentation should serve users or contributors: setup, supported
+contracts, architecture and design rationale, testing, maintained benchmarks,
+security, and releases. Fold durable conclusions into those owning documents or
+regressions instead of adding session reports and duplicate status files.
+Curated benchmark data and test fixtures may be tracked when a maintained
+consumer requires them; raw per-run logs and machine-specific state may not.
+
+The `public-source-boundary` pre-commit hook rejects tracked files in the local
+log/scratch roots, raw benchmark logs and guard traces, and machine-local Claude
+settings. Run the configured hooks before landing; ignored files must not be
+force-added to bypass this boundary. This path check supplements review of a
+document's purpose; it does not classify maintained specifications as scratch.
+
 If a new file is about to land in root, ask:
 
 1. Is it a stable project entrypoint, manifest, or top-level doc?

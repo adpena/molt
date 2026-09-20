@@ -427,20 +427,20 @@ fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
         .and_then(|id| type_map.get(id))
         .cloned()
         .unwrap_or(TirType::DynBox);
-    let result_ty = op
-        .results
-        .first()
-        .and_then(|id| type_map.get(id))
-        .cloned()
-        .unwrap_or_else(|| TirType::Box(Box::new(operand_ty)));
-    let result_id = op.results[0];
     LirOp {
         tir_op: op.clone(),
-        result_values: vec![LirValue {
-            id: result_id,
-            ty: result_ty,
-            repr: LirRepr::DynBox,
-        }],
+        result_values: op
+            .results
+            .iter()
+            .map(|&id| LirValue {
+                id,
+                ty: type_map
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| TirType::Box(Box::new(operand_ty.clone()))),
+                repr: LirRepr::DynBox,
+            })
+            .collect(),
     }
 }
 
@@ -455,23 +455,26 @@ fn lower_unbox_op(
         .and_then(|id| type_map.get(id))
         .cloned()
         .unwrap_or(TirType::DynBox);
-    let result_ty = op
-        .results
-        .first()
-        .and_then(|id| type_map.get(id))
-        .cloned()
-        .unwrap_or_else(|| match operand_ty {
-            TirType::Box(inner) => inner.as_ref().clone(),
-            _ => TirType::DynBox,
-        });
-    let result_id = op.results[0];
     LirOp {
         tir_op: op.clone(),
-        result_values: vec![LirValue {
-            id: result_id,
-            repr: lir_repr_from_source(repr, result_id, &result_ty),
-            ty: result_ty,
-        }],
+        result_values: op
+            .results
+            .iter()
+            .map(|&id| {
+                let ty = type_map
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| match &operand_ty {
+                        TirType::Box(inner) => inner.as_ref().clone(),
+                        _ => TirType::DynBox,
+                    });
+                LirValue {
+                    id,
+                    repr: lir_repr_from_source(repr, id, &ty),
+                    ty,
+                }
+            })
+            .collect(),
     }
 }
 
@@ -811,6 +814,25 @@ mod tests {
             results,
             attrs,
             source_span: None,
+        }
+    }
+
+    #[test]
+    fn discarded_box_and_unbox_preserve_the_operation_without_inventing_results() {
+        for ty in [TirType::I64, TirType::F64, TirType::Bool, TirType::DynBox] {
+            let types = HashMap::from([(ValueId(0), ty)]);
+            for opcode in [OpCode::BoxVal, OpCode::UnboxVal] {
+                let op = make_op(opcode, vec![ValueId(0)], vec![]);
+                let lir = if opcode == OpCode::BoxVal {
+                    lower_box_op(&op, &types)
+                } else {
+                    lower_unbox_op(&op, &types, LirReprSource::AnalysisFloor)
+                };
+                assert_eq!(lir.tir_op.opcode, opcode);
+                assert_eq!(lir.tir_op.operands, [ValueId(0)]);
+                assert!(lir.tir_op.results.is_empty());
+                assert!(lir.result_values.is_empty());
+            }
         }
     }
 

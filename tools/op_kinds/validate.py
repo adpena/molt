@@ -166,6 +166,12 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "audited context-dependent opcodes; use a fixed arity or add "
                 "the opcode to _VARIABLE_RESULT_ARITY_OPCODES with a rationale"
             )
+        discardable = row.get("result_may_be_discarded", False)
+        if type(discardable) is not bool or (discardable and result_arity != "one"):
+            raise OpKindTableError(
+                f"opcode {name}: result_may_be_discarded must be a bool and "
+                "can only admit a discarded binding for result_arity = 'one'"
+            )
         if "operand_independent_result_type" in row:
             raise OpKindTableError(
                 f"opcode {name}: use result-indexed operand_independent_result_types"

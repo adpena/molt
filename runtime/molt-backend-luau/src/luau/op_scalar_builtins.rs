@@ -178,15 +178,26 @@ impl LuauBackend {
             }
 
             // ================================================================
-            // Raw int bridge (no-op in Luau; values are already unboxed)
+            // Representation bridge (Luau already uses VM value carriers).
             // ================================================================
-            "unbox_to_raw_int" | "box_from_raw_int" => {
-                let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(val) = args.first() {
-                    self.emit_line(&format!("local {out} = {}", sanitize_ident(val)));
-                } else {
-                    self.emit_line(&format!("local {out} = nil"));
+            "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
+                let Some([source]) = op.args.as_deref() else {
+                    self.emit_unsupported_op_with_reason(
+                        op,
+                        "representation conversion requires exactly one operand",
+                    );
+                    return true;
+                };
+                if let Some(output) = molt_tir::tir::simple_def_use::simple_ir_out_result(op) {
+                    if self.tuple_vars.contains(source) {
+                        self.tuple_vars.insert(output.to_string());
+                    }
+                    let value = if source == "none" {
+                        "nil".to_string()
+                    } else {
+                        sanitize_ident(source)
+                    };
+                    self.emit_line(&format!("local {} = {value}", sanitize_ident(output)));
                 }
             }
             _ => return false,

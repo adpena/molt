@@ -27,6 +27,90 @@ fn capacity_from_object(py: &crate::PyToken<'_>, bits: u64) -> Option<usize> {
     })
 }
 
+/// Raw byte-send ABIs and their hooks use zero for both ready success and the
+/// `i64` exception sentinel. Python-facing wrappers must consult the pending
+/// exception state before turning an unambiguous success into an integer.
+#[inline]
+fn send_result_into_object(py: &crate::PyToken<'_>, result: i64) -> u64 {
+    if crate::exception_pending(py) {
+        crate::MoltObject::none().bits()
+    } else if result == 0 {
+        crate::MoltObject::from_int(0).bits()
+    } else {
+        result as u64
+    }
+}
+
+#[cfg(test)]
+static SEND_HOOK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static SEND_HOOK_LAST_CTX: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+#[cfg(test)]
+extern "C" fn send_hook_result_fixture(ctx: *mut u8, _data: *const u8, _len: usize) -> i64 {
+    use std::sync::atomic::Ordering;
+
+    SEND_HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+    SEND_HOOK_LAST_CTX.store(ctx as usize, Ordering::SeqCst);
+    if ctx.is_null() {
+        crate::MoltObject::none().bits() as i64
+    } else {
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<i64>(py, "OSError", "send failed")
+        })
+    }
+}
+
+#[cfg(test)]
+fn assert_send_hook_result_paths(
+    py: &crate::PyToken<'_>,
+    ctx: *mut u8,
+    raw_send: impl FnOnce() -> i64,
+    boxed_send: impl FnOnce() -> u64,
+) {
+    use std::sync::atomic::Ordering;
+
+    let expected_raw = if ctx.is_null() {
+        crate::MoltObject::none().bits() as i64
+    } else {
+        0
+    };
+
+    fn reset_observation() {
+        SEND_HOOK_CALLS.store(0, Ordering::SeqCst);
+        SEND_HOOK_LAST_CTX.store(usize::MAX, Ordering::SeqCst);
+    }
+
+    fn assert_observation(ctx: *mut u8) {
+        assert_eq!(SEND_HOOK_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(SEND_HOOK_LAST_CTX.load(Ordering::SeqCst), ctx as usize);
+    }
+
+    fn assert_exception_state(py: &crate::PyToken<'_>, ctx: *mut u8) {
+        assert_eq!(crate::exception_pending(py), !ctx.is_null());
+        crate::clear_exception(py);
+    }
+
+    reset_observation();
+    assert_eq!(
+        send_hook_result_fixture(ctx, b"direct".as_ptr(), 6),
+        expected_raw
+    );
+    assert_observation(ctx);
+    assert_exception_state(py, ctx);
+
+    reset_observation();
+    assert_eq!(raw_send(), expected_raw);
+    assert_observation(ctx);
+    assert_exception_state(py, ctx);
+
+    reset_observation();
+    assert_eq!(boxed_send(), crate::MoltObject::none().bits());
+    assert_observation(ctx);
+    assert_exception_state(py, ctx);
+}
+
 pub(crate) use capabilities::{
     capability_fix_hint, has_capability, is_trusted, operation_allowed, raise_capability_denied,
     require_operation,
@@ -49,6 +133,38 @@ pub(crate) use stream::{
 pub use websocket::*;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 pub(crate) use websocket::{ws_wait_detach_resource, ws_wait_release_detached_resource};
+
+#[cfg(test)]
+mod send_result_tests {
+    #[test]
+    fn signed_send_status_conversion_preserves_all_object_boundary_outcomes() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let ready = super::send_result_into_object(py, 0);
+            assert_eq!(crate::obj_from_bits(ready).as_int(), Some(0));
+
+            let pending = crate::pending_bits_i64();
+            assert_eq!(super::send_result_into_object(py, pending), pending as u64);
+
+            let closed = crate::MoltObject::none().bits();
+            assert_eq!(super::send_result_into_object(py, closed as i64), closed);
+
+            crate::raise_exception::<()>(py, "ValueError", "preserve caller failure");
+            let preserved = crate::builtins::exceptions::molt_exception_last_pending();
+            assert_eq!(super::send_result_into_object(py, 0), closed);
+            let after = crate::builtins::exceptions::molt_exception_last_pending();
+            assert_eq!(after, preserved);
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                after,
+                "ValueError"
+            ));
+            crate::clear_exception(py);
+            crate::dec_ref_bits(py, preserved);
+            crate::dec_ref_bits(py, after);
+        });
+    }
+}
 
 #[cfg(test)]
 mod capacity_tests {

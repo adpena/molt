@@ -236,6 +236,16 @@ for (const name of ['box_heap', 'box_ref', 'unbox_ref', 'unbox_boxed']) {
   assert.equal(output, input); assert.equal(refs.get(input), 2, name);
   dec(input); live(output); dec(output); assert.equal(refs.size, 0, name);
 }
+for (const failure of [0, 1]) {
+  reset(failure); assert.equal(loaded.discard_box(wide), undefined);
+  assert.equal(attempts, 1); assert.equal(refs.size, 0);
+  assert.equal(pending, failure ? 'MemoryError' : '');
+}
+for (const name of ['discard_box_heap', 'discard_unbox']) {
+  reset(); const input = allocate(); assert.equal(loaded[name](input), undefined);
+  assert.equal(refs.get(input), 1, name); assert.equal(attempts, 0, name);
+  assert.equal(unboxes, 0, name); dec(input); assert.equal(refs.size, 0, name);
+}
 for (const integer of [-(1n << 63n), -(1n << 46n) - 1n, 1n << 46n, (1n << 63n) - 1n]) {
   reset(); const boxed = hooks.int_from_i64(integer);
   assert.equal(loaded.unbox_int(boxed), integer); assert.equal(unboxes, 1);
@@ -361,6 +371,21 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
                     AttrValue::Str("binding_alias".into()),
                 );
         }
+        let path = directory.join(format!("{name}.wasm"));
+        fs::write(&path, executable_module(&lower_lir_to_wasm(&function))).unwrap();
+        modules.insert(name.into(), json!(path));
+    }
+    for (name, opcode, repr) in [
+        ("discard_box", OpCode::BoxVal, LirRepr::I64),
+        ("discard_box_heap", OpCode::BoxVal, LirRepr::DynBox),
+        ("discard_unbox", OpCode::UnboxVal, LirRepr::DynBox),
+    ] {
+        let mut function = fixture(opcode, &[repr], &[0], LirRepr::DynBox);
+        function.return_types.clear();
+        let block = function.blocks.get_mut(&function.entry_block).unwrap();
+        block.ops[0].tir_op.results.clear();
+        block.ops[0].result_values.clear();
+        block.terminator = LirTerminator::Return { values: vec![] };
         let path = directory.join(format!("{name}.wasm"));
         fs::write(&path, executable_module(&lower_lir_to_wasm(&function))).unwrap();
         modules.insert(name.into(), json!(path));

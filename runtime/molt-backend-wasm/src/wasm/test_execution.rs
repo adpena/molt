@@ -215,20 +215,33 @@ new WebAssembly.Instance(new WebAssembly.Module(Uint8Array.from(bytes))).exports
 
 #[test]
 fn process_deadline_reaps_owned_host_loop_outside_guest_vm() {
-    let Some(node) = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "WASM test host process deadline",
-    ) else {
-        return;
-    };
+    const CHILD: &str = "MOLT_WASM_TEST_PROCESS_DEADLINE_CHILD";
+    const READY: &str = "owned native deadline child ready";
+    if std::env::var_os(CHILD).is_some() {
+        use std::io::Write;
+
+        println!("{READY}");
+        std::io::stdout().flush().expect("flush child readiness");
+        loop {
+            std::thread::park();
+        }
+    }
+    // The process deadline is a native Child-handle contract, independent of
+    // Node and its graceful runtime-hook shutdown. Re-exec the admitted test
+    // binary so the negative control proves forced termination/reaping without
+    // requiring a killed language runtime to send a terminal handshake.
     let failure = std::panic::catch_unwind(|| {
         execution_output(
-            Command::new(node)
-                .arg("-e")
-                .arg("setInterval(() => {}, 1000)"),
+            Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--exact",
+                    "wasm::test_execution::process_deadline_reaps_owned_host_loop_outside_guest_vm",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1"),
             "host loop negative control",
-            Duration::from_millis(100),
+            Duration::from_secs(2),
         )
         .expect("launch host deadline negative control")
     })
@@ -237,4 +250,8 @@ fn process_deadline_reaps_owned_host_loop_outside_guest_vm() {
         .downcast_ref::<String>()
         .expect("deadline diagnostic must retain the child outcome");
     assert!(message.contains("owned subprocess exceeded"), "{message}");
+    assert!(
+        message.contains(READY),
+        "deadline must exercise the running child, not just startup: {message}"
+    );
 }

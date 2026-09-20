@@ -133,11 +133,25 @@ def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
     lines.extend(
         [
             "    }\n}\n\n",
+            "/// Binding-count admission, distinct from semantic result arity.\n",
+            "/// Only declared discardable results may omit their SSA binding.\n",
+            "#[inline]\n",
+            "pub fn opcode_accepts_result_count(opcode: OpCode, count: usize) -> bool {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        if row.get("result_may_be_discarded", False):
+            lines.append(f"        OpCode::{row['name']} => count <= 1,\n")
+    lines.extend(
+        [
+            "        _ => opcode_fixed_result_count_table(opcode).is_none_or(|expected| count == expected),\n",
+            "    }\n}\n\n",
             "/// One instance-shape gate for result inference and every TIR consumer.\n",
             "#[inline]\n",
             "pub fn opcode_accepts_shape(opcode: OpCode, operands: usize, results: usize) -> bool {\n",
             "    opcode_accepts_operand_count(opcode, operands)\n",
-            "        && opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)\n",
+            "        && opcode_accepts_result_count(opcode, results)\n",
             "}\n\n",
             "/// Result-indexed intrinsic types, independent of effect/scheduling purity.\n",
             "/// Operand-dependent slots remain None; another result of the same opcode\n",

@@ -272,8 +272,9 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     let kind = op.kind.as_str();
                     let retained_binding =
                         crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+                            || crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(kind)
                             || (rc_authority.native_value_tracking_enabled()
-                                && (matches!(kind, "box" | "unbox" | "cast" | "widen")
+                                && (matches!(kind, "cast" | "widen")
                                     || native_alias_mints_owner(alias_roots, src_name, out_name)));
                     if retained_binding
                         && merge_rebind_storage_for_name(src_name, representation_plan)
@@ -283,6 +284,30 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     }
                     def_var_named(&mut *builder, vars, out_name.clone(), src);
                 }
+            } else if op.kind == "box"
+                && merge_rebind_storage_for_name(src_name, representation_plan)
+                    == MergeRebindStorageKind::RawI64
+            {
+                // Dropping the binding does not drop BoxVal's allocation/failure
+                // effect. The captured transport owns this physical box, not
+                // the borrowed raw source or an absent SSA result.
+                let mut incoming = CapturedScalarTransport::read_named(
+                    builder,
+                    vars,
+                    representation_plan,
+                    src_name,
+                );
+                let boxed = incoming.value_for_storage(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    nbc,
+                    MergeRebindStorageKind::BoxedI64,
+                );
+                assert!(incoming.take_boxed_owner());
+                builder.ins().call(local_dec_ref_obj, &[boxed]);
             }
         }
         _ => unreachable!("non-value-transfer op routed to handle_value_transfer_op"),

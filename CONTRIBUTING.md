@@ -19,6 +19,9 @@ Molt expects production-grade changes, not opportunistic patches.
      quarantine material when the resolver provides it; repo-local `tmp/`
      remains the ordinary fallback/default location.
 4. Update docs in the same change when structure, workflow, or semantics move.
+   Follow the [public source boundary](docs/ROOT_LAYOUT.md#review-rule): do not
+   commit logs, scratch plans, agent handoffs, or machine-specific state. Keep
+   durable user/contributor documentation in its existing canonical home.
 5. Remove dead files, duplicate paths, and stale references instead of preserving legacy layout.
 6. Start every nontrivial change by naming one narrow aperture: the invariant,
    command family, file cluster, authority surface, or failing execution path
@@ -98,6 +101,9 @@ Molt expects production-grade changes, not opportunistic patches.
 - Use a bounded evidence budget: run one static or targeted check that can catch
   integration mistakes for the complete structural work class you touched. Do
   not shrink the implementation to match an easier proof lane.
+- After syncing the development environment, install the configured hooks with
+  `uv run --python 3.12 pre-commit install`. They validate staged changes on
+  commit, including the public-source artifact boundary.
 - Keep pre-commit hooks read-only. Formatting and automatic fixes must be run
   explicitly before staging so commit hooks cannot rewrite files mid-commit.
 - Use the canonical CLI DX surface for repo-wide proof only when making a

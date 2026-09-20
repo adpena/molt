@@ -474,8 +474,9 @@ claimed and alive, work Codex lanes B/C/D instead.
    carries `runtime_python_import_modules` AND all object_closure sources resolve,
    fail-closed) and RELATIVIZE the seal's object_closure `source` paths to
    source_plan roots so it's relocatable and can't rot to a deleted worktree again.
-   Find the meson-wasm configure recipe via the proof_queue pact-witness lane /
-   `_pact_witness_native_roots` / `collab/pact/STATUS.md`. POISON rules bind.
+   Find the meson-wasm configure recipe via the proof_queue pact-witness lane,
+   `_pact_witness_native_roots`, and the selected upstream package custody in
+   `config/source_extension_package_sets.toml`. POISON rules bind.
 2. **LINK.** Once seal passes, the build reaches the WASM link — the cpython-abi
    data-symbol fix (`89e5160ea`) already resolves that class. Next likely: 17
    variadic C-shim exports (existing `MOLT_WASM_CPYTHON_ABI_EXPORTS` mechanism).
@@ -808,7 +809,7 @@ apparatus_ledger.py under this track without a board assignment; flag ideas here
   - **AGENT DISCIPLINE (binding):** subagents run in-process → a harness crash kills them; MITIGATE with mandatory incremental commits + preserve-worktree-on-crash + durable TaskCreate tracking. One seal-arc agent violated isolation (edited shared-checkout commands.py) then reverted byte-clean — verified. Coordinate durable work via board + queue + Codex (crash-independent).
 - **✅ UPDATE 2026-07-06 (late, orchestrator): R73.1 + R73.2 LANDED; WITNESS FRONTIER MOVED; NEW METABUG ARC; CRASH-RESILIENCE LESSON.**
   - **R73.1 + R73.2 LANDED (origin/main da862df81, teeth-verified).** R73.1 = shared content-addressed `runtime.wasm` cache + memory-bounded cargo jobs (8GB-capable, no per-session cold rebuild). R73.2 = Molt auto-provisions Cython/WASI/meson from package metadata and regenerates extensions **STANDALONE** — `scipy._cyutility` is a PROVEN BYPASS (standalone `cython -3` → 0 `_cyutility` refs), NOT a wall. The "scipy._cyutility unsolved structural gap" note below is **SUPERSEDED**.
-  - **WITNESS (R0) FRONTIER = STALE NUMPY SEAL.** A clean-worktree witness build now fails CLOSED (correctly) at numpy custody: `tmp/pact_numpy_multiarray_sealed_for_witness` has no `runtime_python_import_modules` and all 130 `object_closure` C sources point at a DELETED pact-collab meson dir. Next R0 arc = regenerate the numpy `_multiarray_umath` meson-wasm seal (STATUS.md L206-211) + reseal + verify. **Orchestrator-owned.** Build from a clean origin/main worktree (shared checkout is transiently unbuildable when a Codex Rust lane has in-flight WIP).
+  - **WITNESS (R0) FRONTIER = STALE NUMPY SEAL.** A clean-worktree witness build now fails CLOSED (correctly) at numpy custody: `tmp/pact_numpy_multiarray_sealed_for_witness` has no `runtime_python_import_modules` and all 130 `object_closure` C sources point at a DELETED pact-collab meson dir. Next R0 arc = regenerate the numpy `_multiarray_umath` meson-wasm seal from the selected upstream package custody + reseal + verify. **Orchestrator-owned.** Build from a clean origin/main worktree (shared checkout is transiently unbuildable when a Codex Rust lane has in-flight WIP).
   - **NEW BINDING ARC — SILENT-DEGRADATION METABUG (operator-flagged).** Perf/capability paths that SILENTLY degrade to naive on a handleable input. Honest audit = ~3 real defects (NOT the ~189 sound conservatisms): A1-A4 = frontend parallelism disabled on any import cycle / phase-timeout / one worker error → whole cold numpy+scipy frontend runs serial (~9 min); B1/B2 = frontend lowering cache is session-local → cold re-lower every session. Fix = SCC-condense + resilient pool + shared content-addressed cache, plus a `degrade_to_slow_registry` enforcement gate so the class can't regrow. **ORCHESTRATOR/SUBAGENT-OWNED lane: `src/molt/cli/{frontend_parallel,frontend_execution,frontend_pipeline,frontend_worker,module_dependencies,module_cache,module_frontend_cache}.py` + `tools/degrade_to_slow_*`. CODEX STAND DOWN (these are src/molt/cli frontend — already off your lanes).** Crash-recovered preserved branches to verify+land: `agent-scc-preserved-20260706` (fc652b96d, 12 teeth pass), `agent-frontend-cache-20260706` (2d6f0df7f).
   - **CRASH-RESILIENCE (binding, 2026-07-06):** background subagents run IN-PROCESS with the orchestrator's harness → a harness crash kills them all and loses in-process state (they can't return). Durable coordination = THIS BOARD + the proof queue + Codex (separate crash-independent processes). Prefer coordinating Codex/queue over fragile in-process subagent fan-out; instruct agents to commit incrementally; on a crash, `git -C <agent-worktree> add -A && commit` to PRESERVE before any cleanup. Also found: `memory_guard` orphan-cleanup can SIGTERM legitimate frontend parallel-worker subprocesses — fix belongs with the A1-A4 parallel arc.
 - **✅ REPRIORITIZATION RELEASED 2026-07-06 (orchestrator): CODEX RESUME NORMAL
@@ -1066,7 +1067,8 @@ instructions and symbols.
 - R4c WebGPU: `molt.gpu` (the tinygrad custody shim's target) lowers to real
   WGSL/WebGPU dispatch. No stubs; if a kernel class isn't supported it
   fails closed with a precise diagnostic.
-- R4d Browser embed API per `collab/pact/003_browser_single_function_embed_api.md`.
+- R4d Browser embed API per
+  `docs/spec/areas/wasm/0970_BROWSER_NUMERIC_KERNEL_EMBED.md`.
 - Standing rule: every runtime-visible WASM op keeps the synced triple
   (ABI import + op_loop handler + #[no_mangle] export); gate
   `test_wasm_runtime_export_no_mangle.py`; validate E2E with

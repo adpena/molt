@@ -12,8 +12,8 @@ use super::blocks::{BlockId, Terminator};
 use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
-    TirVerifyAttrRule, opcode_accepts_operand_count, opcode_fixed_result_count_table,
-    opcode_tir_verify_attr_rule_table,
+    TirVerifyAttrRule, opcode_accepts_operand_count, opcode_accepts_result_count,
+    opcode_fixed_result_count_table, opcode_tir_verify_attr_rule_table,
 };
 use super::ops::AttrValue;
 use super::values::ValueId;
@@ -235,11 +235,12 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             }
             verify_native_callable_attrs(*bid, op_idx, op, errors);
 
-            // Check expected result counts using the generated opcode registry.
+            // Semantic arity remains fixed for inference; binding admission also
+            // accounts for the registry's explicitly discardable result family.
             let expected_results = opcode_fixed_result_count_table(op.opcode);
 
             if let Some(expected) = expected_results
-                && op.results.len() != expected
+                && !opcode_accepts_result_count(op.opcode, op.results.len())
             {
                 errors.push(VerifyError::op(
                     *bid,

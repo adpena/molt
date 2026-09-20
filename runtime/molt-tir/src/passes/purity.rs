@@ -113,7 +113,6 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
             | "copy_var"
             | "identity_alias"
             | "binding_alias"
-            | "box"
             | "unbox"
             | "cast"
             | "widen"

@@ -2,8 +2,9 @@
 
 The **exact** numpy/scipy pact wants molt to compile — TWO kernels (forward + field-solve),
 deterministic fixture/reference generators, a parity oracle, and a proof the extract is
-bit-identical to pact's production tac source. See `../006_precise_contract_full_witness_pipeline.md`
-for the vision + determinism gates + compile-target (WASM-CPU + WebGPU/WGSL) guidance.
+bit-identical to pact's production tac source. See the
+[Pact acceptance contract](../README.md#kernel-a-acceptance-and-determinism)
+for the determinism gates and WASM-CPU/WebGPU target rules.
 
 Pipeline:  `witness_forward.levelset_argmax` (INR → lstar) → `field_solve(lstar)` (→ viz fields).
 
@@ -77,8 +78,9 @@ sanity self-check. Kernels B..7 land as a `<k>_gates.json` manifest for the shar
 `field_solve` is deterministic (no RNG/time/I/O) and bit-identical across CPython re-runs. The two
 cross-implementation-fragile spots (sort tie-order, eigh sign) are **already canonicalized inside the
 kernel**, so WASM does not need to match LAPACK's sign or numpy's tie convention — only the ops in
-the gate table below. See `../006_precise_contract_full_witness_pipeline.md` for
-the full determinism-gate breakdown.
+the gate table below. See the
+[Pact acceptance contract](../README.md#kernel-a-acceptance-and-determinism)
+for the governing determinism rules.
 
 ## Output keys (all numpy arrays; H=384 W=512)
 `sdf_argmax`(H,W u8, ==lstar) · `sdf_margin_m12`(H,W f32) · `sdf_gap13`(H,W f32) ·
