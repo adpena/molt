@@ -5967,6 +5967,10 @@ variant = "Alloc"
 import_name = "alloc"
 
 [[lir_runtime_call]]
+variant = "ObjectPublishInitialized"
+import_name = "object_publish_initialized"
+
+[[lir_runtime_call]]
 variant = "ScratchAlloc"
 import_name = "scratch_alloc"
 

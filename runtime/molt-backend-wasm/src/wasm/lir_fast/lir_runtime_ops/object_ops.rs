@@ -1,7 +1,8 @@
 use super::super::lir_context::LirLowerCtx;
 use super::super::runtime_calls::LirRuntimeCall;
 use super::call_abi::{
-    LirRuntimeArg, emit_lir_runtime_call_with_args_and_result, required_i64_attr,
+    LirRuntimeArg, emit_lir_runtime_call_with_args, emit_lir_runtime_call_with_args_and_result,
+    emit_lir_runtime_call_with_result, required_i64_attr,
 };
 use molt_tir::tir::lir::LirOp;
 
@@ -13,12 +14,10 @@ pub(in crate::wasm::lir_fast) fn emit_lir_alloc(ctx: &mut LirLowerCtx, op: &LirO
         );
     }
     let size = required_i64_attr(op, "value", "Alloc");
-    emit_lir_runtime_call_with_args_and_result(
-        ctx,
-        op,
-        LirRuntimeCall::Alloc,
-        &[LirRuntimeArg::I64Const(size)],
-    );
+    emit_lir_runtime_call_with_args(ctx, LirRuntimeCall::Alloc, &[LirRuntimeArg::I64Const(size)]);
+    // Alloc returns an unpublished handle. Its initialized payload must cross
+    // the publication boundary before any SSA binding or ordinary RC discard.
+    emit_lir_runtime_call_with_result(ctx, op, LirRuntimeCall::ObjectPublishInitialized);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_object_new_bound(ctx: &mut LirLowerCtx, op: &LirOp) {

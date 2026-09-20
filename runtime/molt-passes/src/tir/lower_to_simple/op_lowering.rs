@@ -337,11 +337,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
 
-        // SimpleIR transports boxed values. BoxVal and UnboxVal both have
-        // independent result ownership in generated TIR facts; representation
-        // erasure must not turn either into a shared-root copy. Exact scalar
-        // carriers make this retain a no-op; heap carriers acquire their +1.
-        OpCode::BoxVal | OpCode::UnboxVal => Some(unary_op("binding_alias", op, out_var)),
+        // Keep the generated representation operation and its effects through
+        // re-emission. Native carrier planning can retain raw i64 inputs, whose
+        // boxing may allocate even when the result binding is discarded.
+        OpCode::BoxVal => Some(unary_op("box", op, out_var)),
+        OpCode::UnboxVal => Some(unary_op("unbox", op, out_var)),
         OpCode::TypeGuard => {
             if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
                 Some(OpIR {

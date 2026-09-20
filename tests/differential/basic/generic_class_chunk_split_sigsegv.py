@@ -19,7 +19,8 @@ chunk boundary; generics merely cross the op-cost threshold sooner.
 Fixed: route the molt_main constructor-fold branch through
 `_current_module_static_class_ref` (which performs the `self.globals` liveness
 guard) and fall back to MODULE_GET_ATTR when the class SSA value is not live in the
-current chunk. Full diagnosis + fix notes: tmp/baton_task50_generic_class_sigsegv.md.
+current chunk. This regression retains the cross-chunk lifetime invariant;
+transient investigation notes are not part of the public test contract.
 Passes byte-identical to CPython 3.12/3.13/3.14.
 """
 

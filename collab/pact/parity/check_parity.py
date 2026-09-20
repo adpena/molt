@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generalized, FAIL-LOUD parity oracle for the pact witness kernel suite.
 
-This is the single shared acceptance engine molt owes pact per `009 §5` and the
-`011` parity-harness proposal (`collab/pact/011_molt_reply_progress_sync_and_harness_proposal_20260710.md`
-§2). It generalizes Kernel A's previously-inline `check_parity.py` gate dicts into
+The acceptance contract is maintained in `collab/pact/README.md`. This engine
+generalizes Kernel A's previously-inline `check_parity.py` gate dicts into
 a declarative per-kernel manifest (`<k>_gates.json`) and a single strict verdict
 engine so Kernels B..7 drop in with ZERO engine changes.
 
@@ -21,7 +20,7 @@ Exit codes:
     2  the run could not be evaluated (missing file, unreadable npz, invalid or
        scaffold manifest) — a structural refusal, never a pass-by-default.
 
-FAIL-LOUD guarantees (non-negotiable — M05 / 006 / 009 / 011). The engine FAILS,
+FAIL-LOUD guarantees. The engine FAILS,
 never silently passes, on every one of these:
 
   * a manifest output array MISSING from the candidate                (never skip)
@@ -62,8 +61,8 @@ from typing import Any
 
 import numpy as np
 
-# BINDING (006 / 009 / 011): the float acceptance tolerance is NEVER widened past
-# this. A larger drift is a real op divergence to SURFACE, not to tolerate. Any
+# The public Pact acceptance contract never widens float tolerance past this.
+# A larger drift is an operation divergence to report, not to tolerate. Any
 # manifest that declares an `atol` above this ceiling is rejected outright.
 ATOL_CEILING = 1e-3
 
@@ -173,9 +172,13 @@ def validate_gates(gates: object) -> None:
                 )
         if gate == "order_robust_atol":
             key_cols = spec.get("key_cols")
-            if not isinstance(key_cols, list) or not key_cols or not all(
-                isinstance(c, int) and not isinstance(c, bool) and c >= 0
-                for c in key_cols
+            if (
+                not isinstance(key_cols, list)
+                or not key_cols
+                or not all(
+                    isinstance(c, int) and not isinstance(c, bool) and c >= 0
+                    for c in key_cols
+                )
             ):
                 raise GateSpecError(
                     f"{where}.key_cols must be a non-empty list of column indices "
@@ -233,9 +236,7 @@ def _shape_conforms(actual: tuple[int, ...], spec: list) -> bool:
     return all(dim is None or dim == actual[i] for i, dim in enumerate(spec))
 
 
-def _shape_matches(
-    actual: tuple[int, ...], spec: list, ref: tuple[int, ...]
-) -> bool:
+def _shape_matches(actual: tuple[int, ...], spec: list, ref: tuple[int, ...]) -> bool:
     """Candidate shape: fixed dims match the manifest, None dims match the reference."""
     if len(actual) != len(spec):
         return False
@@ -322,7 +323,10 @@ def _evaluate_array(
         return
     if not _shape_matches(cand.shape, shape_spec, ref.shape):
         verdict.add(
-            name, gate, False, f"shape {cand.shape} != expected (spec {shape_spec}, ref {ref.shape})"
+            name,
+            gate,
+            False,
+            f"shape {cand.shape} != expected (spec {shape_spec}, ref {ref.shape})",
         )
         return
 

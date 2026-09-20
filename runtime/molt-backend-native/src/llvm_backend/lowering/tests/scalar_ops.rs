@@ -98,6 +98,63 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
 }
 
 #[test]
+fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
+    for (opcode, ty) in [
+        (OpCode::BoxVal, TirType::I64),
+        (OpCode::BoxVal, TirType::DynBox),
+        (OpCode::UnboxVal, TirType::DynBox),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let func = TirFunction::new(
+            "discarded_representation".into(),
+            vec![ty.clone()],
+            TirType::None,
+        );
+        let llvm_fn = backend.module.add_function(
+            "discarded_representation",
+            ctx.void_type().fn_type(&[ctx.i64_type().into()], false),
+            None,
+        );
+        backend
+            .builder
+            .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
+        let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+        lowering
+            .values
+            .insert(ValueId(0), llvm_fn.get_first_param().unwrap());
+        lowering.value_types.insert(ValueId(0), ty.clone());
+        lowering.lower_op(
+            func.entry_block,
+            &TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![ValueId(0)],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            },
+        );
+        backend.builder.build_return(None).unwrap();
+        backend.module.verify().unwrap();
+        let ir = llvm_fn.print_to_string().to_string();
+        let allocates = opcode == OpCode::BoxVal && ty == TirType::I64;
+        assert_eq!(
+            ir.matches("call i64 @molt_int_from_i64").count(),
+            usize::from(allocates),
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @molt_dec_ref_obj").count(),
+            usize::from(allocates),
+            "{ir}"
+        );
+        assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+        assert!(!ir.contains("call i64 @molt_int_as_i64"), "{ir}");
+    }
+}
+
+#[test]
 fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

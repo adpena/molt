@@ -10,6 +10,9 @@ use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use debug::emit_seed_debug;
 use local_alloc::{FrameLocalAllocationPolicy, ensure_frame_local};
+use molt_tir::tir::simple_def_use::{
+    simple_ir_out_result, visit_simple_ir_defined_names, visit_simple_ir_reads,
+};
 use requirements::FrameRuntimeRequirements;
 pub(super) use seeds::FrameConstAnchor;
 use seeds::FrameConstSeedPlan;
@@ -84,43 +87,31 @@ impl WasmFunctionFramePlan {
             dead_sink_idx,
         };
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
-            if let Some(var) = &op.var {
-                let var_is_dead_out = molt_tir::tir::simple_def_use::simple_ir_binding(op)
-                    .is_some_and(|binding| binding.destination == var);
+            visit_simple_ir_reads(op, |read| {
                 ensure_frame_local(
                     &mut locals,
                     &mut local_types,
                     &mut local_count,
                     allocation_policy,
-                    var,
-                    var_is_dead_out,
+                    read.name,
+                    false,
                 );
-            }
-            if let Some(args) = &op.args {
-                for arg in args {
-                    ensure_frame_local(
-                        &mut locals,
-                        &mut local_types,
-                        &mut local_count,
-                        allocation_policy,
-                        arg,
-                        false,
-                    );
-                }
-            }
+            });
+            // Result position is independent of its wire field: iterator and
+            // checked results use `var`, unpack results use trailing `args`,
+            // and bindings may define both a destination and a snapshot.
+            visit_simple_ir_defined_names(op, |name| {
+                ensure_frame_local(
+                    &mut locals,
+                    &mut local_types,
+                    &mut local_count,
+                    allocation_policy,
+                    name,
+                    true,
+                );
+            });
             if let Some(out) = &op.out {
-                let out_local_idx = if out == WasmFrameLocals::NONE_NAME {
-                    locals.result_slot(out)
-                } else {
-                    ensure_frame_local(
-                        &mut locals,
-                        &mut local_types,
-                        &mut local_count,
-                        allocation_policy,
-                        out,
-                        true,
-                    )
-                };
+                let out_local_idx = locals.result_or_sink_slot(simple_ir_out_result(op));
                 let is_dead = out_local_idx == dead_sink_idx;
                 seed_plan.observe_const_output(
                     op_idx,
@@ -192,5 +183,93 @@ impl WasmFunctionFramePlan {
             Function::new_with_locals_types(self.local_types),
             self.frame,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OpIR;
+
+    #[test]
+    fn frame_slots_follow_reads_and_definitions_not_wire_field_spelling() {
+        let function = FunctionIR {
+            name: "field_role_slots".into(),
+            params: vec!["source".into()],
+            ops: vec![
+                OpIR {
+                    kind: "iter_next_unboxed".into(),
+                    var: Some("dead_value".into()),
+                    out: Some("live_done".into()),
+                    args: Some(vec!["source".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "checked_add".into(),
+                    var: Some("dead_checked".into()),
+                    out: Some("dead_flag".into()),
+                    args: Some(vec!["source".into(), "source".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "unpack_sequence".into(),
+                    value: Some(2),
+                    args: Some(vec![
+                        "source".into(),
+                        "dead_item".into(),
+                        "live_item".into(),
+                    ]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy_var".into(),
+                    var: Some("transport_only".into()),
+                    args: Some(vec!["live_item".into()]),
+                    out: Some("dead_copy".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("dead_binding".into()),
+                    out: Some("dead_snapshot".into()),
+                    args: Some(vec!["source".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store_index".into(),
+                    out: Some("output_metadata".into()),
+                    args: Some(vec!["source".into(); 3]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["live_done".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        let plan = WasmFunctionFramePlan::for_function(&function);
+        let locals = &plan.frame.locals;
+        for name in [
+            "dead_value",
+            "dead_checked",
+            "dead_flag",
+            "dead_item",
+            "dead_copy",
+            "dead_binding",
+            "dead_snapshot",
+        ] {
+            assert_eq!(locals.bound_result_slot(Some(name)), None, "{name}");
+        }
+        for name in ["source", "live_done", "live_item"] {
+            assert!(locals.bound_result_slot(Some(name)).is_some(), "{name}");
+        }
+        for name in ["transport_only", "output_metadata"] {
+            assert!(
+                locals.get(name).is_none(),
+                "metadata allocated a value: {name}"
+            );
+        }
     }
 }

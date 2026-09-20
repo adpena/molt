@@ -34,6 +34,8 @@ the source of truth.
 
 ## Product And Proof
 
+- Pact stable acceptance and per-kernel intake contract: [../collab/pact/README.md](../collab/pact/README.md)
+- Pact runtime capability and evidence matrix: [PACT_SUPPORT_MATRIX.md](PACT_SUPPORT_MATRIX.md)
 - Compatibility corpus manifest: [COMPATIBILITY_CORPUS_MANIFEST.md](COMPATIBILITY_CORPUS_MANIFEST.md)
 - Ordinary class constructor and `__new__` parity status: [spec/STATUS.md](spec/STATUS.md)
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)

@@ -266,6 +266,56 @@ def test_guard_infrastructure_diagnostic_precedes_product_log_patterns(
     assert diagnostic_audit._frontier_failure({"status": "failed"}, diagnostics) is None
 
 
+@pytest.mark.parametrize(
+    "signal_id,severity",
+    [
+        ("queue-execution-custody-failure", "infra"),
+        ("native-process-image-unadmitted", "infra"),
+        ("guard-infrastructure-error", "infra"),
+        ("memory-guard-summary-incomplete", "error"),
+    ],
+)
+@pytest.mark.parametrize("infra_first", [False, True])
+def test_inadmissible_execution_never_promotes_product_log_frontier(
+    signal_id, severity, infra_first
+):
+    from tools.proof_queue_pkg import diagnostic_audit
+
+    infrastructure = {"signal_id": signal_id, "severity": severity}
+    product = {"signal_id": "rust-test-failure", "severity": "error"}
+    diagnostics = (
+        [infrastructure, product] if infra_first else [product, infrastructure]
+    )
+    assert (
+        diagnostic_audit._audit_severity_for_diagnostic({"status": "failed"}, signal_id)
+        == "error"
+    )
+    assert diagnostic_audit._frontier_failure({"status": "failed"}, diagnostics) is None
+    assert product in diagnostics, "diagnostic observations must remain available"
+
+
+def test_admissible_execution_preserves_product_log_frontier():
+    from tools.proof_queue_pkg import diagnostic_audit
+
+    row = {
+        "run_id": "admissible-failure",
+        "logical_id": "compiler",
+        "log_path": "compiler.log",
+        "finished_at": "2026-09-20T00:00:00Z",
+    }
+    product = {
+        "signal_id": "rust-test-failure",
+        "severity": "error",
+        "summary": "failed test",
+        "evidence": "test result: FAILED",
+        "next_action": "repair shared semantic class",
+    }
+    frontier = diagnostic_audit._frontier_failure(row, [product])
+    assert frontier is not None
+    assert frontier["diagnostic"] == "rust-test-failure"
+    assert frontier["run_id"] == row["run_id"]
+
+
 def test_finalization_publication_failure_is_not_rebound_or_retried(
     tmp_path, monkeypatch
 ):

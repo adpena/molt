@@ -1,6 +1,143 @@
 use super::*;
 
 #[test]
+fn native_representation_results_keep_discarded_box_effects_and_independent_owners() {
+    let raw_plan = representation_plan_for_ops(&[
+        OpIR {
+            kind: "const_int".into(),
+            out: Some("lhs".into()),
+            value: Some(1_i64 << 31),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "const_int".into(),
+            out: Some("rhs".into()),
+            value: Some(1_i64 << 31),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "checked_mul".into(),
+            var: Some("source".into()),
+            out: Some("overflow".into()),
+            args: Some(vec!["lhs".into(), "rhs".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "box".into(),
+            args: Some(vec!["source".into()]),
+            ..OpIR::default()
+        },
+    ]);
+    assert!(raw_plan.is_full_deopt_int_name("source"));
+    assert!(!raw_plan.is_inline_safe_int_name("source"));
+    let boxed_plan = ScalarRepresentationPlan::default();
+    for authority in [
+        NativeRcAuthority::NativeValueTracking,
+        NativeRcAuthority::TirDropInsertion,
+    ] {
+        for (kind, raw) in [("box", true), ("box", false), ("unbox", false)] {
+            for out in [None, Some("none"), Some("kept")] {
+                let plan = if raw { &raw_plan } else { &boxed_plan };
+                let mut backend = SimpleBackend::new();
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+                let mut context = FunctionBuilderContext::new();
+                let mut refs = BTreeMap::new();
+                let (retain, release);
+                {
+                    let mut builder = FunctionBuilder::new(&mut func, &mut context);
+                    let entry = builder.create_block();
+                    builder.append_block_params_for_function_params(entry);
+                    builder.switch_to_block(entry);
+                    builder.seal_block(entry);
+                    let mut vars = BTreeMap::new();
+                    vars.insert("source".into(), builder.declare_var(types::I64));
+                    if out == Some("kept") {
+                        vars.insert("kept".into(), builder.declare_var(types::I64));
+                    }
+                    let source = builder.block_params(entry)[0];
+                    builder.def_var(vars["source"], source);
+                    retain = import_func_ref(
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        &mut builder,
+                        &mut refs,
+                        "molt_inc_ref_obj",
+                        &[types::I64],
+                        &[],
+                    );
+                    release = import_func_ref(
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        &mut builder,
+                        &mut refs,
+                        "molt_dec_ref_obj",
+                        &[types::I64],
+                        &[],
+                    );
+                    let aliases = BTreeMap::new();
+                    let mut cleanup = NativeCleanupRoots::new(
+                        &mut builder,
+                        &FunctionIR::default(),
+                        &aliases,
+                        plan,
+                        authority,
+                    );
+                    let mut sealed = BTreeSet::from([entry]);
+                    super::super::fc::value_transfer::handle_value_transfer_op(
+                        &OpIR {
+                            kind: kind.into(),
+                            args: Some(vec!["source".into()]),
+                            out: out.map(str::to_string),
+                            ..OpIR::default()
+                        },
+                        0,
+                        &mut backend.module,
+                        &mut backend.import_ids,
+                        &mut builder,
+                        &mut refs,
+                        &mut sealed,
+                        &vars,
+                        plan,
+                        &aliases,
+                        &mut cleanup,
+                        &std::collections::HashSet::new(),
+                        authority,
+                        retain,
+                        release,
+                        &crate::NanBoxConsts::new(),
+                    );
+                    builder.ins().return_(&[]);
+                    builder.finalize();
+                }
+                verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
+                let calls = |callee| {
+                    func.layout.blocks().flat_map(|block| func.layout.block_insts(block))
+                    .filter(|inst| matches!(func.dfg.insts[*inst], cranelift_codegen::ir::InstructionData::Call { func_ref, .. } if func_ref == callee)).count()
+                };
+                let bound = out == Some("kept");
+                assert_eq!(
+                    refs.get("molt_int_from_i64")
+                        .map_or(0, |&callee| calls(callee)),
+                    usize::from(raw)
+                );
+                assert_eq!(
+                    calls(retain),
+                    usize::from(!raw && bound),
+                    "{kind} {out:?} {authority:?}"
+                );
+                assert_eq!(
+                    calls(release),
+                    usize::from(raw && !bound),
+                    "{kind} {out:?} {authority:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
     use MergeRebindStorageKind::{BoxedI64, RawBool, RawF64, RawI64};
     for source_storage in [RawI64, RawF64, RawBool, BoxedI64] {

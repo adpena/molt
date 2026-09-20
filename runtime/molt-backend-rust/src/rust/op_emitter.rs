@@ -50,7 +50,9 @@ impl RustBackend {
             "const_bytes" => self.emit_op_const_bytes(op),
             "const_bigint" => self.emit_op_const_bigint(op),
             "const_not_implemented" | "const_ellipsis" => self.emit_op_const_not_implemented(op),
-            "box" | "box_from_raw_int" => self.emit_op_box(op),
+            "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
+                self.emit_op_representation_copy(op)
+            }
             "load_local" | "load_var" | "copy_var" => self.emit_op_local_copy(op),
             "store_var" => self.emit_op_store_var(op),
             "load" | "guarded_load" => self.emit_op_load(op),

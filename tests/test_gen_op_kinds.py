@@ -760,10 +760,11 @@ def test_removed_absorbing_constructor_helper_stays_removed() -> None:
     assert "copy_kind_absorbs_elements_table" not in generated
 
 
-def test_selected_operand_result_contract_covers_python_boolops() -> None:
-    """Python `and`/`or` return one operand, not a fresh value. Backends must
-    retain the selected borrowed operand whenever that selected value is bound as
-    an owned boxed result."""
+def test_selected_operand_result_contract_covers_boolops_and_representation_aliases() -> (
+    None
+):
+    """Bool selections and boxed representation aliases own their result
+    independently of the borrowed operand whose physical bits they forward."""
     gen = _gen()
     data = gen.load_table()
     selected_owner = {
@@ -771,7 +772,7 @@ def test_selected_operand_result_contract_covers_python_boolops() -> None:
         for row in data["opcode"]
         if row.get("result_mints_owned_selected_operand", False)
     }
-    assert selected_owner == {"And", "Or"}
+    assert selected_owner == {"And", "Or", "BoxVal", "UnboxVal"}
 
 
 def test_explicit_release_operand_contract_covers_python_release_ops() -> None:
@@ -1176,6 +1177,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         assert f"OpCode::{opcode} => {arm[arity]}," in table_block
 
     assert "opcode_fixed_result_count_table(op.opcode)" in verify
+    assert "opcode_accepts_result_count(op.opcode, op.results.len())" in verify
     assert "let expected_results = match op.opcode" not in verify
     assert "OpCode::ConstInt\n                | OpCode::ConstBigInt" not in verify
 
@@ -2834,6 +2836,35 @@ def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path) -> None:
         assert "result_arity = 'variable' is reserved" in str(exc)
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
         raise AssertionError("unreviewed variable result_arity opcode was accepted")
+
+
+@pytest.mark.parametrize(
+    ("opcode", "field", "replacement"),
+    [
+        (
+            "BoxVal",
+            "result_may_be_discarded = true",
+            'result_may_be_discarded = "true"',
+        ),
+        ("BoxVal", 'result_arity = "one"', 'result_arity = "zero"'),
+        (
+            "CheckedAdd",
+            'result_arity = "two"',
+            'result_arity = "two"\nresult_may_be_discarded = true',
+        ),
+    ],
+)
+def test_discarded_result_binding_schema_rejects_non_boolean_or_non_single_results(
+    tmp_path, opcode, field, replacement
+) -> None:
+    gen = _gen()
+    original = TABLE.read_text(encoding="utf-8")
+    mutated = _mutate_opcode_field(original, opcode, field, replacement)
+    assert mutated != original
+    table = tmp_path / "op_kinds.toml"
+    table.write_text(mutated, encoding="utf-8", newline="\n")
+    with pytest.raises(gen.OpKindTableError, match="result_may_be_discarded"):
+        gen.load_table(table)
 
 
 def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
@@ -7067,10 +7098,14 @@ def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
         )
         assert f"OpCode::{name} => {expected}," in admission
     assert "opcode_accepts_operand_count(opcode, operands)" in rendered
-    assert (
-        "opcode_fixed_result_count_table(opcode).is_none_or(|count| count == results)"
-        in rendered
-    )
+    assert "opcode_accepts_result_count(opcode, results)" in rendered
+    discardable = {
+        name for name, row in opcodes.items() if row.get("result_may_be_discarded")
+    }
+    assert discardable == {"BoxVal", "UnboxVal"}
+    for name in discardable:
+        assert opcodes[name]["result_arity"] == "one"
+        assert f"OpCode::{name} => count <= 1," in rendered
     ops = tir_path("ops.rs").read_text(encoding="utf-8")
     inference = _read_rs_module_cluster(tir_path("type_refine.rs"))
     assert "has_valid_shape" in ops

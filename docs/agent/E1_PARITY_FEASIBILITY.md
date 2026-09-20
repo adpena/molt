@@ -6,14 +6,14 @@ The acceptance (`collab/pact/parity/check_parity.py` +
 bit-identical fp32 — it is `exact` on the two integer rasters, `exact_set` on
 the three critical-point lists, and `atol<=1e-3` on the six float fields
 (engine `ATOL_CEILING`, check_parity.py:68; the `bitwise` gate class exists at
-check_parity.py:333 but **no Kernel A output uses it**). The ledger's
-FP32-BAR row (docs/agent/PACT_CONTRACT_LEDGER.md:16-17, :80) defines the bar
-identically; "bit-identical fp32" in lane summaries is shorthand for this.
+check_parity.py:333 but **no Kernel A output uses it**). The
+[Pact acceptance contract](../../collab/pact/README.md#kernel-a-acceptance-and-determinism)
+defines the bar identically; "bit-identical fp32" in lane summaries is shorthand
+for this.
 
 Every hazard funnels through ONE quantity: **`m_smooth` must be bit-identical**
-(the 006 contract already says so: 006 §gates line 99 — "the compiled filter
-must return the bit-exact same float at the extremum or the critical-point set
-changes"). Everything below is evidence that it is, with measured headroom,
+at its extrema or the critical-point set changes. Everything below is evidence
+that it is, with measured headroom,
 plus the tooling (`tools/parity_microscope.py`) to localize any surprise in
 minutes.
 
@@ -60,7 +60,7 @@ host-variance is nil for this pin — and now structurally pinned anyway (§3).
   `_prepare_reference_oracle` (pip wheels via
   `proof_queue._pact_witness_acceptance_spec`, tools/proof_queue.py:3230).
 
-The sharp edge (measured, matches 006 §gates "630/672 tied"): the
+The measured sharp edge is that the
 `crit_min_rc` keep-120 lexsort cut lands INSIDE a 630-pixel exact-tie group
 of `m_smooth` values. The kernel's (row,col) tie-break makes selection
 enumeration-independent but NOT value-perturbation-independent:
@@ -134,7 +134,8 @@ Sharp constraint for future molt optimization work: any accelerated/rewritten
 serial per-pixel accumulation ROUNDING of scipy's correlate1d, or crit_min_rc
 breaks — re-run `parity_microscope margins` + the perturbation stress before
 swapping that op. JFA-style approximate EDT stays out of the authority path
-(006 already mandates exact EDT).
+because Kernel A acceptance requires the real package-native operation and its
+declared outputs.
 
 If the first real wasm candidate still fails a gate, the microscope turns it
 into a stage+index+ulp report in one native run + one `final` call.
@@ -146,9 +147,7 @@ gate = exact uint8 argmax) does NOT inherit Kernel A's luck: measured, wasi
 exp != native np.exp on a 100k-value sweep (checksums differ), and oracle
 matmul is OpenBLAS sgemm (blocked/SIMD accumulation order) vs whatever the
 wasm build does — f32 last-ulp drift is EXPECTED there. Feasibility of the
-exact-argmax gate depends on the argmax margins of real φ, exactly as the
-ledger already anticipates (FP32-BAR: "argmax-margin tolerance gate if
-exact-uint8 is too strict"). Recommendation: before compiling Kernel B, run
-this same microscope pattern (stage the pipeline, measure argmax margins vs
-plausible ulp drift) — the tooling generalizes; that decision is pact-owned
-and pre-authorized by the ledger row, not a contract change.
+exact-argmax gate depends on the argmax margins of real φ. Recommendation:
+before compiling Kernel B, run this same microscope pattern (stage the pipeline,
+measure argmax margins vs plausible ulp drift). The tooling generalizes, but any
+different tolerance must be an explicit Pact gate-manifest contract change.

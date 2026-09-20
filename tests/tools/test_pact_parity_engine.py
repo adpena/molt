@@ -1,7 +1,6 @@
 """Tests for the shared, generalized parity engine `collab/pact/parity/check_parity.py`.
 
-This is the single acceptance authority molt owes pact per `009 §5` /
-`011 §2` (`collab/pact/011_molt_reply_progress_sync_and_harness_proposal_20260710.md`).
+This is the shared acceptance authority documented in `collab/pact/README.md`.
 Two things are proved here:
 
 1. **Fail-loud guarantees** (`test_fail_loud_guarantee`): the engine never
@@ -43,7 +42,9 @@ _UV_NUMPY = ["--with", "numpy==1.26.4"]
 _UV_NUMPY_SCIPY = ["--with", "numpy==1.26.4", "--with", "scipy==1.17.1"]
 
 
-def _uv_run(*args: str, cwd: Path, with_packages: list[str]) -> subprocess.CompletedProcess[str]:
+def _uv_run(
+    *args: str, cwd: Path, with_packages: list[str]
+) -> subprocess.CompletedProcess[str]:
     cmd = [
         "uv",
         "run",
@@ -66,17 +67,23 @@ def _uv_run(*args: str, cwd: Path, with_packages: list[str]) -> subprocess.Compl
 
 def _require_uv() -> None:
     if shutil.which("uv") is None:
-        pytest.skip("uv is not on PATH; cannot provision the numpy/scipy child interpreter")
+        pytest.skip(
+            "uv is not on PATH; cannot provision the numpy/scipy child interpreter"
+        )
 
 
 # --------------------------------------------------------------------------- #
 # 1. Fail-loud guarantee battery (see tests/helpers/pact_parity_scenarios.py)
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def scenario_results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, object]]:
+def scenario_results(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, dict[str, object]]:
     _require_uv()
     workdir = tmp_path_factory.mktemp("pact_parity_scenarios")
-    result = _uv_run(str(SCENARIOS_SCRIPT), str(workdir), cwd=ROOT, with_packages=_UV_NUMPY)
+    result = _uv_run(
+        str(SCENARIOS_SCRIPT), str(workdir), cwd=ROOT, with_packages=_UV_NUMPY
+    )
     match = re.search(r"^RESULT_JSON: (.+)$", result.stdout, flags=re.MULTILINE)
     assert match, (
         "scenario battery did not print a RESULT_JSON line "
@@ -116,7 +123,7 @@ def test_fail_loud_guarantee(
 
 
 def test_fail_loud_battery_covers_exactly_the_declared_guarantees(
-    scenario_results: dict[str, dict[str, object]]
+    scenario_results: dict[str, dict[str, object]],
 ) -> None:
     assert set(scenario_results) == set(_FAIL_LOUD_GUARANTEES)
 
@@ -159,7 +166,13 @@ def test_cli_exit_2_on_scaffold_manifest(tmp_path: Path) -> None:
     _write_trivial_fixture_and_gates(tmp_path)
     scaffold_gates = tmp_path / "gates.json"
     scaffold_gates.write_text(
-        json.dumps({"schema_version": 1, "kernel": "k", "status": "AWAITING_PACT_KERNEL_SOURCE"}),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kernel": "k",
+                "status": "AWAITING_PACT_KERNEL_SOURCE",
+            }
+        ),
         encoding="utf-8",
     )
     result = _uv_run(
@@ -240,7 +253,9 @@ def real_kernel_a_reference(
         shutil.copy2(KERNEL_ROOT / name, work / name)
     r1 = _uv_run("make_fixture.py", cwd=work, with_packages=_UV_NUMPY_SCIPY)
     assert r1.returncode == 0, r1.stdout + r1.stderr
-    r2 = _uv_run("field_solve.py", "lstar_sample.npz", cwd=work, with_packages=_UV_NUMPY_SCIPY)
+    r2 = _uv_run(
+        "field_solve.py", "lstar_sample.npz", cwd=work, with_packages=_UV_NUMPY_SCIPY
+    )
     assert r2.returncode == 0, r2.stdout + r2.stderr
     reference = work / "reference_outputs.npz"
     assert reference.is_file()
@@ -279,19 +294,23 @@ def test_new_engine_matches_legacy_kernel_a_oracle_on_true_reference(
     legacy_verdicts = _line_verdicts(legacy.stdout)
     new_verdicts = _line_verdicts(new.stdout)
     assert legacy_verdicts, "legacy oracle produced no parseable per-key verdict lines"
-    assert set(legacy_verdicts) == set(new_verdicts) == {
-        "sdf_argmax",
-        "sdf_margin_m12",
-        "sdf_gap13",
-        "boundary",
-        "m_smooth",
-        "crit_max_rc",
-        "crit_min_rc",
-        "crit_saddle_rc",
-        "crit_saddle_eigvec",
-        "curvature",
-        "dist",
-    }
+    assert (
+        set(legacy_verdicts)
+        == set(new_verdicts)
+        == {
+            "sdf_argmax",
+            "sdf_margin_m12",
+            "sdf_gap13",
+            "boundary",
+            "m_smooth",
+            "crit_max_rc",
+            "crit_min_rc",
+            "crit_saddle_rc",
+            "crit_saddle_eigvec",
+            "curvature",
+            "dist",
+        }
+    )
     assert legacy_verdicts == new_verdicts, (
         f"per-array verdict diverged: legacy={legacy_verdicts} new={new_verdicts}"
     )

@@ -199,15 +199,17 @@ fn verify_box_op(
     _values: &HashMap<ValueId, ValueDef>,
     errors: &mut Vec<LirVerifyError>,
 ) {
-    if op.tir_op.operands.len() != 1 || op.result_values.len() != 1 {
+    if !op.tir_op.has_valid_shape() || op.result_values.len() > 1 {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
-            message: "box op requires exactly one operand and one result".to_string(),
+            message: "box op requires one operand and an optional result binding".to_string(),
         });
         return;
     }
-    let result = &op.result_values[0];
+    let Some(result) = op.result_values.first() else {
+        return;
+    };
     if result.repr != LirRepr::DynBox {
         errors.push(LirVerifyError {
             block: Some(bid),
@@ -227,11 +229,11 @@ fn verify_unbox_op(
     values: &HashMap<ValueId, ValueDef>,
     errors: &mut Vec<LirVerifyError>,
 ) {
-    if op.tir_op.operands.len() != 1 || op.result_values.len() != 1 {
+    if !op.tir_op.has_valid_shape() || op.result_values.len() > 1 {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
-            message: "unbox op requires exactly one operand and one result".to_string(),
+            message: "unbox op requires one operand and an optional result binding".to_string(),
         });
         return;
     }

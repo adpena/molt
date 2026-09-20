@@ -60,7 +60,10 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
     }
     let ops = lower_to_simple_ir(&func);
     assert!(ops.iter().any(|op| op.kind == "drop_inserted"));
-    let aliases: Vec<_> = ops.iter().filter(|op| op.kind == "binding_alias").collect();
+    let aliases: Vec<_> = ops
+        .iter()
+        .filter(|op| matches!(op.kind.as_str(), "box" | "unbox"))
+        .collect();
     assert_eq!(aliases.len(), 2);
     for alias in aliases {
         assert!(
@@ -72,6 +75,26 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             "boxed owner must retain its matching release after projection: {ops:?}"
         );
     }
+}
+
+#[test]
+fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
+    let mut func = TirFunction::new("discarded_boxing".into(), vec![TirType::I64], TirType::None);
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::BoxVal,
+        operands: vec![crate::tir::values::ValueId(0)],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return { values: vec![] };
+    let ops = lower_to_simple_ir(&func);
+    let boxed = ops.iter().find(|op| op.kind == "box").unwrap();
+    assert!(boxed.out.is_none());
+    assert_eq!(boxed.args.as_ref().unwrap().len(), 1);
+    assert!(!ops.iter().any(|op| op.kind == "binding_alias"));
 }
 
 #[test]

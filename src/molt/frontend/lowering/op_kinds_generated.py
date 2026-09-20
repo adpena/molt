@@ -2007,8 +2007,10 @@ BINARY_IMAGE_REF_RETAIN_KINDS: frozenset[str] = frozenset(
     {
         "and",
         "binding_alias",
+        "box",
         "inc_ref",
         "or",
+        "unbox",
     }
 )
 

@@ -9,6 +9,17 @@ use molt_tir::tir::lir::{LirOp, LirRepr};
 use wasm_encoder::Instruction;
 
 pub(super) fn emit_lir_box_value(ctx: &mut LirLowerCtx, op: &LirOp) {
+    if op.result_values.is_empty() {
+        if let Some(&src) = op.tir_op.operands.first()
+            && ctx.repr_of(src) == LirRepr::I64
+        {
+            // A discarded full-width box can still fail. Keep materialization
+            // and let the operation-owner scope retire its temporary credit.
+            emit_get_boxed_for_repr(ctx, src);
+            ctx.instructions.push(Instruction::Drop);
+        }
+        return;
+    }
     if let (Some(&src), Some(result)) = (op.tir_op.operands.first(), op.result_values.first()) {
         assert!(matches!(result.repr, LirRepr::DynBox | LirRepr::Ref64));
         emit_get_boxed_for_repr(ctx, src);
@@ -31,13 +42,15 @@ pub(super) fn emit_lir_box_value(ctx: &mut LirLowerCtx, op: &LirOp) {
 /// Python conversion. Preserve the entire signed i64 range, including integers
 /// represented by a BigInt; an inline-payload mask alone truncates heap bits.
 pub(super) fn emit_lir_unbox_value(ctx: &mut LirLowerCtx, op: &LirOp) {
-    let (&src, result) = (
-        op.tir_op
-            .operands
-            .first()
-            .expect("UnboxVal requires operand"),
-        op.result_values.first().expect("UnboxVal requires result"),
-    );
+    let Some(result) = op.result_values.first() else {
+        // Representation extraction is pure and creates no owner when unused.
+        return;
+    };
+    let &src = op
+        .tir_op
+        .operands
+        .first()
+        .expect("UnboxVal requires operand");
     assert!(matches!(ctx.repr_of(src), LirRepr::DynBox | LirRepr::Ref64));
     match result.repr {
         LirRepr::I64 => {

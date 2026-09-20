@@ -8,9 +8,9 @@ an expanding verified subset without a hidden host-Python fallback. Language,
 stdlib, third-party package support, and native/WASM parity remain incomplete;
 see [current status](docs/spec/STATUS.md) before choosing a workload.
 
-The immediate priority is a scoped, evidence-backed `v0.0.1` release, followed
-by the stable `v1.0` contract. Neither implies full Python or ecosystem
-compatibility beyond its verified subset. See the
+The release priority is a stable `v1.0` contract, with a scoped, evidence-backed
+`v0.0.1` as the initial milestone. Neither implies full
+Python or ecosystem compatibility beyond its verified subset. See the
 [release milestone](ROADMAP.md#first-release-milestone).
 
 ## Why Molt

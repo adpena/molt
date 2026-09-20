@@ -64,7 +64,7 @@ Do not duplicate detail from these authorities in this plan:
 | Import/module bedrock | [`foundation/import_bedrock_frozen_module_layer.md`](foundation/import_bedrock_frozen_module_layer.md) |
 | DX, build graph, toolchains, distribution | [`foundation/dx_doctrine_100yr.md`](foundation/dx_doctrine_100yr.md), designs [`56`](foundation/56_dx_buildspeed_tooling.md), [`73`](foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md), [`74`](foundation/74_build_work_deduplication.md), [`75`](foundation/75_oss_build_speed_mining.md) |
 | Security and formalization | [`docs/SECURITY.md`](../SECURITY.md), [`docs/spec/areas/security/`](../spec/areas/security/), [`docs/spec/areas/formal/FORMALIZATION_PLAN.md`](../spec/areas/formal/FORMALIZATION_PLAN.md), [`docs/spec/areas/formal/CERTIFICATION_STATUS.md`](../spec/areas/formal/CERTIFICATION_STATUS.md) |
-| Pact reports, obligations, and acceptance | [`collab/pact/README.md`](../../collab/pact/README.md), [`docs/agent/PACT_CONTRACT_LEDGER.md`](../agent/PACT_CONTRACT_LEDGER.md), [`docs/PACT_SUPPORT_MATRIX.md`](../PACT_SUPPORT_MATRIX.md) |
+| Pact acceptance and runtime evidence | [`collab/pact/README.md`](../../collab/pact/README.md), [`docs/PACT_SUPPORT_MATRIX.md`](../PACT_SUPPORT_MATRIX.md) |
 | Long-running proof protocol | [`docs/agent/PROOF_QUEUE.md`](../agent/PROOF_QUEUE.md) |
 
 ## 3. Dependency spine
@@ -322,9 +322,8 @@ hermetic package/toolchain seals; honest current-state and support matrices.
 
 Exit `H0` iff all are machine true:
 
-- `docs/agent/PACT_CONTRACT_LEDGER.md` has no open P0 and the named Pact
-  acceptance lane produced `candidate_outputs.npz` accepted by the canonical
-  parity engine for the exact commit.
+- The named Pact acceptance lane produced `candidate_outputs.npz` accepted by
+  the canonical parity engine for the exact commit and required runtime cell.
 - Memory-safety, lifetime, weakref/finalizer, import-bedrock, C-API/ABI, and
   differential parity gates are green on required native/WASM cells.
 - Structural/fail-closed audits report no newly introduced duplicate authority,
@@ -432,7 +431,7 @@ The plan is continuously re-derived; it is never a frozen prediction.
 |---|---|
 | Every arc | Read live board; pre-register done contract; inspect whole authority family; run bounded contract proof; delete replaced lanes; update owning ledger/evidence. |
 | Every merge | Re-read board; drift/trample audit; generated-artifact checks; exact pathspec; commit-linked evidence and performance/resource impact. |
-| Weekly | Triage red matrix cells, regressions, security findings, stale proofs, legacy inventory, Pact correspondence, and unowned obligations. |
+| Weekly | Triage red matrix cells, regressions, security findings, stale proofs, legacy inventory, Pact contract drift, and unowned obligations. |
 | Monthly | Re-rank dependency graph by class-kill and measured cost; audit allocations/memory/cache/atomics/build fanout; run one disaster or clean-room micro-drill. |
 | Quarterly | Full claimed matrix sampling; ecosystem crater/friend suites; formal/security/supply-chain review; deletion release; DX journey study. |
 | Every release | Reproducible clean-room build; parity/perf/resource/security gates; SBOM/provenance/signing; migration/rollback/recovery proof; archived evidence bundle. |
@@ -442,17 +441,19 @@ The plan is continuously re-derived; it is never a frozen prediction.
 
 ## 7. Pact is the current end-to-end keystone
 
-Pact reports 001 through the latest memo are one additive correspondence stream,
-indexed by [`collab/pact/README.md`](../../collab/pact/README.md) and normalized
-into [`docs/agent/PACT_CONTRACT_LEDGER.md`](../agent/PACT_CONTRACT_LEDGER.md).
-The ledger, not a stale narrative status paragraph, owns obligation state.
+The stable [`Pact acceptance contract`](../../collab/pact/README.md) owns the
+public workload, custody, parity, runtime-axis, and kernel-intake invariants.
+The [`Pact runtime support matrix`](../PACT_SUPPORT_MATRIX.md) separates
+implemented infrastructure from the exact evidence required for each cell.
+Live execution state belongs to proof-queue evidence, not public narrative.
 
 The current shared P0 remains Kernel A: build and execute the real
 `collab/pact/pact_witness_kernel/field_solve.py` through Molt WASM/browser,
 produce `candidate_outputs.npz`, and pass the canonical parity engine under the
 declared gates. Kernel B, the shared parity-harness intake, WebGPU/WebNN demo,
 seven-kernel suite, headless/browser support matrix, contest-runtime axes, and
-long-horizon training/deployment work remain ordered obligations in the ledger.
+long-horizon training/deployment work remain separate contract and proof
+obligations.
 No package clone, host fallback, synthetic forward-only smoke, or one-cell
 backend proof can satisfy this acceptance contract.
 
@@ -460,7 +461,7 @@ backend proof can satisfy this acceptance contract.
 
 This plan has no prose-only completion path. Before closing any horizon or the
 century goal, derive every explicit obligation from this plan, the live board,
-current status, Pact ledger, generated support matrices, formal certification,
+current status, the Pact contract, generated support matrices, formal certification,
 security policy, release checklist, and proof queue; bind each to current-state
 evidence; classify missing, weak, contradictory, stale, or green evidence; and
 continue until every required item is green. A blocked proof, model failure,

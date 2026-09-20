@@ -612,48 +612,103 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
 #[test]
 fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() {
     for raw in ["none", "True", "False", "", "external_symbol"] {
-        let source = FunctionIR {
-            name: "var_metadata_identity".into(),
-            params: vec!["arg".into()],
-            ops: vec![
-                OpIR {
-                    kind: "transport_probe".into(),
-                    var: Some(raw.into()),
-                    args: Some(vec!["arg".into()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
-            ],
-            ..FunctionIR::default()
-        };
-        let tir = lower_to_tir(&source);
-        let probe = tir
-            .blocks
-            .values()
-            .flat_map(|block| &block.ops)
-            .find(|op| {
-                op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
-            })
-            .unwrap();
-        assert!(
-            !probe.attrs.contains_key("_simple_var_operand"),
-            "{raw:?} did not become an SSA read"
-        );
-        assert_eq!(probe.operands.len(), 1);
-        let lowered = lower_to_simple_ir(&tir);
-        let probe = lowered
-            .iter()
-            .find(|op| op.kind == "transport_probe")
-            .unwrap();
-        assert_eq!(probe.var.as_deref(), Some(raw));
-        assert_eq!(
-            probe.args,
-            Some(vec!["arg".into()]),
-            "unresolved var cannot steal args[0]"
-        );
+        for args in [vec![], vec!["arg".to_string()], vec!["arg".to_string(); 2]] {
+            let source = FunctionIR {
+                name: "var_metadata_identity".into(),
+                params: vec!["arg".into()],
+                ops: vec![
+                    OpIR {
+                        kind: "transport_probe".into(),
+                        var: Some(raw.into()),
+                        args: Some(args.clone()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            };
+            let tir = lower_to_tir(&source);
+            let probe = tir
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .find(|op| {
+                    op.attrs.get("_original_kind")
+                        == Some(&AttrValue::Str("transport_probe".into()))
+                })
+                .unwrap();
+            assert!(
+                !probe.attrs.contains_key("_simple_var_operand"),
+                "{raw:?} did not become an SSA read"
+            );
+            assert_eq!(probe.operands.len(), args.len());
+            let lowered = lower_to_simple_ir(&tir);
+            let probe = lowered
+                .iter()
+                .find(|op| op.kind == "transport_probe")
+                .unwrap();
+            assert_eq!(probe.var.as_deref(), Some(raw));
+            assert_eq!(
+                probe.args.as_deref().unwrap_or_default(),
+                args.as_slice(),
+                "unresolved var cannot steal args[0]"
+            );
+        }
+    }
+}
+
+#[test]
+fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
+    for kind in ["copy_var", "load_var"] {
+        for in_args in [false, true] {
+            let source = FunctionIR {
+                name: "reserved_binding_source".into(),
+                ops: vec![
+                    OpIR {
+                        kind: kind.into(),
+                        var: Some(if in_args { "transport_only" } else { "none" }.into()),
+                        args: in_args.then(|| vec!["none".into()]),
+                        out: Some("result".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["result".into()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            };
+            let mut tir = lower_to_tir(&source);
+            for roundtrip in 0..2 {
+                let none = tir
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .find(|op| op.opcode == OpCode::ConstNone)
+                    .unwrap()
+                    .results[0];
+                let copy = tir
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .find(|op| op.opcode == OpCode::Copy)
+                    .unwrap();
+                assert_eq!(
+                    copy.operands,
+                    [none],
+                    "{kind} args={in_args} pass={roundtrip}"
+                );
+                let lowered = lower_to_simple_ir(&tir);
+                tir = lower_to_tir(&FunctionIR {
+                    ops: lowered,
+                    ..source.clone()
+                });
+            }
+        }
     }
 }
 

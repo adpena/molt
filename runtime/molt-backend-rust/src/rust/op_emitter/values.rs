@@ -160,24 +160,25 @@ impl RustBackend {
         );
     }
 
-    pub(super) fn emit_op_box(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
+    pub(super) fn emit_op_representation_copy(&mut self, op: &OpIR) {
+        let Some([source]) = op.args.as_deref() else {
+            self.emit_unsupported_op(op, "representation conversion requires exactly one operand");
+            return;
         };
-
-        let o = out();
-        let rhs = op
-            .args
-            .as_deref()
-            .and_then(|args| args.first())
-            .map(|src| rust_clone(src))
-            .unwrap_or_else(|| "MoltValue::None".to_string());
-        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+        // The source target keeps every admitted value in MoltValue already;
+        // neither conversion has a raw carrier to materialize or extract.
+        let Some(output) = molt_tir::tir::simple_def_use::simple_ir_out_result(op) else {
+            return;
+        };
+        let output = rust_ident(output);
+        self.emit_line(&declare_molt_value(
+            &output,
+            &rust_clone(source),
+            &self.hoisted_vars,
+        ));
+        if is_assignable_var(source) {
+            self.note_alias(output, rust_ident(source));
+        }
     }
 
     pub(super) fn emit_op_local_copy(&mut self, op: &OpIR) {

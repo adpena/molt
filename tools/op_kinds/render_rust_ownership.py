@@ -325,8 +325,8 @@ def _render_result_absorption(
     out.append("    }\n}\n\n")
 
     out.append(
-        "/// Result-side selected-alias ownership fact. These opcodes return one\n"
-        "/// borrowed operand's bits as their result, so backend lowering must\n"
+        "/// Result-side selected-alias ownership fact. These opcodes may forward\n"
+        "/// a borrowed operand's bits as their result, so backend lowering must\n"
         "/// retain the selected object when an owned boxed result is produced.\n"
         "/// Raw scalar lanes remain refcount-free. The table is keyed by explicit\n"
         "/// `result_mints_owned_selected_operand` rows in op_kinds.toml.\n"
