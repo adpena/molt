@@ -33,8 +33,6 @@ use super::var_get_boxed_overflow_safe_fn;
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_set_op(
     op: &OpIR,
-    op_idx: usize,
-    func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
