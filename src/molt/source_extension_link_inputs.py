@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import re
 
 from molt.dx import _reject_onedrive
+from molt.exact_json import string_keyed_mapping
 from molt.toolchain_identity import stable_file_content_identity
 
 SOURCE_EXTENSION_LINK_INPUTS_ENV = "MOLT_PROOF_SOURCE_EXTENSION_LINK_INPUTS"
@@ -76,36 +76,42 @@ def validate_source_extension_link_inputs(
     target_triple: str,
 ) -> SourceExtensionLinkInputs:
     """Verify a captured selection without running rustc or rediscovering files."""
+    contract = string_keyed_mapping(payload)
     if (
-        not isinstance(payload, Mapping)
-        or set(payload) != {"schema", "target_triple", "compiler_builtins"}
-        or payload["schema"] != _SCHEMA
-        or payload["target_triple"] != target_triple
+        contract is None
+        or set(contract) != {"schema", "target_triple", "compiler_builtins"}
+        or contract["schema"] != _SCHEMA
+        or contract["target_triple"] != target_triple
     ):
         raise ValueError("source-extension link-input contract differs from the target")
-    archive = payload["compiler_builtins"]
+    archive_payload = contract["compiler_builtins"]
     if target_triple != "wasm32-wasip1":
-        if archive is not None:
+        if archive_payload is not None:
             raise ValueError(
                 "non-WASI source-extension target has unexpected compiler-builtins"
             )
         return SourceExtensionLinkInputs(target_triple, None, None, None)
+    archive = string_keyed_mapping(archive_payload)
+    if archive is None:
+        raise ValueError(
+            "WASI source-extension compiler-builtins identity is malformed"
+        )
+    path_value = archive.get("path")
+    sha256_value = archive.get("sha256")
+    size_value = archive.get("size")
     if (
-        not isinstance(archive, Mapping)
-        or set(archive) != {"path", "sha256", "size"}
-        or not isinstance(archive["path"], str)
-        or not isinstance(archive["sha256"], str)
-        or re.fullmatch(r"[0-9a-f]{64}", archive["sha256"]) is None
-        or type(archive["size"]) is not int
-        or archive["size"] < 0
+        set(archive) != {"path", "sha256", "size"}
+        or not isinstance(path_value, str)
+        or not isinstance(sha256_value, str)
+        or re.fullmatch(r"[0-9a-f]{64}", sha256_value) is None
+        or type(size_value) is not int
+        or size_value < 0
     ):
         raise ValueError(
             "WASI source-extension compiler-builtins identity is malformed"
         )
-    path = Path(archive["path"])
+    path = Path(path_value)
     actual = _archive_identity(path)
-    if actual["sha256"] != archive["sha256"] or actual["size"] != archive["size"]:
+    if actual["sha256"] != sha256_value or actual["size"] != size_value:
         raise ValueError("captured source-extension compiler-builtins content changed")
-    return SourceExtensionLinkInputs(
-        target_triple, path, archive["sha256"], archive["size"]
-    )
+    return SourceExtensionLinkInputs(target_triple, path, sha256_value, size_value)

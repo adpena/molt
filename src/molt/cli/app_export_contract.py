@@ -15,23 +15,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
+from molt.exact_json import string_keyed_object
 
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
 APP_EXPORT_CALL_ABI_SCHEMA = 2
-
-
-def _string_keyed_object(value: object, *, context: str) -> dict[str, object]:
-    """Validate and normalize one JSON object at the untyped input boundary."""
-
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{context} must be an object")
-    normalized: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise ValueError(f"{context} keys must be strings")
-        normalized[key] = item
-    return normalized
 
 
 def _canonical_call_abi() -> dict[str, object]:
@@ -62,7 +50,7 @@ def _canonical_call_abi() -> dict[str, object]:
 
 def _validated_call_abi(raw_abi: object) -> dict[str, object]:
     expected = _canonical_call_abi()
-    actual = _string_keyed_object(raw_abi, context="app export contract call_abi")
+    actual = string_keyed_object(raw_abi, context="app export contract call_abi")
     if actual != expected:
         raise ValueError(
             "app export contract call_abi must match the canonical "
@@ -81,7 +69,7 @@ def _frontend_resolved_bindings(
         raise ValueError("backend IR has no functions list for app export custody")
     carriers: list[object] = []
     for index, raw_function in enumerate(raw_functions):
-        function = _string_keyed_object(
+        function = string_keyed_object(
             raw_function, context=f"backend IR function {index}"
         )
         if "app_callable_bindings" in function:
@@ -108,7 +96,7 @@ def _validated_binding_rows(
     seen_names: set[str] = set()
     seen_export_symbols: set[str] = set()
     for index, raw_binding in enumerate(raw_bindings):
-        binding = _string_keyed_object(
+        binding = string_keyed_object(
             raw_binding, context=f"app export binding {index}"
         )
         name = binding.get("name")
@@ -198,7 +186,7 @@ def build_app_export_contract(
 
 
 def validate_app_export_contract(payload: Mapping[str, object]) -> dict[str, object]:
-    validated = _string_keyed_object(payload, context="app export contract")
+    validated = string_keyed_object(payload, context="app export contract")
     if validated.get("schema") != APP_EXPORT_CONTRACT_SCHEMA:
         raise ValueError(
             f"app export contract schema must be {APP_EXPORT_CONTRACT_SCHEMA}"
@@ -244,7 +232,7 @@ def exported_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
     assert isinstance(bindings, list)
     exported: list[str] = []
     for binding in bindings:
-        row = _string_keyed_object(binding, context="validated app export binding")
+        row = string_keyed_object(binding, context="validated app export binding")
         symbol = row.get("symbol")
         if row.get("disposition") == "export" and isinstance(symbol, str):
             exported.append(symbol)

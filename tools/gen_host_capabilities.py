@@ -871,6 +871,7 @@ def _format_python(source: str) -> str:
             "-m",
             "ruff",
             "format",
+            "--no-force-exclude",
             "-",
             "--stdin-filename",
             str(OUT_PYTHON),

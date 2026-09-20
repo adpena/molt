@@ -4551,6 +4551,7 @@ class _Analyzer:
 
         def terminal_release_effects() -> EffectMask:
             assert iteration is not None
+            assert isinstance(node, (ast.For, ast.AsyncFor))
             boundary = iteration.effects | retained_boundary
             release_result = _result_after_retained_boundary(iterable_result, boundary)
             release_may_call = release_result.release_may_call and not (

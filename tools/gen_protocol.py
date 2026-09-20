@@ -695,6 +695,7 @@ def _format_generated_text(path: Path, text: str) -> str:
         "-m",
         "ruff",
         "format",
+        "--no-force-exclude",
         "--stdin-filename",
         str(path),
         "-",

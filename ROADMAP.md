@@ -8,8 +8,10 @@ this roadmap does not duplicate their implementation history.
 
 ## First Release Milestone
 
-The first product milestone is an initial release, before a stable `v1.0`
-contract. The exact version and tag follow the existing
+The immediate P0 is an evidence-backed `v0.0.1` initial release; the next major
+release objective is the stable `v1.0` contract. Rank work by release-blocker
+closure and measured reduction of the release critical path. Broader expansion
+must not displace either objective. The exact version and tag follow the existing
 [packaging authority](packaging/PACKAGING.md), not a separate roadmap version.
 Consolidate and land the owned compiler work on `origin/main` first, preserving
 unique WIP and retiring replaced authorities. Close known correctness failures

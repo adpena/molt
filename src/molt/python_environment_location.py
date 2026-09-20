@@ -11,7 +11,6 @@ import sys
 import sysconfig
 from typing import cast
 import urllib.parse
-import urllib.request
 
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.python_identity_common import (
@@ -70,15 +69,24 @@ def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
                 f"installed distribution {distribution!r} has an invalid file URL"
             )
         percent_index += 3
-    # CPython 3.12 has no Path.from_uri; use the stdlib URL decoder, which
-    # preserves platform file-URL semantics across the supported versions.
-    raw = urllib.request.url2pathname(encoded_path)
+    # Decode only the already-admitted local path, not the URI authority again.
+    # Keep filesystem-byte semantics stable across supported Python versions.
+    try:
+        raw = os.fsdecode(urllib.parse.unquote_to_bytes(encoded_path))
+    except (ValueError, OSError) as exc:
+        raise PythonEnvironmentIdentityError(
+            f"installed distribution {distribution!r} has an invalid file URL"
+        ) from exc
     if re.search(r"%[0-9A-Fa-f]{2}", raw):
         raise PythonEnvironmentIdentityError(
             f"installed distribution {distribution!r} has a multiply encoded file URL"
         )
-    if os.name == "nt" and re.match(r"^/[A-Za-z]:", raw):
-        raw = raw[1:]
+    if os.name == "nt":
+        # RFC 8089 Appendix E drive spellings apply only to Windows. POSIX
+        # colons and bars are ordinary filename bytes, never DOS syntax.
+        drive = re.match(r"^/?([A-Za-z])[:|](?=/|$)", raw)
+        if drive is not None:
+            raw = drive[1].upper() + ":" + raw[drive.end() :]
     if raw.startswith(("//", "\\\\")):
         raise PythonEnvironmentIdentityError(
             f"installed distribution {distribution!r} has a non-local editable source"

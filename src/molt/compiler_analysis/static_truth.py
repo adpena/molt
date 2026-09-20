@@ -151,7 +151,9 @@ class StaticExpressionResult:
             return True
         if not isinstance(other, StaticExpressionResult):
             return False
-        pending = [(self, other)]
+        pending: list[tuple[StaticExpressionResult, StaticExpressionResult]] = [
+            (self, other)
+        ]
         compared: set[tuple[int, int]] = set()
         while pending:
             left, right = pending.pop()

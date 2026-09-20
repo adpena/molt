@@ -28,7 +28,7 @@ from molt.cli.cargo_target_cfg import (
     parse_rustc_target_metadata,
     select_cargo_target_flags,
 )
-from molt.exact_json import canonical_json_sha256
+from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 from molt.rust_toolchain import cargo_configuration_paths, resolve_rustup_proxy
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
@@ -957,9 +957,10 @@ def _profile_environment_prefix(profile: str) -> str:
 
 
 def _table(value: object, *, label: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+    table = string_keyed_mapping(value)
+    if table is None:
         raise ValueError(f"runtime Cargo {label} must be a string-keyed table")
-    return cast(Mapping[str, object], value)
+    return table
 
 
 def _merge(
