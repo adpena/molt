@@ -45,9 +45,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     tracked_obj_vars_set: &mut std::collections::HashSet<String>,
     tracked_vars_set: &mut std::collections::HashSet<String>,
     last_use: &BTreeMap<String, usize>,
-    alias_roots: &BTreeMap<String, String>,
-    already_decrefed: &mut BTreeSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
+    cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: FuncRef,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
@@ -167,18 +165,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     eprintln!("check_exception {} op={}", func_name, op_idx,);
                 }
             }
-            let mut scrubbed_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
             if !carry_obj.is_empty() {
-                let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    rc_authority,
-                    &mut carry_obj,
-                    last_use,
-                    alias_roots,
-                    op_idx,
-                    None,
-                    Some(&mut *already_decrefed),
-                );
+                let cleanup =
+                    drain_cleanup_candidates(rc_authority, &mut carry_obj, last_use, op_idx, None);
                 if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
                     && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                         .ok()
@@ -197,42 +186,17 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     );
                 }
                 for name in cleanup {
-                    let val = entry_vars.get(&name).copied().or_else(|| {
-                        var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &name,
-                            representation_plan,
-                        )
-                        .map(|v| *v)
-                    });
-                    let Some(val) = val else {
-                        continue;
-                    };
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                    entry_vars.remove(&name);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     if let Some(var) = vars.get(&name) {
                         let scrub =
                             dead_scrub_value_for_var(&mut *builder, representation_plan, &name);
                         builder.def_var(*var, scrub);
                     }
-                    scrubbed_names.insert(name);
                 }
             }
             if !carry_ptr.is_empty() {
-                let cleanup = drain_cleanup_tracked_dedup_with_authority(
-                    rc_authority,
-                    &mut carry_ptr,
-                    last_use,
-                    alias_roots,
-                    op_idx,
-                    None,
-                    Some(&mut *already_decrefed),
-                );
+                let cleanup =
+                    drain_cleanup_candidates(rc_authority, &mut carry_ptr, last_use, op_idx, None);
                 if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
                     && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                         .ok()
@@ -251,40 +215,12 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     );
                 }
                 for name in cleanup {
-                    let val = entry_vars.get(&name).copied().or_else(|| {
-                        var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            &mut *import_refs,
-                            &mut *sealed_blocks,
-                            vars,
-                            &name,
-                            representation_plan,
-                        )
-                        .map(|v| *v)
-                    });
-                    let Some(val) = val else {
-                        continue;
-                    };
-                    builder.ins().call(local_dec_ref_obj, &[val]);
-                    entry_vars.remove(&name);
+                    cleanup_roots.release(builder, local_dec_ref_obj, &name);
                     if let Some(var) = vars.get(&name) {
                         let scrub =
                             dead_scrub_value_for_var(&mut *builder, representation_plan, &name);
                         builder.def_var(*var, scrub);
                     }
-                    scrubbed_names.insert(name);
-                }
-            }
-            // Single pass over all exception handler blocks to remove
-            // scrubbed names, instead of one retain per name per block.
-            if !scrubbed_names.is_empty() {
-                for tracked_list in block_tracked_obj.values_mut() {
-                    tracked_list.retain(|n| !scrubbed_names.contains(n));
-                }
-                for tracked_list in block_tracked_ptr.values_mut() {
-                    tracked_list.retain(|n| !scrubbed_names.contains(n));
                 }
             }
             let fallthrough = builder.create_block();

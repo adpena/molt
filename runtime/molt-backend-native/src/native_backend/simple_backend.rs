@@ -113,4 +113,4 @@ pub struct SimpleBackend {
 }
 
 #[cfg(all(test, feature = "native-backend"))]
-mod tests;
+pub(in crate::native_backend) mod tests;

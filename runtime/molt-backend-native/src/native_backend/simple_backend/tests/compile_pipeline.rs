@@ -6,6 +6,96 @@ use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
 
 #[test]
+fn iterator_lowering_preserves_materialized_values_and_unpack_consumers() {
+    for unboxed in [false, true] {
+        let mut ops = if unboxed {
+            vec![OpIR {
+                kind: "iter_next_unboxed".into(),
+                args: Some(vec!["iterator".into()]),
+                var: Some("next_value".into()),
+                out: Some("done".into()),
+                ..OpIR::default()
+            }]
+        } else {
+            vec![
+                OpIR {
+                    kind: "iter_next".into(),
+                    args: Some(vec!["iterator".into()]),
+                    out: Some("pair".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("one".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "index".into(),
+                    args: Some(vec!["pair".into(), "one".into()]),
+                    out: Some("done".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(0),
+                    out: Some("zero".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "index".into(),
+                    args: Some(vec!["pair".into(), "zero".into()]),
+                    out: Some("next_value".into()),
+                    ..OpIR::default()
+                },
+            ]
+        };
+        ops.extend([
+            OpIR {
+                kind: "unpack_sequence".into(),
+                args: Some(vec!["next_value".into(), "left".into(), "right".into()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec![if unboxed { "next_value" } else { "pair" }.into()]),
+                ..OpIR::default()
+            },
+        ]);
+        let compiled = compile_function_to_clif_with_imports(
+            vec![FunctionIR {
+                name: "observable_iterator_value".into(),
+                params: vec!["iterator".into()],
+                ops,
+                ..FunctionIR::default()
+            }],
+            "observable_iterator_value",
+        );
+        let next = if unboxed {
+            "molt_iter_next_unboxed"
+        } else {
+            "molt_iter_next"
+        };
+        for helper in [next, "molt_unpack_sequence"] {
+            let id = compiled.import_ids.get(helper).unwrap_or_else(|| {
+                panic!("missing {helper}: native lowering replaced an observable value")
+            });
+            assert_eq!(
+                call_sites_for_import(&compiled.function, *id).len(),
+                1,
+                "{helper}"
+            );
+        }
+        assert!(
+            !compiled
+                .import_ids
+                .contains_key("molt_iter_next_dict_items"),
+            "an unpack consumer cannot authorize replacing the observable iterator value with a key"
+        );
+    }
+}
+#[test]
 fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
     for (kind, argc, target, runtime_symbol, owns_result, returns_value) in [
         ("call", 1, Some("molt_classmethod_new"), None, true, true),

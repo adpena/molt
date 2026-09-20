@@ -3,29 +3,29 @@ use std::collections::{HashMap, HashSet};
 use super::super::value_range::ValueRange;
 use super::PassStats;
 use super::safety::is_hoistable;
-use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
+use crate::tir::analysis::{AnalysisManager, DefMap, ImmediateDoms, LoopForest, PredMap};
 use crate::tir::blocks::BlockId;
+use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::values::ValueId;
 /// Find the preheader block for a loop header.
-/// The preheader is the unique predecessor of the header that is NOT
-/// part of the loop body.  If no unique preheader exists, returns None.
+/// The preheader is the unique executable predecessor outside the loop and
+/// must dominate the header. Retained lexical latches and exception edges are
+/// governed by the same canonical CFG relation as loop discovery.
 fn find_preheader(
-    func: &TirFunction,
     header_bid: BlockId,
     loop_blocks: &HashSet<BlockId>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
 ) -> Option<BlockId> {
-    let mut preds: Vec<BlockId> = Vec::new();
-    for (&bid, block) in &func.blocks {
-        if block.terminator.has_successor(header_bid) && !loop_blocks.contains(&bid) {
-            preds.push(bid);
-        }
-    }
-    if preds.len() == 1 {
-        Some(preds[0])
-    } else {
-        None
-    }
+    let mut preds = predecessors
+        .get(&header_bid)?
+        .iter()
+        .copied()
+        .filter(|bid| idoms.contains_key(bid) && !loop_blocks.contains(bid));
+    let preheader = preds.next()?;
+    (preds.next().is_none() && dominators::dominates(preheader, header_bid, idoms))
+        .then_some(preheader)
 }
 
 pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
@@ -56,13 +56,15 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
     // beyond the normal block-splitting that any structured
     // construct does.
 
-    // The loop forest (headers from `loop_roles`, sorted by id for
+    // The executable loop forest (headers from backedges, sorted by id for
     // deterministic tie-breaking; bodies via dominator-based natural-loop
     // construction) is shared with BCE through the analysis manager.
     let forest = am.get::<LoopForest>(func).clone();
     if forest.headers.is_empty() {
         return stats;
     }
+    let predecessors = am.get::<PredMap>(func).clone();
+    let idoms = am.get::<ImmediateDoms>(func).clone();
     let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Value-range proof, shared with BCE/SROA via the analysis manager. Used to
@@ -134,7 +136,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
             None => continue,
         };
 
-        let preheader = match find_preheader(func, *header_bid, loop_blocks) {
+        let preheader = match find_preheader(*header_bid, loop_blocks, &predecessors, &idoms) {
             Some(p) => p,
             None => continue, // No unique preheader - can't hoist.
         };
@@ -173,20 +175,29 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
                         continue;
                     }
 
-                    // Check if all operands are defined outside the loop.
-                    let all_invariant = op.operands.iter().all(|&operand| {
-                        match value_def_block.get(&operand) {
-                            Some(def_bid) => !loop_blocks.contains(def_bid),
-                            None => true, // Unknown def = conservative: treat as external.
-                        }
-                    });
+                    // Being outside the loop is not enough: an operand in a
+                    // sibling or exception-only block may be unavailable at
+                    // the preheader. Unknown definitions are not a proof.
+                    let all_invariant =
+                        op.operands
+                            .iter()
+                            .all(|&operand| match value_def_block.get(&operand) {
+                                Some(def_bid) => {
+                                    !loop_blocks.contains(def_bid)
+                                        && dominators::dominates(*def_bid, preheader, &idoms)
+                                }
+                                None => false,
+                            });
 
                     if all_invariant {
                         to_hoist.push(i);
                     }
                 }
 
-                // Hoist ops from back to front to preserve indices.
+                // Remove back-to-front to preserve indices, then append in
+                // source order. Moving definitions must not reverse their
+                // dependency order at the destination.
+                let mut hoisted = Vec::with_capacity(to_hoist.len());
                 for &idx in to_hoist.iter().rev() {
                     let op = func.blocks.get_mut(&loop_bid).unwrap().ops.remove(idx);
                     // Update def_block for the hoisted values.
@@ -195,11 +206,16 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
                     }
                     // Insert at the end of the preheader (before the terminator,
                     // which is handled structurally, not in the ops vec).
-                    func.blocks.get_mut(&preheader).unwrap().ops.push(op);
+                    hoisted.push(op);
                     hoisted_this_round += 1;
                     stats.ops_removed += 1; // removed from loop
                     stats.ops_added += 1; // added to preheader
                 }
+                func.blocks
+                    .get_mut(&preheader)
+                    .unwrap()
+                    .ops
+                    .extend(hoisted.into_iter().rev());
             }
 
             if hoisted_this_round == 0 {

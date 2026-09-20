@@ -1,12 +1,40 @@
 use super::super::value_range::ValueRangeResult;
 use super::run;
 use super::safety::throw_condition_disproven;
+use crate::ir::{FunctionIR, OpIR};
+use crate::tir::analysis::{AnalysisManager, LoopForest};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::numeric_facts::IntRange;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::pass_manager::{Mutates, PassManager, TirPass};
+use crate::tir::passes::PassStats;
+use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
+
+struct LicmOnlyPass;
+
+impl TirPass for LicmOnlyPass {
+    fn name(&self) -> &'static str {
+        "licm"
+    }
+
+    fn mutation_class(&self) -> Mutates {
+        Mutates::Cfg
+    }
+
+    fn run(
+        &self,
+        func: &mut TirFunction,
+        am: &mut AnalysisManager,
+        _tti: &TargetInfo,
+    ) -> PassStats {
+        super::run(func, am)
+    }
+}
+
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         dialect: Dialect::Molt,
@@ -30,6 +58,98 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
         results: vec![result],
         attrs: AttrDict::new(),
         source_span: None,
+    }
+}
+
+struct SingleLoop {
+    preheader: BlockId,
+    header: BlockId,
+    body: BlockId,
+    loop_arg: ValueId,
+}
+
+fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
+    let preheader = func.fresh_block();
+    let header = func.fresh_block();
+    let body = func.fresh_block();
+    let exit = func.fresh_block();
+    let seed = func.fresh_value();
+    let loop_arg = func.fresh_value();
+    let cond = func.fresh_value();
+
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(make_const_int(0, seed));
+    entry.terminator = Terminator::Branch {
+        target: preheader,
+        args: vec![],
+    };
+    func.blocks.insert(
+        preheader,
+        TirBlock {
+            id: preheader,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![seed],
+            },
+        },
+    );
+    func.blocks.insert(
+        header,
+        TirBlock {
+            id: header,
+            args: vec![TirValue {
+                id: loop_arg,
+                ty: TirType::I64,
+            }],
+            ops: vec![TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstBool,
+                operands: vec![],
+                results: vec![cond],
+                attrs: AttrDict::new(),
+                source_span: None,
+            }],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![loop_arg],
+            },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+    func.loop_roles.insert(body, LoopRole::LoopEnd);
+    func.loop_pairs.insert(header, body);
+
+    SingleLoop {
+        preheader,
+        header,
+        body,
+        loop_arg,
     }
 }
 
@@ -157,6 +277,275 @@ fn invariant_add_hoisted_to_preheader() {
     );
 
     assert!(stats.ops_removed > 0 || stats.ops_added > 0);
+}
+
+#[test]
+fn reachable_preheader_ignores_retained_unreachable_predecessor() {
+    let mut func = TirFunction::new("dead_predecessor".into(), vec![], TirType::None);
+    let loop_shape = build_single_loop(&mut func);
+    let invariant = func.fresh_value();
+    func.blocks
+        .get_mut(&loop_shape.body)
+        .unwrap()
+        .ops
+        .push(make_const_int(41, invariant));
+
+    let dead_latch = func.fresh_block();
+    func.blocks.insert(
+        dead_latch,
+        TirBlock {
+            id: dead_latch,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: loop_shape.header,
+                args: vec![loop_shape.loop_arg],
+            },
+        },
+    );
+    func.loop_roles.insert(dead_latch, LoopRole::LoopEnd);
+    func.loop_pairs.insert(loop_shape.header, dead_latch);
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    assert!(
+        func.blocks[&loop_shape.preheader]
+            .ops
+            .iter()
+            .any(|op| op.results == vec![invariant]),
+        "an unreachable retained latch must not invalidate the executable preheader"
+    );
+}
+
+#[test]
+fn function_parameter_operand_can_hoist() {
+    let mut func = TirFunction::new(
+        "parameter_dominates_preheader".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+    );
+    let parameter = ValueId(0);
+    let loop_shape = build_single_loop(&mut func);
+    let copied = func.fresh_value();
+    func.blocks
+        .get_mut(&loop_shape.body)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![parameter],
+            results: vec![copied],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    assert!(
+        func.blocks[&loop_shape.preheader]
+            .ops
+            .iter()
+            .any(|op| op.results == vec![copied]),
+        "entry-defined function parameters must be available at the preheader"
+    );
+}
+
+#[test]
+fn loop_block_argument_operand_cannot_hoist() {
+    let mut func = TirFunction::new("loop_argument".into(), vec![], TirType::None);
+    let loop_shape = build_single_loop(&mut func);
+    let copied = func.fresh_value();
+    func.blocks
+        .get_mut(&loop_shape.body)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![loop_shape.loop_arg],
+            results: vec![copied],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    assert!(
+        func.blocks[&loop_shape.body]
+            .ops
+            .iter()
+            .any(|op| op.results == vec![copied]),
+        "a loop-carried block argument is defined inside the loop"
+    );
+}
+
+#[test]
+fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
+    let mut func = TirFunction::new("sibling_definition".into(), vec![], TirType::None);
+    let loop_shape = build_single_loop(&mut func);
+    let sibling = func.fresh_block();
+    let entry_cond = func.fresh_value();
+    let sibling_value = func.fresh_value();
+    let copied = func.fresh_value();
+    {
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstBool,
+            operands: vec![],
+            results: vec![entry_cond],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::CondBranch {
+            cond: entry_cond,
+            then_block: loop_shape.preheader,
+            then_args: vec![],
+            else_block: sibling,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        sibling,
+        TirBlock {
+            id: sibling,
+            args: vec![],
+            ops: vec![make_const_int(7, sibling_value)],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.blocks
+        .get_mut(&loop_shape.body)
+        .unwrap()
+        .ops
+        .push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![sibling_value],
+            results: vec![copied],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    assert!(
+        func.blocks[&loop_shape.body]
+            .ops
+            .iter()
+            .any(|op| op.results == vec![copied]),
+        "being outside the loop is insufficient without dominance of the destination"
+    );
+}
+
+#[test]
+fn same_round_hoists_preserve_source_order() {
+    let mut func = TirFunction::new("stable_hoist_order".into(), vec![], TirType::None);
+    let loop_shape = build_single_loop(&mut func);
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    func.blocks
+        .get_mut(&loop_shape.body)
+        .unwrap()
+        .ops
+        .extend([make_const_int(11, first), make_const_int(22, second)]);
+
+    run(&mut func, &mut AnalysisManager::new());
+
+    let preheader_ops = &func.blocks[&loop_shape.preheader].ops;
+    let first_pos = preheader_ops
+        .iter()
+        .position(|op| op.results == vec![first])
+        .expect("first invariant must hoist");
+    let second_pos = preheader_ops
+        .iter()
+        .position(|op| op.results == vec![second])
+        .expect("second invariant must hoist");
+    assert!(
+        first_pos < second_pos,
+        "back-to-front removal must not reverse destination order"
+    );
+}
+
+#[test]
+fn luau_loop_pending_observer_stays_inside_executable_loop_through_pass_manager() {
+    let source = FunctionIR {
+        name: "loop_pending_observer".into(),
+        ops: vec![
+            OpIR {
+                kind: "loop_start".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_break_if_exception".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_break".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".into(),
+                value: Some(1),
+                out: Some("ok".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["ok".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let mut func = lower_to_tir(&source);
+
+    let pending_block_before = func
+        .blocks
+        .iter()
+        .find_map(|(&bid, block)| {
+            block
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ExceptionPending)
+                .then_some(bid)
+        })
+        .expect("SimpleIR lift must materialize the loop pending observer");
+    let mut am = AnalysisManager::new();
+    let forest_before = am.get::<LoopForest>(&func);
+    assert!(
+        forest_before.headers.is_empty(),
+        "the retained loop_end after an unconditional break is not an executable backedge"
+    );
+
+    let pipeline = PassManager::new(
+        vec![Box::new(LicmOnlyPass)],
+        TargetInfo::luau_release_fast(),
+    );
+    let stats = pipeline.run(&mut func);
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].name, "licm");
+
+    let pending_block_after = func
+        .blocks
+        .iter()
+        .find_map(|(&bid, block)| {
+            block
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::ExceptionPending)
+                .then_some(bid)
+        })
+        .expect("LICM must retain the runtime pending observer");
+    let mut am = AnalysisManager::new();
+    let forest_after = am.get::<LoopForest>(&func);
+    assert!(forest_after.headers.is_empty());
+    assert_eq!(pending_block_after, pending_block_before);
 }
 
 #[test]

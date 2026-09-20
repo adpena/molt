@@ -1,45 +1,19 @@
 use super::*;
 
-#[test]
-fn cleanup_roots_collapse_join_alias_duplicates() {
-    let func = FunctionIR {
-        name: "join_alias_cleanup".to_string(),
-        params: vec![],
+pub(super) fn token_test_ir() -> FunctionIR {
+    FunctionIR {
+        name: "tokens".into(),
+        params: vec!["borrowed".into()],
         ops: vec![
             OpIR {
-                kind: "const_str".to_string(),
-                out: Some("src".to_string()),
-                s_value: Some("hi".to_string()),
+                kind: "alloc".into(),
+                out: Some("owner".into()),
                 ..OpIR::default()
             },
             OpIR {
-                kind: "store_var".to_string(),
-                var: Some("_bb4_arg0".to_string()),
-                args: Some(vec!["src".to_string()]),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "load_var".to_string(),
-                var: Some("_bb4_arg0".to_string()),
-                out: Some("joined".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "copy_var".to_string(),
-                var: Some("joined".to_string()),
-                out: Some("arg_alias".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "call".to_string(),
-                s_value: Some("callee".to_string()),
-                args: Some(vec!["arg_alias".to_string()]),
-                out: Some("out".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec!["out".to_string()]),
+                kind: "copy".into(),
+                args: Some(vec!["owner".into()]),
+                out: Some("alias".into()),
                 ..OpIR::default()
             },
         ],
@@ -48,61 +22,223 @@ fn cleanup_roots_collapse_join_alias_duplicates() {
         is_extern: false,
         codegen_partition: false,
         execution_context: Default::default(),
-    };
-
-    let analysis = preanalyze_for_test(&func);
-    let arg_cleanup_roots =
-        cleanup_roots_for_names(&analysis.alias_roots, ["arg_alias".to_string()]);
-
-    assert_eq!(arg_cleanup_roots, BTreeSet::from(["src".to_string()]));
-    assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "_bb4_arg0")));
-    assert!(arg_cleanup_roots.contains(alias_root_name(&analysis.alias_roots, "joined")));
+    }
 }
 
 #[test]
-fn cleanup_root_marking_dedups_aliases() {
-    let alias_roots = BTreeMap::from([
-        ("alias".to_string(), "root".to_string()),
-        ("join".to_string(), "root".to_string()),
-    ]);
-    let mut already_decrefed = BTreeSet::new();
-
-    assert!(mark_cleanup_root_once(
-        &alias_roots,
-        &mut already_decrefed,
-        "alias",
-    ));
-    assert!(!mark_cleanup_root_once(
-        &alias_roots,
-        &mut already_decrefed,
-        "join",
-    ));
-    assert!(!mark_cleanup_root_once(
-        &alias_roots,
-        &mut already_decrefed,
-        "root",
-    ));
-    assert_eq!(already_decrefed, BTreeSet::from(["root".to_string()]));
+fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
+    use cranelift_codegen::ir::InstructionData;
+    for release_in_predecessor in [false, true] {
+        let input = token_test_ir();
+        let analysis = preanalyze_for_test(&input);
+        let mut backend = SimpleBackend::new();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params
+            .extend([AbiParam::new(types::I64), AbiParam::new(types::I64)]);
+        let mut function = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut context = FunctionBuilderContext::new();
+        let (left, right, merge, release);
+        {
+            let mut builder = FunctionBuilder::new(&mut function, &mut context);
+            let entry = builder.create_block();
+            left = builder.create_block();
+            right = builder.create_block();
+            merge = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let params = builder.block_params(entry).to_vec();
+            let roots = NativeCleanupRoots::new(
+                &mut builder,
+                &input,
+                &analysis.alias_roots,
+                &ScalarRepresentationPlan::default(),
+                NativeRcAuthority::NativeValueTracking,
+            );
+            assert!(roots.contains("owner"));
+            assert!(roots.shares_owner("owner", "alias"));
+            assert!(
+                !roots.contains("borrowed"),
+                "never-acquired params need no cleanup phi"
+            );
+            roots.initialize(&mut builder);
+            release = import_func_ref(
+                &mut backend.module,
+                &mut backend.import_ids,
+                &mut builder,
+                &mut BTreeMap::new(),
+                "molt_dec_ref_obj",
+                &[types::I64],
+                &[],
+            );
+            roots.acquire(&mut builder, release, "owner", params[1]);
+            if release_in_predecessor {
+                roots.release(&mut builder, release, "alias");
+            }
+            builder.ins().brif(params[0], left, &[], right, &[]);
+            for block in [left, right] {
+                builder.switch_to_block(block);
+                builder.seal_block(block);
+                roots.release(&mut builder, release, "alias");
+                roots.release(&mut builder, release, "owner");
+                builder.ins().jump(merge, &[]);
+            }
+            builder.switch_to_block(merge);
+            builder.seal_block(merge);
+            roots.release_all(&mut builder, release);
+            builder.ins().return_(&[]);
+            builder.finalize();
+        }
+        let calls = |block| {
+            function.layout.block_insts(block).filter(|&inst| matches!(
+            function.dfg.insts[inst], InstructionData::Call { func_ref, .. } if func_ref == release
+        )).count()
+        };
+        assert_eq!(
+            calls(left),
+            usize::from(!release_in_predecessor),
+            "{}",
+            function.display()
+        );
+        assert_eq!(
+            calls(right),
+            usize::from(!release_in_predecessor),
+            "{}",
+            function.display()
+        );
+        assert_eq!(calls(merge), 0, "both predecessor tokens are empty");
+        verify_function(&function, &settings::Flags::new(settings::builder()))
+            .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
+    }
 }
 
 #[test]
-fn protected_cleanup_rearms_preserved_alias_root() {
-    let alias_roots = BTreeMap::from([("phi_in".to_string(), "src".to_string())]);
-    let protected = BTreeSet::from(["phi_in"]);
-    let cleanup = vec!["phi_in".to_string(), "dead".to_string()];
-    let mut carry = Vec::new();
-    let mut already_decrefed = BTreeSet::from(["src".to_string(), "dead".to_string()]);
+fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
+    use cranelift_codegen::ir::InstructionData;
+    let input = token_test_ir();
+    let analysis = preanalyze_for_test(&input);
+    let mut backend = SimpleBackend::new();
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params
+        .extend([AbiParam::new(types::I64), AbiParam::new(types::I64)]);
+    let mut function = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+    let mut context = FunctionBuilderContext::new();
+    let release;
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let values = builder.block_params(entry).to_vec();
+        let roots = NativeCleanupRoots::new(
+            &mut builder,
+            &input,
+            &analysis.alias_roots,
+            &ScalarRepresentationPlan::default(),
+            NativeRcAuthority::NativeValueTracking,
+        );
+        roots.initialize(&mut builder);
+        release = import_func_ref(
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut BTreeMap::new(),
+            "molt_dec_ref_obj",
+            &[types::I64],
+            &[],
+        );
+        roots.acquire(&mut builder, release, "owner", values[0]);
+        roots.acquire(&mut builder, release, "owner", values[1]); // displaced owner
+        roots.transfer(&mut builder, "alias");
+        roots.release_all(&mut builder, release); // transferred: no release
+        roots.acquire(&mut builder, release, "owner", values[0]);
+        roots.release_all(&mut builder, release); // reacquired: one release
+        builder.ins().return_(&[]);
+        builder.finalize();
+    }
+    let calls = function.layout.blocks().flat_map(|block| function.layout.block_insts(block))
+        .filter(|&inst| matches!(function.dfg.insts[inst], InstructionData::Call { func_ref, .. } if func_ref == release)).count();
+    assert_eq!(calls, 2, "{}", function.display());
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
 
-    let actual = protect_cleanup_names(
-        &mut carry,
-        cleanup,
-        &protected,
-        &alias_roots,
-        &mut already_decrefed,
+#[test]
+fn tir_drop_insertion_declares_no_native_owner_tokens() {
+    let input = token_test_ir();
+    let analysis = preanalyze_for_test(&input);
+    let mut function =
+        Function::with_name_signature(UserFuncName::user(0, 0), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let roots = NativeCleanupRoots::new(
+        &mut builder,
+        &input,
+        &analysis.alias_roots,
+        &ScalarRepresentationPlan::default(),
+        NativeRcAuthority::TirDropInsertion,
     );
+    assert!(!roots.contains("owner"));
+    assert!(!roots.contains("alias"));
+}
 
-    assert_eq!(carry, vec!["phi_in".to_string()]);
-    assert_eq!(actual, vec!["dead".to_string()]);
-    assert!(!already_decrefed.contains("src"));
-    assert!(already_decrefed.contains("dead"));
+#[test]
+fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
+    let input = token_test_ir();
+    let analysis = preanalyze_for_test(&input);
+    let mut backend = SimpleBackend::new();
+    let mut signature = Signature::new(CallConv::SystemV);
+    signature
+        .params
+        .extend([AbiParam::new(types::I64), AbiParam::new(types::I64)]);
+    let mut function = Function::with_name_signature(UserFuncName::user(0, 0), signature);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        let header = builder.create_block();
+        let exit = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let inputs = builder.block_params(entry).to_vec();
+        let roots = NativeCleanupRoots::new(
+            &mut builder,
+            &input,
+            &analysis.alias_roots,
+            &ScalarRepresentationPlan::default(),
+            NativeRcAuthority::NativeValueTracking,
+        );
+        roots.initialize(&mut builder);
+        let release = import_func_ref(
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut BTreeMap::new(),
+            "molt_dec_ref_obj",
+            &[types::I64],
+            &[],
+        );
+        builder.ins().jump(header, &[]);
+        builder.switch_to_block(header);
+        roots.acquire(&mut builder, release, "owner", inputs[1]);
+        builder.ins().brif(inputs[0], header, &[], exit, &[]);
+        builder.seal_block(header);
+        builder.switch_to_block(exit);
+        builder.seal_block(exit);
+        roots.release_all(&mut builder, release);
+        builder.ins().return_(&[]);
+        builder.finalize();
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder()))
+        .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
+}
+
+#[test]
+fn protected_cleanup_preserves_candidates_without_owning_release_state() {
+    let mut carry = Vec::new();
+    let cleanup = vec!["phi_in".into(), "dead".into()];
+    let actual = protect_cleanup_names(&mut carry, cleanup, &BTreeSet::from(["phi_in"]));
+    assert_eq!(carry, vec!["phi_in"]);
+    assert_eq!(actual, vec!["dead"]);
 }

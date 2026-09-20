@@ -2,8 +2,7 @@ use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backe
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
     NativeBackendModuleContext, NativeRcAuthority, SimpleBackend, TrampolineKey,
-    analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_entry_tracked,
-    drain_cleanup_entry_tracked_with_authority, drain_cleanup_tracked_dedup_with_authority,
+    analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
     merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_leaf_functions,
     merge_task_kinds, preprocess_backend_tir_input, should_flush_deferred_codegen,
 };
@@ -230,38 +229,7 @@ fn compile_function_to_clif_with_imports(
     functions: Vec<FunctionIR>,
     target_name: &str,
 ) -> CompiledFunctionClif {
-    let ir = SimpleIR {
-        functions,
-        profile: None,
-    };
-    let analysis = analyze_native_backend_ir(
-        &ir,
-        true,
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-    );
-    let function_has_ret = compute_function_has_ret(&ir.functions);
-    let function_arities = ir
-        .functions
-        .iter()
-        .map(|func| (func.name.clone(), func.params.len()))
-        .collect();
-    let target_func = ir
-        .functions
-        .into_iter()
-        .find(|func| func.name == target_name)
-        .unwrap_or_else(|| panic!("missing target function `{target_name}`"));
-    let mut backend = SimpleBackend::new();
-    backend.compile_func(
-        target_func,
-        &crate::tir::target_info::TargetInfo::native_release_fast(),
-        &analysis.task_kinds,
-        &analysis.task_closure_sizes,
-        &analysis.defined_functions,
-        &analysis.closure_functions,
-        &analysis.leaf_functions,
-        &function_arities,
-        &function_has_ret,
-    );
+    let backend = compile_selected_functions_direct(functions, &[target_name]);
     let function = backend
         .deferred_defines
         .iter()
@@ -278,6 +246,61 @@ fn compile_function_to_clif_with_imports(
         function,
         import_ids,
     }
+}
+
+/// Share direct function compilation between CLIF inspection and executable
+/// tests without running a preprocessing pipeline that changes the RC authority.
+pub(in crate::native_backend) fn compile_selected_functions_direct(
+    functions: Vec<FunctionIR>,
+    target_names: &[&str],
+) -> SimpleBackend {
+    let ir = SimpleIR {
+        functions,
+        profile: None,
+    };
+    let analysis = analyze_native_backend_ir(
+        &ir,
+        true,
+        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+    );
+    let function_has_ret = compute_function_has_ret(&ir.functions);
+    let function_arities = ir
+        .functions
+        .iter()
+        .map(|func| (func.name.clone(), func.params.len()))
+        .collect();
+    let mut backend = SimpleBackend::new();
+    for target_name in target_names {
+        let target_func = ir
+            .functions
+            .iter()
+            .find(|func| func.name == *target_name)
+            .unwrap_or_else(|| panic!("missing target function `{target_name}`"))
+            .clone();
+        backend.compile_func(
+            target_func,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+            &analysis.task_kinds,
+            &analysis.task_closure_sizes,
+            &analysis.defined_functions,
+            &analysis.closure_functions,
+            &analysis.leaf_functions,
+            &function_arities,
+            &function_has_ret,
+        );
+    }
+    backend
+}
+
+/// Complete the same deferred codegen used by production without rerunning
+/// preprocessing over the directly compiled test functions.
+pub(in crate::native_backend) fn emit_direct_object(mut backend: SimpleBackend) -> Vec<u8> {
+    backend.flush_deferred_defines();
+    backend
+        .module
+        .finish()
+        .emit()
+        .expect("emit native test object")
 }
 
 fn call_sites_for_import(function: &Function, import_id: FuncId) -> Vec<(Block, Inst)> {

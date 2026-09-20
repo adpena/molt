@@ -55,12 +55,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     defined_functions: &BTreeSet<String>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
@@ -90,12 +85,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             defined_functions,
             &mut *block_tracked_obj,
             &mut *block_tracked_ptr,
-            &mut *tracked_obj_vars,
-            &mut *tracked_vars,
-            &mut *tracked_obj_vars_set,
-            &mut *tracked_vars_set,
-            &mut *entry_vars,
-            &mut *already_decrefed,
+            &mut *cleanup_roots,
             local_dec_ref_obj,
             nbc,
         ),
@@ -174,14 +164,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *sealed_blocks,
             vars,
             representation_plan,
-            alias_roots,
-            &mut *block_tracked_obj,
-            &mut *block_tracked_ptr,
-            &mut *tracked_obj_vars,
-            &mut *tracked_vars,
-            &mut *tracked_obj_vars_set,
-            &mut *tracked_vars_set,
-            &mut *entry_vars,
+            cleanup_roots,
             nbc,
         ),
         "call_method_ic" => handle_call_method_ic_op(
@@ -293,12 +276,7 @@ fn handle_call_direct_op(
     defined_functions: &BTreeSet<String>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
-    already_decrefed: &mut BTreeSet<String>,
+    cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
@@ -364,13 +342,12 @@ fn handle_call_direct_op(
     // refcount-underflow abort) that blocked activation. So under
     // `drop_inserted` we leave `arg_cleanup`/`arg_cleanup_roots` empty: the
     // emit loop becomes a no-op, the root-filtered retains become identity, and
-    // `already_decrefed` is not polluted with roots the native side never
+    // `cleanup_roots` is not polluted with roots the native side never
     // decrefs (the TIR drop owns them).
-    let mut arg_cleanup = Vec::new();
     let mut arg_cleanup_names = BTreeSet::new();
     let mut arg_cleanup_roots = BTreeSet::new();
     if rc_authority.native_value_tracking_enabled() {
-        for (name, value) in args_names.iter().zip(args.iter()) {
+        for name in args_names {
             if param_name_set.contains(name.as_str()) {
                 continue;
             }
@@ -378,10 +355,7 @@ fn handle_call_direct_op(
             if last <= op_idx {
                 arg_cleanup_names.insert(name.clone());
                 let root = alias_root_name(alias_roots, name).to_string();
-                if arg_cleanup_roots.insert(root.clone()) {
-                    arg_cleanup.push(*value);
-                    already_decrefed.insert(root);
-                }
+                arg_cleanup_roots.insert(root);
             }
         }
     }
@@ -396,25 +370,11 @@ fn handle_call_direct_op(
         .current_block()
         .expect("call requires an active block");
     let mut origin_obj_live = block_tracked_obj.remove(&origin_block).unwrap_or_default();
-    let origin_obj_cleanup = drain_cleanup_tracked_dedup_with_authority(
-        rc_authority,
-        &mut origin_obj_live,
-        last_use,
-        alias_roots,
-        op_idx,
-        None,
-        Some(&mut *already_decrefed),
-    );
+    let origin_obj_cleanup =
+        drain_cleanup_candidates(rc_authority, &mut origin_obj_live, last_use, op_idx, None);
     let mut origin_ptr_live = block_tracked_ptr.remove(&origin_block).unwrap_or_default();
-    let origin_ptr_cleanup = drain_cleanup_tracked_dedup_with_authority(
-        rc_authority,
-        &mut origin_ptr_live,
-        last_use,
-        alias_roots,
-        op_idx,
-        None,
-        Some(&mut *already_decrefed),
-    );
+    let origin_ptr_cleanup =
+        drain_cleanup_candidates(rc_authority, &mut origin_ptr_live, last_use, op_idx, None);
 
     // For direct calls to closures, extract env from function object
     if closure_functions.contains(target_name)
@@ -604,106 +564,20 @@ fn handle_call_direct_op(
         if arg_cleanup_roots.contains(alias_root_name(alias_roots, name)) {
             continue;
         }
-        // Use entry_vars (definition-time Value) for dec_ref,
-        // not var_get (current SSA Value). If the variable was
-        // redefined, var_get returns the WRONG object.
-        let val = entry_vars.get(name).copied().or_else(|| {
-            var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .map(|v| *v)
-        });
-        let Some(val) = val else {
-            continue;
-        };
-        builder.ins().call(local_dec_ref_obj, &[val]);
+        // The token carries this path\'s owner across SSA redefinitions.
+        cleanup_roots.release(builder, local_dec_ref_obj, &name);
     }
     for name in &origin_ptr_cleanup {
         if arg_cleanup_roots.contains(alias_root_name(alias_roots, name)) {
             continue;
         }
-        let val = entry_vars.get(name).copied().or_else(|| {
-            var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .map(|v| *v)
-        });
-        let Some(val) = val else {
-            continue;
-        };
-        builder.ins().call(local_dec_ref_obj, &[val]);
+        cleanup_roots.release(builder, local_dec_ref_obj, &name);
     }
-    for val in &arg_cleanup {
-        builder.ins().call(local_dec_ref_obj, &[*val]);
+    for name in &arg_cleanup_names {
+        cleanup_roots.release(builder, local_dec_ref_obj, name);
     }
-    // Remove cleaned-up names from entry-tracked lists so the
-    // function-return cleanup does not dec-ref them a second
-    // time (the `call` op changes blocks, so the normal
-    // entry-tracked drain no longer runs for these variables).
-    if !arg_cleanup_roots.is_empty() {
-        tracked_obj_vars.retain(|n: &String| {
-            !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        tracked_vars.retain(|n: &String| {
-            !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        tracked_obj_vars_set
-            .retain(|n| !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str())));
-        tracked_vars_set
-            .retain(|n| !arg_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str())));
-        entry_vars
-            .retain(|name, _| !arg_cleanup_roots.contains(alias_root_name(alias_roots, name)));
-    }
-    let origin_obj_cleanup_roots = cleanup_roots_for_names(
-        alias_roots,
-        origin_obj_cleanup
-            .iter()
-            .filter(|name| !arg_cleanup_roots.contains(alias_root_name(alias_roots, name)))
-            .cloned(),
-    );
-    if !origin_obj_cleanup_roots.is_empty() {
-        tracked_obj_vars.retain(|n: &String| {
-            !origin_obj_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        tracked_obj_vars_set.retain(|n| {
-            !origin_obj_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        entry_vars.retain(|name, _| {
-            !origin_obj_cleanup_roots.contains(alias_root_name(alias_roots, name))
-        });
-    }
-    let origin_ptr_cleanup_roots = cleanup_roots_for_names(
-        alias_roots,
-        origin_ptr_cleanup
-            .iter()
-            .filter(|name| !arg_cleanup_roots.contains(alias_root_name(alias_roots, name)))
-            .cloned(),
-    );
-    if !origin_ptr_cleanup_roots.is_empty() {
-        tracked_vars.retain(|n: &String| {
-            !origin_ptr_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        tracked_vars_set.retain(|n| {
-            !origin_ptr_cleanup_roots.contains(alias_root_name(alias_roots, n.as_str()))
-        });
-        entry_vars.retain(|name, _| {
-            !origin_ptr_cleanup_roots.contains(alias_root_name(alias_roots, name))
-        });
-    }
+    // Keep sibling inventories intact. The SSA token, not mutation of global
+    // name lists, records that this path has released these owners.
     if owns_result {
         bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
     } else if let Some(out__) = op.out.as_ref() {
@@ -2045,14 +1919,7 @@ fn handle_call_bind_indirect_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    alias_roots: &BTreeMap<String, String>,
-    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
-    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    tracked_obj_vars: &mut Vec<String>,
-    tracked_vars: &mut Vec<String>,
-    tracked_obj_vars_set: &mut std::collections::HashSet<String>,
-    tracked_vars_set: &mut std::collections::HashSet<String>,
-    entry_vars: &mut BTreeMap<String, Value>,
+    cleanup_roots: &mut NativeCleanupRoots,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -2167,18 +2034,7 @@ fn handle_call_bind_indirect_op(
     // tracking to prevent double-free. The last_use assertion is
     // omitted: the IR may reference the variable in unreachable
     // branches (different if/else arms), inflating last_use.
-    let consumed_builder_roots = cleanup_roots_for_names(alias_roots, [callargs_name.to_string()]);
-    scrub_tracked_roots(
-        &consumed_builder_roots,
-        alias_roots,
-        &mut *tracked_vars,
-        &mut *tracked_obj_vars,
-        &mut *tracked_vars_set,
-        &mut *tracked_obj_vars_set,
-        &mut *entry_vars,
-        &mut *block_tracked_obj,
-        &mut *block_tracked_ptr,
-    );
+    cleanup_roots.transfer(builder, callargs_name);
 }
 
 #[cfg(feature = "native-backend")]
