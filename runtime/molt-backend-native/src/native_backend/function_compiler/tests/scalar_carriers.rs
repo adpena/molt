@@ -678,6 +678,66 @@ fn raw_bool_boxing_accepts_i64_carrier() {
 }
 
 #[test]
+fn conditional_list_fallback_shadow_preserves_the_captured_layout() {
+    use super::super::scalar_carriers::ConditionalListBoolShadow;
+    use cranelift_codegen::ir::{InstructionData, Opcode, ValueDef};
+
+    let nbc = crate::NanBoxConsts::new();
+    // The false case catches boxed False being mistaken for a nonzero raw
+    // truth bit. Generic values must retain every tag/payload bit, not merely
+    // their least significant bit or their current truth value.
+    for (is_bool, boxed) in [
+        (true, nbc.qnan_tag_bool),
+        (true, nbc.qnan_tag_bool | 1),
+        (false, nbc.qnan_tag_bool),
+        (false, nbc.qnan_tag_int | 42),
+        (false, nbc.qnan_tag_int | 43),
+    ] {
+        let mut signature = Signature::new(CallConv::SystemV);
+        signature.returns.push(AbiParam::new(types::I64));
+        let mut function = Function::with_name_signature(UserFuncName::user(0, 0), signature);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut function, &mut context);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let layout = builder.ins().iconst(types::I8, i64::from(is_bool));
+            let value = builder.ins().iconst(types::I64, boxed);
+            let shadow = ConditionalListBoolShadow::from_boxed(&mut builder, layout, value);
+            assert_eq!(shadow.is_bool, layout, "retain the read-time layout flag");
+
+            let ValueDef::Result(select, _) = builder.func.dfg.value_def(shadow.payload) else {
+                panic!("a fallback shadow must normalize its boxed payload");
+            };
+            assert_eq!(builder.func.dfg.insts[select].opcode(), Opcode::Select);
+            let args = builder.func.dfg.inst_args(select);
+            assert_eq!(args[0], layout, "selection must use the captured layout");
+            assert_eq!(args[2], value, "generic lists retain the boxed value");
+            let raw_bit = args[1];
+            let ValueDef::Result(mask, _) = builder.func.dfg.value_def(raw_bit) else {
+                panic!("Boolean lists require an unboxed truth bit");
+            };
+            assert_eq!(builder.func.dfg.insts[mask].opcode(), Opcode::Band);
+            let mask_args = builder.func.dfg.inst_args(mask);
+            assert_eq!(mask_args[0], value);
+            let ValueDef::Result(one, _) = builder.func.dfg.value_def(mask_args[1]) else {
+                panic!("truth-bit extraction requires the constant mask 1");
+            };
+            assert!(matches!(
+                builder.func.dfg.insts[one],
+                InstructionData::UnaryImm { opcode: Opcode::Iconst, imm }
+                    if imm.bits() == 1
+            ));
+            builder.ins().return_(&[shadow.payload]);
+            builder.finalize();
+        }
+        verify_function(&function, &settings::Flags::new(settings::builder()))
+            .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
+    }
+}
+
+#[test]
 fn native_int_boxing_constants_materialized_at_site() {
     let mut backend = SimpleBackend::new();
     let mut sig = Signature::new(CallConv::SystemV);

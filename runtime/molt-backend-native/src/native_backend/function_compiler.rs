@@ -190,7 +190,6 @@ impl SimpleBackend {
             function_exception_label_id,
             exception_label_ids,
             const_int_map: _const_int_map,
-            loop_body_out_vars,
             loop_body_init_vars,
             scalar_slot_exclusion_unsafe,
             field_store_modes,
@@ -338,7 +337,7 @@ impl SimpleBackend {
         // same static-set rule for the F64-primary subset.
         // `representation_plan` is the immutable source of truth for F64-primary Variables.
         // Non-primary float values are boxed immediately in their main I64 Variable.
-        let mut list_index_fast_paths = ListIndexFastPathState::default();
+        let mut list_index_fast_paths = ListIndexFastPathState::new(&cleanup_roots);
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
@@ -1009,6 +1008,7 @@ impl SimpleBackend {
                 }
             }
             let mut defined_names = BTreeSet::new();
+            list_index_fast_paths.begin_op(op_idx, &op, representation_plan);
             crate::tir::simple_def_use::visit_simple_ir_defined_names(&op, |name| {
                 defined_names.insert(name.to_string());
             });
@@ -1226,7 +1226,6 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
-                        &mut list_index_fast_paths,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1308,7 +1307,6 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
-                        &mut list_index_fast_paths,
                         &nbc,
                     );
                 }

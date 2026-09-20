@@ -16,8 +16,8 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 ];
 use super::OpFlow;
 use super::list_index_fast_path::{
-    ListIndexFastPathState, collect_pre_loop_defined_names, loop_start_has_index_prelude,
-    scan_loop_hoistable_lists, scan_loop_int_sum_reduction,
+    ListIndexFastPathState, ListStorageField, emit_loop_list_storage_hoists,
+    loop_start_has_index_prelude, scan_loop_int_sum_reduction,
 };
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -166,156 +166,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         }
                     }
                 }
-                // ── Loop-invariant list pointer hoisting ──────────
-                // Scan the loop body to find list variables that are
-                // accessed (index/store_index) but never mutated
-                // (append/pop/etc).  For those, emit the NaN-unbox +
-                // data_ptr/len loads HERE (in the pre-loop block) so
-                // the results live in Cranelift Variables that persist
-                // across iterations via phi nodes.  The in-loop cache
-                // lookup will then hit on every iteration.
-                {
-                    let mut pre_loop_defined = collect_pre_loop_defined_names(&func_ir.ops, op_idx);
-                    for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
-                        pre_loop_defined.insert(p.clone());
-                    }
-                    let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
-                        &func_ir.ops,
-                        op_idx,
-                        &pre_loop_defined,
-                        representation_plan,
-                        list_index_fast_paths,
-                    );
-                    for list_name in &li_hoist {
-                        if list_index_fast_paths
-                            .list_int_data_cache
-                            .contains_key(list_name)
-                        {
-                            continue; // already cached from an outer scope
-                        }
-                        let Some(obj) = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            import_refs,
-                            sealed_blocks,
-                            vars,
-                            list_name,
-                            representation_plan,
-                        ) else {
-                            continue;
-                        };
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                        let storage_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                        let dp = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            LIST_INT_STORAGE_DATA_OFFSET,
-                        );
-                        let len = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
-                        );
-                        let dvar = builder.declare_var(types::I64);
-                        builder.def_var(dvar, dp);
-                        list_index_fast_paths
-                            .list_int_data_cache
-                            .insert(list_name.clone(), dvar);
-                        let lvar = builder.declare_var(types::I64);
-                        builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_int_len_cache
-                            .insert(list_name.clone(), lvar);
-                    }
-                    for list_name in &lg_hoist {
-                        if list_index_fast_paths
-                            .list_data_cache
-                            .contains_key(list_name)
-                        {
-                            continue;
-                        }
-                        let Some(obj) = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            import_refs,
-                            sealed_blocks,
-                            vars,
-                            list_name,
-                            representation_plan,
-                        ) else {
-                            continue;
-                        };
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                        // Load type_id to distinguish list vs list_bool.
-                        let tid = builder.ins().load(
-                            types::I32,
-                            MemFlagsData::trusted(),
-                            obj_ptr,
-                            HEADER_TYPE_ID_OFFSET,
-                        );
-                        let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
-                        let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
-                        let ibvar = builder.declare_var(types::I8);
-                        builder.def_var(ibvar, is_bool);
-                        list_index_fast_paths
-                            .list_is_bool_cache
-                            .insert(list_name.clone(), ibvar);
-                        let storage_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                        let vec_layout = vec_u64_layout();
-                        // ListBoolStorage (repr(C)): data@0, len@8
-                        let dp_bool = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            0i32,
-                        );
-                        let len_bool = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            8i32,
-                        );
-                        // Vec<u64> (repr(Rust), probed offsets)
-                        let dp_vec = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            vec_layout.data_offset,
-                        );
-                        let len_vec = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            vec_layout.len_offset,
-                        );
-                        let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
-                        let len = builder.ins().select(is_bool, len_bool, len_vec);
-                        let dvar = builder.declare_var(types::I64);
-                        builder.def_var(dvar, dp);
-                        list_index_fast_paths
-                            .list_data_cache
-                            .insert(list_name.clone(), dvar);
-                        let lvar = builder.declare_var(types::I64);
-                        builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_len_cache
-                            .insert(list_name.clone(), lvar);
-                    }
-                }
+                emit_loop_list_storage_hoists(
+                    func_ir,
+                    op_idx,
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    representation_plan,
+                    list_index_fast_paths,
+                    cleanup_roots,
+                    nbc,
+                );
 
                 ensure_block_in_layout(&mut *builder, loop_block);
                 reachable_blocks.insert(loop_block);
@@ -545,149 +409,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     }
                 }
 
-                // ── Loop-invariant list pointer hoisting (indexed) ──
-                // Same as the loop_start hoisting — emit data_ptr/len
-                // loads in the pre-loop block so the in-loop cache hits
-                // on every iteration.
-                {
-                    let mut pre_loop_defined = collect_pre_loop_defined_names(&func_ir.ops, op_idx);
-                    for p in func_ir.params.iter().filter(|n| n.as_str() != "none") {
-                        pre_loop_defined.insert(p.clone());
-                    }
-                    let (li_hoist, lg_hoist) = scan_loop_hoistable_lists(
-                        &func_ir.ops,
-                        op_idx,
-                        &pre_loop_defined,
-                        representation_plan,
-                        list_index_fast_paths,
-                    );
-                    for list_name in &li_hoist {
-                        if list_index_fast_paths
-                            .list_int_data_cache
-                            .contains_key(list_name)
-                        {
-                            continue;
-                        }
-                        let Some(obj) = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            import_refs,
-                            sealed_blocks,
-                            vars,
-                            list_name,
-                            representation_plan,
-                        ) else {
-                            continue;
-                        };
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                        let storage_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                        let dp = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            LIST_INT_STORAGE_DATA_OFFSET,
-                        );
-                        let len = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            LIST_INT_STORAGE_LEN_OFFSET,
-                        );
-                        let dvar = builder.declare_var(types::I64);
-                        builder.def_var(dvar, dp);
-                        list_index_fast_paths
-                            .list_int_data_cache
-                            .insert(list_name.clone(), dvar);
-                        let lvar = builder.declare_var(types::I64);
-                        builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_int_len_cache
-                            .insert(list_name.clone(), lvar);
-                    }
-                    for list_name in &lg_hoist {
-                        if list_index_fast_paths
-                            .list_data_cache
-                            .contains_key(list_name)
-                        {
-                            continue;
-                        }
-                        let Some(obj) = var_get_boxed_overflow_safe(
-                            &mut *module,
-                            &mut *import_ids,
-                            &mut *builder,
-                            import_refs,
-                            sealed_blocks,
-                            vars,
-                            list_name,
-                            representation_plan,
-                        ) else {
-                            continue;
-                        };
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-                        let tid = builder.ins().load(
-                            types::I32,
-                            MemFlagsData::trusted(),
-                            obj_ptr,
-                            HEADER_TYPE_ID_OFFSET,
-                        );
-                        let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
-                        let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
-                        let ibvar = builder.declare_var(types::I8);
-                        builder.def_var(ibvar, is_bool);
-                        list_index_fast_paths
-                            .list_is_bool_cache
-                            .insert(list_name.clone(), ibvar);
-                        let storage_ptr =
-                            builder
-                                .ins()
-                                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                        let vec_layout = vec_u64_layout();
-                        let dp_bool = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            0i32,
-                        );
-                        let len_bool = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            8i32,
-                        );
-                        let dp_vec = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            vec_layout.data_offset,
-                        );
-                        let len_vec = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            storage_ptr,
-                            vec_layout.len_offset,
-                        );
-                        let dp = builder.ins().select(is_bool, dp_bool, dp_vec);
-                        let len = builder.ins().select(is_bool, len_bool, len_vec);
-                        let dvar = builder.declare_var(types::I64);
-                        builder.def_var(dvar, dp);
-                        list_index_fast_paths
-                            .list_data_cache
-                            .insert(list_name.clone(), dvar);
-                        let lvar = builder.declare_var(types::I64);
-                        builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_len_cache
-                            .insert(list_name.clone(), lvar);
-                    }
-                }
+                emit_loop_list_storage_hoists(
+                    func_ir,
+                    op_idx,
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    representation_plan,
+                    list_index_fast_paths,
+                    cleanup_roots,
+                    nbc,
+                );
 
                 // ── 4x Loop Unrolling for sum reductions ─────────
                 // Before emitting the standard structured loop, check
@@ -698,17 +433,20 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     scan_loop_int_sum_reduction(&func_ir.ops, op_idx, out_name, representation_plan)
                 {
                     // We need:
-                    //   - data_ptr from list_index_fast_paths.list_int_data_cache (hoisted above)
-                    //   - len from list_index_fast_paths.list_int_len_cache (hoisted above)
+                    //   - data_ptr and len from certified preheader observations
                     //   - initial accumulator value from the acc_operand_name
                     //   - start index (already in out_name / start variable)
-                    let data_ptr_var = list_index_fast_paths
-                        .list_int_data_cache
-                        .get(&reduction.list_name);
-                    let len_var = list_index_fast_paths
-                        .list_int_len_cache
-                        .get(&reduction.list_name);
-                    if let (Some(&dp_var), Some(&ln_var)) = (data_ptr_var, len_var) {
+                    let data_ptr_var = list_index_fast_paths.get(
+                        ListStorageField::IntData,
+                        &reduction.list_name,
+                        builder,
+                    );
+                    let len_var = list_index_fast_paths.get(
+                        ListStorageField::IntLen,
+                        &reduction.list_name,
+                        builder,
+                    );
+                    if let (Some(dp_var), Some(ln_var)) = (data_ptr_var, len_var) {
                         let data_ptr = builder.use_var(dp_var);
                         let len_val = builder.use_var(ln_var);
 
