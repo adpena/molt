@@ -367,6 +367,12 @@ returns of their unobserved result. Physical-slot constant facts are invalidated
 by every canonical definition before emitter dispatch and at generated control
 boundaries; early-returning handlers cannot preserve stale facts across writes.
 
+Numeric op-loop emitters carry the selected typed runtime import through to the
+shared result sink, including guarded inline branches and in-place variants.
+The generated numeric selector table drives execution coverage for live,
+absent, sentinel and dead results; no separate numeric ownership classifier or
+untyped call-and-store helper owns this boundary.
+
 Runtime import return custody is generated from the shared boxed-call ABI and
 explicit non-boxed import declarations in `wasm_abi_manifest.toml`. An `i64`
 carrier alone does not imply an object or a borrowed result. WASM direct,

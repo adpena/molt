@@ -470,6 +470,8 @@ def _render_rs_mod() -> str:
             "    wasm_numeric_runtime_selection, WasmNumericOpLoopKind,\n",
             "    WasmNumericRuntimeSelection,\n",
             "};\n",
+            "#[cfg(test)]\n",
+            "pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;\n",
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",

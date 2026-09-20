@@ -55,12 +55,5 @@ pub(super) fn emit_equality_compare_op(
         emit_boxed_binary_result(func, op, import_ids, locals, import_name, reloc_enabled);
         return;
     }
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        selection.import,
-    );
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import_name);
 }
