@@ -495,6 +495,14 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
     backend: &LlvmBackend<'ctx>,
     pgo_branch_weights: Option<Vec<u64>>,
 ) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
+    crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
+        LlvmLoweringError::new(
+            errors
+                .into_iter()
+                .map(|error| format!("{}: {error}", func.name))
+                .collect(),
+        )
+    })?;
     if !func.blocks.contains_key(&func.entry_block) {
         return Err(LlvmLoweringError::new(vec![format!(
             "{}: entry block {:?} is missing from TIR block map",
@@ -933,3 +941,44 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
 #[cfg(all(test, feature = "llvm"))]
 mod tests;
+
+#[cfg(all(test, feature = "llvm"))]
+mod operation_shape_tests {
+    use super::*;
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
+    use crate::tir::values::ValueId;
+
+    #[test]
+    fn malformed_preserved_metadata_is_rejected_before_llvm_module_mutation() {
+        for (operands, value) in [(1, Some(0)), (3, Some(0)), (2, None), (2, Some(-1))] {
+            let context = inkwell::context::Context::create();
+            let backend = LlvmBackend::new(&context, "shape_admission");
+            let mut func = TirFunction::new("bad_code_slot".into(), vec![], TirType::None);
+            let mut attrs = AttrDict::from([(
+                "_original_kind".into(),
+                AttrValue::Str("code_slot_set".into()),
+            )]);
+            if let Some(value) = value {
+                attrs.insert("value".into(), AttrValue::Int(value));
+            }
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands: (0..operands).map(ValueId).collect(),
+                    results: vec![],
+                    attrs,
+                    source_span: None,
+                });
+            let error = try_lower_tir_to_llvm(&func, &backend)
+                .err()
+                .expect("checked shape failure");
+            assert!(error.to_string().contains("code_slot_set"));
+            assert_eq!(backend.module.get_functions().count(), 0);
+        }
+    }
+}

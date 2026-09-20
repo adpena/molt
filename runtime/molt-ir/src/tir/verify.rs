@@ -13,7 +13,8 @@ use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
     TirVerifyAttrRule, opcode_accepts_operand_count, opcode_accepts_result_count,
-    opcode_fixed_result_count_table, opcode_tir_verify_attr_rule_table,
+    opcode_canonical_kind_table, opcode_fixed_result_count_table,
+    opcode_tir_verify_attr_rule_table,
 };
 use super::ops::AttrValue;
 use super::values::ValueId;
@@ -101,6 +102,9 @@ impl std::fmt::Display for VerifyError {
 /// non-empty list of all violations found.
 pub fn verify_function(func: &TirFunction) -> Result<(), Vec<VerifyError>> {
     let mut errors = Vec::new();
+    if let Err(shape_errors) = verify_operation_shapes(func) {
+        errors.extend(shape_errors);
+    }
     verify_entry_block(func, &mut errors);
     verify_no_duplicate_values(func, &mut errors);
     verify_op_attributes(func, &mut errors);
@@ -162,6 +166,41 @@ fn verify_no_duplicate_values(func: &TirFunction, errors: &mut Vec<VerifyError>)
 // ---------------------------------------------------------------------------
 // Check 3: op-level attribute and operand validation
 // ---------------------------------------------------------------------------
+
+/// Shared generated shape admission, also usable before a target mutates its
+/// output module. No whole-function SSA or program-closure assumptions apply.
+pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError>> {
+    let mut errors = Vec::new();
+    for (bid, block) in &func.blocks {
+        for (op_index, op) in block.ops.iter().enumerate() {
+            let kind = if op.opcode == super::ops::OpCode::Copy {
+                match op.attrs.get("_original_kind") {
+                    Some(AttrValue::Str(kind)) => kind.as_str(),
+                    _ => opcode_canonical_kind_table(op.opcode),
+                }
+            } else {
+                opcode_canonical_kind_table(op.opcode)
+            };
+            let value = match op.attrs.get("value") {
+                Some(AttrValue::Int(value)) => Some(*value),
+                _ => None,
+            };
+            if let Err(error) = crate::ir_schema::validate_op_shape(
+                kind,
+                Some(op.operands.len()),
+                !op.results.is_empty(),
+                value,
+            ) {
+                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
 
 fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     for (bid, block) in &func.blocks {
@@ -863,6 +902,55 @@ fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_preserved_shapes_fail_before_target_lowering() {
+        use super::super::op_kinds_generated::{SIMPLEIR_OP_SHAPES, SimpleIrOpValueRule};
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+        for shape in SIMPLEIR_OP_SHAPES {
+            let mut func = TirFunction::new("preserved_shape".into(), vec![], TirType::None);
+            let mut attrs =
+                AttrDict::from([("_original_kind".into(), AttrValue::Str(shape.kind.into()))]);
+            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+                attrs.insert("value".into(), AttrValue::Int(0));
+            }
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands: (0..shape.operands).map(|i| ValueId(i as u32)).collect(),
+                    results: if shape.requires_result {
+                        vec![ValueId(100)]
+                    } else {
+                        vec![]
+                    },
+                    attrs,
+                    source_span: None,
+                });
+            assert!(verify_operation_shapes(&func).is_ok(), "{}", shape.kind);
+            func.blocks.get_mut(&func.entry_block).unwrap().ops[0]
+                .operands
+                .push(ValueId(101));
+            let errors = verify_operation_shapes(&func).unwrap_err();
+            assert_eq!(errors.len(), 1);
+            assert!(errors[0].message.contains(shape.kind));
+            assert!(errors[0].message.contains("args"));
+            let op = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
+            op.operands.pop();
+            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+                op.attrs.insert("value".into(), AttrValue::Str("0".into()));
+                assert!(
+                    verify_operation_shapes(&func).unwrap_err()[0]
+                        .message
+                        .contains("explicit nonnegative")
+                );
+            }
+        }
+    }
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};

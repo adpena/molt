@@ -77,6 +77,9 @@ pub fn lower_to_tir_for_target(ir: &FunctionIR, target_info: &TargetInfo) -> Tir
 }
 
 fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFunction {
+    molt_ir::ir_schema::validate_function_op_shapes(ir).unwrap_or_else(|error| {
+        panic!("invalid SimpleIR operation shape before lowering: {error}")
+    });
     if std::env::var("MOLT_TRACE_SIMPLE_IMPORT").as_deref() == Ok("1") {
         for op in &ir.ops {
             if op.kind.contains("import") {

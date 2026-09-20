@@ -12,14 +12,16 @@ import pytest
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import (
     backend_binary,
-    native_symbol_inspection,
     backend_compile,
     backend_pipeline,
+    frontend_pipeline,
+    native_symbol_inspection,
 )
 from molt.cli.models import (
     _BackendCacheSetup,
     _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _FrontendIntegrationState,
     _ModuleGraphMetadata,
     _PreparedBackendIR,
     _PreparedBackendRuntimeContext,
@@ -183,30 +185,20 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     ticket = SimpleNamespace(
         frontend_layer_execution_context=SimpleNamespace(module_graph_metadata=metadata)
     )
-    bundle = (
-        ticket,
-        {},
-        set(),
-        set(),
-        False,
-        layout,
-        set(),
-        {},
-        {},
-        {},
-        [],
-        None,
-        {},
-        False,
-        0,
-        False,
-        None,
-        None,
-        lambda *args, **kwargs: None,
-        lambda: (None, None),
-        lambda *args, **kwargs: None,
-        tmp_path,
-        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    bundle = frontend_pipeline._PreparedFrontendPipelineBundle(
+        prepared_frontend_run_ticket=ticket,
+        module_graph={},
+        runtime_import_dispatch_roots=set(),
+        stdlib_allowlist=set(),
+        spawn_enabled=False,
+        output_layout=layout,
+        known_modules=set(),
+        module_order=(),
+        integration_state=_FrontendIntegrationState(functions=[], known_classes={}),
+        build_diagnostics_payload=lambda: (None, None),
+        record_binary_image_analysis=lambda *args, **kwargs: None,
+        artifacts_root=tmp_path,
+        native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
     preamble = SimpleNamespace(
         diagnostics_enabled=False,
@@ -235,9 +227,6 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         prepared_build_config=config,
         resolved_build_entry=SimpleNamespace(entry_module="__main__"),
         prepared_frontend_pipeline_bundle=bundle,
-        parse_codec="json",
-        type_hint_policy="ignore",
-        fallback_policy="error",
         profile="dev",
         json_output=json_output,
         target="native",

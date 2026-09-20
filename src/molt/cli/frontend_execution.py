@@ -243,7 +243,6 @@ def _prepare_frontend_execution(
     _FrontendLayerExecutionContext,
     _FrontendLayerRuntimeHooks,
     _FrontendIntegrationState,
-    _MidendDiagnosticsState,
 ]:
     source_modules = tuple(module_graph)
     frontend_layer_execution_context = _FrontendLayerExecutionContext(
@@ -374,7 +373,6 @@ def _prepare_frontend_execution(
         frontend_layer_execution_context,
         frontend_layer_runtime_hooks,
         integration_state,
-        midend_diagnostics_state,
     )
 
 

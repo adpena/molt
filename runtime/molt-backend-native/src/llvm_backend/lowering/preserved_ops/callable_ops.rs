@@ -255,9 +255,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "code_new" => {
-                if op.operands.len() != 9 {
-                    return false;
-                }
                 let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
                     .operands
                     .iter()
@@ -282,13 +279,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         AttrValue::Int(v) => Some(*v),
                         _ => None,
                     })
-                    .unwrap_or(0);
-                let Some(&code_bits_id) = op.operands.first() else {
-                    return false;
-                };
-                let Some(&globals_bits_id) = op.operands.get(1) else {
-                    return false;
-                };
+                    .expect("admitted code_slot_set ID");
+                let code_bits_id = op.operands[0];
+                let globals_bits_id = op.operands[1];
                 let code_bits = self.ensure_i64(self.resolve(code_bits_id));
                 let globals_bits = self.ensure_i64(self.resolve(globals_bits_id));
                 let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
@@ -315,7 +308,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         AttrValue::Int(v) => Some(*v),
                         _ => None,
                     })
-                    .unwrap_or(0);
+                    .expect("admitted code_slots_init count");
                 let init_fn = self.ensure_runtime_i64_fn("molt_code_slots_init", 1);
                 let _ = self
                     .backend
@@ -336,7 +329,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         AttrValue::Int(v) => Some(*v),
                         _ => None,
                     })
-                    .unwrap_or(0);
+                    .expect("admitted trace_enter_slot ID");
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
                     .backend

@@ -29,14 +29,25 @@ pub(super) fn emit_code_metadata_call_op(
             "gen_locals_register",
             WasmRuntimeImport::GenLocalsRegister,
         ),
-        "code_slots_init" => {
-            emit_value_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotsInit)
-        }
-        "trace_enter_slot" => {
-            emit_value_drop_call(call_ctx, func, op, WasmRuntimeImport::TraceEnterSlot)
-        }
+        "code_slots_init" => emit_value_drop_call(
+            call_ctx,
+            func,
+            op.value.expect("admitted code_slots_init count"),
+            WasmRuntimeImport::CodeSlotsInit,
+        ),
+        "trace_enter_slot" => emit_value_drop_call(
+            call_ctx,
+            func,
+            op.value.expect("admitted trace_enter_slot ID"),
+            WasmRuntimeImport::TraceEnterSlot,
+        ),
         "trace_exit" => emit_no_arg_drop_call(call_ctx, func, WasmRuntimeImport::TraceExit),
-        "line" => emit_value_drop_call(call_ctx, func, op, WasmRuntimeImport::TraceSetLine),
+        "line" => emit_value_drop_call(
+            call_ctx,
+            func,
+            op.value.unwrap_or(0),
+            WasmRuntimeImport::TraceSetLine,
+        ),
         "frame_locals_set" => {
             emit_one_local_drop_call(call_ctx, func, op, WasmRuntimeImport::FrameLocalsSet)
         }
@@ -46,8 +57,8 @@ pub(super) fn emit_code_metadata_call_op(
 }
 
 fn emit_code_new(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, op: &OpIR) {
-    let args = op.args.as_ref().unwrap();
-    for arg in args.iter().take(9) {
+    let args = op.args.as_ref().expect("admitted code_new operands");
+    for arg in args {
         func.instruction(&Instruction::LocalGet(call_ctx.locals[arg]));
     }
     emit_call(
@@ -71,8 +82,8 @@ fn emit_value_then_two_locals_drop_call(
     op: &OpIR,
     import: WasmRuntimeImport,
 ) {
-    let args = op.args.as_ref().unwrap();
-    let value = op.value.unwrap_or(0);
+    let args = op.args.as_ref().expect("admitted code_slot_set operands");
+    let value = op.value.expect("admitted code_slot_set ID");
     func.instruction(&Instruction::I64Const(value));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
@@ -108,10 +119,10 @@ fn emit_table_two_local_drop_call(
 fn emit_value_drop_call(
     call_ctx: &CallOpContext<'_, '_, '_>,
     func: &mut Function,
-    op: &OpIR,
+    value: i64,
     import: WasmRuntimeImport,
 ) {
-    func.instruction(&Instruction::I64Const(op.value.unwrap_or(0)));
+    func.instruction(&Instruction::I64Const(value));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
     discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }

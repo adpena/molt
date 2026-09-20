@@ -24,12 +24,20 @@ fn collect_extern_function_signatures(functions: &[FunctionIR]) -> ExternFunctio
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub fn compile(self, ir: SimpleIR) -> CompileOutput {
+        self.compile_checked(ir)
+            .unwrap_or_else(|error| panic!("native SimpleIR admission failed: {error}"))
+    }
+
+    pub fn compile_checked(
+        self,
+        ir: SimpleIR,
+    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
         // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
         // missing LLVM feature must fail closed instead of substituting a
         // different backend and producing misleading validation evidence.
         let backend_setting = env_setting("MOLT_BACKEND");
         let backend = select_native_codegen_backend(backend_setting.as_deref());
-        self.compile_selected(ir, backend)
+        self.compile_selected_checked(ir, backend)
     }
 
     /// Compile directly through LLVM without mutating process-global backend
@@ -37,7 +45,25 @@ impl SimpleBackend {
     /// and parallel tests.
     #[cfg(feature = "llvm")]
     pub fn compile_llvm(self, ir: SimpleIR) -> CompileOutput {
-        self.compile_selected(ir, NativeCodegenBackend::Llvm)
+        self.compile_llvm_checked(ir)
+            .unwrap_or_else(|error| panic!("LLVM SimpleIR admission failed: {error}"))
+    }
+
+    #[cfg(feature = "llvm")]
+    pub fn compile_llvm_checked(
+        self,
+        ir: SimpleIR,
+    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        self.compile_selected_checked(ir, NativeCodegenBackend::Llvm)
+    }
+
+    fn compile_selected_checked(
+        self,
+        ir: SimpleIR,
+        backend: NativeCodegenBackend,
+    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
+        Ok(self.compile_selected(ir, backend))
     }
 
     fn compile_selected(mut self, ir: SimpleIR, backend: NativeCodegenBackend) -> CompileOutput {

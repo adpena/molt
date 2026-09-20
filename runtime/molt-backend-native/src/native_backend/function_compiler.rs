@@ -780,7 +780,7 @@ impl SimpleBackend {
             .ops
             .first()
             .filter(|op| op.kind == "trace_enter_slot")
-            .map(|op| op.value.unwrap_or(0));
+            .map(|op| op.value.expect("admitted trace_enter_slot ID"));
         if let (Some(entered), Some(code_id)) = (owned_frame_entered, leading_frame_code_id) {
             emit_owned_execution_frame_enter(
                 entered,
