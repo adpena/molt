@@ -283,6 +283,11 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     ] == ["ownership_memory_contracts"]
     assert "--bins" not in core.argv
     assert "--include-ignored" not in core.argv
+    assert {
+        complement.argv[index + 1]
+        for index, arg in enumerate(complement.argv[:-1])
+        if arg == "--test"
+    } == {"generated_artifact_custody", "ir_contract_validation"}
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
@@ -335,7 +340,7 @@ def test_docs_only_change_skips_compiler_proofs() -> None:
 def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -> None:
     commands = {command.id: command for command in PLAN.commands}
     owners = {
-        "llvm.test.lowering": {"molt-backend-native"},
+        "llvm.test.lowering": {"molt-backend-native", "molt-backend"},
         "llvm.clippy.backend": {"molt-backend", "molt-backend-native"},
         "linker.test.generated-object-admission": {"molt-backend"},
     }
@@ -349,6 +354,9 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
     assert "--lib" in lowering
     assert "llvm_backend::lowering" in lowering
     assert "llvm_backend::runtime_imports" in lowering
+    assert lowering[lowering.index("--test") + 1] == "ir_contract_validation"
+    assert "direct_checked_backends_share_generated_shape_rejection" in lowering
+    assert "molt-backend/llvm" in lowering[lowering.index("--features") + 1].split(",")
     linkage = commands["linker.test.generated-object-admission"].argv
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 
