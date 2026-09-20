@@ -1,10 +1,10 @@
 use crate::OpIR;
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::op_kinds_generated::{
-    SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
+    SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
     simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
-    simpleir_return_shape, simpleir_var_field_role_table,
+    simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
 };
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
@@ -107,36 +107,188 @@ const CONTAINER_TYPES: &[&str] = &[
 
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OpFieldSchema {
-    pub family: &'static str,
-    pub kind: &'static str,
-    pub required_args_len: Option<usize>,
-    pub requires_out_value: bool,
+pub enum OpShapeViolation {
+    OperandCount {
+        expected: usize,
+        actual: Option<usize>,
+    },
+    MissingResult,
+    NonNegativeValue {
+        actual: Option<i64>,
+    },
 }
 
-// Generated-style scaffold:
-// keep op field requirements centralized to avoid stringly drift between
-// lowering and backend codegen. This first slice only covers the range-fill
-// op family and is intentionally additive.
-const RANGE_FILL_OP_SCHEMAS: &[OpFieldSchema] = &[
-    OpFieldSchema {
-        family: "range_fill",
-        kind: "list_repeat_range",
-        required_args_len: Some(4),
-        requires_out_value: true,
-    },
-    OpFieldSchema {
-        family: "range_fill",
-        kind: "bytearray_fill_range",
-        required_args_len: Some(4),
-        requires_out_value: false,
-    },
-];
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpShapeDiagnostic {
+    pub family: &'static str,
+    pub kind: &'static str,
+    pub violation: OpShapeViolation,
+}
 
-const OP_FIELD_SCHEMAS: &[OpFieldSchema] = RANGE_FILL_OP_SCHEMAS;
+impl std::fmt::Display for OpShapeDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[family={}] `{}` ", self.family, self.kind)?;
+        match self.violation {
+            OpShapeViolation::OperandCount { expected, actual } => {
+                write!(f, "requires `args` length {expected}, found ")?;
+                match actual {
+                    Some(actual) => write!(f, "{actual}"),
+                    None => write!(f, "none"),
+                }
+            }
+            OpShapeViolation::MissingResult => write!(f, "requires non-`none` `out` destination"),
+            OpShapeViolation::NonNegativeValue { actual } => {
+                write!(
+                    f,
+                    "requires explicit nonnegative integer `value`, found {actual:?}"
+                )
+            }
+        }
+    }
+}
 
-fn schema_for_kind(kind: &str) -> Option<&'static OpFieldSchema> {
-    OP_FIELD_SCHEMAS.iter().find(|schema| schema.kind == kind)
+impl std::error::Error for OpShapeDiagnostic {}
+
+/// Validate one generated operation shape without assuming a complete program,
+/// value definitions, slot-table initialization or execution-context ownership.
+/// Both SimpleIR and preserved TIR operations project into this same checker.
+pub fn validate_op_shape(
+    kind: &str,
+    operands: Option<usize>,
+    has_result: bool,
+    value: Option<i64>,
+) -> Result<(), OpShapeDiagnostic> {
+    let Some(shape) = simpleir_op_shape(kind) else {
+        return Ok(());
+    };
+    let violation = if operands.unwrap_or(0) != shape.operands {
+        Some(OpShapeViolation::OperandCount {
+            expected: shape.operands,
+            actual: operands,
+        })
+    } else if shape.requires_result && !has_result {
+        Some(OpShapeViolation::MissingResult)
+    } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
+        && !value.is_some_and(|value| value >= 0)
+    {
+        Some(OpShapeViolation::NonNegativeValue { actual: value })
+    } else {
+        None
+    };
+    match violation {
+        Some(violation) => Err(OpShapeDiagnostic {
+            family: shape.family,
+            kind: shape.kind,
+            violation,
+        }),
+        None => Ok(()),
+    }
+}
+
+fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
+    validate_op_shape(
+        &op.kind,
+        op.args.as_ref().map(Vec::len),
+        op.out
+            .as_deref()
+            .is_some_and(|out| !out.trim().is_empty() && out != "none"),
+        op.value,
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionOpShapeDiagnostic {
+    pub function: String,
+    pub op_index: usize,
+    pub shape: OpShapeDiagnostic,
+}
+
+impl std::fmt::Display for FunctionOpShapeDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "function `{}` op#{}: {}",
+            self.function, self.op_index, self.shape
+        )
+    }
+}
+
+impl std::error::Error for FunctionOpShapeDiagnostic {}
+
+pub fn validate_function_op_shapes(
+    func: &crate::FunctionIR,
+) -> Result<(), FunctionOpShapeDiagnostic> {
+    for (op_index, op) in func.ops.iter().enumerate() {
+        validate_simple_op_shape(op).map_err(|shape| FunctionOpShapeDiagnostic {
+            function: func.name.clone(),
+            op_index,
+            shape,
+        })?;
+    }
+    Ok(())
+}
+
+pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), FunctionOpShapeDiagnostic> {
+    for func in &ir.functions {
+        validate_function_op_shapes(func)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod op_shape_tests {
+    use super::*;
+    use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
+
+    #[test]
+    fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
+        for shape in SIMPLEIR_OP_SHAPES {
+            let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
+            assert!(validate_op_shape(shape.kind, Some(shape.operands), true, value).is_ok());
+            assert!(matches!(
+                validate_op_shape(shape.kind, Some(shape.operands + 1), true, value),
+                Err(OpShapeDiagnostic {
+                    violation: OpShapeViolation::OperandCount { .. },
+                    ..
+                })
+            ));
+            if shape.operands > 0 {
+                for actual in [None, Some(shape.operands - 1)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, actual, true, value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::OperandCount { .. },
+                            ..
+                        })
+                    ));
+                }
+            } else {
+                assert!(validate_op_shape(shape.kind, None, true, value).is_ok());
+            }
+            assert_eq!(
+                validate_op_shape(shape.kind, Some(shape.operands), false, value).is_ok(),
+                !shape.requires_result
+            );
+            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+                for value in [None, Some(-1), Some(i64::MIN)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, Some(shape.operands), true, value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::NonNegativeValue { .. },
+                            ..
+                        })
+                    ));
+                }
+                assert!(
+                    validate_op_shape(shape.kind, Some(shape.operands), true, Some(i64::MAX))
+                        .is_ok()
+                );
+            }
+        }
+        // Source lines are not code-slot identities and retain their distinct policy.
+        assert!(validate_op_shape("line", None, false, None).is_ok());
+        assert!(validate_op_shape("code_new", Some(9), false, None).is_ok());
+    }
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
@@ -159,40 +311,7 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
         return Err("retired compiler operation `object_new_bound_stack`: frame placement requires an owner-lifetime proof; use owned `object_new_bound` allocation".into());
     }
     validate_representation_fields(op)?;
-    let Some(schema) = schema_for_kind(op.kind.as_str()) else {
-        return Ok(());
-    };
-    if let Some(required) = schema.required_args_len {
-        match op.args.as_ref() {
-            Some(args) if args.len() == required => {}
-            Some(args) => {
-                return Err(format!(
-                    "[family={}] requires `args` length {}, found {}",
-                    schema.family,
-                    required,
-                    args.len()
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "[family={}] requires `args` length {}, found none",
-                    schema.family, required
-                ));
-            }
-        }
-    }
-    if schema.requires_out_value {
-        match op.out.as_deref() {
-            Some(out) if !out.trim().is_empty() && out != "none" => {}
-            _ => {
-                return Err(format!(
-                    "[family={}] requires non-`none` `out` destination",
-                    schema.family
-                ));
-            }
-        }
-    }
-    Ok(())
+    validate_simple_op_shape(op).map_err(|error| error.to_string())
 }
 
 pub(crate) fn validate_function_param_types(

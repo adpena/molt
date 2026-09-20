@@ -34,9 +34,6 @@ from molt.cli.extension_manifest import (
 )
 from molt.cli.models import (
     BuildProfile,
-    FallbackPolicy,
-    ParseCodec,
-    TypeHintPolicy,
     _BuildOutputLayout,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
@@ -75,9 +72,6 @@ def _run_build_pipeline(
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
     prepared_frontend_pipeline_bundle: _frontend_pipeline._PreparedFrontendPipelineBundle,
-    parse_codec: ParseCodec,
-    type_hint_policy: TypeHintPolicy,
-    fallback_policy: FallbackPolicy,
     profile: BuildProfile,
     json_output: bool,
     target: str,
@@ -96,7 +90,9 @@ def _run_build_pipeline(
     bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
-    prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
+    prepared_frontend_run_ticket = (
+        prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
+    )
     frontend_run_start = time.perf_counter()
     frontend_layer_error = _run_frontend_pipeline(
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
@@ -114,8 +110,8 @@ def _run_build_pipeline(
     # MLIR target: run the frontend to produce TIR, then shell out to the
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
-    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle[5]
-    native_artifact_plan = prepared_frontend_pipeline_bundle[22]
+    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
+    native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
     native_artifact_custody_error = _external_native_artifact_output_custody_error(
         native_artifact_plan=native_artifact_plan,
         output_layout=output_layout,
@@ -130,58 +126,29 @@ def _run_build_pipeline(
             command="factgraph",
         )
     if output_layout.is_mlir_emit:
-        (
-            _frt,
-            module_graph,
-            runtime_import_dispatch_roots,
-            stdlib_allowlist,
-            spawn_enabled,
-            _ol,
-            known_modules,
-            generated_module_source_paths,
-            known_func_defaults,
-            known_func_kinds,
-            module_order,
-            type_facts,
-            known_classes,
-            enable_phi,
-            module_chunk_max_ops,
-            module_chunking,
-            integration_state,
-            diagnostics_state,
-            record_frontend_timing,
-            _build_diagnostics_payload,
-            record_binary_image_analysis,
-            artifacts_root,
-            _native_artifact_plan,
-        ) = prepared_frontend_pipeline_bundle
+        module_graph = prepared_frontend_pipeline_bundle.module_graph
+        runtime_import_dispatch_roots = (
+            prepared_frontend_pipeline_bundle.runtime_import_dispatch_roots
+        )
+        stdlib_allowlist = prepared_frontend_pipeline_bundle.stdlib_allowlist
+        spawn_enabled = prepared_frontend_pipeline_bundle.spawn_enabled
+        known_modules = prepared_frontend_pipeline_bundle.known_modules
+        module_order = prepared_frontend_pipeline_bundle.module_order
+        integration_state = prepared_frontend_pipeline_bundle.integration_state
+        record_binary_image_analysis = (
+            prepared_frontend_pipeline_bundle.record_binary_image_analysis
+        )
         prepared_backend_ir, prepared_backend_ir_error = (
             _backend_ir._prepare_backend_ir(
                 entry_module=resolved_build_entry.entry_module,
                 module_graph=module_graph,
-                parse_codec=parse_codec,
-                type_hint_policy=type_hint_policy,
-                fallback_policy=fallback_policy,
-                type_facts=type_facts,
-                enable_phi=enable_phi,
                 known_modules=known_modules,
-                known_classes=known_classes,
                 stdlib_allowlist=stdlib_allowlist,
-                known_func_defaults=known_func_defaults,
-                known_func_kinds=known_func_kinds,
-                module_chunking=module_chunking,
-                module_chunk_max_ops=module_chunk_max_ops,
-                optimization_profile=profile,
-                pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-                frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
                 integration_state=integration_state,
-                diagnostics_state=diagnostics_state,
-                record_frontend_timing=record_frontend_timing,
                 fail=_fail,
                 json_output=json_output,
                 module_order=module_order,
                 runtime_import_dispatch_roots=runtime_import_dispatch_roots,
-                generated_module_source_paths=generated_module_source_paths,
                 spawn_enabled=spawn_enabled,
                 pgo_profile_summary=prepared_build_config.pgo_profile_summary,
                 runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
@@ -226,9 +193,6 @@ def _run_build_pipeline(
         prepared_build_config=prepared_build_config,
         resolved_build_entry=resolved_build_entry,
         prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
         profile=profile,
         json_output=json_output,
         target=target,

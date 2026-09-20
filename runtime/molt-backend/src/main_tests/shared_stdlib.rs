@@ -440,6 +440,67 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
+fn stdlib_code_slot_fixture(code_id: i64) -> Vec<OpIR> {
+    vec![
+        OpIR {
+            kind: "const_str".into(),
+            s_value: Some("<module>".into()),
+            out: Some("code_name".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "const".into(),
+            value: Some(0),
+            out: Some("zero".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "const_none".into(),
+            out: Some("linetable".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "tuple_new".into(),
+            args: Some(vec![]),
+            out: Some("names".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "dict_new".into(),
+            args: Some(vec![]),
+            out: Some("globals".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "code_new".into(),
+            args: Some(
+                [
+                    "code_name",
+                    "code_name",
+                    "zero",
+                    "linetable",
+                    "names",
+                    "names",
+                    "zero",
+                    "zero",
+                    "zero",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            ),
+            out: Some("code".into()),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "code_slot_set".into(),
+            args: Some(vec!["code".into(), "globals".into()]),
+            value: Some(code_id),
+            ..OpIR::default()
+        },
+    ]
+}
+
 #[test]
 fn dead_function_elimination_prunes_stdlib_before_partition() {
     let mut ir = SimpleIR {
@@ -481,11 +542,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
             FunctionIR {
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "code_slot_set".to_string(),
-                    value: Some(73),
-                    ..OpIR::default()
-                }],
+                ops: stdlib_code_slot_fixture(73),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -495,11 +552,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
             FunctionIR {
                 name: "molt_init_json".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "code_slot_set".to_string(),
-                    value: Some(843),
-                    ..OpIR::default()
-                }],
+                ops: stdlib_code_slot_fixture(843),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -566,11 +619,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
             FunctionIR {
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "code_slot_set".to_string(),
-                    value: Some(73),
-                    ..OpIR::default()
-                }],
+                ops: stdlib_code_slot_fixture(73),
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -580,11 +629,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
             FunctionIR {
                 name: "molt_init_json".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "code_slot_set".to_string(),
-                    value: Some(843),
-                    ..OpIR::default()
-                }],
+                ops: stdlib_code_slot_fixture(843),
                 param_types: None,
                 source_file: None,
                 is_extern: false,

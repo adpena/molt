@@ -76,6 +76,7 @@ if str(ROOT) not in sys.path:
 from tools.op_kinds.paths import TABLE as OP_KINDS_TOML  # noqa: E402
 from tools.op_kinds.paths import TIR_SRC as OP_KIND_TIR_SRC  # noqa: E402
 from tools.op_kinds.paths import read_rust_module_cluster, tir_path  # noqa: E402
+from molt.rust_source_scan import mask_rust_comments_and_strings  # noqa: E402
 
 SERIALIZATION_DIR = ROOT / "src/molt/frontend/lowering"
 SERIALIZATION_PY = SERIALIZATION_DIR / "serialization.py"
@@ -182,12 +183,27 @@ class RustMatchParseError(RuntimeError):
     pass
 
 
-def _find_fn_start(lines: list[str], fn: str) -> int:
-    pat = re.compile(r"\bfn\s+" + re.escape(fn) + r"\b")
-    for i, line in enumerate(lines):
-        if pat.search(line):
-            return i
-    raise RustMatchParseError(f"fn {fn} not found")
+def _rust_block_end(masked: str, opening: int, fn: str) -> int:
+    """Balance an already lexically masked Rust body, preserving source offsets."""
+    depth = 0
+    for brace in re.finditer(r"[{}]", masked[opening:]):
+        depth += 1 if brace.group() == "{" else -1
+        if depth == 0:
+            return opening + brace.end()
+    raise RustMatchParseError(f"unbalanced braces in fn {fn}")
+
+
+def _rust_function_source(path: Path, fn: str) -> str:
+    source = path.read_text(encoding="utf-8")
+    masked = mask_rust_comments_and_strings(source)
+    declaration = re.search(r"\bfn\s+" + re.escape(fn) + r"\b", masked)
+    if declaration is None:
+        raise RustMatchParseError(f"fn {fn} not found")
+    opening = masked.find("{", declaration.end())
+    if opening < 0 or ";" in masked[declaration.end() : opening]:
+        raise RustMatchParseError(f"fn {fn} has no body")
+    end = _rust_block_end(masked, opening, fn)
+    return source[declaration.start() : end]
 
 
 def _string_literals(text: str) -> list[str]:
@@ -197,32 +213,14 @@ def _string_literals(text: str) -> list[str]:
 def extract_match_arms(path: Path, fn: str, match_on: str) -> list[str]:
     """Return, in source order (deduped), the string-literal patterns of every
     top-level arm of the `match_on` match inside function `fn` of `path`."""
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    fs = _find_fn_start(lines, fn)
-    ms = None
-    for i in range(fs, len(lines)):
-        if match_on in lines[i]:
-            ms = i
-            break
-    if ms is None:
+    source = _rust_function_source(path, fn)
+    masked = mask_rust_comments_and_strings(source)
+    match_start = masked.find(match_on)
+    if match_start < 0:
         raise RustMatchParseError(f"`{match_on}` not found in fn {fn}")
-
-    region = "".join(lines[ms:])
-    open_idx = region.index("{")
-    depth = 0
-    end = None
-    for idx in range(open_idx, len(region)):
-        ch = region[idx]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = idx
-                break
-    if end is None:
-        raise RustMatchParseError(f"unbalanced match braces in fn {fn}")
-    body = region[open_idx + 1 : end]
+    open_idx = masked.index("{", match_start)
+    end = _rust_block_end(masked, open_idx, fn)
+    body = source[open_idx + 1 : end - 1]
 
     # Guard against raw strings inside the scanned region (would defeat the plain
     # "..." scanner). None exist in the parsed functions; assert it stays so. The
@@ -863,22 +861,87 @@ def extract_native_family_handlers() -> dict[str, tuple[str, str]]:
     return handlers
 
 
+def _registry_kind_projection(path: Path, helper: str) -> tuple[str, set[str]]:
+    """Prove the complete helper is one generated-opcode canonical projection.
+
+    This is a closed grammar, not trust in a helper's name or a substring of its
+    body. Any added condition, alternate fallback, or arbitrary transform fails
+    closed. The registry, never this parser, supplies the opcode's spellings.
+    """
+    source = _rust_function_source(path, helper)
+    masked = mask_rust_comments_and_strings(source)
+    projection = re.fullmatch(
+        r"fn\s+" + re.escape(helper) + r"\s*\(\s*(?P<input>[A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*:\s*&\s*str\s*\)\s*->\s*&\s*str\s*\{\s*"
+        r"if\s+crate\s*::\s*tir\s*::\s*op_kinds_generated\s*::\s*"
+        r"kind_to_opcode_table\s*\(\s*(?P=input)\s*\)\s*==\s*Some\s*\(\s*"
+        r"crate\s*::\s*tir\s*::\s*ops\s*::\s*OpCode\s*::\s*"
+        r"(?P<opcode>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*"
+        r"\{(?P<canonical>\s*)\}\s*else\s*\{\s*(?P=input)\s*\}\s*\}",
+        masked,
+    )
+    if projection is None:
+        raise RustMatchParseError(
+            f"{path}:{helper} is not an exact generated registry kind projection"
+        )
+    rows = [
+        row
+        for row in _load_op_kinds_toml()["kind"]
+        if row.get("mapper_opcode") == projection["opcode"]
+    ]
+    if len(rows) != 1:
+        raise RustMatchParseError(
+            f"{path}:{helper} requires one registry kind row for {projection['opcode']}"
+        )
+    row = rows[0]
+    start, end = projection.span("canonical")
+    if source[start:end].strip() != json.dumps(row["canonical"]):
+        raise RustMatchParseError(
+            f"{path}:{helper} does not return registry canonical {row['canonical']!r}"
+        )
+    return row["canonical"], {row["canonical"], *row.get("aliases", [])}
+
+
 def extract_native_handler_arm_kinds(
     path: Path, fn_name: str, routed_kinds: set[str]
 ) -> set[str]:
-    try:
-        return set(extract_match_arms(path, fn_name, "match op.kind.as_str()"))
-    except RustMatchParseError as exc:
-        missing_direct_match = "`match op.kind.as_str()` not found" in str(exc)
-        if missing_direct_match and len(routed_kinds) == 1:
-            return set(routed_kinds)
-        if missing_direct_match:
+    source = _rust_function_source(path, fn_name)
+    masked = mask_rust_comments_and_strings(source)
+    kind_match = next(
+        (
+            match
+            for match in re.finditer(r"\bmatch\b[^{}]*\{", masked)
+            if re.search(r"\bop\s*\.\s*kind\b", match.group())
+        ),
+        None,
+    )
+    dispatch = re.fullmatch(
+        r"\bmatch\s+(?:op\s*\.\s*kind\s*\.\s*as_str\s*\(\s*\)"
+        r"|(?P<helper>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*&\s*op\s*\.\s*kind\s*\))\s*\{",
+        kind_match.group() if kind_match is not None else "",
+    )
+    if dispatch is not None:
+        arms = set(extract_match_arms(path, fn_name, dispatch.group()))
+        helper = dispatch["helper"]
+        if helper is None:
+            return arms
+        canonical, spellings = _registry_kind_projection(path, helper)
+        unreachable = arms & (spellings - {canonical})
+        if unreachable:
             raise RustMatchParseError(
-                f"{path.relative_to(ROOT).as_posix()}:{fn_name} handles "
-                f"{len(routed_kinds)} routed native kinds without an explicit "
-                "`match op.kind.as_str()`"
-            ) from exc
-        raise
+                f"{path}:{fn_name} has unreachable projected alias arms: {sorted(unreachable)}"
+            )
+        # Compare RAW wire domains. Canonicalizing routed_kinds would hide a
+        # missing alias route, including an alias newly added to the registry.
+        if canonical in arms:
+            arms.update(spellings)
+        return arms
+    if len(routed_kinds) == 1 and not re.search(r"\bmatch\b", masked):
+        return set(routed_kinds)
+    raise RustMatchParseError(
+        f"{path}:{fn_name} handles {len(routed_kinds)} routed native kinds "
+        "without a supported raw or registry-projected kind dispatch"
+    )
 
 
 def extract_native_handler_routing_drifts() -> list[str]:
@@ -888,7 +951,8 @@ def extract_native_handler_routing_drifts() -> list[str]:
     single local `HANDLED_KINDS` slice, but delegated families may reference
     sibling slices too (`vec_reductions::HANDLED_KINDS` routes into
     `handle_arith_op`). The union of slices routed to a family and that family's
-    handler `match op.kind.as_str()` arms must be exact peers.
+    handler's raw-spelling arm preimage must be exact peers. Canonical dispatch
+    is accepted only through a fully verified generated-registry projection.
     """
     drifts: list[str] = []
     dispatch_slices = extract_native_family_dispatch_slices()

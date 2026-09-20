@@ -281,48 +281,37 @@ impl RustBackend {
         };
 
         let o = out();
-        let args = op.args.as_deref().unwrap_or(&[]);
-        if args.len() >= 9 {
-            let filename = rust_ident(&args[0]);
-            let name = rust_ident(&args[1]);
-            let firstlineno = rust_ident(&args[2]);
-            let linetable = rust_ident(&args[3]);
-            let varnames = rust_ident(&args[4]);
-            let names = rust_ident(&args[5]);
-            let argcount = rust_ident(&args[6]);
-            let posonlyargcount = rust_ident(&args[7]);
-            let kwonlyargcount = rust_ident(&args[8]);
-            self.emit_line(&declare(
+        let args = op.args.as_deref().expect("admitted code_new operands");
+        let filename = rust_ident(&args[0]);
+        let name = rust_ident(&args[1]);
+        let firstlineno = rust_ident(&args[2]);
+        let linetable = rust_ident(&args[3]);
+        let varnames = rust_ident(&args[4]);
+        let names = rust_ident(&args[5]);
+        let argcount = rust_ident(&args[6]);
+        let posonlyargcount = rust_ident(&args[7]);
+        let kwonlyargcount = rust_ident(&args[8]);
+        self.emit_line(&declare(
                         &o,
                         &format!(
                             "molt_code_new(&{filename}, &{name}, &{firstlineno}, &{linetable}, &{varnames}, &{names}, &{argcount}, &{posonlyargcount}, &{kwonlyargcount})"
                         ),
                         &self.hoisted_vars.clone(),
                     ));
-        } else {
-            self.emit_unsupported_op(op, "code_new requires its complete 9-argument schema");
-        }
     }
 
     pub(super) fn emit_op_code_slots_init(&mut self, op: &OpIR) {
-        let count = op.value.unwrap_or(0);
+        let count = op.value.expect("admitted code_slots_init count");
         self.emit_line(&format!("molt_code_slots_init({count});"));
     }
 
     pub(super) fn emit_op_code_slot_set(&mut self, op: &OpIR) {
-        let args = op.args.as_deref().unwrap_or(&[]);
-        if let [code, globals] = args {
-            let code = rust_ident(code);
-            let globals = rust_ident(globals);
-            let code_id = op.value.unwrap_or(0);
-            self.emit_line(&format!(
-                "molt_code_slot_set({code_id}, &{code}, &{globals});"
-            ));
-        } else {
-            self.emit_unsupported_op(
-                op,
-                "code_slot_set requires exactly a code object and globals dictionary",
-            );
-        }
+        let args = op.args.as_deref().expect("admitted code_slot_set operands");
+        let code = rust_ident(&args[0]);
+        let globals = rust_ident(&args[1]);
+        let code_id = op.value.expect("admitted code_slot_set ID");
+        self.emit_line(&format!(
+            "molt_code_slot_set({code_id}, &{code}, &{globals});"
+        ));
     }
 }

@@ -54,17 +54,13 @@ impl LuauBackend {
                 self.emit_unsupported_op(op);
             }
             "code_slot_set" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let [code, globals] = args {
-                    let slot = op.value.unwrap_or(0);
-                    self.emit_line(&format!(
-                        "molt_code_slots[{slot}] = molt_frame_bind_code({slot}, {}, {})",
-                        sanitize_ident(code),
-                        sanitize_ident(globals),
-                    ));
-                } else {
-                    self.emit_unsupported_op(op);
-                }
+                let args = op.args.as_deref().expect("admitted code_slot_set operands");
+                let slot = op.value.expect("admitted code_slot_set ID");
+                self.emit_line(&format!(
+                    "molt_code_slots[{slot}] = molt_frame_bind_code({slot}, {}, {})",
+                    sanitize_ident(&args[0]),
+                    sanitize_ident(&args[1]),
+                ));
                 if let Some(ref out_name) = op.out
                     && out_name != "none"
                 {
@@ -73,7 +69,7 @@ impl LuauBackend {
                 }
             }
             "code_slots_init" => {
-                let count = op.value.unwrap_or(0).max(0);
+                let count = op.value.expect("admitted code_slots_init count");
                 self.emit_line(&format!("molt_code_slots = table.create({count})"));
                 if let Some(ref out_name) = op.out
                     && out_name != "none"
@@ -83,7 +79,7 @@ impl LuauBackend {
                 }
             }
             "trace_enter_slot" => {
-                let code_id = op.value.unwrap_or(0);
+                let code_id = op.value.expect("admitted trace_enter_slot ID");
                 self.emit_line(&format!(
                     "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));

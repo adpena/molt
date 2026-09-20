@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
 
 from .paths import TABLE
 from .schema import (
+    _SIMPLEIR_OP_VALUE_RULES,
     _BOXED_ALLOCATION_LAYOUT_RULES,
     _ALIAS_MEMORY_REGION_SETS,
     _ALIAS_SLOT_OBSERVATION_SETS,
@@ -689,6 +690,7 @@ def load_table(table_path: Path = TABLE) -> dict:
         trailing_result_kinds.add(kind)
 
     _validate_simpleir_control_kinds(data)
+    _validate_simpleir_op_shapes(data)
     _validate_literal_payload_facts(data, seen_opcodes)
     _validate_fuzz_tir_opcode_shapes(data, opcodes_by_name)
     _validate_canonicalize_facts(data, seen_opcodes)
@@ -1993,6 +1995,55 @@ def _validate_call_graph_user_call_kinds(
                 f"call_graph_user_call_kinds {kind!r} maps to OpCode::{opcode}; "
                 "user-call Copy fallbacks may only map to Call or CallMethod"
             )
+
+
+def _validate_simpleir_op_shapes(data: dict) -> None:
+    rows = data.get("simpleir_op_shape", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("simpleir_op_shape must be an array of tables")
+    registered = _simpleir_registered_runtime_kinds(data)
+    for table in _CLASSIFIER_SETS:
+        registered.update(data.get(table, []))
+    aliases = {
+        alias for row in data.get("kind", []) for alias in row.get("aliases", [])
+    }
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "kind",
+            "family",
+            "operands",
+            "requires_result",
+            "value_rule",
+        }:
+            raise OpKindTableError(
+                "simpleir_op_shape requires exactly kind, family, operands, requires_result and value_rule"
+            )
+        kind = row["kind"]
+        if not isinstance(kind, str) or kind not in registered or kind in aliases:
+            raise OpKindTableError(
+                f"simpleir_op_shape requires a registered canonical kind: {kind!r}"
+            )
+        if kind in seen:
+            raise OpKindTableError(f"duplicate simpleir_op_shape: {kind}")
+        seen.add(kind)
+        if not isinstance(row["family"], str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]*", row["family"]
+        ):
+            raise OpKindTableError(f"simpleir_op_shape {kind}: invalid family")
+        if type(row["operands"]) is not int or row["operands"] < 0:
+            raise OpKindTableError(
+                f"simpleir_op_shape {kind}: operands must be a nonnegative integer"
+            )
+        if not isinstance(row["requires_result"], bool):
+            raise OpKindTableError(
+                f"simpleir_op_shape {kind}: requires_result must be boolean"
+            )
+        if (
+            not isinstance(row["value_rule"], str)
+            or row["value_rule"] not in _SIMPLEIR_OP_VALUE_RULES
+        ):
+            raise OpKindTableError(f"simpleir_op_shape {kind}: invalid value_rule")
 
 
 def _validate_simpleir_control_kinds(data: dict) -> None:

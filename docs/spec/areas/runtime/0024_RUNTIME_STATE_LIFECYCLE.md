@@ -1,7 +1,7 @@
 Title: Runtime State Lifecycle and Shutdown
 Status: Draft
 Owner: runtime
-Last Updated: 2026-09-16
+Last Updated: 2026-09-20
 
 ## Summary
 Molt's runtime uses process-global caches (builtins, interned names, module and
@@ -86,6 +86,21 @@ publishes an owned code/globals pair under the runtime execution token. Dynamic
 function invocation transfers exact callable code, captured globals and builtins through a scoped,
 slot-keyed, single-use handoff. Typed generated calls and runtime dispatch use
 the same handoff, independently of their machine return ABI.
+
+Each frontend-lowered module initializer alone constructs and publishes its
+module code object with its lexical globals dictionary, before entering the
+module frame. Executable, host, isolate-bootstrap and import-dispatch wrappers
+allocate the code-slot table but never synthesize or replace module code objects.
+Backend assembly consumes already-lowered modules, not source paths or a second
+frontend-lowering context. This ownership also preserves logical filenames and
+removes startup ordering derived from an eager-module set.
+
+The generated operation schema admits code metadata before backend emission:
+`code_new` has exactly nine operands, `code_slot_set` exactly two (code, globals),
+and `code_slots_init`/`trace_enter_slot` no operands. Slot counts and IDs are
+explicit nonnegative integers, never implicit slot zero. The same admission
+applies to serialized input, direct backend calls and preserved TIR operations;
+runtime checks still own code-object and namespace type validation.
 
 Function objects capture builtins with globals. Globals admit dictionary
 subclasses through the existing dictionary-storage authority, retaining the

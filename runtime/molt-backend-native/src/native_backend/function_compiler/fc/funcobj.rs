@@ -386,7 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "code_new" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let args = op.args.as_ref().expect("admitted code_new operands");
             let filename_bits = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -522,7 +522,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
         "code_slot_set" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let args = op.args.as_ref().expect("admitted code_slot_set operands");
             let code_bits = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -545,7 +545,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 representation_plan,
             )
             .expect("code globals not found");
-            let code_id = op.value.unwrap_or(0);
+            let code_id = op.value.expect("admitted code_slot_set ID");
             let code_id_val = builder.ins().iconst(types::I64, code_id);
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
@@ -684,7 +684,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .call(local_callee, &[func_addr, *names_bits, *offsets_bits]);
         }
         "code_slots_init" => {
-            let count = op.value.unwrap_or(0);
+            let count = op.value.expect("admitted code_slots_init count");
             let count_val = builder.ins().iconst(types::I64, count);
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
@@ -704,7 +704,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             } else {
                 emit_owned_execution_frame_enter(
                     entered,
-                    op.value.unwrap_or(0),
+                    op.value.expect("admitted trace_enter_slot ID"),
                     module,
                     import_ids,
                     builder,

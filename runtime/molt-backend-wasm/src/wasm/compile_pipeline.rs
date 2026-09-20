@@ -76,6 +76,19 @@ impl WasmBackend {
     }
 
     pub fn compile_with_diagnostics(self, ir: SimpleIR) -> WasmCompileOutput {
+        self.compile_checked(ir)
+            .unwrap_or_else(|error| panic!("WASM SimpleIR admission failed: {error}"))
+    }
+
+    pub fn compile_checked(
+        self,
+        ir: SimpleIR,
+    ) -> Result<WasmCompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
+        Ok(self.compile_admitted(ir))
+    }
+
+    fn compile_admitted(self, ir: SimpleIR) -> WasmCompileOutput {
         let mut ir = ir;
         let target_info = crate::tir::target_info::TargetInfo::wasm_release_fast();
         crate::apply_profile_order(&mut ir);

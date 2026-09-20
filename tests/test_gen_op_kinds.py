@@ -523,6 +523,51 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
     assert "extract_rust_str_slice_const" not in structural_fn
 
 
+def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    shapes = {row["kind"]: row for row in data["simpleir_op_shape"]}
+    assert {kind: row["operands"] for kind, row in shapes.items()} == {
+        "code_new": 9,
+        "code_slot_set": 2,
+        "code_slots_init": 0,
+        "trace_enter_slot": 0,
+        "list_repeat_range": 4,
+        "bytearray_fill_range": 4,
+    }
+    assert not shapes["code_new"][
+        "requires_result"
+    ]  # discarded constructors remain valid
+    for kind in ("code_slot_set", "code_slots_init", "trace_enter_slot"):
+        assert shapes[kind]["value_rule"] == "nonnegative"
+    rendered = gen.render_rs(data)
+    assert "pub const SIMPLEIR_OP_SHAPES" in rendered
+    assert "pub fn simpleir_op_shape" in rendered
+    assert "SIMPLEIR_OP_SHAPES.iter().find" not in rendered
+    for index, kind in enumerate(shapes):
+        assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
+    schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
+    assert "RANGE_FILL_OP_SCHEMAS" not in schema
+    assert "simpleir_op_shape(kind)" in schema
+    for field, value in [
+        ("operands", -1),
+        ("operands", True),
+        ("requires_result", 1),
+        ("value_rule", "default_zero"),
+        ("family", ""),
+        ("kind", "unregistered_shape"),
+        ("unknown_field", True),
+    ]:
+        malformed = json.loads(json.dumps(data))
+        malformed["simpleir_op_shape"][0][field] = value
+        with pytest.raises(gen.OpKindTableError, match="simpleir_op_shape"):
+            gen._validate_simpleir_op_shapes(malformed)
+    duplicate = json.loads(json.dumps(data))
+    duplicate["simpleir_op_shape"].append(duplicate["simpleir_op_shape"][0])
+    with pytest.raises(gen.OpKindTableError, match="duplicate simpleir_op_shape"):
+        gen._validate_simpleir_op_shapes(duplicate)
+
+
 def test_simpleir_control_kind_validation_rejects_drift() -> None:
     gen = _gen()
     data = gen.load_table()

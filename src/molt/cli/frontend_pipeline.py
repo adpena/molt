@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence, cast
 
@@ -65,7 +65,6 @@ from molt.cli.models import (
     _FrontendIntegrationState,
     _FrontendTimingRecorderConfig,
     _ImportPlan,
-    _MidendDiagnosticsState,
     _ModuleGraphMetadata,
     _PreparedBuildCallbacks,
     _PreparedBuildConfig,
@@ -82,31 +81,22 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.target_python import TargetPythonVersion
 
-_PreparedFrontendPipelineBundle = tuple[
-    _PreparedFrontendRunTicket,
-    Mapping[str, Path],
-    Collection[str],
-    Collection[str],
-    bool,
-    _BuildOutputLayout,
-    Collection[str],
-    Mapping[str, str],
-    dict[str, dict[str, dict[str, Any]]],
-    dict[str, dict[str, str]],
-    list[str],
-    TypeFacts | None,
-    dict[str, Any],
-    bool,
-    int,
-    bool,
-    _FrontendIntegrationState,
-    _MidendDiagnosticsState,
-    Callable[..., None],
-    Callable[[], tuple[dict[str, Any] | None, Path | None]],
-    Callable[[str, Mapping[str, Any] | None], None],
-    Path,
-    _ExternalPackageNativeArtifactPlan,
-]
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFrontendPipelineBundle:
+    prepared_frontend_run_ticket: _PreparedFrontendRunTicket
+    module_graph: Mapping[str, Path]
+    runtime_import_dispatch_roots: Collection[str]
+    stdlib_allowlist: Collection[str]
+    spawn_enabled: bool
+    output_layout: _BuildOutputLayout
+    known_modules: Collection[str]
+    module_order: Sequence[str]
+    integration_state: _FrontendIntegrationState
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]]
+    record_binary_image_analysis: Callable[[str, Mapping[str, Any] | None], None]
+    artifacts_root: Path
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan
 
 
 def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
@@ -1174,7 +1164,6 @@ def _prepare_frontend_pipeline(
         frontend_layer_execution_context,
         frontend_layer_runtime_hooks,
         integration_state,
-        midend_diagnostics_state,
     ) = _frontend_execution._prepare_frontend_execution(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
         module_graph=compile_module_graph,
@@ -1254,30 +1243,22 @@ def _prepare_frontend_pipeline(
         frontend_layer_runtime_hooks=frontend_layer_runtime_hooks,
     )
     return (
-        (
-            prepared_frontend_run_ticket,
-            dict(compile_module_graph),
-            set(import_plan.runtime_import_dispatch_roots),
-            set(import_plan.stdlib_allowlist),
-            import_plan.spawn_enabled,
-            prepared_build_outputs.output_layout,
-            set(import_plan.known_modules),
-            dict(compile_generated_module_source_paths),
-            prepared_frontend_analysis.known_func_defaults,
-            prepared_frontend_analysis.known_func_kinds,
-            compile_module_order,
-            prepared_frontend_lowering_config.type_facts,
-            prepared_frontend_lowering_config.known_classes,
-            prepared_frontend_lowering_config.enable_phi,
-            prepared_frontend_lowering_config.module_chunk_max_ops,
-            prepared_frontend_lowering_config.module_chunking,
-            integration_state,
-            midend_diagnostics_state,
-            record_frontend_timing,
-            build_diagnostics_payload,
-            record_binary_image_analysis,
-            artifacts_root,
-            import_plan.native_artifact_plan,
+        _PreparedFrontendPipelineBundle(
+            prepared_frontend_run_ticket=prepared_frontend_run_ticket,
+            module_graph=dict(compile_module_graph),
+            runtime_import_dispatch_roots=set(
+                import_plan.runtime_import_dispatch_roots
+            ),
+            stdlib_allowlist=set(import_plan.stdlib_allowlist),
+            spawn_enabled=import_plan.spawn_enabled,
+            output_layout=prepared_build_outputs.output_layout,
+            known_modules=set(import_plan.known_modules),
+            module_order=tuple(compile_module_order),
+            integration_state=integration_state,
+            build_diagnostics_payload=build_diagnostics_payload,
+            record_binary_image_analysis=record_binary_image_analysis,
+            artifacts_root=artifacts_root,
+            native_artifact_plan=import_plan.native_artifact_plan,
         ),
         None,
     )

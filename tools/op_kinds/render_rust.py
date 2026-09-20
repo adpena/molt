@@ -16,6 +16,7 @@ from .schema import (
     _LITERAL_PAYLOAD_KINDS,
     _PASS_DELTA_FACT_FIELDS,
     _SIMPLEIR_CONTROL_FACT_FIELDS,
+    _SIMPLEIR_OP_VALUE_RULES,
     _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
 )
 from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
@@ -86,6 +87,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
     out.append(_render_simpleir_field_roles(data))
+    out.append("\n\n")
+    out.append(_render_simpleir_op_shapes(data))
     out.append("\n\n")
     out.append(_render_simpleir_integer_semantics(data))
     out.append("\n\n")
@@ -944,6 +947,61 @@ def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) ->
     lines.append(_render_matches_arm(members))
     lines.append("    )\n}\n\n")
     return "".join(lines)
+
+
+def _render_simpleir_op_shapes(data: dict) -> str:
+    out = [
+        "/// Integer-metadata admission for generated SimpleIR operation shapes.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SimpleIrOpValueRule {\n",
+    ]
+    out.extend(f"    {variant},\n" for variant in _SIMPLEIR_OP_VALUE_RULES.values())
+    out.extend(
+        [
+            "}\n\n",
+            "/// One shape authority shared by wire, TIR and backend admission.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub struct SimpleIrOpShape {\n",
+            "    pub kind: &'static str,\n",
+            "    pub family: &'static str,\n",
+            "    pub operands: usize,\n",
+            "    pub requires_result: bool,\n",
+            "    pub value_rule: SimpleIrOpValueRule,\n",
+            "}\n\n",
+            "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[\n",
+        ]
+    )
+    for row in data.get("simpleir_op_shape", []):
+        out.extend(
+            [
+                "    SimpleIrOpShape {\n",
+                f"        kind: {_rs_string(row['kind'])},\n",
+                f"        family: {_rs_string(row['family'])},\n",
+                f"        operands: {row['operands']},\n",
+                f"        requires_result: {_rs_bool(row['requires_result'])},\n",
+                f"        value_rule: SimpleIrOpValueRule::{_SIMPLEIR_OP_VALUE_RULES[row['value_rule']]},\n",
+                "    },\n",
+            ]
+        )
+    out.extend(
+        [
+            "];\n\n",
+            "pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for index, row in enumerate(data.get("simpleir_op_shape", [])):
+        out.append(
+            f"        {_rs_string(row['kind'])} => Some(&SIMPLEIR_OP_SHAPES[{index}]),\n"
+        )
+    out.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
+            "}\n",
+        ]
+    )
+    return "".join(out)
 
 
 def _render_simpleir_control_facts(data: dict) -> str:

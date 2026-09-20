@@ -497,9 +497,24 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 ..OpIR::default()
             },
             OpIR {
+                kind: "const_str".into(),
+                s_value: Some("__dict__".into()),
+                out: Some("code_globals_name".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_get_attr".into(),
+                args: Some(vec![
+                    "__molt_module_obj__".into(),
+                    "code_globals_name".into(),
+                ]),
+                out: Some("code_globals".into()),
+                ..OpIR::default()
+            },
+            OpIR {
                 kind: "code_slot_set".into(),
                 value: Some(0),
-                args: Some(vec!["v97".into()]),
+                args: Some(vec!["v97".into(), "code_globals".into()]),
                 ..OpIR::default()
             },
             OpIR {

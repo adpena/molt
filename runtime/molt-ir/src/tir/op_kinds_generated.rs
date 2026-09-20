@@ -492,6 +492,80 @@ pub fn simpleir_first_trailing_result_arg_table(kind: &str) -> Option<usize> {
     }
 }
 
+/// Integer-metadata admission for generated SimpleIR operation shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimpleIrOpValueRule {
+    Unconstrained,
+    NonNegative,
+}
+
+/// One shape authority shared by wire, TIR and backend admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimpleIrOpShape {
+    pub kind: &'static str,
+    pub family: &'static str,
+    pub operands: usize,
+    pub requires_result: bool,
+    pub value_rule: SimpleIrOpValueRule,
+}
+
+pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
+    SimpleIrOpShape {
+        kind: "code_new",
+        family: "code_metadata",
+        operands: 9,
+        requires_result: false,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "code_slot_set",
+        family: "code_metadata",
+        operands: 2,
+        requires_result: false,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "code_slots_init",
+        family: "code_metadata",
+        operands: 0,
+        requires_result: false,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "trace_enter_slot",
+        family: "code_metadata",
+        operands: 0,
+        requires_result: false,
+        value_rule: SimpleIrOpValueRule::NonNegative,
+    },
+    SimpleIrOpShape {
+        kind: "list_repeat_range",
+        family: "range_fill",
+        operands: 4,
+        requires_result: true,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "bytearray_fill_range",
+        family: "range_fill",
+        operands: 4,
+        requires_result: false,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+];
+
+pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
+    match kind {
+        "code_new" => Some(&SIMPLEIR_OP_SHAPES[0]),
+        "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[1]),
+        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[2]),
+        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[3]),
+        "list_repeat_range" => Some(&SIMPLEIR_OP_SHAPES[4]),
+        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[5]),
+        _ => None,
+    }
+}
+
 /// Python integer semantic role for a SimpleIR wire spelling.
 /// Generated from op_kinds.toml so string-dispatch backends apply target
 /// policy to one shared operation taxonomy.

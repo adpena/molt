@@ -4,6 +4,10 @@ from __future__ import annotations
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
+_SIMPLEIR_OP_VALUE_RULES = {
+    "unconstrained": "Unconstrained",
+    "nonnegative": "NonNegative",
+}
 # Only audited container builders and the legacy transport carrier have
 # variable operand shapes. BuildDict carries alternating key/value operands.
 _VARIABLE_OPERAND_ARITIES = {
