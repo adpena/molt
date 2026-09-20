@@ -62,14 +62,7 @@ pub(super) fn emit_shift_op(
         numeric_lane_stats.record_op_loop_bitwise_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        selection.import,
-    );
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import_name);
 }
 
 fn emit_shift_fast_path(

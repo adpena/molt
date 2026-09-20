@@ -44,6 +44,8 @@ pub(crate) use lir_runtime_calls::{
 pub(crate) use method_ic_selector::{
     WasmMethodIcFamily, WasmMethodIcSelection, wasm_method_ic_selection,
 };
+#[cfg(test)]
+pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;
 pub(crate) use numeric_runtime_selector::{
     WasmNumericOpLoopKind, WasmNumericRuntimeSelection, wasm_numeric_runtime_selection,
 };

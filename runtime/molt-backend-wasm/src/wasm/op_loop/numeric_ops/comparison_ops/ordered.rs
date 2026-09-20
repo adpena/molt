@@ -82,12 +82,5 @@ pub(super) fn emit_ordered_compare_op(
             },
         );
     }
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        selection.import,
-    );
+    store_runtime_result(func, op, locals, import_ids, reloc_enabled, import_name);
 }

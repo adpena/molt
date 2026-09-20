@@ -212,8 +212,6 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
         ("gen_throw", 2, 0),
         ("gen_close", 1, 0),
         ("iter_next", 1, 0),
-        ("add", 2, 0),
-        ("neg", 1, 0),
         ("gpu_thread_id", 0, 0),
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
@@ -235,6 +233,128 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
             );
         }
     }
+}
+
+#[test]
+fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
+    use crate::wasm_abi_generated::{
+        STATIC_FUNC_TYPES, WASM_NUMERIC_RUNTIME_SELECTORS, WasmRuntimeReturn,
+    };
+
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "numeric runtime result ownership",
+    )
+    .expect("Node is required to prove emitted numeric result ownership");
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let mut cases = Vec::new();
+    assert!(!WASM_NUMERIC_RUNTIME_SELECTORS.is_empty());
+    for spec in WASM_NUMERIC_RUNTIME_SELECTORS {
+        let import = spec.selection.import;
+        let signature = &STATIC_FUNC_TYPES[import.type_idx() as usize];
+        assert_eq!(import.return_contract(), WasmRuntimeReturn::OwnedObject);
+        assert!(
+            signature
+                .params
+                .iter()
+                .all(|ty| *ty == wasm_encoder::ValType::I64)
+        );
+        for (shape, out) in [
+            ("absent", None),
+            ("none", Some("none")),
+            ("dead", Some("unused")),
+            ("live", Some("result")),
+        ] {
+            let bound = shape == "live";
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+                functions: vec![wasm_test_function(
+                    "molt_main",
+                    vec!["value"],
+                    None,
+                    vec![
+                        wasm_test_op(spec.kind, out, vec!["value"; signature.params.len()]),
+                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                    ],
+                )],
+                profile: None,
+            })
+            .wasm;
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
+            let path = temp.join(format!("{}-{shape}.wasm", spec.kind));
+            fs::write(&path, wasm).unwrap();
+            cases.push(json!({
+                "name": format!("{}-{shape}", spec.kind), "import": import.name(),
+                "arity": signature.params.len(), "bound": bound, "path": path,
+                "memory_pages": memory_pages, "table_entries": table_entries,
+            }));
+        }
+    }
+    let config = temp.join("numeric-results.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "cases": cases, "none": molt_codegen_abi::box_none_bits().to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const none = BigInt(config.none), owner = 777n;
+for (const test of config.cases) {
+  const module = new WebAssembly.Module(fs.readFileSync(test.path));
+  for (const failed of [false, true]) {
+    const name = test.name + (failed ? '/failed' : '/success');
+    let owners = 0, calls = 0;
+    const imports = {env: {
+      memory: new WebAssembly.Memory({initial:test.memory_pages}),
+      __indirect_function_table: new WebAssembly.Table({initial:test.table_entries, element:'anyfunc'}),
+    }};
+    const providers = {
+      [test.import]: (...args) => {
+        calls++;
+        assert.equal(args.length, test.arity, name + ': arity');
+        for (const arg of args) assert.equal(arg, none, name + ': operand');
+        if (failed) return none;
+        owners++;
+        return owner;
+      },
+      dec_ref_obj: bits => {
+        if (bits === none) return;
+        assert.equal(bits, owner, name + ': wrong result released');
+        assert.equal(owners, 1, name + ': duplicate release');
+        owners--;
+      },
+    };
+    for (const entry of WebAssembly.Module.imports(module)) {
+      imports[entry.module] ??= {};
+      if (entry.kind !== 'function') {
+        assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
+        continue;
+      }
+      imports[entry.module][entry.name] = providers[entry.name] ??
+        (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
+    }
+    // A tagged nonnumeric operand selects the boxed runtime path. This test
+    // proves call/result ownership, not the provider's arithmetic semantics.
+    const result = new WebAssembly.Instance(module, imports).exports.molt_main(none);
+    const retained = test.bound && !failed;
+    assert.equal(calls, 1, name + ': selected runtime import');
+    assert.equal(result, retained ? owner : none, name + ': result');
+    assert.equal(owners, retained ? 1 : 0, name + ': owner balance');
+    if (retained) providers.dec_ref_obj(result);
+    assert.equal(owners, 0, name + ': caller releases final owner');
+  }
+}
+"#,
+        &[&config],
+        "WASM numeric runtime result ownership",
+    );
 }
 
 #[test]
