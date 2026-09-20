@@ -1135,6 +1135,7 @@ class LoopLoweringMixin(_MixinBase):
         self._visit_block(branch)
 
     def _visit_block(self, body: list[ast.stmt]) -> bool:
+        """Return this block's completion while restoring the enclosing flag."""
         prior = self.block_terminated
         self.block_terminated = False
         terminated = False

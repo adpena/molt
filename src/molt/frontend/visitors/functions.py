@@ -75,7 +75,6 @@ class FunctionVisitorMixin(_MixinBase):
     def visit_Return(self, node: ast.Return) -> None:
         if self.finally_depth > 0:
             self._emit_syntax_warning(node, "'return' in a 'finally' block")
-        self.block_terminated = True
         val = self.visit(node.value) if node.value else None
         if val is None:
             val = MoltValue(self.next_var(), type_hint="None")
@@ -123,6 +122,10 @@ class FunctionVisitorMixin(_MixinBase):
             self._emit_return_value(val)
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)
+        # Cleanup emits its own reachable failure continuations. Publish the
+        # source transfer only after those nested blocks have finished, as for
+        # break/continue, so they cannot reopen fallthrough after this return.
+        self.block_terminated = True
         return None
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:

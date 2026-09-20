@@ -1382,7 +1382,8 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
         .into_iter()
         .collect();
     let stacks =
-        compute_state_resume_stacks(&func, &label_to_block, &AnonymousHandlerDestinations::new());
+        compute_state_resume_stacks(&func, &label_to_block, &AnonymousHandlerDestinations::new())
+            .unwrap();
 
     assert_eq!(
         stacks.get(&7).cloned().unwrap_or_default(),
@@ -1676,11 +1677,11 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
     let facts = compute_exception_region_facts(&func);
     assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
     assert_eq!(
-        exception_pop_owner_states(&func, inner_pop).all,
+        exception_pop_owner_states(&func, inner_pop).unwrap().all,
         BTreeSet::from([Some(ExceptionRegionToken::Labeled(20))])
     );
     assert_eq!(
-        exception_pop_owner_states(&func, outer_pop).all,
+        exception_pop_owner_states(&func, outer_pop).unwrap().all,
         BTreeSet::from([Some(ExceptionRegionToken::Labeled(10))])
     );
     let (observed_owner, observed_release) = if inner_phase == ExceptionRegionPhase::Handler {
@@ -1725,7 +1726,8 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
             &func,
             &label_to_block,
             &AnonymousHandlerDestinations::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             stacks[&7],
             BTreeSet::from([ExceptionPathState {
@@ -1838,11 +1840,11 @@ fn nested_finally_join_uses_inner_custody_on_normal_and_exceptional_paths() {
     );
     assert_eq!(facts.match_refs[&restored_outer].releases, vec![outer_pop]);
     assert_eq!(
-        exception_pop_owner_states(&func, inner_pop).all,
+        exception_pop_owner_states(&func, inner_pop).unwrap().all,
         BTreeSet::from([Some(ExceptionRegionToken::Labeled(20))])
     );
     assert_eq!(
-        exception_pop_owner_states(&func, outer_pop).all,
+        exception_pop_owner_states(&func, outer_pop).unwrap().all,
         BTreeSet::from([Some(ExceptionRegionToken::Labeled(10))])
     );
 }
@@ -1902,6 +1904,7 @@ fn exceptional_transfer_discards_younger_handler_and_normal_custody() {
                 op_index: 3,
             }
         )
+        .unwrap()
         .all,
         BTreeSet::from([None])
     );
@@ -1923,6 +1926,7 @@ fn try_end_after_nonlocal_pop_does_not_recreate_region_custody() {
                 op_index: 3,
             }
         )
+        .unwrap()
         .all,
         BTreeSet::from([None])
     );
@@ -2138,6 +2142,421 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         assert_eq!(
             facts.lexical_handler_before(ExceptionOpPosition { block, op_index }),
             Ok(expected)
+        );
+    }
+}
+
+#[test]
+fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
+    // Case presence is not a save witness: cover no save, a self-supported
+    // repoll island, and two islands which only save one another's state.
+    for island_count in 0..=2 {
+        let mut func = TirFunction::new("unwitnessed_resume".into(), vec![], TirType::None);
+        let handler = func.fresh_block();
+        let observer = func.fresh_block();
+        let dispatch = func.fresh_block();
+        let live_pop = func.fresh_block();
+        let orphan = func.fresh_block();
+        let sibling = func.fresh_block();
+        let exc = func.fresh_value();
+        let awaitable = func.fresh_value();
+        let slot = func.fresh_value();
+        func.label_id_map.insert(handler.0, 94);
+        func.blocks.get_mut(&func.entry_block).unwrap().ops =
+            vec![try_start(94), check_exception(94), try_end(94)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: observer,
+            args: vec![],
+        };
+        for (id, ops, terminator) in [
+            (
+                handler,
+                vec![try_end(94)],
+                Terminator::Branch {
+                    target: observer,
+                    args: vec![],
+                },
+            ),
+            (
+                observer,
+                vec![original("exception_last_pending", vec![exc])],
+                Terminator::Branch {
+                    target: dispatch,
+                    args: vec![],
+                },
+            ),
+            (
+                dispatch,
+                vec![],
+                Terminator::StateDispatch {
+                    cases: vec![(7, orphan, vec![]), (8, sibling, vec![])],
+                    default: live_pop,
+                    default_args: vec![],
+                },
+            ),
+            (
+                live_pop,
+                vec![original("exception_pop", vec![])],
+                Terminator::Return { values: vec![] },
+            ),
+        ] {
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops,
+                    terminator,
+                },
+            );
+        }
+        for (index, id) in [orphan, sibling].into_iter().enumerate() {
+            let mut ops = Vec::new();
+            if index < island_count {
+                let pending = func.fresh_value();
+                let saved_state = if island_count == 1 || index == 1 {
+                    7
+                } else {
+                    8
+                };
+                ops.push(const_int(pending, saved_state));
+                ops.push(state_transition(awaitable, slot, pending));
+            }
+            ops.push(original("exception_pop", vec![]));
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops,
+                    terminator: Terminator::Branch {
+                        target: observer,
+                        args: vec![],
+                    },
+                },
+            );
+        }
+        let labels = dominators::exception_label_to_block(&func)
+            .into_iter()
+            .collect();
+        let (stacks, _, anonymous) = exception_region_path_authority(&func, &labels).unwrap();
+        assert!(
+            stacks.is_empty(),
+            "orphan saves cannot bootstrap their own reachability"
+        );
+        let producer = ExceptionOpPosition {
+            block: observer,
+            op_index: 0,
+        };
+        let producer_states: Vec<_> =
+            path_states_before(&func, &labels, &stacks, &anonymous, producer)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            producer_states.len(),
+            2,
+            "only handler and normal closure are live"
+        );
+        assert!(
+            producer_states
+                .iter()
+                .all(ExceptionPathState::has_observer_custody)
+        );
+        let release = ExceptionOpPosition {
+            block: live_pop,
+            op_index: 0,
+        };
+        assert_eq!(
+            reachable_region_pops(
+                &func,
+                &labels,
+                &stacks,
+                &anonymous,
+                producer,
+                ExceptionRegionToken::Labeled(94),
+                &producer_states
+            )
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+            vec![release],
+            "release search must not enter an unwitnessed case from a live producer"
+        );
+        let facts = compute_exception_region_facts(&func);
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(facts.match_refs[&exc].releases, vec![release]);
+        for block in [orphan, sibling] {
+            let position = ExceptionOpPosition { block, op_index: 0 };
+            assert!(path_states_before(&func, &labels, &stacks, &anonymous, position).is_empty());
+            assert_eq!(
+                facts.lexical_handler_before(position),
+                Ok(ExceptionBoundaryHandler::Unreachable)
+            );
+            let pop = ExceptionOpPosition {
+                block,
+                op_index: func.blocks[&block].ops.len() - 1,
+            };
+            assert_eq!(
+                exception_pop_owner_states(&func, pop).unwrap(),
+                ExceptionPopOwnerStates::default()
+            );
+        }
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+}
+
+#[test]
+fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
+    for owned in [false, true] {
+        let mut func = TirFunction::new("chained_resume".into(), vec![], TirType::None);
+        let initial = func.fresh_block();
+        let first = func.fresh_block();
+        let second = func.fresh_block();
+        let awaitable = func.fresh_value();
+        let slot = func.fresh_value();
+        let pending = func.fresh_value();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(7, first, vec![]), (8, second, vec![])],
+            default: initial,
+            default_args: vec![],
+        };
+        let mut initial_ops = Vec::new();
+        if owned {
+            initial_ops.push(try_start(94));
+        }
+        initial_ops.push(state_yield(7));
+        for (id, ops) in [
+            (initial, initial_ops),
+            (
+                first,
+                vec![
+                    const_int(pending, 8),
+                    state_transition(awaitable, slot, pending),
+                ],
+            ),
+            (second, vec![original("exception_pop", vec![])]),
+        ] {
+            func.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![],
+                    ops,
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+        }
+        let labels = dominators::exception_label_to_block(&func)
+            .into_iter()
+            .collect();
+        let (stacks, _, _) = exception_region_path_authority(&func, &labels).unwrap();
+        assert_eq!(stacks.keys().copied().collect::<Vec<_>>(), vec![7, 8]);
+        assert_eq!(stacks[&7], stacks[&8]);
+        let facts = compute_exception_region_facts(&func);
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        for block in [first, second] {
+            assert_eq!(
+                facts.lexical_handler_before(ExceptionOpPosition { block, op_index: 0 }),
+                Ok(if owned {
+                    ExceptionBoundaryHandler::Labeled(94)
+                } else {
+                    ExceptionBoundaryHandler::DepthZero
+                })
+            );
+        }
+        assert_eq!(
+            exception_pop_owner_states(
+                &func,
+                ExceptionOpPosition {
+                    block: second,
+                    op_index: 0
+                }
+            )
+            .unwrap()
+            .all,
+            BTreeSet::from([owned.then_some(ExceptionRegionToken::Labeled(94))])
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+}
+
+#[test]
+fn reachable_unresolved_saves_fail_closed_for_every_generated_suspend_kind() {
+    use crate::tir::op_kinds_generated::{
+        ALL_OPCODES, opcode_canonical_kind_table, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
+    };
+
+    for &opcode in ALL_OPCODES {
+        if !simpleir_kind_is_suspend(opcode_canonical_kind_table(opcode)) {
+            continue;
+        }
+        for reachable in [false, true] {
+            let mut func = TirFunction::new("unresolved_resume".into(), vec![], TirType::None);
+            let initial = func.fresh_block();
+            let resume = func.fresh_block();
+            func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+                Terminator::StateDispatch {
+                    cases: vec![(7, resume, vec![])],
+                    default: initial,
+                    default_args: vec![],
+                };
+            func.blocks.insert(
+                initial,
+                TirBlock {
+                    id: initial,
+                    args: vec![],
+                    ops: if reachable {
+                        vec![state_yield(7)]
+                    } else {
+                        vec![]
+                    },
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            // No saved attribute for pure yield; a nonconstant pending operand
+            // for repoll. A ready-state attribute must not hide the latter.
+            let mut unresolved = op(opcode);
+            if simpleir_kind_is_repoll(opcode_canonical_kind_table(opcode)) {
+                let unknown = func.fresh_value();
+                unresolved.operands = vec![unknown, unknown, unknown];
+                unresolved.attrs.insert("value".into(), AttrValue::Int(7));
+            }
+            func.blocks.insert(
+                resume,
+                TirBlock {
+                    id: resume,
+                    args: vec![],
+                    ops: vec![unresolved, original("exception_pop", vec![])],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let position = ExceptionOpPosition {
+                block: resume,
+                op_index: 0,
+            };
+            let facts = compute_exception_region_facts(&func);
+            if reachable {
+                let diagnostics = verify_exception_regions(&func).unwrap_err();
+                assert_eq!(diagnostics.len(), 1, "{opcode:?}");
+                assert_eq!(
+                    diagnostics[0].kind,
+                    ExceptionRegionDiagnosticKind::UnresolvedResumeState
+                );
+                assert_eq!(diagnostics[0].position, position);
+                assert_eq!(diagnostics[0].value, None);
+                assert_eq!(facts.diagnostics, diagnostics);
+                assert!(facts.match_refs.is_empty() && facts.release_to_match_facts.is_empty());
+                assert_eq!(
+                    exception_pop_owner_states(&func, position),
+                    Err(diagnostics.clone())
+                );
+                assert_eq!(
+                    facts.lexical_handler_before(position),
+                    Err(ExceptionBoundaryHandlerError::UnresolvedResumeState {
+                        diagnostic: diagnostics[0].clone()
+                    })
+                );
+                assert!(
+                    matches!(
+                        facts.lexical_handler_before(ExceptionOpPosition {
+                            block: initial,
+                            op_index: 0,
+                        }),
+                        Err(ExceptionBoundaryHandlerError::UnresolvedResumeState { .. })
+                    ),
+                    "incomplete analysis must not publish plausible partial custody"
+                );
+            } else {
+                assert!(verify_exception_regions(&func).is_ok());
+                assert_eq!(
+                    facts.lexical_handler_before(position),
+                    Ok(ExceptionBoundaryHandler::Unreachable)
+                );
+                assert_eq!(
+                    exception_pop_owner_states(&func, position).unwrap(),
+                    ExceptionPopOwnerStates::default()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimization() {
+    // Source-faithful projection of the retained failed-exit-poll finally:
+    // return pops region94 and jumps out, followed by dead normal cleanup whose
+    // only pending113 save is inside its own island. The live observer joins
+    // normal closure and handler custody, never a fabricated depth-zero resume.
+    let ir: crate::ir::FunctionIR = serde_json::from_value(serde_json::json!({
+        "name": "dead_return_cleanup_repoll",
+        "params": ["self", "return_now", "awaitable"],
+        "param_types": ["i64", "bool", "Any"],
+        "ops": [
+            {"kind": "state_switch"},
+            {"kind": "exception_push"},
+            {"kind": "try_start", "value": 94},
+            {"kind": "br_if", "args": ["return_now"], "value": 92},
+            {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
+            {"kind": "check_exception", "value": 94},
+            {"kind": "try_end", "value": 94},
+            {"kind": "jump", "value": 95},
+            {"kind": "label", "value": 92},
+            {"kind": "exception_pop"},
+            {"kind": "jump", "value": 93},
+            {"kind": "state_label", "value": 113},
+            {"kind": "const", "value": 113, "out": "pending"},
+            {"kind": "const", "value": 152, "out": "slot"},
+            {"kind": "state_transition", "value": 114,
+             "args": ["awaitable", "slot", "pending"], "out": "ready"},
+            {"kind": "check_exception", "value": 94},
+            {"kind": "try_end", "value": 94},
+            {"kind": "jump", "value": 95},
+            {"kind": "label", "value": 94},
+            {"kind": "try_end", "value": 94},
+            {"kind": "label", "value": 95},
+            {"kind": "exception_last_pending", "out": "observed"},
+            {"kind": "call", "s_value": "consume", "args": ["observed"], "out": "consumed"},
+            {"kind": "exception_pop"},
+            {"kind": "ret_void"},
+            {"kind": "label", "value": 93},
+            {"kind": "ret_void"}
+        ]
+    }))
+    .unwrap();
+    for target in [
+        crate::tir::target_info::TargetInfo::native_release_fast(),
+        crate::tir::target_info::TargetInfo::wasm_release_fast(),
+        crate::tir::target_info::TargetInfo::llvm_release_fast(),
+    ] {
+        let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
+        crate::tir::type_refine::refine_types(&mut func);
+        crate::tir::passes::run_pipeline(&mut func, &target);
+        let facts = compute_exception_region_facts(&func);
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        let labels = dominators::exception_label_to_block(&func)
+            .into_iter()
+            .collect();
+        let (stacks, _, _) = exception_region_path_authority(&func, &labels).unwrap();
+        assert!(
+            !stacks.contains_key(&113),
+            "dead repoll must not save its own reachability"
+        );
+        let mut observer_count = 0;
+        for (position, op) in iter_ops(&func) {
+            if original_kind(op) == Some("exception_last_pending") {
+                observer_count += 1;
+                assert!(!facts.match_refs[&op.results[0]].releases.is_empty());
+            }
+            if op.opcode == OpCode::StateTransition {
+                assert_eq!(
+                    facts.lexical_handler_before(position),
+                    Ok(ExceptionBoundaryHandler::Unreachable)
+                );
+            }
+        }
+        assert_eq!(
+            observer_count, 1,
+            "the actual exception observer must survive optimization"
         );
     }
 }

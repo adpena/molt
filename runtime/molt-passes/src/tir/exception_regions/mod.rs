@@ -68,6 +68,7 @@ pub struct ExceptionMatchRefFact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExceptionRegionDiagnosticKind {
+    UnresolvedResumeState,
     AmbiguousProducerDepth,
     MatchWithoutReachablePop,
 }
@@ -75,7 +76,9 @@ pub enum ExceptionRegionDiagnosticKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExceptionRegionDiagnostic {
     pub kind: ExceptionRegionDiagnosticKind,
-    pub value: ValueId,
+    /// Match-reference diagnostics name their value; malformed suspension
+    /// sites need not produce a value and are identified by position instead.
+    pub value: Option<ValueId>,
     pub position: ExceptionOpPosition,
     pub message: String,
 }
@@ -94,10 +97,13 @@ pub enum ExceptionBoundaryHandler {
     },
 }
 
-/// Reachable boundaries whose lexical custody or recovered destination is not
-/// singular remain explicit fail-closed errors.
+/// Incomplete resume analysis and reachable boundaries whose lexical custody
+/// or recovered destination is not singular remain explicit fail-closed errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExceptionBoundaryHandlerError {
+    UnresolvedResumeState {
+        diagnostic: ExceptionRegionDiagnostic,
+    },
     AnonymousDestination {
         position: ExceptionOpPosition,
         owner: ExceptionOpPosition,
@@ -133,6 +139,13 @@ impl ExceptionRegionFacts {
         &self,
         position: ExceptionOpPosition,
     ) -> Result<ExceptionBoundaryHandler, ExceptionBoundaryHandlerError> {
+        if let Some(diagnostic) = self.diagnostics.iter().find(|diagnostic| {
+            diagnostic.kind == ExceptionRegionDiagnosticKind::UnresolvedResumeState
+        }) {
+            return Err(ExceptionBoundaryHandlerError::UnresolvedResumeState {
+                diagnostic: diagnostic.clone(),
+            });
+        }
         let Some(states) = self.lexical_handlers_before.get(&position) else {
             return Ok(ExceptionBoundaryHandler::Unreachable);
         };
@@ -205,15 +218,18 @@ fn observe_anonymous_handler_destinations(
 fn exception_region_path_authority(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
-) -> (
-    StateResumeStacks,
-    BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
-    AnonymousHandlerDestinations,
-) {
+) -> Result<
+    (
+        StateResumeStacks,
+        BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>>,
+        AnonymousHandlerDestinations,
+    ),
+    Vec<ExceptionRegionDiagnostic>,
+> {
     let mut anonymous_destinations = AnonymousHandlerDestinations::new();
     loop {
         let state_resume_stacks =
-            compute_state_resume_stacks(func, label_to_block, &anonymous_destinations);
+            compute_state_resume_stacks(func, label_to_block, &anonymous_destinations)?;
         let handlers = lexical_handlers_before(
             func,
             label_to_block,
@@ -229,7 +245,7 @@ fn exception_region_path_authority(
             }
         }
         if !changed {
-            return (state_resume_stacks, handlers, anonymous_destinations);
+            return Ok((state_resume_stacks, handlers, anonymous_destinations));
         }
     }
 }
@@ -258,7 +274,15 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         .into_iter()
         .collect();
     let (state_resume_stacks, lexical_handlers_before, anonymous_handler_destinations) =
-        exception_region_path_authority(func, &label_to_block);
+        match exception_region_path_authority(func, &label_to_block) {
+            Ok(authority) => authority,
+            Err(diagnostics) => {
+                return ExceptionRegionFacts {
+                    diagnostics,
+                    ..ExceptionRegionFacts::default()
+                };
+            }
+        };
     let mut facts = ExceptionRegionFacts {
         anonymous_handler_destinations: anonymous_handler_destinations.clone(),
         lexical_handlers_before,
@@ -311,7 +335,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
             }
             facts.diagnostics.push(ExceptionRegionDiagnostic {
                 kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
-                value,
+                value: Some(value),
                 position: producer,
                 message: format!(
                     "exception match ref v{} from {source_kind} is reachable with ambiguous exception-region owners: {:?}",
@@ -357,7 +381,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         if unmapped_non_finally_state_reachable && source_kind != "exception_last" {
             facts.diagnostics.push(ExceptionRegionDiagnostic {
                 kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
-                value,
+                value: Some(value),
                 position: producer,
                 message: format!(
                     "exception match ref v{} from {source_kind} is reachable with ambiguous exception-region owners: {:?}",
@@ -396,7 +420,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 }
                 facts.diagnostics.push(ExceptionRegionDiagnostic {
                     kind: ExceptionRegionDiagnosticKind::MatchWithoutReachablePop,
-                    value,
+                    value: Some(value),
                     position: producer,
                     message: format!(
                         "exception match ref v{} from {source_kind} owned by {:?} has no reachable exception_pop",
