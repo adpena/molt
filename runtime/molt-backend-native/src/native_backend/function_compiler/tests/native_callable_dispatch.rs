@@ -2078,6 +2078,17 @@ pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exc
 #[no_mangle]
 pub extern "C" fn molt_exception_pop() -> u64 { BOXED_NONE }
 #[no_mangle]
+pub extern "C" fn molt_is(lhs: u64, rhs: u64) -> u64 {
+    for value in [lhs, rhs] {
+        if let Some(index) = owner_index(value) {
+            assert_ne!(unsafe { REFS[index] }, 0, "identity read after final release");
+        }
+    }
+    // Runtime identity compares object bits, not equal integer payloads. It
+    // borrows both operands and returns an immediate Boolean without credits.
+    if lhs == rhs { BOXED_TRUE } else { BOXED_FALSE }
+}
+#[no_mangle]
 pub extern "C" fn molt_is_truthy(value: u64) -> u64 {
     u64::from(value != BOXED_FALSE)
 }
