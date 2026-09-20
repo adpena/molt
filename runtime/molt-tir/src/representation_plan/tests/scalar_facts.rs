@@ -141,6 +141,50 @@ fn alias_facts_follow_argument_before_transport_var_metadata() {
 }
 
 #[test]
+fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() {
+    for constant_kind in ["const", "const_int", "load_const"] {
+        for checked_kind in ["checked_add", "checked_sub", "checked_mul"] {
+            let mut seed = const_int("seed", 1_i64 << 31);
+            seed.kind = constant_kind.into();
+            let function = function(
+                "checked_result_store_facts",
+                &[],
+                None,
+                vec![
+                    seed,
+                    op(
+                        checked_kind,
+                        Some("overflow"),
+                        Some("value"),
+                        &["seed", "seed"],
+                    ),
+                    op(
+                        "store_var",
+                        Some("snapshot"),
+                        Some("value_slot"),
+                        &["value"],
+                    ),
+                    op("store_var", None, Some("snapshot_slot"), &["snapshot"]),
+                    op("store_var", None, Some("flag_slot"), &["overflow"]),
+                ],
+            );
+            let plan = native_representation_plan(&function);
+            assert_eq!(plan.op_scalar_lane(&function.ops[0]), Some(ScalarKind::Int));
+            assert_eq!(
+                plan.scalar_store_targets(ScalarKind::Int),
+                BTreeSet::from(["value_slot".into(), "snapshot_slot".into()]),
+                "{constant_kind}/{checked_kind}"
+            );
+            assert_eq!(
+                plan.scalar_store_targets(ScalarKind::Bool),
+                BTreeSet::from(["flag_slot".into()]),
+                "{constant_kind}/{checked_kind}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reserved_none_operands_remain_singletons_through_lift_and_roundtrip() {
     for ops in [
         vec![
@@ -635,45 +679,60 @@ fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
 
 #[test]
 fn input_producer_identity_is_separate_from_injective_lowered_names() {
-    let source = function(
-        "shadowed_source_identity",
-        &["value"],
-        None,
-        vec![const_bool("value", true), op("ret", None, None, &["value"])],
-    );
-    let tir = lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
-    let names = SimpleValueNames::for_function(&tir);
-    let produced = tir
-        .blocks
-        .values()
-        .flat_map(|block| &block.ops)
-        .find(|op| op.opcode == OpCode::ConstBool)
-        .unwrap()
-        .results[0];
-    assert_eq!(names.source_value_name(produced), Some("value"));
-    assert_ne!(names.value_name(produced), "value");
-    let source_plan = native_representation_plan(&source);
-    assert!(
-        !source_plan.is_bool_unboxed("value"),
-        "one source spelling cannot select one of two SSA producers"
-    );
-    assert!(
-        !source_plan.is_bool_unboxed(&names.value_name(produced)),
-        "the input plan must not fabricate a fact under a future emitted suffix"
-    );
+    for returned in [false, true] {
+        let source = function(
+            "shadowed_source_identity",
+            &["value"],
+            None,
+            vec![
+                const_bool("value", true),
+                if returned {
+                    op("ret", None, None, &["value"])
+                } else {
+                    op("ret_void", None, None, &[])
+                },
+            ],
+        );
+        let tir = lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+        let names = SimpleValueNames::for_function(&tir);
+        let produced = tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::ConstBool)
+            .unwrap()
+            .results[0];
+        assert_eq!(names.source_value_name(produced), Some("value"));
+        let emitted = names.value_name(produced);
+        assert_ne!(emitted, "value");
+        let source_plan = native_representation_plan(&source);
+        assert!(
+            !source_plan.is_bool_unboxed("value"),
+            "one source spelling cannot select one of two SSA producers"
+        );
+        assert!(
+            !source_plan.is_bool_unboxed(&emitted),
+            "the input plan must not fabricate a fact under a future emitted suffix"
+        );
 
-    let lowered = function(
-        "lowered_unique_identity",
-        &["value"],
-        None,
-        crate::tir::lower_to_simple::lower_to_simple_ir(&tir),
-    );
-    let lowered_plan = native_representation_plan(&lowered);
-    assert!(!lowered_plan.is_bool_unboxed("value"));
-    assert!(
-        lowered_plan.is_bool_unboxed(&names.value_name(produced)),
-        "after emission the new transport is a genuine, independently typed producer"
-    );
+        let lowered = function(
+            "lowered_unique_identity",
+            &["value"],
+            None,
+            crate::tir::lower_to_simple::lower_to_simple_ir(&tir),
+        );
+        let lowered_plan = native_representation_plan(&lowered);
+        assert!(!lowered_plan.is_bool_unboxed("value"));
+        assert!(
+            lowered_plan.name_has_scalar_kind(&emitted, ScalarKind::Bool),
+            "emitted transport must retain its independent semantic identity"
+        );
+        assert_eq!(
+            lowered_plan.is_bool_unboxed(&emitted),
+            !returned,
+            "producer identity does not waive the Boolean escape-storage policy"
+        );
+    }
 }
 
 #[test]
@@ -854,7 +913,9 @@ fn integer_family_preserves_boxed_unbounded_arithmetic_lane() {
 
     assert!(integer_family.contains("wide"));
     assert!(integer_family.contains("masked"));
-    assert!(!int_like.contains("wide"));
+    assert!(int_like.contains("wide"));
+    assert!(!plan.is_raw_int_carrier_name("wide"));
+    assert!(!plan.is_raw_int_carrier_name("masked"));
     assert!(!float_like.contains("wide"));
     assert!(!float_like.contains("masked"));
 }

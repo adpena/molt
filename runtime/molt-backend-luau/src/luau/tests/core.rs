@@ -3243,7 +3243,7 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
 
 #[test]
 fn representation_conversions_preserve_only_declared_results() {
-    for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+    for kind in ["box", "unbox"] {
         for input in ["source_value", "none"] {
             for output in [None, Some("none"), Some("converted")] {
                 let ir = SimpleIR {
@@ -3292,6 +3292,82 @@ fn representation_conversions_preserve_only_declared_results() {
                 assert!(!source.contains("local none ="), "{kind}: {source}");
                 assert!(!source.contains("local _ ="), "{kind}: {source}");
             }
+        }
+    }
+}
+
+#[test]
+fn raw_integer_representation_handlers_preserve_declared_results_before_admission() {
+    for kind in ["box_from_raw_int", "unbox_to_raw_int"] {
+        for input in ["source_value", "none"] {
+            for output in [None, Some("none"), Some("converted")] {
+                let mut backend = LuauBackend::new();
+                backend.emit_op(&OpIR {
+                    kind: kind.to_string(),
+                    args: Some(vec![input.to_string()]),
+                    out: output.map(str::to_string),
+                    ..OpIR::default()
+                });
+                assert!(backend.unsupported_ops.is_empty(), "{kind} {input}");
+                if output == Some("converted") {
+                    let value = if input == "none" {
+                        "nil"
+                    } else {
+                        "source_value"
+                    };
+                    assert!(
+                        backend
+                            .output
+                            .contains(&format!("local converted = {value}")),
+                        "{kind} input={input}: {}",
+                        backend.output
+                    );
+                } else {
+                    assert!(backend.output.is_empty(), "{kind}: {}", backend.output);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn raw_integer_representation_conversions_require_arbitrary_precision_authority() {
+    for kind in ["box_from_raw_int", "unbox_to_raw_int"] {
+        for output in [None, Some("none"), Some("converted")] {
+            let mut backend = LuauBackend::new();
+            let error = backend
+                .compile_checked(&SimpleIR {
+                    functions: vec![FunctionIR {
+                        name: "representation_conversion".to_string(),
+                        ops: vec![
+                            OpIR {
+                                kind: "const_bool".to_string(),
+                                value: Some(1),
+                                out: Some("source_value".to_string()),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: kind.to_string(),
+                                args: Some(vec!["source_value".to_string()]),
+                                out: output.map(str::to_string),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            },
+                        ],
+                        ..FunctionIR::default()
+                    }],
+                    profile: None,
+                })
+                .expect_err("raw integer bridges must not bypass source-target admission");
+            assert!(error.contains(kind), "{kind}: {error}");
+            assert!(
+                error.contains("canonical arbitrary-precision value authority"),
+                "{kind}: {error}"
+            );
+            assert!(backend.output.is_empty());
         }
     }
 }
@@ -4283,7 +4359,7 @@ fn store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
             float("same_source", 11.0),
             store(Some("same"), Some("same"), "same_source"),
             float("binding_source", 13.0),
-            store(None, Some("binding_only"), "binding_source"),
+            store(Some("binding_slot"), Some("binding_only"), "binding_source"),
         ];
         if labelled {
             ops.push(OpIR {

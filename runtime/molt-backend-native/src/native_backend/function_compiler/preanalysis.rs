@@ -263,7 +263,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let mut resume_states = BTreeSet::new();
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
-    let const_int_map = crate::build_const_int_map(&func_ir.ops);
+    let const_int_map = crate::build_const_int_map(func_ir);
     for name in &func_ir.params {
         if name != "none" {
             var_names.insert(name.clone());

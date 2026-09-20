@@ -189,7 +189,7 @@ impl SimpleBackend {
             resume_states,
             function_exception_label_id,
             exception_label_ids,
-            const_int_map: _const_int_map,
+            const_int_map,
             loop_body_init_vars,
             scalar_slot_exclusion_unsafe,
             field_store_modes,
@@ -724,7 +724,11 @@ impl SimpleBackend {
             // The phi at loop headers then picks the correct constant on
             // the first iteration instead of a bogus default.
             let const_int_defs: BTreeMap<String, i64> = if has_loop_or_backedge {
-                fc::const_literals::collect_loop_entry_const_defs(&func_ir, representation_plan)
+                fc::const_literals::collect_loop_entry_const_defs(
+                    &func_ir,
+                    representation_plan,
+                    &const_int_map,
+                )
             } else {
                 BTreeMap::new()
             };
@@ -1279,7 +1283,7 @@ impl SimpleBackend {
                     fc::subscript_get::handle_subscript_get_op(
                         &op,
                         op_idx,
-                        &func_ir.ops,
+                        &const_int_map,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
