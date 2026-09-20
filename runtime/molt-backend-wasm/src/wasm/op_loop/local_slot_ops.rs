@@ -2,6 +2,7 @@ use super::super::WasmFrameLocals;
 use crate::OpIR;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
+use molt_tir::tir::simple_def_use::simple_ir_binding;
 use wasm_encoder::Function;
 use wasm_encoder::Instruction;
 
@@ -18,12 +19,17 @@ pub(super) fn emit_local_slot_op(
             let src_name = args_names
                 .first()
                 .expect("store_var requires one source arg");
-            let dst_name = op
-                .var
-                .as_ref()
-                .or(op.out.as_ref())
-                .expect("store_var requires destination");
-            copy_local(func, locals, src_name, dst_name);
+            let binding = simple_ir_binding(op).expect("store_var requires destination");
+            assert!(
+                !binding.destination.is_empty() && binding.destination != "none",
+                "store_var requires a non-reserved binding destination"
+            );
+            // The snapshot is the incoming value, not a subsequent read of
+            // mutable storage. Both names share the store's existing ownership.
+            if let Some(result) = binding.result {
+                copy_local(func, locals, src_name, result);
+            }
+            copy_local(func, locals, src_name, binding.destination);
             true
         }
         "delete_var" => {
@@ -34,13 +40,13 @@ pub(super) fn emit_local_slot_op(
             let old_name = args_names
                 .get(1)
                 .expect("delete_var requires old-slot operand");
-            let dst_name = op
-                .var
-                .as_ref()
-                .or(op.out.as_ref())
-                .expect("delete_var requires destination");
+            let binding = simple_ir_binding(op).expect("delete_var requires destination");
+            assert!(
+                !binding.destination.is_empty() && binding.destination != "none",
+                "delete_var requires a non-reserved binding destination"
+            );
             let _old_slot = locals[old_name];
-            copy_local(func, locals, missing_name, dst_name);
+            copy_local(func, locals, missing_name, binding.destination);
             true
         }
         "load_var" | "copy_var" | "copy" | "identity_alias" | "binding_alias" => {

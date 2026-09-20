@@ -396,12 +396,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         for fwd in (op_idx + 1)..ops.len() {
                             let f = &ops[fwd];
                             if f.kind == "store_var"
-                                && let (Some(v), Some(a)) = (&f.var, &f.args)
-                                && v.starts_with("_bb")
-                                && v.contains("_arg")
+                                && let (Some(binding), Some(a)) = (simple_ir_binding(f), &f.args)
+                                && binding.destination.starts_with("_bb")
+                                && binding.destination.contains("_arg")
                                 && a.first().map(|s| s.as_str()) == Some(next)
                             {
-                                arg_name = Some(v.clone());
+                                arg_name = Some(binding.destination.to_string());
                                 break;
                             }
                             if f.kind == "loop_end" {
@@ -1457,7 +1457,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 depth -= 1;
                             }
                             "store_var" if depth == 0 => {
-                                if scan_op.var.as_deref() == Some(index_name.as_str())
+                                if simple_ir_binding(scan_op)
+                                    .is_some_and(|binding| binding.destination == index_name)
                                     && let Some(src_name) =
                                         scan_op.args.as_ref().and_then(|args| args.first())
                                     && let Some(next_idx) = var_get_boxed_overflow_safe(

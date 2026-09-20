@@ -294,9 +294,11 @@ impl RustBackend {
             let mut seen = Vec::new();
             for op in &ops {
                 if op.kind == "store_var"
-                    && let Some(name) = op.var.as_deref().or(op.out.as_deref())
+                    && let Some(binding) = molt_tir::tir::simple_def_use::simple_ir_binding(op)
+                    && !binding.destination.is_empty()
+                    && binding.destination != "none"
                 {
-                    let storage = rust_ident(name);
+                    let storage = rust_ident(binding.destination);
                     if !self.current_params.contains(&storage) && !seen.contains(&storage) {
                         seen.push(storage);
                     }

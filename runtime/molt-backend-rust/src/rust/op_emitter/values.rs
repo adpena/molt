@@ -206,9 +206,18 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_store_var(&mut self, op: &OpIR) {
-        if let Some(name) = op.var.as_deref().or(op.out.as_deref()) {
-            let dst = rust_ident(name);
-            self.clear_alias(&dst);
+        let Some(binding) = molt_tir::tir::simple_def_use::simple_ir_binding(op) else {
+            self.emit_unsupported_op(op, "store_var requires a destination");
+            return;
+        };
+        if binding.destination.is_empty() || binding.destination == "none" {
+            self.emit_unsupported_op(
+                op,
+                "store_var requires a non-empty, non-reserved destination",
+            );
+        } else {
+            let dst = rust_ident(binding.destination);
+            let source = op.args.as_deref().and_then(|args| args.first());
             let rhs = op
                 .args
                 .as_deref()
@@ -216,6 +225,27 @@ impl RustBackend {
                 .map(|src| rust_clone(src))
                 .unwrap_or_else(|| "MoltValue::None".to_string());
             self.emit_line(&format!("{dst} = {rhs};"));
+            if let Some(source) = source
+                && is_assignable_var(source)
+            {
+                self.note_alias(dst.clone(), rust_ident(source));
+            }
+            if let Some(result) = binding.result {
+                let result = rust_ident(result);
+                self.emit_line(&declare_molt_value(
+                    &result,
+                    &format!("{dst}.clone()"),
+                    &self.hoisted_vars,
+                ));
+                if let Some(source) = source
+                    && is_assignable_var(source)
+                {
+                    // The snapshot shares the value assigned at this point,
+                    // not the mutable destination binding. A later destination
+                    // rebind must not retarget or sever the snapshot's alias.
+                    self.note_alias(result, rust_ident(source));
+                }
+            }
         }
     }
 

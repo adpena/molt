@@ -184,21 +184,34 @@ impl LuauBackend {
                 }
             }
             "store_var" => {
-                let var = op
-                    .var
-                    .as_deref()
-                    .or(op.out.as_deref())
-                    .map(sanitize_ident)
-                    .unwrap_or_else(|| "_".to_string());
-                if let Some(ref args) = op.args
+                let binding = molt_tir::tir::simple_def_use::simple_ir_binding(op);
+                if binding.is_none_or(|binding| {
+                    binding.destination.is_empty() || binding.destination == "none"
+                }) {
+                    self.emit_unsupported_op_with_reason(
+                        op,
+                        "store_var requires a non-empty, non-reserved destination",
+                    );
+                } else if let Some(binding) = binding
+                    && let Some(ref args) = op.args
                     && let Some(src) = args.first()
                 {
-                    if self.tuple_vars.contains(src)
-                        && let Some(ref var_name) = op.var
-                    {
-                        self.tuple_vars.insert(var_name.clone());
+                    let destination = sanitize_ident(binding.destination);
+                    let source_is_tuple = self.tuple_vars.contains(src);
+                    for name in std::iter::once(binding.destination).chain(binding.result) {
+                        if source_is_tuple {
+                            self.tuple_vars.insert(name.to_string());
+                        } else {
+                            self.tuple_vars.remove(name);
+                        }
                     }
-                    self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
+                    self.emit_line(&format!("{destination} = {}", sanitize_ident(src)));
+                    if let Some(result) = binding.result {
+                        self.emit_line(&format!(
+                            "local {} = {destination}",
+                            sanitize_ident(result)
+                        ));
+                    }
                 }
             }
             "store" => {

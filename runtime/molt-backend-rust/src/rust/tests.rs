@@ -1259,6 +1259,195 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
 }
 
 #[test]
+fn result_carrying_store_var_executes_in_structured_and_labelled_flow() {
+    let float = |name: &str, value: f64| OpIR {
+        kind: "const_float".to_string(),
+        out: Some(name.to_string()),
+        f_value: Some(value),
+        ..OpIR::default()
+    };
+    let store = |destination: Option<&str>, result: Option<&str>, source: &str| OpIR {
+        kind: "store_var".to_string(),
+        var: destination.map(str::to_string),
+        out: result.map(str::to_string),
+        args: Some(vec![source.to_string()]),
+        ..OpIR::default()
+    };
+    let op = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
+        kind: kind.to_string(),
+        args: (!args.is_empty()).then(|| args.iter().map(|arg| (*arg).to_string()).collect()),
+        out: out.map(str::to_string),
+        ..OpIR::default()
+    };
+    let body = |labelled: bool| {
+        let mut ops = vec![
+            float("first", 5.0),
+            store(Some("slot"), Some("snapshot"), "first"),
+            float("same_source", 11.0),
+            store(Some("same"), Some("same"), "same_source"),
+            float("binding_source", 13.0),
+            store(None, Some("binding_only"), "binding_source"),
+        ];
+        if labelled {
+            ops.push(OpIR {
+                kind: "jump".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "label".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            });
+        }
+        ops.extend([
+            float("rebound", 7.0),
+            store(Some("slot"), Some("none"), "rebound"),
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("slot".to_string()),
+                out: Some("current".to_string()),
+                ..OpIR::default()
+            },
+            op("add", &["snapshot", "current"], Some("sum_one")),
+            op("add", &["sum_one", "same"], Some("sum_two")),
+            op("add", &["sum_two", "binding_only"], Some("total")),
+            op("ret", &["total"], None),
+        ]);
+        ops
+    };
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![op("ret_void", &[], None)],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "structured_store_results".to_string(),
+                ops: body(false),
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "labelled_store_results".to_string(),
+                ops: body(true),
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "aliased_store_result".to_string(),
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("old_item".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    op("build_list", &["old_item"], Some("source")),
+                    store(Some("list_slot"), Some("list_snapshot"), "source"),
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("replacement_item".to_string()),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    op("build_list", &["replacement_item"], Some("replacement")),
+                    store(Some("list_slot"), Some("none"), "replacement"),
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("appended".to_string()),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    op("list_append", &["list_snapshot", "appended"], None),
+                    op("len", &["list_snapshot"], Some("snapshot_len")),
+                    op("len", &["source"], Some("source_len")),
+                    op("len", &["list_slot"], Some("slot_len")),
+                    op("add", &["snapshot_len", "source_len"], Some("len_sum")),
+                    op("add", &["len_sum", "slot_len"], Some("total_len")),
+                    op("ret", &["total_len"], None),
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let mut backend = RustBackend::new();
+    let source = backend.compile(&ir);
+    assert!(source.contains("slot = first.clone();"));
+    assert!(source.contains("snapshot") && source.contains("= slot.clone();"));
+    assert!(!source.contains("let mut _: MoltValue"));
+    assert!(
+        backend.unsupported_ops.is_empty(),
+        "{:?}",
+        backend.unsupported_ops
+    );
+
+    let mut source = source.replacen(
+        "fn main() {",
+        "fn main() {\n    check_store_var_results();",
+        1,
+    );
+    source.push_str(
+        r#"
+fn check_store_var_results() {
+    #[track_caller]
+    fn is_float(value: MoltValue, expected: f64) {
+        assert!(
+            matches!(&value, MoltValue::Float(actual) if *actual == expected),
+            "expected Float({expected}), got {value:?}"
+        );
+    }
+    is_float(structured_store_results(&mut vec![]), 36.0);
+    is_float(labelled_store_results(&mut vec![]), 36.0);
+    assert!(matches!(aliased_store_result(&mut vec![]), MoltValue::Int(5)));
+}
+"#,
+    );
+    assert!(
+        compile_and_run_emitted(&source, "store_var_results")
+            .trim()
+            .is_empty()
+    );
+}
+
+#[test]
+fn store_var_rejects_reserved_destinations_without_admitting_store_fast() {
+    for destination in ["", "none"] {
+        let mut backend = RustBackend::new();
+        backend.emit_op(&OpIR {
+            kind: "store_var".to_string(),
+            var: Some(destination.to_string()),
+            args: Some(vec!["source".to_string()]),
+            ..OpIR::default()
+        });
+        assert!(
+            backend
+                .unsupported_ops
+                .iter()
+                .any(|failure| failure.contains("non-empty, non-reserved destination")),
+            "{destination:?}: {:?}",
+            backend.unsupported_ops
+        );
+    }
+
+    let mut backend = RustBackend::new();
+    backend.emit_op(&OpIR {
+        kind: "store_fast".to_string(),
+        out: Some("binding_only".to_string()),
+        args: Some(vec!["source".to_string()]),
+        ..OpIR::default()
+    });
+    assert!(
+        backend
+            .unsupported_ops
+            .iter()
+            .any(|failure| failure.contains("unsupported Rust backend op `store_fast`")),
+        "{:?}",
+        backend.unsupported_ops
+    );
+}
+
+#[test]
 fn jump_after_loop_rejects_an_undefined_target_before_emission() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {

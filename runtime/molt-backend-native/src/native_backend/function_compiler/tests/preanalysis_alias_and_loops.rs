@@ -107,6 +107,39 @@ fn result_carrying_store_preserves_both_binding_and_alias_definition() {
 }
 
 #[test]
+fn native_binding_consumers_share_destination_and_optional_result_roles() {
+    for (var, out, result) in [
+        (Some("_bb4_arg0"), None, None),
+        (None, Some("_bb4_arg0"), None),
+        (Some("_bb4_arg0"), Some("_bb4_arg0"), None),
+        (Some("_bb4_arg0"), Some("none"), None),
+        (Some("_bb4_arg0"), Some("snapshot"), Some("snapshot")),
+    ] {
+        let mut input = super::cleanup_roots::token_test_ir();
+        let store = OpIR {
+            kind: "store_var".into(),
+            var: var.map(str::to_string),
+            out: out.map(str::to_string),
+            args: Some(vec!["owner".into()]),
+            ..OpIR::default()
+        };
+        input.ops.push(store.clone());
+        let analysis = preanalyze_for_test(&input);
+        assert_eq!(
+            analysis.alias_roots.get("_bb4_arg0").map(String::as_str),
+            Some("_bb4_arg0")
+        );
+        assert_eq!(
+            analysis.alias_roots.contains_key("snapshot"),
+            result.is_some()
+        );
+        assert!(!analysis.alias_roots.contains_key("none"));
+        let slots = collect_slot_backed_join_names(&[store], &BTreeSet::new(), false);
+        assert_eq!(slots, BTreeSet::from(["_bb4_arg0".to_string()]));
+    }
+}
+
+#[test]
 fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
     let mut input = super::cleanup_roots::token_test_ir();
     input.ops = vec![

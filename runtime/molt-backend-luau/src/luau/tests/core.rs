@@ -3877,6 +3877,158 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
 }
 
 #[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
+    let float = |name: &str, value: f64| OpIR {
+        kind: "const_float".to_string(),
+        out: Some(name.to_string()),
+        f_value: Some(value),
+        ..OpIR::default()
+    };
+    let store = |destination: Option<&str>, result: Option<&str>, source: &str| OpIR {
+        kind: "store_var".to_string(),
+        var: destination.map(str::to_string),
+        out: result.map(str::to_string),
+        args: Some(vec![source.to_string()]),
+        ..OpIR::default()
+    };
+    let op = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
+        kind: kind.to_string(),
+        args: (!args.is_empty()).then(|| args.iter().map(|arg| (*arg).to_string()).collect()),
+        out: out.map(str::to_string),
+        ..OpIR::default()
+    };
+    let body = |labelled: bool| {
+        let mut ops = vec![
+            float("first", 5.0),
+            store(Some("slot"), Some("snapshot"), "first"),
+            float("same_source", 11.0),
+            store(Some("same"), Some("same"), "same_source"),
+            float("binding_source", 13.0),
+            store(None, Some("binding_only"), "binding_source"),
+        ];
+        if labelled {
+            ops.push(OpIR {
+                kind: "jump".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "label".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            });
+        }
+        ops.extend([
+            float("rebound", 7.0),
+            store(Some("slot"), Some("none"), "rebound"),
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("slot".to_string()),
+                out: Some("current".to_string()),
+                ..OpIR::default()
+            },
+            op("add", &["snapshot", "current"], Some("sum_one")),
+            op("add", &["sum_one", "same"], Some("sum_two")),
+            op("add", &["sum_two", "binding_only"], Some("total")),
+            op("ret", &["total"], None),
+        ]);
+        ops
+    };
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".to_string(),
+                ops: vec![op("ret_void", &[], None)],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "structured_store_results".to_string(),
+                ops: body(false),
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "labelled_store_results".to_string(),
+                ops: body(true),
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "tuple_snapshot_after_rebind".to_string(),
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("text".to_string()),
+                        s_value: Some("alpha".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("prefix".to_string()),
+                        s_value: Some("al".to_string()),
+                        ..OpIR::default()
+                    },
+                    op("tuple_new", &["prefix"], Some("prefixes")),
+                    store(Some("tuple_slot"), Some("tuple_snapshot"), "prefixes"),
+                    store(Some("tuple_slot"), Some("none"), "prefix"),
+                    op(
+                        "string_startswith",
+                        &["text", "tuple_snapshot"],
+                        Some("matched"),
+                    ),
+                    op("ret", &["matched"], None),
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let compiled = LuauBackend::new().compile(&ir);
+    let destination_assignment = compiled.find("slot = ").expect("destination assignment");
+    let snapshot_assignment = compiled
+        .find("snapshot = slot")
+        .expect("ordered result snapshot");
+    assert!(destination_assignment < snapshot_assignment);
+    assert!(!compiled.contains("local none ="));
+    assert!(!compiled.contains("[unsupported op: store_var]"));
+    let source = format!(
+        "{compiled}\nassert(structured_store_results() == 36)\nassert(labelled_store_results() == 36)\nassert(tuple_snapshot_after_rebind() == true)\nprint(\"luau-store-var-results-ok\")\n"
+    );
+    validate_luau_source(&source).expect("result-carrying store_var source must validate");
+    let output = execute_lune_oracle("store_var_results", &source);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-store-var-results-ok"));
+}
+
+#[test]
+fn store_var_rejects_reserved_destinations_without_admitting_store_fast() {
+    for destination in ["", "none"] {
+        let mut backend = LuauBackend::new();
+        backend.emit_op(&OpIR {
+            kind: "store_var".to_string(),
+            var: Some(destination.to_string()),
+            args: Some(vec!["source".to_string()]),
+            ..OpIR::default()
+        });
+        assert!(
+            backend
+                .unsupported_ops
+                .iter()
+                .any(|failure| failure.contains("non-empty, non-reserved destination")),
+            "{destination:?}: {:?}",
+            backend.unsupported_ops
+        );
+    }
+
+    let mut backend = LuauBackend::new();
+    backend.emit_op(&OpIR {
+        kind: "store_fast".to_string(),
+        out: Some("binding_only".to_string()),
+        args: Some(vec!["source".to_string()]),
+        ..OpIR::default()
+    });
+    assert_eq!(backend.unsupported_ops, ["`store_fast` (luau backend)"]);
+}
+
+#[test]
 fn test_compile_checked_lowers_missing_singleton() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {

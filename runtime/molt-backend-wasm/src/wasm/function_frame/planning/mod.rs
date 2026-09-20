@@ -79,7 +79,8 @@ impl WasmFunctionFramePlan {
         };
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
             if let Some(var) = &op.var {
-                let var_is_dead_out = op.kind == "store_var";
+                let var_is_dead_out = molt_tir::tir::simple_def_use::simple_ir_binding(op)
+                    .is_some_and(|binding| binding.destination == var);
                 ensure_frame_local(
                     &mut locals,
                     &mut local_types,

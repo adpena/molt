@@ -39,8 +39,8 @@ impl NativeCleanupRoots {
             // assigned borrowed parameters must not generate cleanup phis.
             for op in &function.ops {
                 crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
-                    let stored_binding = op.kind == "store_var"
-                        && op.var.as_deref().or(op.out.as_deref()) == Some(name);
+                    let stored_binding =
+                        simple_ir_binding(op).is_some_and(|binding| binding.destination == name);
                     if boxed(name)
                         && (stored_binding
                             || preanalyze_alias_source(op).is_none_or(|source| {

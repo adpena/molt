@@ -472,6 +472,83 @@ fn cleanup_result_store_function(name: &str, first_owner: &str, second_owner: &s
     )
 }
 
+fn cleanup_binding_shape_function(
+    name: &str,
+    var: Option<&str>,
+    out: Option<&str>,
+    result_snapshot: bool,
+    labelled: bool,
+) -> FunctionIR {
+    let mut function = cleanup_result_store_function(name, "first_owner", "second_owner");
+    function.ops[2].var = var.map(str::to_string);
+    function.ops[2].out = out.map(str::to_string);
+    function.ops[5].out = Some("none".into());
+    if result_snapshot {
+        function.ops.pop();
+        function.ops.push(ret("first_result"));
+        function.ops.remove(3); // Return the store's actual result, not a later load.
+    }
+    if labelled {
+        let boundary = if result_snapshot { 3 } else { 4 };
+        function.ops.insert(boundary, cleanup_jump(130));
+        function.ops.insert(boundary + 1, cleanup_label(130));
+    }
+    function
+}
+
+#[test]
+#[should_panic(expected = "no codegen for binding op kind `store_fast`")]
+fn native_unhandled_binding_without_out_fails_closed() {
+    let function = cleanup_oracle_function(
+        "unsupported_binding",
+        &["source"],
+        Some(&["dyn"]),
+        vec![
+            OpIR {
+                kind: "store_fast".into(),
+                var: Some("local".into()),
+                args: Some(vec!["source".into()]),
+                ..OpIR::default()
+            },
+            cleanup_ret_void(),
+        ],
+    );
+    compile_selected_functions_direct(vec![function], &["unsupported_binding"]);
+}
+
+#[test]
+fn native_binding_emission_rejects_empty_and_reserved_destinations() {
+    for destination in ["", "none"] {
+        let function = cleanup_oracle_function(
+            "invalid_binding",
+            &["source"],
+            Some(&["dyn"]),
+            vec![
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some(destination.into()),
+                    args: Some(vec!["source".into()]),
+                    ..OpIR::default()
+                },
+                cleanup_ret_void(),
+            ],
+        );
+        let error = std::panic::catch_unwind(|| {
+            compile_selected_functions_direct(vec![function], &["invalid_binding"]);
+        })
+        .expect_err("reserved/empty names are not native storage");
+        let message = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("store_var requires a nonempty, non-reserved binding destination"),
+            "{message}"
+        );
+    }
+}
+
 #[test]
 fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
     const TARGET_NAMES: &[&str] = &[
@@ -495,6 +572,14 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         "cleanup_explicit_credit_rebind",
         "cleanup_parameter_snapshot_rebind",
         "cleanup_mutable_source_result_store_snapshot",
+        "cleanup_binding_result_direct",
+        "cleanup_binding_result_labelled",
+        "cleanup_binding_out_only_direct",
+        "cleanup_binding_out_only_labelled",
+        "cleanup_binding_same_name_direct",
+        "cleanup_binding_same_name_labelled",
+        "cleanup_binding_none_result_direct",
+        "cleanup_binding_none_result_labelled",
     ];
     let Some(rustc) = real_rustc() else {
         return;
@@ -821,6 +906,32 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_result_store_function(TARGET_NAMES[19], "owner", "owner"),
+        cleanup_binding_shape_function(
+            TARGET_NAMES[20],
+            Some("local"),
+            Some("first_result"),
+            true,
+            false,
+        ),
+        cleanup_binding_shape_function(
+            TARGET_NAMES[21],
+            Some("local"),
+            Some("first_result"),
+            true,
+            true,
+        ),
+        cleanup_binding_shape_function(TARGET_NAMES[22], None, Some("local"), false, false),
+        cleanup_binding_shape_function(TARGET_NAMES[23], None, Some("local"), false, true),
+        cleanup_binding_shape_function(
+            TARGET_NAMES[24],
+            Some("local"),
+            Some("local"),
+            false,
+            false,
+        ),
+        cleanup_binding_shape_function(TARGET_NAMES[25], Some("local"), Some("local"), false, true),
+        cleanup_binding_shape_function(TARGET_NAMES[26], Some("local"), Some("none"), false, false),
+        cleanup_binding_shape_function(TARGET_NAMES[27], Some("local"), Some("none"), false, true),
     ];
     assert!(
         functions
@@ -1027,6 +1138,14 @@ pub extern "C" fn molt_add(lhs: u64, rhs: u64) -> u64 {
     fn cleanup_explicit_credit_rebind();
     fn cleanup_parameter_snapshot_rebind(owner: u64) -> u64;
     fn cleanup_mutable_source_result_store_snapshot() -> u64;
+    fn cleanup_binding_result_direct() -> u64;
+    fn cleanup_binding_result_labelled() -> u64;
+    fn cleanup_binding_out_only_direct() -> u64;
+    fn cleanup_binding_out_only_labelled() -> u64;
+    fn cleanup_binding_same_name_direct() -> u64;
+    fn cleanup_binding_same_name_labelled() -> u64;
+    fn cleanup_binding_none_result_direct() -> u64;
+    fn cleanup_binding_none_result_labelled() -> u64;
     fn cleanup_oracle_reset();
     fn cleanup_oracle_allocations() -> u64;
     fn cleanup_oracle_inc_refs() -> u64;
@@ -1196,6 +1315,24 @@ fn main() {
         molt_dec_ref_obj(snapshot);
         assert_counts("mutable source result store caller cleanup", 2, 5, 7, 0);
         reset();
+
+        for (label, run, incs, decs) in [
+            ("binding result direct", cleanup_binding_result_direct as unsafe extern "C" fn() -> u64, 2, 3),
+            ("binding result labelled", cleanup_binding_result_labelled as unsafe extern "C" fn() -> u64, 2, 3),
+            ("binding-only out direct", cleanup_binding_out_only_direct as unsafe extern "C" fn() -> u64, 3, 4),
+            ("binding-only out labelled", cleanup_binding_out_only_labelled as unsafe extern "C" fn() -> u64, 3, 4),
+            ("same binding/result direct", cleanup_binding_same_name_direct as unsafe extern "C" fn() -> u64, 3, 4),
+            ("same binding/result labelled", cleanup_binding_same_name_labelled as unsafe extern "C" fn() -> u64, 3, 4),
+            ("none result direct", cleanup_binding_none_result_direct as unsafe extern "C" fn() -> u64, 3, 4),
+            ("none result labelled", cleanup_binding_none_result_labelled as unsafe extern "C" fn() -> u64, 3, 4),
+        ] {
+            let snapshot = run();
+            assert_eq!(snapshot, cleanup_oracle_owner(0), "{label}: snapshot survives local rebind");
+            assert_counts(label, 2, incs, decs, 1);
+            molt_dec_ref_obj(snapshot);
+            assert_counts(label, 2, incs, decs + 1, 0);
+            reset();
+        }
     }
 }
 "#

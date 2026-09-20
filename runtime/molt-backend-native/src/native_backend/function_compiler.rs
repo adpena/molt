@@ -2,6 +2,7 @@ use super::*;
 use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::runtime_import_abi::{MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ};
+use crate::tir::simple_def_use::simple_ir_binding;
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). Scalar carrier/boxing helpers live in
@@ -254,17 +255,9 @@ impl SimpleBackend {
             first_defined_at.entry(name.clone()).or_insert(0);
         }
         for (idx, op) in func_ir.ops.iter().enumerate() {
-            if let Some(out) = op.out.as_ref()
-                && out != "none"
-            {
-                first_defined_at.entry(out.clone()).or_insert(idx);
-            }
-            if matches!(op.kind.as_str(), "store_var" | "delete_var")
-                && let Some(name) = op.var.as_ref().or(op.out.as_ref())
-                && name != "none"
-            {
-                first_defined_at.entry(name.clone()).or_insert(idx);
-            }
+            crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+                first_defined_at.entry(name.to_string()).or_insert(idx);
+            });
         }
         let trace_ops = should_trace_ops(&func_ir.name);
         let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
@@ -2002,6 +1995,12 @@ impl SimpleBackend {
                 // sentinel) -> the exact silent miscompile fixed in 0323ad28c. Fail
                 // loud here, just as every fc::* handler's own `_ => unreachable!`.
                 _ => {
+                    if let Some(binding) = simple_ir_binding(op) {
+                        panic!(
+                            "native backend: no codegen for binding op kind `{}` (destination={:?}) in function `{}`",
+                            op.kind, binding.destination, func_ir.name,
+                        );
+                    }
                     if op.out.is_some()
                         && !fc::NATIVE_NO_CODEGEN_RESULT_KINDS.contains(&op.kind.as_str())
                     {
@@ -2109,7 +2108,7 @@ impl SimpleBackend {
                 && !(matches!(op.kind.as_str(), "inc_ref" | "borrow")
                     && rc_skip_inc.contains(&op_idx))
                 {
-                    if (op.kind == "store_var"
+                    if (simple_ir_binding(op).is_some()
                         || alias_src_name
                             .as_deref()
                             .is_none_or(|source| !cleanup_roots.shares_owner(source, name)))

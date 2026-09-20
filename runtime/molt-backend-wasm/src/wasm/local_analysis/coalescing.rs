@@ -1,5 +1,6 @@
 use crate::FunctionIR;
 use crate::wasm::control_flow::has_non_linear_control_flow;
+use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn coalesced_locals(
@@ -12,19 +13,17 @@ pub(super) fn coalesced_locals(
     }
 
     let mut first_write: BTreeMap<String, usize> = BTreeMap::new();
-    let mut last_read: BTreeMap<String, usize> = BTreeMap::new();
+    let mut last_access: BTreeMap<String, usize> = BTreeMap::new();
     for (op_idx, op) in func_ir.ops.iter().enumerate() {
-        if let Some(out) = &op.out {
-            first_write.entry(out.clone()).or_insert(op_idx);
-        }
-        if let Some(args) = &op.args {
-            for arg in args {
-                last_read.insert(arg.clone(), op_idx);
-            }
-        }
-        if let Some(var) = &op.var {
-            last_read.insert(var.clone(), op_idx);
-        }
+        visit_simple_ir_defined_names(op, |name| {
+            first_write.entry(name.to_string()).or_insert(op_idx);
+            // A later write still touches the physical slot even when its
+            // value is dead; it cannot overwrite a new occupant after reuse.
+            last_access.insert(name.to_string(), op_idx);
+        });
+        visit_simple_ir_reads(op, |read| {
+            last_access.insert(read.name.to_string(), op_idx);
+        });
     }
 
     let mut ranges: Vec<(usize, usize, String)> = Vec::new();
@@ -32,7 +31,7 @@ pub(super) fn coalesced_locals(
         if !is_coalescable_local(name, read_vars, param_set) {
             continue;
         }
-        let end = last_read.get(name).copied().unwrap_or(*start);
+        let end = last_access.get(name).copied().unwrap_or(*start);
         ranges.push((*start, end, name.clone()));
     }
     ranges.sort_by_key(|range| range.0);

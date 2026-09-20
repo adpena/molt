@@ -19,6 +19,33 @@ pub struct SimpleIrRead<'a> {
     pub field: SimpleIrReadField,
 }
 
+/// A mutable binding and its optional value snapshot. This borrowed field-role
+/// view does not validate names or expand any backend's admitted operation set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimpleIrBinding<'a> {
+    pub destination: &'a str,
+    pub result: Option<&'a str>,
+}
+
+/// Interpret binding fields once for every def/use and backend consumer.
+/// Binding-only `out` is a destination; only a distinct, non-`none`, non-metadata
+/// output beside an explicit `var` is a value snapshot. Delete output metadata
+/// never becomes a snapshot. Reserved destination filtering remains with the
+/// definition visitor and existing admission checks.
+pub fn simple_ir_binding(op: &OpIR) -> Option<SimpleIrBinding<'_>> {
+    if simpleir_var_field_role_table(op.kind.as_str()) != SimpleIrVarFieldRole::Definition {
+        return None;
+    }
+    let destination = op.var.as_deref().or(op.out.as_deref())?;
+    let result = op.out.as_deref().filter(|out| {
+        *out != "none" && *out != destination && !simpleir_out_field_is_metadata(op.kind.as_str())
+    });
+    Some(SimpleIrBinding {
+        destination,
+        result,
+    })
+}
+
 /// Whether `op.var` denotes a source read rather than an assignment target.
 ///
 /// This is the canonical SimpleIR field-role authority used by CFG liveness,
@@ -41,11 +68,13 @@ pub fn visit_simple_ir_result_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a 
     {
         visit(var);
     }
-    if !simpleir_out_field_is_metadata(op.kind.as_str())
+    if let Some(binding) = simple_ir_binding(op) {
+        if let Some(result) = binding.result {
+            visit(result);
+        }
+    } else if !simpleir_out_field_is_metadata(op.kind.as_str())
         && let Some(out) = op.out.as_deref()
         && out != "none"
-        && (simpleir_var_field_role_table(op.kind.as_str()) != SimpleIrVarFieldRole::Definition
-            || op.var.as_deref().is_some_and(|binding| binding != out))
     {
         visit(out);
     }
@@ -142,11 +171,10 @@ fn simple_ir_read_names(op: &OpIR) -> Vec<String> {
 /// Consumers that retain names must copy them into their own long-lived set.
 pub fn visit_simple_ir_defined_names<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
     visit_simple_ir_result_names(op, &mut visit);
-    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Definition
-        && let Some(var) = op.var.as_deref().or(op.out.as_deref())
-        && var != "none"
+    if let Some(binding) = simple_ir_binding(op)
+        && binding.destination != "none"
     {
-        visit(var);
+        visit(binding.destination);
     }
 }
 
@@ -214,6 +242,14 @@ mod tests {
                 assert_eq!(simple_ir_result_names(&store), results, "{store:?}");
                 assert_eq!(simple_ir_defined_names(&store), definitions, "{store:?}");
                 assert_eq!(simple_ir_read_names(&store), vec!["source"], "{store:?}");
+                assert_eq!(
+                    simple_ir_binding(&store),
+                    Some(SimpleIrBinding {
+                        destination: binding.or(output).unwrap(),
+                        result: results.first().copied(),
+                    }),
+                    "{store:?}"
+                );
             }
         }
         let mut delete = op("delete_var");
@@ -221,6 +257,48 @@ mod tests {
         delete.out = Some("diagnostic_metadata".into());
         assert!(simple_ir_result_names(&delete).is_empty());
         assert_eq!(simple_ir_defined_names(&delete), vec!["local"]);
+        assert_eq!(
+            simple_ir_binding(&delete),
+            Some(SimpleIrBinding {
+                destination: "local",
+                result: None
+            })
+        );
+    }
+
+    #[test]
+    fn binding_view_preserves_field_shape_without_becoming_name_admission() {
+        for kind in ["store_var", "store_fast", "delete_var"] {
+            assert_eq!(simple_ir_binding(&op(kind)), None);
+            for destination in ["none", ""] {
+                let binding = OpIR {
+                    var: Some(destination.into()),
+                    out: Some("snapshot".into()),
+                    ..op(kind)
+                };
+                let result = (kind != "delete_var").then_some("snapshot");
+                assert_eq!(
+                    simple_ir_binding(&binding),
+                    Some(SimpleIrBinding {
+                        destination,
+                        result
+                    })
+                );
+                let mut expected = result.into_iter().collect::<Vec<_>>();
+                if destination != "none" {
+                    expected.push(destination);
+                }
+                assert_eq!(simple_ir_defined_names(&binding), expected);
+            }
+        }
+        for kind in ["copy_var", "load_var", "iter_next_unboxed", "unknown"] {
+            let nonbinding = OpIR {
+                var: Some("source".into()),
+                out: Some("result".into()),
+                ..op(kind)
+            };
+            assert_eq!(simple_ir_binding(&nonbinding), None, "{kind}");
+        }
     }
 
     #[test]
