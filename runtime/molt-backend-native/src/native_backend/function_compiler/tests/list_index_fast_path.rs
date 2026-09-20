@@ -1,4 +1,523 @@
+use super::super::fc::list_index_fast_path::{ListIndexFastPathState, ListStorageField};
+use super::super::scalar_carriers::ConditionalListBoolShadow;
 use super::*;
+
+fn with_list_storage_state(
+    check: impl FnOnce(
+        &mut FunctionBuilder<'_>,
+        &mut ListIndexFastPathState,
+        &NativeCleanupRoots,
+        cranelift_codegen::ir::FuncRef,
+    ),
+) {
+    let input = super::cleanup_roots::token_test_ir();
+    let analysis = preanalyze_for_test(&input);
+    let mut backend = SimpleBackend::new();
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params
+        .extend([AbiParam::new(types::I8), AbiParam::new(types::I64)]);
+    let mut function = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let mut roots = NativeCleanupRoots::new(
+            &mut builder,
+            &input,
+            &analysis.alias_roots,
+            &ScalarRepresentationPlan::default(),
+            NativeRcAuthority::NativeValueTracking,
+        );
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        roots.initialize(&mut builder);
+        let release = import_func_ref(
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut BTreeMap::new(),
+            "molt_dec_ref_obj",
+            &[types::I64],
+            &[],
+        );
+        let mut state = ListIndexFastPathState::new(&roots);
+        check(&mut builder, &mut state, &roots, release);
+        builder.ins().return_(&[]);
+        builder.finalize();
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder()))
+        .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
+}
+
+fn cache_list_storage_field(
+    builder: &mut FunctionBuilder<'_>,
+    state: &mut ListIndexFastPathState,
+    field: ListStorageField,
+    name: &str,
+) -> cranelift_frontend::Variable {
+    let ty = if field == ListStorageField::IsBool {
+        types::I8
+    } else {
+        types::I64
+    };
+    let value = builder.ins().iconst(ty, 1);
+    let variable = builder.declare_var(ty);
+    builder.def_var(variable, value);
+    state.insert(field, name.into(), variable, builder);
+    variable
+}
+
+#[test]
+fn list_storage_observations_do_not_cross_sibling_blocks_or_merges() {
+    with_list_storage_state(|builder, state, _, _| {
+        let fields = [
+            ListStorageField::IntData,
+            ListStorageField::IntLen,
+            ListStorageField::Data,
+            ListStorageField::Len,
+            ListStorageField::IsBool,
+        ];
+        let left = builder.create_block();
+        let right = builder.create_block();
+        let merge = builder.create_block();
+        let condition = builder.block_params(builder.current_block().unwrap())[0];
+        builder.ins().brif(condition, left, &[], right, &[]);
+        builder.switch_to_block(left);
+        builder.seal_block(left);
+        for field in fields {
+            let variable = cache_list_storage_field(builder, state, field, "lst");
+            assert_eq!(state.get(field, "lst", builder), Some(variable));
+        }
+        builder.ins().jump(merge, &[]);
+        builder.switch_to_block(right);
+        builder.seal_block(right);
+        for field in fields {
+            assert!(
+                state.get(field, "lst", builder).is_none(),
+                "sibling definition cannot dominate"
+            );
+            cache_list_storage_field(builder, state, field, "lst");
+        }
+        builder.ins().jump(merge, &[]);
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        for field in fields {
+            assert!(
+                state.get(field, "lst", builder).is_none(),
+                "one predecessor is not a merge fact"
+            );
+        }
+    });
+}
+
+#[test]
+fn list_storage_effect_fence_covers_alias_mutation_zero_arg_calls_and_deletion() {
+    for op in [
+        OpIR {
+            kind: "list_append".into(),
+            args: Some(vec!["alias".into(), "item".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "call".into(),
+            args: Some(vec![]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "del_index".into(),
+            args: Some(vec!["alias".into(), "idx".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "store_index".into(),
+            args: Some(vec!["alias".into(), "idx".into(), "item".into()]),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "check_exception".into(),
+            async_work_poll: true,
+            ..OpIR::default()
+        },
+    ] {
+        with_list_storage_state(|builder, state, _, _| {
+            let plan = ScalarRepresentationPlan::default();
+            let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
+            let alias = OpIR {
+                kind: "binding_alias".into(),
+                args: Some(vec!["lst".into()]),
+                out: Some("alias".into()),
+                ..OpIR::default()
+            };
+            state.begin_op(0, &alias, &plan);
+            assert_eq!(
+                state.get(ListStorageField::Data, "lst", builder),
+                Some(variable)
+            );
+            state.begin_op(1, &op, &plan);
+            assert!(
+                state.get(ListStorageField::Data, "lst", builder).is_none(),
+                "{} fences the whole heap",
+                op.kind
+            );
+        });
+    }
+}
+
+#[test]
+fn list_storage_definition_fence_uses_canonical_binding_roles() {
+    with_list_storage_state(|builder, state, _, _| {
+        let plan = ScalarRepresentationPlan::default();
+        let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
+        let read = OpIR {
+            kind: "copy_var".into(),
+            var: Some("lst".into()),
+            out: Some("alias".into()),
+            ..OpIR::default()
+        };
+        state.begin_op(0, &read, &plan);
+        assert_eq!(
+            state.get(ListStorageField::Data, "lst", builder),
+            Some(variable),
+            "var is a read here"
+        );
+        let rebind = OpIR {
+            kind: "binding_alias".into(),
+            args: Some(vec!["other".into()]),
+            out: Some("lst".into()),
+            ..OpIR::default()
+        };
+        state.begin_op(1, &rebind, &plan);
+        assert!(state.get(ListStorageField::Data, "lst", builder).is_none());
+    });
+}
+
+#[test]
+fn list_storage_certified_loop_scope_is_published_only_by_its_actual_preheader() {
+    with_list_storage_state(|builder, state, roots, _| {
+        let ops = typed_list_hoist_fixture();
+        let plan = representation_plan_for_ops(&ops);
+        let pre = collect_pre_loop_defined_names(&ops, 3);
+        let entry = builder.current_block().unwrap();
+        cache_list_storage_field(builder, state, ListStorageField::IntData, "lst");
+        let (hoisted, _) =
+            super::scan_loop_hoistable_lists(&ops, 3, &pre, &plan, state, entry, Some(roots));
+        assert!(hoisted.contains("lst"), "safe loop hoisting remains active");
+        assert!(
+            state
+                .get(ListStorageField::IntData, "lst", builder)
+                .is_none(),
+            "ordinary cache cannot be promoted"
+        );
+        let data = cache_list_storage_field(builder, state, ListStorageField::IntData, "lst");
+        let body = builder.create_block();
+        builder.ins().jump(body, &[]);
+        builder.switch_to_block(body);
+        builder.seal_block(body);
+        // Still in the header's opcode, but already in an internal lowering
+        // block: a new field must not inherit preheader publication privileges.
+        cache_list_storage_field(builder, state, ListStorageField::IntLen, "lst");
+        let next_body = builder.create_block();
+        builder.ins().jump(next_body, &[]);
+        builder.switch_to_block(next_body);
+        builder.seal_block(next_body);
+        state.begin_op(4, &ops[4], &plan);
+        assert_eq!(
+            state.get(ListStorageField::IntData, "lst", builder),
+            Some(data)
+        );
+        assert!(
+            state
+                .get(ListStorageField::IntLen, "lst", builder)
+                .is_none()
+        );
+        state.begin_op(6, &ops[6], &plan);
+        assert_eq!(
+            state.get(ListStorageField::IntData, "lst", builder),
+            Some(data)
+        );
+        state.begin_op(7, &ops[1], &plan);
+        assert!(
+            state
+                .get(ListStorageField::IntData, "lst", builder)
+                .is_none(),
+            "completed loop cannot serve its sibling"
+        );
+    });
+}
+
+#[test]
+fn list_storage_loop_certification_uses_actual_native_owner_custody() {
+    let input = FunctionIR {
+        name: "generic_loop_ownership".into(),
+        params: vec!["lst".into(), "idx".into()],
+        param_types: Some(vec!["list".into(), "int".into()]),
+        ops: vec![
+            OpIR {
+                kind: "loop_start".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "index".into(),
+                args: Some(vec!["lst".into(), "idx".into()]),
+                out: Some("element".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "loop_end".into(),
+                ..OpIR::default()
+            },
+        ],
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        execution_context: Default::default(),
+    };
+    let plan = native_representation_plan_for_test(&input);
+    let analysis = preanalyze_for_test(&input);
+    let pre = input.params.iter().cloned().collect();
+    assert!(
+        scan_loop_hoistable_lists(&input.ops, 0, &pre, &plan)
+            .1
+            .is_empty(),
+        "missing cleanup custody cannot certify an unknown heap result"
+    );
+    for authority in [
+        NativeRcAuthority::NativeValueTracking,
+        NativeRcAuthority::TirDropInsertion,
+    ] {
+        let mut function = Function::new();
+        let mut context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let roots = NativeCleanupRoots::new(
+            &mut builder,
+            &input,
+            &analysis.alias_roots,
+            &plan,
+            authority,
+        );
+        let mut state = ListIndexFastPathState::new(&roots);
+        let preheader = builder.create_block();
+        let (_, generic) = super::scan_loop_hoistable_lists(
+            &input.ops,
+            0,
+            &pre,
+            &plan,
+            &mut state,
+            preheader,
+            Some(&roots),
+        );
+        assert_eq!(
+            generic.contains("lst"),
+            !roots.contains("element"),
+            "native replacement can finalize a prior element; TIR releases remain explicit effects"
+        );
+    }
+}
+
+#[test]
+fn list_storage_consumption_observes_same_op_owner_release_and_replacement() {
+    for action in ["release", "replace", "release_all"] {
+        with_list_storage_state(|builder, state, roots, release| {
+            let owner = builder.block_params(builder.current_block().unwrap())[1];
+            let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
+            roots.acquire(builder, release, "owner", owner);
+            assert_eq!(
+                state.get(ListStorageField::Data, "lst", builder),
+                Some(variable),
+                "first acquisition releases no owner"
+            );
+            match action {
+                "release" => roots.release(builder, release, "alias"),
+                "replace" => roots.acquire(builder, release, "owner", owner),
+                "release_all" => roots.release_all(builder, release),
+                _ => unreachable!(),
+            }
+            assert!(
+                state.get(ListStorageField::Data, "lst", builder).is_none(),
+                "{action} must fence before the next op begins"
+            );
+            roots.release_all(builder, release);
+            let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
+            roots.release_all(builder, release);
+            assert_eq!(
+                state.get(ListStorageField::Data, "lst", builder),
+                Some(variable),
+                "empty tokens emit no finalizer call"
+            );
+        });
+    }
+}
+
+#[test]
+fn list_bool_shadow_snapshots_layout_but_remains_block_local() {
+    with_list_storage_state(|builder, state, _, _| {
+        let is_bool = builder.ins().iconst(types::I8, 1);
+        let payload = builder.ins().iconst(types::I64, 0);
+        state.insert_bool_shadow(
+            "item".into(),
+            ConditionalListBoolShadow { is_bool, payload },
+            builder,
+        );
+        cache_list_storage_field(builder, state, ListStorageField::IsBool, "lst");
+        state.begin_op(
+            1,
+            &OpIR {
+                kind: "list_append".into(),
+                args: Some(vec!["lst".into(), "other".into()]),
+                ..OpIR::default()
+            },
+            &ScalarRepresentationPlan::default(),
+        );
+        assert!(
+            state
+                .get(ListStorageField::IsBool, "lst", builder)
+                .is_none()
+        );
+        let shadow = state
+            .bool_shadow("item", builder)
+            .expect("the old element retains its own layout snapshot");
+        assert_eq!(shadow.is_bool, is_bool);
+        assert_eq!(shadow.payload, payload);
+        let next = builder.create_block();
+        builder.ins().jump(next, &[]);
+        builder.switch_to_block(next);
+        builder.seal_block(next);
+        assert!(
+            state.bool_shadow("item", builder).is_none(),
+            "shadow Values cannot escape their defining block"
+        );
+    });
+}
+
+#[test]
+fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
+    use crate::native_backend::simple_backend::tests::{
+        compile_selected_functions_direct, emit_direct_object,
+    };
+    let mut functions = Vec::new();
+    for (name, indexed, generic) in [
+        ("list_cache_sibling_plain", false, false),
+        ("list_cache_sibling_indexed", true, false),
+        ("list_cache_sibling_generic", false, true),
+    ] {
+        let mut ops = vec![
+            OpIR {
+                kind: "const".into(),
+                value: Some(0),
+                out: Some("zero".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".into(),
+                value: Some(1),
+                out: Some("one".into()),
+                ..OpIR::default()
+            },
+        ];
+        if !generic {
+            ops.push(OpIR {
+                kind: "list_int_new".into(),
+                args: Some(vec!["one".into(), "zero".into()]),
+                out: Some("lst".into()),
+                ..OpIR::default()
+            });
+        }
+        ops.push(OpIR {
+            kind: "if".into(),
+            args: Some(vec!["condition".into()]),
+            ..OpIR::default()
+        });
+        for branch in ["left", "right"] {
+            if branch == "right" {
+                ops.push(OpIR {
+                    kind: "else".into(),
+                    ..OpIR::default()
+                });
+            }
+            ops.push(OpIR {
+                kind: "loop_start".into(),
+                ..OpIR::default()
+            });
+            let index = if indexed {
+                let index = format!("{branch}_idx");
+                ops.push(OpIR {
+                    kind: "loop_index_start".into(),
+                    args: Some(vec!["zero".into()]),
+                    out: Some(index.clone()),
+                    ..OpIR::default()
+                });
+                index
+            } else {
+                "zero".into()
+            };
+            ops.push(OpIR {
+                kind: "index".into(),
+                args: Some(vec!["lst".into(), index]),
+                out: Some(format!("{branch}_element")),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "loop_break".into(),
+                ..OpIR::default()
+            });
+            ops.push(OpIR {
+                kind: "loop_end".into(),
+                ..OpIR::default()
+            });
+        }
+        ops.push(OpIR {
+            kind: "end_if".into(),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "ret".into(),
+            args: Some(vec!["zero".into()]),
+            ..OpIR::default()
+        });
+        functions.push(FunctionIR {
+            name: name.into(),
+            params: if generic {
+                vec!["condition".into(), "lst".into()]
+            } else {
+                vec!["condition".into()]
+            },
+            param_types: Some(if generic {
+                vec!["bool".into(), "list".into()]
+            } else {
+                vec!["bool".into()]
+            }),
+            ops,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+        });
+    }
+    let names = [
+        "list_cache_sibling_plain",
+        "list_cache_sibling_indexed",
+        "list_cache_sibling_generic",
+    ];
+    let backend = compile_selected_functions_direct(functions, &names);
+    for name in names {
+        let function = &backend
+            .deferred_defines
+            .iter()
+            .find(|deferred| deferred.name == name)
+            .expect("compiled sibling-loop function")
+            .func;
+        verify_function(function, &settings::Flags::new(settings::builder()))
+            .unwrap_or_else(|errors| panic!("{name}: {errors}\n{}", function.display()));
+    }
+    let symbols = native_object_symbols(&emit_direct_object(backend));
+    for name in names {
+        assert!(
+            symbols.defined.contains(name),
+            "the real loop callers must emit {name}"
+        );
+    }
+}
 
 fn scan_loop_hoistable_lists(
     ops: &[OpIR],
@@ -6,12 +525,18 @@ fn scan_loop_hoistable_lists(
     pre_loop_defined: &BTreeSet<String>,
     plan: &ScalarRepresentationPlan,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut function = Function::new();
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let preheader = builder.create_block();
     super::scan_loop_hoistable_lists(
         ops,
         start_idx,
         pre_loop_defined,
         plan,
         &mut Default::default(),
+        preheader,
+        None,
     )
 }
 

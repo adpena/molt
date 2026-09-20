@@ -1,5 +1,5 @@
 use super::super::*;
-use super::list_index_fast_path::{ListIndexFastPathState, store_index_fallback_import_name};
+use super::list_index_fast_path::store_index_fallback_import_name;
 use super::var_get_boxed_overflow_safe_fn;
 
 #[cfg(feature = "native-backend")]
@@ -19,7 +19,6 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    list_index_fast_paths: &mut ListIndexFastPathState,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -47,7 +46,6 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
         )
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    list_index_fast_paths.invalidate_for_store_index(&args[0]);
     let obj = var_get_boxed_overflow_safe(
         &mut *module,
         &mut *import_ids,

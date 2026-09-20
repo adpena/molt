@@ -124,11 +124,23 @@ mutable bindings and repeated definitions retain their load points. Object
 identity alone does not authorize erasing guards or owned-reference operations.
 
 Native list-buffer caching consumes the same typed operation effects and
-executable CFG dominance facts. Nested loop effects count; indexed preludes do
-not create a second loop. Unknown or arbitrary-heap effects fence all cached
-buffers, even for calls without list arguments, and rebinding a list invalidates
-its cached identity. A lexical definition before a loop is not evidence that it
-dominates a resumable entry. There is no backend mutation-name whitelist or
+executable CFG dominance facts. Ordinary and indexed loops share one preheader
+producer for scope publication and storage/layout loads. Nested loop effects
+count; indexed preludes do not create a second loop. Unknown or arbitrary-heap
+effects fence all cached buffers, even for calls without list arguments, and
+rebinding a list invalidates
+its cached identity. Ordinary observations are local to their defining native
+block; cross-block reuse requires an explicitly certified loop lifetime and
+expires at its boundary. Map membership alone proves neither initialization
+on a sibling path nor validity after an intervening mutation. A lexical
+definition before a loop is not evidence that it dominates a resumable entry.
+Implicit owner releases can invoke finalizers: cache consumers check cleanup
+emission custody, including releases within an operation, and loop certification
+accounts for backedge cleanup. Conditional Boolean shadows snapshot the loaded
+value and its storage tag in their defining block, rather than consulting a
+subsequently mutable list layout. Fast and fallback indexing must transport the
+same shadow representation, including negative indices into Boolean lists:
+boxed `False` is not a raw truth bit. There is no backend mutation-name whitelist or
 separate alias graph supplying a weaker safety rule.
 
 Loop-invariant motion is owned by the shared TIR LICM pass, after control-flow

@@ -24,13 +24,8 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
     /// Only the first definition of each name is stored (SSA correctness).
     pub(in crate::native_backend::function_compiler) const_int_map: BTreeMap<String, i64>,
-    /// Variables assigned (op.out) inside each loop body, keyed by the
-    /// loop_start / loop_index_start op index.  Used to emit per-iteration
-    /// dec_ref at the loop back-edge so reassigned containers are freed
-    /// instead of leaking.
-    pub(in crate::native_backend::function_compiler) loop_body_out_vars:
-        BTreeMap<usize, Vec<String>>,
-    /// Subset of loop_body_out_vars that lack any reaching pre-loop store.
+    /// Persistent loop-body bindings that lack any reaching pre-loop store,
+    /// keyed by the loop_start / loop_index_start operation index.
     /// These need an explicit None sentinel before the first iteration so
     /// the native backend has a valid old-value slot for loop-carried cleanup.
     pub(in crate::native_backend::function_compiler) loop_body_init_vars:
@@ -401,7 +396,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // ops sit inside the range; variables they reference are extended.
     // At loop_break, drain_cleanup_candidates sees last_use > op_idx and
     // keeps variables alive; they propagate to after_block for later cleanup.
-    let mut loop_body_out_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut loop_body_init_vars: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     // Per-iteration heap temporaries of a generator/async `_poll` (see the
     // computation below). Declared in the function scope — assigned exactly once
@@ -732,7 +726,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         // loop-carried state, or check_exception fallthrough can select stale
         // previous-iteration values for transient heap objects.
         for &(start, end) in &loop_ranges {
-            let mut assigned: Vec<String> = Vec::new();
             let mut init_needed: Vec<String> = Vec::new();
             let mut seen: BTreeSet<String> = BTreeSet::new();
             // Identify the loop counter name so we can exclude it —
@@ -767,7 +760,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     && is_persistent_local_slot_name(name)
                     && seen.insert(name.to_string())
                 {
-                    assigned.push(name.to_string());
                     let has_pre_loop_store = func_ir.ops[..start].iter().any(|prior| {
                         simple_ir_binding(prior).is_some_and(|prior| prior.destination == name)
                     });
@@ -775,9 +767,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                         init_needed.push(name.to_string());
                     }
                 }
-            }
-            if !assigned.is_empty() {
-                loop_body_out_vars.insert(start, assigned);
             }
             if !init_needed.is_empty() {
                 loop_body_init_vars.insert(start, init_needed);
@@ -892,7 +881,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         function_exception_label_id,
         exception_label_ids,
         const_int_map,
-        loop_body_out_vars,
         loop_body_init_vars,
         scalar_slot_exclusion_unsafe,
         field_store_modes,
