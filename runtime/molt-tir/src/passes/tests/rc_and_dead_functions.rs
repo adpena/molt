@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn constant_integer_facts_require_one_canonical_producer() {
+    for kind in ["const", "const_int", "load_const"] {
+        let constant = |name: &str| OpIR {
+            kind: kind.into(),
+            out: Some(name.into()),
+            value: Some(7),
+            ..OpIR::default()
+        };
+        let function = FunctionIR {
+            name: "constant_identity".into(),
+            params: vec!["parameter".into()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            execution_context: Default::default(),
+            ops: vec![
+                constant("stable"),
+                constant("parameter"),
+                constant("repeated"),
+                constant("repeated"),
+                constant("repeated"),
+                constant("stored"),
+                make_store_var("stored", "stable"),
+                constant("deleted"),
+                OpIR {
+                    kind: "delete_var".into(),
+                    var: Some("deleted".into()),
+                    ..OpIR::default()
+                },
+                constant("checked"),
+                OpIR {
+                    kind: "checked_add".into(),
+                    var: Some("checked".into()),
+                    out: Some("overflow".into()),
+                    args: Some(vec!["stable".into(), "stable".into()]),
+                    ..OpIR::default()
+                },
+                constant("none"),
+                constant(""),
+                OpIR {
+                    kind: "store_index".into(),
+                    out: Some("stable".into()), // Metadata, not a producer.
+                    args: Some(vec!["items".into(), "index".into(), "stable".into()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+        assert_eq!(
+            build_const_int_map(&function),
+            std::collections::BTreeMap::from([("stable".into(), 7)]),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
 fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
     let mut func = FunctionIR {
         name: "test".to_string(),

@@ -14,7 +14,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     op: &OpIR,
     op_idx: usize,
-    func_ops: &[OpIR],
+    const_int_map: &BTreeMap<String, i64>,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -28,7 +28,6 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     local_inc_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
-    let ops = func_ops;
     let var_is_int =
         |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_integer_scalar(name);
     let var_is_bool =
@@ -65,7 +64,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     // Stack-tuple fast path: resolve element at compile time.
     let stack_resolved = scalarized_tuples.get(&args[0]).and_then(|elems| {
-        SimpleBackend::resolve_const_int(ops, op_idx, &args[1]).and_then(|ci| {
+        const_int_map.get(&args[1]).and_then(|&ci| {
             let ui = ci as usize;
             elems.get(ui).copied()
         })

@@ -353,6 +353,14 @@ mod tests {
                 "const literal kind `{kind}` must route to the ConstLiterals handler",
             );
         }
+        for kind in ["const", "const_int", "load_const"] {
+            assert_eq!(
+                crate::tir::op_kinds_generated::kind_to_opcode_table(kind),
+                Some(crate::tir::ops::OpCode::ConstInt),
+            );
+            assert_eq!(native_op_family(kind), Some(NativeOpFamily::ConstLiterals));
+            assert_eq!(super::super::const_literals::literal_kind(kind), "const");
+        }
     }
 
     #[test]

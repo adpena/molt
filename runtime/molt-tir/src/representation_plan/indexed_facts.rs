@@ -1098,14 +1098,7 @@ where
     changed
 }
 
-pub(super) fn store_var_targets_all_sources_in(
-    fact_index: &FunctionFactIndex<'_>,
-    proven_outputs: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    store_var_targets_all_sources_where(fact_index, |src| proven_outputs.contains(src))
-}
-
-fn store_var_targets_all_sources_where(
+pub(super) fn store_var_targets_all_sources_where(
     fact_index: &FunctionFactIndex<'_>,
     mut source_proven: impl FnMut(&str) -> bool,
 ) -> BTreeSet<String> {
@@ -1123,19 +1116,6 @@ fn store_var_targets_all_sources_where(
         .filter(|&(_, all_sources_proven)| all_sources_proven)
         .map(|(target, _)| target.to_string())
         .collect()
-}
-
-pub(super) fn propagate_store_var_targets_in(
-    fact_index: &FunctionFactIndex<'_>,
-    proven_outputs: &mut BTreeSet<String>,
-) -> bool {
-    let mut changed = false;
-    for target in store_var_targets_all_sources_in(fact_index, proven_outputs) {
-        if proven_outputs.insert(target) {
-            changed = true;
-        }
-    }
-    changed
 }
 
 fn flat_list_int_storage_fact() -> ContainerStorageFact {

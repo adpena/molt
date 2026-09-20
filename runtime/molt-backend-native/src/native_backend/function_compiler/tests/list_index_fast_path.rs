@@ -194,14 +194,16 @@ fn list_storage_definition_fence_uses_canonical_binding_roles() {
 
 #[test]
 fn list_storage_certified_loop_scope_is_published_only_by_its_actual_preheader() {
-    with_list_storage_state(|builder, state, roots, _| {
+    with_list_storage_state(|builder, state, _, _| {
         let ops = typed_list_hoist_fixture();
         let plan = representation_plan_for_ops(&ops);
         let pre = collect_pre_loop_defined_names(&ops, 3);
+        let roots = tir_drop_hoist_fixture_roots(builder, &ops, 3, &pre, &plan);
+        *state = ListIndexFastPathState::new(&roots);
         let entry = builder.current_block().unwrap();
         cache_list_storage_field(builder, state, ListStorageField::IntData, "lst");
         let (hoisted, _) =
-            super::scan_loop_hoistable_lists(&ops, 3, &pre, &plan, state, entry, Some(roots));
+            super::scan_loop_hoistable_lists(&ops, 3, &pre, &plan, state, entry, &roots);
         assert!(hoisted.contains("lst"), "safe loop hoisting remains active");
         assert!(
             state
@@ -279,8 +281,8 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
     assert!(
         scan_loop_hoistable_lists(&input.ops, 0, &pre, &plan)
             .1
-            .is_empty(),
-        "missing cleanup custody cannot certify an unknown heap result"
+            .contains("lst"),
+        "the scanner-only fixture explicitly uses TIR-owned releases"
     );
     for authority in [
         NativeRcAuthority::NativeValueTracking,
@@ -299,13 +301,7 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         let mut state = ListIndexFastPathState::new(&roots);
         let preheader = builder.create_block();
         let (_, generic) = super::scan_loop_hoistable_lists(
-            &input.ops,
-            0,
-            &pre,
-            &plan,
-            &mut state,
-            preheader,
-            Some(&roots),
+            &input.ops, 0, &pre, &plan, &mut state, preheader, &roots,
         );
         assert_eq!(
             generic.contains("lst"),
@@ -519,6 +515,39 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
     }
 }
 
+fn tir_drop_hoist_fixture_roots(
+    builder: &mut FunctionBuilder<'_>,
+    ops: &[OpIR],
+    start_idx: usize,
+    pre_loop_defined: &BTreeSet<String>,
+    plan: &ScalarRepresentationPlan,
+) -> NativeCleanupRoots {
+    // Scanner fixtures describe their complete effect stream, including drops.
+    // Actual NativeValueTracking custody is tested separately; no absent or
+    // unrelated cleanup table may silently certify a heap result here.
+    let input = FunctionIR {
+        name: "hoist_effect_fixture".into(),
+        params: pre_loop_defined
+            .difference(&collect_pre_loop_defined_names(ops, start_idx))
+            .cloned()
+            .collect(),
+        ops: ops.to_vec(),
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        execution_context: Default::default(),
+    };
+    let analysis = preanalyze_function_ir(&input, plan);
+    NativeCleanupRoots::new(
+        builder,
+        &input,
+        &analysis.alias_roots,
+        plan,
+        NativeRcAuthority::TirDropInsertion,
+    )
+}
+
 fn scan_loop_hoistable_lists(
     ops: &[OpIR],
     start_idx: usize,
@@ -528,15 +557,17 @@ fn scan_loop_hoistable_lists(
     let mut function = Function::new();
     let mut context = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let roots = tir_drop_hoist_fixture_roots(&mut builder, ops, start_idx, pre_loop_defined, plan);
+    let mut state = ListIndexFastPathState::new(&roots);
     let preheader = builder.create_block();
     super::scan_loop_hoistable_lists(
         ops,
         start_idx,
         pre_loop_defined,
         plan,
-        &mut Default::default(),
+        &mut state,
         preheader,
-        None,
+        &roots,
     )
 }
 

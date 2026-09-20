@@ -11,7 +11,14 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
     let plan = ScalarRepresentationPlan::default();
     let mut ops = Vec::new();
     for index in 0..2 {
-        for kind in ["const_str", "const_bytes", "const_bigint", "const"] {
+        for kind in [
+            "const_str",
+            "const_bytes",
+            "const_bigint",
+            "const",
+            "const_int",
+            "load_const",
+        ] {
             ops.push(OpIR {
                 kind: kind.into(),
                 out: Some(format!("{kind}_{index}")),
@@ -21,7 +28,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
                     "non-interned literal".into()
                 }),
                 bytes: (kind == "const_bytes").then(|| vec![0, 255, 128]),
-                value: (kind == "const").then_some(i64::MAX),
+                value: matches!(kind, "const" | "const_int" | "load_const").then_some(i64::MAX),
                 ..OpIR::default()
             });
         }
@@ -166,20 +173,20 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
     }
     assert_eq!(
         calls.iter().filter(|(callee, _)| *callee == retain).count(),
-        8
+        input.ops.len()
     );
     assert_eq!(
         calls
             .iter()
             .filter(|(callee, _)| *callee == release)
             .count(),
-        7 + 3
+        input.ops.len() - 1 + 3
     );
     for (index, (_, args)) in calls
         .iter()
         .enumerate()
         .filter(|(_, (callee, _))| *callee == retain)
-        .take(7)
+        .take(input.ops.len() - 1)
     {
         assert_eq!(
             calls[index + 1],
@@ -192,4 +199,90 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             .iter()
             .all(|(callee, _)| *callee == release)
     );
+}
+
+#[test]
+fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
+    use super::super::fc::const_literals::{
+        collect_loop_entry_const_defs, op_uses_heap_literal_data_segment,
+    };
+    use crate::native_backend::simple_backend::tests::{
+        compile_selected_functions_direct, emit_direct_object,
+    };
+    for kind in ["const", "const_int", "load_const"] {
+        for value in [i64::MIN, 0, i64::MAX] {
+            let input = FunctionIR {
+                name: "integer_literal_contract".into(),
+                params: vec![],
+                param_types: None,
+                ops: vec![
+                    OpIR {
+                        kind: kind.into(),
+                        value: Some(value),
+                        out: Some("value".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: kind.into(),
+                        value: Some(i64::MAX),
+                        out: None,
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: kind.into(),
+                        value: Some(i64::MAX),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["value".into()]),
+                        ..OpIR::default()
+                    },
+                ],
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                execution_context: Default::default(),
+            };
+            let plan = native_representation_plan_for_test(&input);
+            let constants = crate::build_const_int_map(&input);
+            assert_eq!(constants, BTreeMap::from([("value".into(), value)]));
+            let entry = collect_loop_entry_const_defs(&input, &plan, &constants);
+            assert_eq!(
+                entry.get("value").copied(),
+                Some(if plan.is_raw_int_carrier_name("value") {
+                    value
+                } else {
+                    molt_codegen_abi::box_int_bits(value)
+                })
+            );
+            assert!(!entry.contains_key("none"));
+            for discarded in &input.ops[1..3] {
+                assert!(
+                    !op_uses_heap_literal_data_segment(discarded),
+                    "{kind}: discarded integers have no frame anchors"
+                );
+            }
+            let backend =
+                compile_selected_functions_direct(vec![input], &["integer_literal_contract"]);
+            let function = &backend
+                .deferred_defines
+                .iter()
+                .find(|deferred| deferred.name == "integer_literal_contract")
+                .unwrap()
+                .func;
+            verify_function(function, &settings::Flags::new(settings::builder()))
+                .unwrap_or_else(|errors| panic!("{kind}: {errors}\n{}", function.display()));
+            assert!(
+                !backend.import_ids.contains_key("molt_bigint_from_str"),
+                "raw literals and discarded outputs need no boxed-literal constructor: {kind}"
+            );
+            assert!(
+                native_object_symbols(&emit_direct_object(backend))
+                    .defined
+                    .contains("integer_literal_contract")
+            );
+        }
+    }
 }

@@ -150,7 +150,8 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
     let plan = native_representation_plan_for_test(&func);
 
     assert!(plan.integer_family_names().contains("_v7"));
-    assert!(!plan.name_has_scalar_kind("_v7", ScalarKind::Int));
+    assert!(plan.name_has_scalar_kind("_v7", ScalarKind::Int));
+    assert!(!plan.is_raw_int_carrier_name("_v7"));
     assert!(!plan.name_has_scalar_kind("_v7", ScalarKind::Float));
 }
 

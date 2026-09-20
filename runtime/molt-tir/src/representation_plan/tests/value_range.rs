@@ -203,13 +203,13 @@ fn checked_loop_seed_admits_peeled_fast_loop_only() {
     let bool_primary = plan.primary_name_sets().bool_;
     for name in [
         "_v46",
-        "_v47",      // checked_add overflow flags
-        "_v48",      // or fan-in
-        "_v40",      // of-slot load
-        "_v44",      // not(of)
-        "_v45",      // and(cond, not_of) — the break condition
-        "v111",      // the guard compare
-        "_bb1_arg2", // the carried of slot
+        "_v47",       // checked_add overflow flags
+        "_v48",       // or fan-in
+        "_v40",       // of-slot load
+        "_v44",       // not(of)
+        "_v45",       // and(cond, not_of) — the break condition
+        "fast_guard", // the fast-lane guard compare, distinct from the slow path
+        "_bb1_arg2",  // the carried of slot
     ] {
         assert!(
             bool_primary.contains(name),
@@ -1073,7 +1073,7 @@ fn unknown_peeled_guard_result_is_not_a_raw_bool_carrier() {
     )
     .primary_name_sets();
     assert!(
-        !primary.bool_.contains("v111"),
+        !primary.bool_.contains("fast_guard"),
         "rich comparison can return an owned object"
     );
     assert!(
