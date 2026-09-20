@@ -36,8 +36,9 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
 - For maintainer/agent proof lanes and heavy local differential, conformance,
   benchmark, or CI-style runs, resolve artifact roots through `molt dx env`,
   `molt dx run`, or `tools/run_context_env.py --prefer-external-artifacts
-  --dx`; on Windows checkouts on `C:`, use a healthy non-`C:` root unless an
-  explicit emergency override is set.
+  --dx`. Consume the selected canonical roots on every platform; do not
+  substitute a drive fallback. Capacity admission and consumer-owned retention
+  follow [proof custody](../../../agent/PROOF_QUEUE.md).
 - Public users and lightweight local examples may compile in place, use
   Molt/Cargo defaults, or choose roots with explicit flags/environment
   variables. Repo-local roots (`target/`, `tmp/diff`, `.molt_cache/`,

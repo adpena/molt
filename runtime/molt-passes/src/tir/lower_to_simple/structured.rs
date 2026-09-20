@@ -5,7 +5,7 @@ use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock}
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
-use crate::tir::simple_value_names::value_var;
+use crate::tir::simple_value_names::{temporary_var, value_var};
 use crate::tir::values::ValueId;
 
 use super::cfg::collect_guard_raise_path_blocks;
@@ -695,7 +695,7 @@ pub(super) fn emit_block_ops_inner(
 pub(super) fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &mut Vec<OpIR>) {
     if values.is_empty() {
         if original_has_ret {
-            let ret_name = format!("_ret_value_{}", out.len());
+            let ret_name = temporary_var(&format!("_ret_value_{}", out.len()));
             out.push(OpIR {
                 kind: "const_none".to_string(),
                 out: Some(ret_name.clone()),
@@ -741,32 +741,7 @@ pub(super) fn emit_terminator(
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
-            if values.is_empty() {
-                if original_has_ret {
-                    let ret_name = format!("_ret_value_{}", out.len());
-                    out.push(OpIR {
-                        kind: "const_none".to_string(),
-                        out: Some(ret_name.clone()),
-                        ..OpIR::default()
-                    });
-                    out.push(OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec![ret_name]),
-                        ..OpIR::default()
-                    });
-                } else {
-                    out.push(OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    });
-                }
-            } else {
-                out.push(OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(values.iter().map(|v| value_var(*v)).collect()),
-                    ..OpIR::default()
-                });
-            }
+            emit_return_ops(values, original_has_ret, out);
         }
 
         Terminator::Branch { target, args } => {

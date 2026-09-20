@@ -415,6 +415,9 @@ local function molt_coroutine_execution_wrap(func: (...any) -> ...any): ((...any
 			if restoration_error ~= nil and close_error == nil then close_error = restoration_error end
 		end
 		finalized = true
+		-- Terminal wrappers no longer own a resumable context. Detach the
+		-- non-owning index now; GC scheduling must not govern terminal custody.
+		if execution_owner ~= nil then molt_frame_forget_context(execution_owner) end
 		execution_context = nil
 		execution_owner = nil
 		thread = nil

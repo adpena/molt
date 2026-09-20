@@ -1,153 +1,197 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    SimpleIrVarFieldRole, opcode_canonical_kind_table, simpleir_var_field_role_table,
+};
 use crate::tir::ops::AttrValue;
 use crate::tir::values::ValueId;
 
-/// Canonical naming bridge from TIR SSA values and block arguments to the
-/// legacy SimpleIR variable namespace consumed by existing backends.
+/// One allocation authority for SimpleIR value and storage transports.
+/// Authored stream spellings are provenance, not SSA identity: moving a
+/// definition must never overwrite a different, still-live ValueId.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SimpleValueNames {
-    value_overrides: HashMap<ValueId, String>,
+    value_names: HashMap<ValueId, String>,
+    source_names: HashMap<ValueId, String>,
+    ambiguous_source_names: HashSet<String>,
+    local_slots: HashMap<String, String>,
     block_arg_slots: HashMap<(BlockId, usize), String>,
+    reserved_names: HashSet<String>,
 }
 
 impl SimpleValueNames {
     pub fn for_function(func: &TirFunction) -> Self {
         let mut names = Self::default();
+        let mut occupied = HashSet::new();
+        let mut values = Vec::new();
+        let mut slots = BTreeSet::new();
+        let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+        blocks.sort_unstable_by_key(|id| id.0);
 
-        // ── Phase 1: collect the EXPLICIT-override names ────────────────────
-        // Entry-param names and `_simple_out` / `_simple_result_N` stream names
-        // are authoritative: they are the SimpleIR identities downstream
-        // consumers (the scalar representation plan, store_var/load_var edges)
-        // key on. We assign them first and reserve every name they consume.
-        //
-        // A value with an explicit override keeps it verbatim. Two different
-        // overrides that name the SAME string would already be a frontend bug;
-        // we do not attempt to rename overrides (they are the contract). We DO
-        // protect *canonical* fallbacks from colliding with an override name
-        // belonging to a different value — the re-lift hazard documented on
-        // `has_override`: the TIR inliner mints fresh ValueIds, so a value's
-        // canonical `_v{id}` can land on a string a *different* value already
-        // claimed via `_simple_out` (carried verbatim from the pre-lift stream).
-        // Without this protection both values resolve to one SimpleIR name and
-        // `rewrite_copy_aliases` conflates them — a silent wrong-value miscompile
-        // (observed: a module-scope guarded property merge reading the cold slow
-        // path on the hot fast edge).
-        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
-            for (idx, arg) in entry_block.args.iter().enumerate() {
-                if let Some(name) = func.param_names.get(idx) {
-                    names.value_overrides.insert(arg.id, name.clone());
+        // ABI parameter names are fixed. Mutable locals of the same spelling
+        // receive separate storage below; no entry snapshot or copy shim is
+        // needed to keep the incoming parameter value alive across a rebind.
+        if let Some(entry) = func.blocks.get(&func.entry_block) {
+            for (index, arg) in entry.args.iter().enumerate() {
+                if let Some(name) = func.param_names.get(index) {
+                    assert!(
+                        occupied.insert(name.clone()),
+                        "duplicate ABI parameter name: {name}"
+                    );
+                    names.value_names.insert(arg.id, name.clone());
+                    names.source_names.insert(arg.id, name.clone());
                 }
             }
         }
-        for (bid, block) in &func.blocks {
-            for index in 0..block.args.len() {
-                names
-                    .block_arg_slots
-                    .insert((*bid, index), Self::canonical_block_arg_slot(*bid, index));
-            }
+        for bid in &blocks {
+            let block = &func.blocks[bid];
+            values.extend(block.args.iter().map(|arg| arg.id));
             for op in &block.ops {
-                for (index, result) in op.results.iter().enumerate() {
-                    let key = format!("_simple_result_{index}");
-                    if let Some(AttrValue::Str(name)) = op.attrs.get(&key) {
-                        names.value_overrides.insert(*result, name.clone());
+                values.extend(op.results.iter().copied());
+                for (index, &result) in op.results.iter().enumerate() {
+                    let source = op
+                        .attrs
+                        .get(&format!("_simple_result_{index}"))
+                        .or_else(|| {
+                            (op.results.len() == 1)
+                                .then(|| op.attrs.get("_simple_out"))
+                                .flatten()
+                        });
+                    if let Some(AttrValue::Str(name)) = source
+                        && !name.is_empty()
+                        && name != "none"
+                    {
+                        names.source_names.insert(result, name.clone());
                     }
                 }
-                if op.results.len() == 1
-                    && let Some(result) = op.results.first()
-                    && let Some(AttrValue::Str(name)) = op.attrs.get("_simple_out")
+                let kind = match op.attrs.get("_original_kind") {
+                    Some(AttrValue::Str(kind)) => kind.as_str(),
+                    _ => opcode_canonical_kind_table(op.opcode),
+                };
+                if simpleir_var_field_role_table(kind) == SimpleIrVarFieldRole::Definition
+                    && let Some(AttrValue::Str(slot)) = op.attrs.get("_var")
                 {
-                    names.value_overrides.insert(*result, name.clone());
+                    slots.insert(slot.clone());
                 }
             }
         }
+        values.sort_unstable_by_key(|id| id.0);
+        values.dedup();
 
-        // ── Phase 2: resolve canonical-name collisions ──────────────────────
-        // Reserve every name already consumed: all explicit overrides. Then,
-        // for every value WITHOUT an override, check whether its canonical
-        // `_v{id}` name collides with a reserved name (an override on a
-        // different value, or a canonical name already handed to another value).
-        // On collision, mint a fresh deterministic name and record it as an
-        // override so `value_name` returns it. Values are visited in ascending
-        // ValueId order so the assignment is stable across builds.
-        let mut reserved: HashSet<String> = names.value_overrides.values().cloned().collect();
-
-        let mut all_values: Vec<ValueId> = Vec::new();
-        if let Some(entry_block) = func.blocks.get(&func.entry_block) {
-            for arg in &entry_block.args {
-                all_values.push(arg.id);
+        // Reserve authored spellings before minting any suffix, so allocation
+        // cannot steal a later producer's requested name. Source metadata is
+        // kept separately even when its emitted value name must change.
+        let mut reserved = occupied.clone();
+        reserved.extend(names.source_names.values().cloned());
+        reserved.extend(slots.iter().cloned());
+        let mut source_owners = HashMap::new();
+        for (&value, source) in &names.source_names {
+            if source_owners.insert(source, value).is_some() {
+                names.ambiguous_source_names.insert(source.clone());
             }
         }
-        for block in func.blocks.values() {
-            for arg in &block.args {
-                all_values.push(arg.id);
-            }
-            for op in &block.ops {
-                for result in &op.results {
-                    all_values.push(*result);
-                }
-            }
-        }
-        all_values.sort_unstable_by_key(|v| v.0);
-        all_values.dedup();
-
-        for id in all_values {
-            if names.value_overrides.contains_key(&id) {
-                // Already has an authoritative name; it is reserved.
-                continue;
-            }
-            let canonical = Self::canonical_value_name(id);
-            if !reserved.contains(&canonical) {
-                // Canonical name is free — claim it (reserve so a later value's
-                // canonical or fresh name cannot re-collide).
-                reserved.insert(canonical);
-                continue;
-            }
-            // Collision: this value's canonical name belongs to a different
-            // value (via override). Mint a fresh, collision-free name and pin
-            // it as an override so `value_name` returns it deterministically.
-            let mut suffix = 0u32;
-            let fresh = loop {
-                let candidate = format!("_v{}_c{}", id.0, suffix);
-                if !reserved.contains(&candidate) {
-                    break candidate;
-                }
-                suffix += 1;
+        for slot in slots {
+            let transport = if occupied.insert(slot.clone()) {
+                slot.clone()
+            } else {
+                Self::allocate_fresh(&format!("_slot_{slot}"), &mut reserved)
             };
-            reserved.insert(fresh.clone());
-            names.value_overrides.insert(id, fresh);
+            occupied.insert(transport.clone());
+            names.local_slots.insert(slot, transport);
         }
-
+        for bid in blocks {
+            for index in 0..func.blocks[&bid].args.len() {
+                let preferred = Self::canonical_block_arg_slot(bid, index);
+                let transport = if reserved.insert(preferred.clone()) {
+                    preferred
+                } else {
+                    Self::allocate_fresh(&preferred, &mut reserved)
+                };
+                occupied.insert(transport.clone());
+                names.block_arg_slots.insert((bid, index), transport);
+            }
+        }
+        for id in values {
+            if names.value_names.contains_key(&id) {
+                continue;
+            }
+            let transport = match names.source_names.get(&id) {
+                Some(source) if occupied.insert(source.clone()) => source.clone(),
+                _ => {
+                    let canonical = Self::canonical_value_name(id);
+                    if reserved.insert(canonical.clone()) {
+                        canonical
+                    } else {
+                        Self::allocate_fresh(&canonical, &mut reserved)
+                    }
+                }
+            };
+            occupied.insert(transport.clone());
+            reserved.insert(transport.clone());
+            names.value_names.insert(id, transport);
+        }
+        names.reserved_names = reserved;
         names
     }
 
+    fn allocate_fresh(base: &str, reserved: &mut HashSet<String>) -> String {
+        for suffix in 0u64.. {
+            let candidate = format!("{base}_c{suffix}");
+            if reserved.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+        unreachable!("SimpleIR name space exhausted")
+    }
+
     pub fn value_name(&self, id: ValueId) -> String {
-        self.value_overrides
+        self.value_names
             .get(&id)
             .cloned()
             .unwrap_or_else(|| Self::canonical_value_name(id))
     }
 
-    /// True if `id` carries an EXPLICIT SimpleIR name (a `_simple_out` /
-    /// `_simple_result_N` override) — the stream's source of truth — rather
-    /// than a synthetic canonical fallback (`_v{N}` / `_bb{N}_arg{I}`).
-    ///
-    /// Name-keyed consumers (the scalar representation plan) treat
-    /// explicit-name facts as authoritative: a re-lift renumbers ValueIds, so
-    /// a canonical fallback name can COLLIDE with a different value's
-    /// explicit stream name; the explicit fact must win, not conflict out.
-    pub fn has_override(&self, id: ValueId) -> bool {
-        self.explicit_value_name(id).is_some()
+    /// Authored input-stream identity, never a synthesized transport name.
+    /// Consumers projecting facts back to that input must reject ambiguous
+    /// source names rather than select one of their distinct SSA definitions.
+    pub fn source_value_name(&self, id: ValueId) -> Option<&str> {
+        self.source_names.get(&id).map(String::as_str)
     }
 
-    /// Borrow the explicit SimpleIR stream name for a value, excluding
-    /// synthesized `_vN` fallbacks. Consumers that require an authored producer
-    /// identity use this instead of allocating through [`Self::value_name`].
-    pub fn explicit_value_name(&self, id: ValueId) -> Option<&str> {
-        self.value_overrides.get(&id).map(String::as_str)
+    pub fn ambiguous_source_names(&self) -> impl Iterator<Item = &str> {
+        self.ambiguous_source_names.iter().map(String::as_str)
+    }
+
+    pub fn source_name_is_ambiguous(&self, name: &str) -> bool {
+        self.ambiguous_source_names.contains(name)
+    }
+
+    /// The input stream's name when known, otherwise a synthetic value name.
+    /// This is only a fact-projection key; code emission uses value_name.
+    pub fn source_or_value_name(&self, id: ValueId) -> String {
+        self.source_value_name(id)
+            .map(str::to_string)
+            .unwrap_or_else(|| self.value_name(id))
+    }
+
+    pub fn local_slot(&self, source: &str) -> String {
+        self.local_slots
+            .get(source)
+            .cloned()
+            .unwrap_or_else(|| source.to_string())
+    }
+
+    /// Allocate an emission-only value in the same namespace as authored
+    /// values, ABI parameters, and storage. These values have no source fact.
+    pub fn fresh_temporary(&mut self, preferred: &str) -> String {
+        if self.reserved_names.insert(preferred.to_string()) {
+            preferred.to_string()
+        } else {
+            Self::allocate_fresh(preferred, &mut self.reserved_names)
+        }
     }
 
     pub fn block_arg_slot(&self, block: BlockId, index: usize) -> String {
@@ -184,7 +228,14 @@ pub fn reset_value_names() {
     set_value_names(SimpleValueNames::default());
 }
 
-/// Synthesise a SimpleIR variable name from a ValueId.
 pub fn value_var(id: ValueId) -> String {
     VALUE_NAMES.with(|names| names.borrow().value_name(id))
+}
+
+pub fn local_slot_var(source: &str) -> String {
+    VALUE_NAMES.with(|names| names.borrow().local_slot(source))
+}
+
+pub fn temporary_var(preferred: &str) -> String {
+    VALUE_NAMES.with(|names| names.borrow_mut().fresh_temporary(preferred))
 }

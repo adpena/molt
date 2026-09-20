@@ -3,7 +3,7 @@ use crate::tir::op_kinds_generated::{
     SimpleIrVarFieldRole, simpleir_first_trailing_result_arg_table, simpleir_var_field_role_table,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
-use crate::tir::simple_value_names::value_var;
+use crate::tir::simple_value_names::{local_slot_var, value_var};
 
 use super::op_utils::{
     attr_bool, attr_bytes, attr_float, attr_int, attr_str, binary_op, operand_args,
@@ -15,9 +15,10 @@ use super::op_utils::{
 // ---------------------------------------------------------------------------
 
 fn local_destination(op: &TirOp) -> String {
-    attr_str(&op.attrs, "_var")
+    let source = attr_str(&op.attrs, "_var")
         .filter(|name| !name.is_empty())
-        .expect("named-local mutation requires an explicit _var destination")
+        .expect("named-local mutation requires an explicit _var destination");
+    local_slot_var(&source)
 }
 
 fn assign_multi_result_transport(simple: &mut OpIR, op: &TirOp) {
@@ -360,20 +361,56 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             if let Some(original_kind) = attr_str(&op.attrs, "_original_kind")
                 .filter(|kind| !matches!(kind.as_str(), "copy" | "copy_var" | "load_var"))
             {
-                // Passthrough: reconstruct the original SimpleIR op with all fields.
+                // Reconstruct field roles, not their pre-SSA spellings. Lift
+                // records the exact operand only when var resolved to an SSA
+                // read; sentinel/literal metadata must not consume an argument.
+                // A definition is independent mutable storage.
+                let original_var = attr_str(&op.attrs, "_var");
+                let var_role = simpleir_var_field_role_table(&original_kind);
+                let var_operand = match op.attrs.get("_simple_var_operand") {
+                    Some(AttrValue::Int(index)) => {
+                        assert!(
+                            var_role == SimpleIrVarFieldRole::Read && original_var.is_some(),
+                            "passthrough var operand requires an authored read field"
+                        );
+                        let index = usize::try_from(*index)
+                            .expect("passthrough var operand index must be nonnegative");
+                        assert!(
+                            index < op.operands.len(),
+                            "passthrough var operand index is out of bounds"
+                        );
+                        Some(index)
+                    }
+                    None => None,
+                    _ => panic!("passthrough var operand index must be an integer"),
+                };
+                let var = match (var_role, original_var) {
+                    (SimpleIrVarFieldRole::Definition, Some(source)) => {
+                        Some(local_slot_var(&source))
+                    }
+                    (SimpleIrVarFieldRole::Read, Some(source)) => Some(
+                        var_operand
+                            .map(|index| value_var(op.operands[index]))
+                            .unwrap_or(source),
+                    ),
+                    (_, original) => original,
+                };
+                let args: Vec<_> = op
+                    .operands
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| Some(*index) != var_operand)
+                    .map(|(_, value)| value_var(*value))
+                    .collect();
                 Some(OpIR {
                     kind: original_kind,
-                    args: if op.operands.is_empty() {
-                        None
-                    } else {
-                        Some(operand_args(op))
-                    },
+                    args: (!args.is_empty()).then_some(args),
                     out: out_var,
                     value: attr_int(&op.attrs, "value"),
                     f_value: attr_float(&op.attrs, "f_value"),
                     s_value: attr_str(&op.attrs, "s_value"),
                     bytes: attr_bytes(&op.attrs, "bytes"),
-                    var: attr_str(&op.attrs, "_var"),
+                    var,
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     task_closure_size: attr_int(&op.attrs, "task_closure_size"),
                     container_type: attr_str(&op.attrs, "container_type"),

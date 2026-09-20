@@ -69,8 +69,9 @@ Target: remove infra-induced false negatives and lock contention in transpiler t
 Plan:
 - Prefer direct interpreter invocation (`sys.executable -m molt.cli`) inside transpiler tests.
 - Keep maintainer/agent heavy build artifacts and tmp under the DX-resolved
-  artifact root; on Windows checkouts on `C:`, prefer a healthy non-`C:` root
-  unless an explicit emergency override is set. Public users may compile in
+  canonical artifact roots on every platform, without drive fallback; apply
+  the existing [capacity and custody contract](../../../agent/PROOF_QUEUE.md).
+  Public users may compile in
   place, use Molt/Cargo defaults, or choose roots with explicit flags/env vars.
 - Make build timeouts configurable (`MOLT_RUST_BUILD_TIMEOUT`, `MOLT_LUAU_BUILD_TIMEOUT`).
 

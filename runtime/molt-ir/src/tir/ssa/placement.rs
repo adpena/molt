@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::super::is_structural;
 use super::variables::is_variable;
 use super::*;
+use crate::tir::op_kinds_generated::opcode_result_is_conditionally_valid_only_on_edge;
+use crate::tir::op_semantics::op_instance_effects_for_op;
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +39,52 @@ struct TirIterFusePlan {
     pair: ValueId,
     done: TirIterProjection,
     value: TirIterProjection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TirIterValidityGuard {
+    block: usize,
+    done_target: usize,
+    not_done_target: usize,
+}
+
+const ITER_PATH_NO_STEP: u8 = 1;
+const ITER_PATH_AWAITING_GUARD: u8 = 2;
+const ITER_PATH_VALID_ITEM: u8 = 4;
+
+fn graph_has_cycle(graph: &[Vec<usize>]) -> bool {
+    let mut active = vec![false; graph.len()];
+    let mut indegree = vec![0usize; graph.len()];
+    for (source, targets) in graph.iter().enumerate() {
+        if !targets.is_empty() {
+            active[source] = true;
+        }
+        for &target in targets {
+            if target >= graph.len() {
+                return true;
+            }
+            active[target] = true;
+            indegree[target] += 1;
+        }
+    }
+    let active_count = active.iter().filter(|&&is_active| is_active).count();
+    let mut roots = VecDeque::new();
+    for (node, &is_active) in active.iter().enumerate() {
+        if is_active && indegree[node] == 0 {
+            roots.push_back(node);
+        }
+    }
+    let mut visited = 0usize;
+    while let Some(node) = roots.pop_front() {
+        visited += 1;
+        for &target in &graph[node] {
+            indegree[target] -= 1;
+            if indegree[target] == 0 {
+                roots.push_back(target);
+            }
+        }
+    }
+    visited != active_count
 }
 
 impl<'a> SsaContext<'a> {
@@ -325,6 +373,14 @@ impl<'a> SsaContext<'a> {
                 || !self.tir_op_dominates(producer, done.location)
                 || !self.tir_op_dominates(producer, value.location)
                 || !self.tir_op_dominates(done.location, value.location)
+                || !self.iter_item_projection_is_valid(
+                    blocks,
+                    pair,
+                    producer,
+                    &done,
+                    &value,
+                    &provenance,
+                )
             {
                 continue;
             }
@@ -410,6 +466,244 @@ impl<'a> SsaContext<'a> {
                 keep
             });
         }
+    }
+
+    /// Prove the generated conditional-result contract for a proposed
+    /// `IterNextUnboxed` value result. The bounded state walk consumes the
+    /// already-built augmented CFG and exact SSA identities; it is not a
+    /// reaching-definition analysis. Each candidate carries one three-bit
+    /// state per block and one bounded edge list, so the cost is
+    /// `O(candidates * (blocks + edges + ops))` without per-op map cloning.
+    fn iter_item_projection_is_valid(
+        &self,
+        blocks: &[TirBlock],
+        pair: ValueId,
+        producer: TirOpLocation,
+        done: &TirIterProjection,
+        value: &TirIterProjection,
+        provenance: &HashMap<ValueId, PairProvenance>,
+    ) -> bool {
+        if !opcode_result_is_conditionally_valid_only_on_edge(OpCode::IterNextUnboxed, 0)
+            || opcode_result_is_conditionally_valid_only_on_edge(OpCode::IterNextUnboxed, 1)
+            || self.aug_successors.len() != blocks.len()
+            || self.cfg.entry >= blocks.len()
+        {
+            return false;
+        }
+
+        let mut guard = None;
+        for (block_idx, block) in blocks.iter().enumerate() {
+            let Terminator::CondBranch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            if *cond != done.result {
+                continue;
+            }
+            let candidate = TirIterValidityGuard {
+                block: block_idx,
+                done_target: then_block.0 as usize,
+                not_done_target: else_block.0 as usize,
+            };
+            if candidate.done_target == candidate.not_done_target
+                || candidate.done_target >= blocks.len()
+                || candidate.not_done_target >= blocks.len()
+                || then_args.iter().any(|forwarded| {
+                    provenance
+                        .get(forwarded)
+                        .is_some_and(|facts| facts.iter_pairs.contains(&pair))
+                })
+                || guard.replace(candidate).is_some()
+            {
+                return false;
+            }
+        }
+        let Some(guard) = guard else {
+            return false;
+        };
+        let guard_terminator = TirOpLocation {
+            block: guard.block,
+            op: blocks[guard.block].ops.len(),
+        };
+        if !self.tir_op_dominates(producer, guard_terminator)
+            || !self.tir_op_dominates(done.location, guard_terminator)
+        {
+            return false;
+        }
+
+        let mut incoming_states = vec![0u8; blocks.len()];
+        incoming_states[self.cfg.entry] = ITER_PATH_NO_STEP;
+        let mut regular_edges = HashSet::new();
+        for (source, block) in blocks.iter().enumerate() {
+            block.terminator.for_each_edge(|target, _| {
+                regular_edges.insert((source, target.0 as usize));
+            });
+        }
+        let implicit_edges: HashSet<(usize, usize)> = self
+            .cfg
+            .exception_edges
+            .iter()
+            .copied()
+            .chain(
+                self.cfg
+                    .state_resume_edges
+                    .iter()
+                    .map(|&(from, to, _)| (from, to)),
+            )
+            .collect();
+        let mut worklist = VecDeque::from([self.cfg.entry]);
+        let mut queued = vec![false; blocks.len()];
+        queued[self.cfg.entry] = true;
+        let mut reached_producer = false;
+        let mut reached_value = false;
+        let mut awaiting_edges = vec![Vec::<usize>::new(); blocks.len()];
+
+        while let Some(block_idx) = worklist.pop_front() {
+            queued[block_idx] = false;
+            let block = &blocks[block_idx];
+            let mut states = incoming_states[block_idx];
+            let mut exception_probe = None;
+            for (op_idx, op) in block.ops.iter().enumerate() {
+                let location = TirOpLocation {
+                    block: block_idx,
+                    op: op_idx,
+                };
+                if location == producer {
+                    reached_producer = true;
+                    states = ITER_PATH_AWAITING_GUARD;
+                    continue;
+                }
+                if location == value.location {
+                    reached_value = true;
+                    if states == 0 || states & !ITER_PATH_VALID_ITEM != 0 {
+                        return false;
+                    }
+                }
+                if states & ITER_PATH_AWAITING_GUARD != 0
+                    && location != done.location
+                    && location != value.location
+                {
+                    let effects = op_instance_effects_for_op(op, &self.value_types);
+                    let exact_exception_probe =
+                        if op.opcode == OpCode::ExceptionPending && op.results.len() == 1 {
+                            match &block.terminator {
+                                Terminator::CondBranch {
+                                    cond,
+                                    then_block,
+                                    then_args,
+                                    else_block,
+                                    ..
+                                } if *cond == op.results[0]
+                                    && then_block != else_block
+                                    && !then_args.iter().any(|forwarded| {
+                                        provenance
+                                            .get(forwarded)
+                                            .is_some_and(|facts| facts.iter_pairs.contains(&pair))
+                                    }) =>
+                                {
+                                    Some((then_block.0 as usize, else_block.0 as usize))
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                    if !(effects.effect_free && effects.nothrow) && exact_exception_probe.is_none()
+                    {
+                        return false;
+                    }
+                    if let Some(targets) = exact_exception_probe {
+                        if exception_probe.replace(targets).is_some() {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            let mut propagated = false;
+            for &target in &self.aug_successors[block_idx] {
+                if target >= blocks.len() {
+                    return false;
+                }
+                let regular_edge = regular_edges.contains(&(block_idx, target));
+                let implicit_edge = implicit_edges.contains(&(block_idx, target));
+
+                // Implicit exception/resume transfers do not prove the direct
+                // done polarity for this dynamic step. Conservatively reject
+                // them while a producer is awaiting its guard.
+                if states & ITER_PATH_AWAITING_GUARD != 0 && implicit_edge {
+                    return false;
+                }
+
+                if regular_edge {
+                    propagated = true;
+                    let next_states = if block_idx == guard.block {
+                        if target == guard.not_done_target {
+                            let mut next = states & (ITER_PATH_NO_STEP | ITER_PATH_VALID_ITEM);
+                            if states & ITER_PATH_AWAITING_GUARD != 0 {
+                                next |= ITER_PATH_VALID_ITEM;
+                            }
+                            next
+                        } else if target == guard.done_target {
+                            (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0)
+                        } else {
+                            return false;
+                        }
+                    } else if let Some((exception_target, continue_target)) = exception_probe {
+                        if target == exception_target {
+                            (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0)
+                        } else if target == continue_target {
+                            states
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        states
+                    };
+                    if states & ITER_PATH_AWAITING_GUARD != 0
+                        && next_states & ITER_PATH_AWAITING_GUARD != 0
+                    {
+                        awaiting_edges[block_idx].push(target);
+                    }
+                    if next_states & !incoming_states[target] != 0 {
+                        incoming_states[target] |= next_states;
+                        if !queued[target] {
+                            queued[target] = true;
+                            worklist.push_back(target);
+                        }
+                    }
+                }
+
+                if implicit_edge || !regular_edge {
+                    propagated = true;
+                    let next_states = (states != 0).then_some(ITER_PATH_NO_STEP).unwrap_or(0);
+                    if next_states & !incoming_states[target] != 0 {
+                        incoming_states[target] |= next_states;
+                        if !queued[target] {
+                            queued[target] = true;
+                            worklist.push_back(target);
+                        }
+                    }
+                }
+            }
+            if states & ITER_PATH_AWAITING_GUARD != 0 && !propagated {
+                return false;
+            }
+        }
+
+        // Each state bit is admitted once. Revisited edges remain bounded by
+        // those three bits; Kahn's indegree walk handles parallel edges without
+        // sorting/deduplication, keeping high-fanout switches linear as well.
+        if !reached_producer || !reached_value || graph_has_cycle(&awaiting_edges) {
+            return false;
+        }
+        true
     }
 
     fn tir_op_dominates(&self, definition: TirOpLocation, usage: TirOpLocation) -> bool {
@@ -540,9 +834,9 @@ impl<'a> SsaContext<'a> {
             succs.dedup();
         }
 
+        self.aug_dominators = compute_dominators_from(n, &aug_succs, &aug_preds, self.cfg.entry);
         self.aug_predecessors = aug_preds;
-        self.aug_dominators =
-            compute_dominators_from(n, &aug_succs, &self.aug_predecessors, self.cfg.entry);
+        self.aug_successors = aug_succs;
     }
 
     // -- Phase 2: dominance frontiers ----------------------------------------

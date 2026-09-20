@@ -47,8 +47,9 @@ molt commands:
 export MOLT_SESSION_ID="<unique session id>"
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 
-On Windows checkouts on `C:`, heavy developer/agent lanes should resolve to a
-healthy non-`C:` root unless an explicit emergency override is set. Public users
+Heavy developer/agent lanes consume the DX-selected canonical artifact roots
+on every platform, without drive fallback. Capacity admission and retention
+follow [proof custody](../../../agent/PROOF_QUEUE.md). Public users
 may compile in place, use Molt/Cargo defaults, or choose outputs with explicit
 flags/environment variables.
 

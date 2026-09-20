@@ -473,9 +473,10 @@ pub(super) fn clone_and_rewrite_poll(
     })
 }
 
-/// Clone an op's attrs, dropping the SimpleIR value-name annotations (which are
-/// function-local name strings with no id to remap — copying them verbatim would
-/// alias the poll's names onto caller values).
+/// Clone attrs without the poll's input-stream producer provenance. Emitted
+/// transports are allocated injectively by SimpleValueNames; these annotations
+/// must nevertheless not claim that a cloned poll result was an original
+/// producer in the caller's stream for representation-fact projection.
 fn clone_attrs_drop_simple_names(attrs: &AttrDict) -> AttrDict {
     attrs
         .iter()

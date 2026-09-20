@@ -480,8 +480,6 @@ pub fn simpleir_out_field_is_metadata(kind: &str) -> bool {
             | "inc_ref"
             | "dec_ref"
             | "delete_var"
-            | "store_fast"
-            | "store_var"
     )
 }
 
