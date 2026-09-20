@@ -129,13 +129,30 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &self,
         operand_id: ValueId,
     ) -> inkwell::values::IntValue<'ctx> {
+        self.materialize_dynbox_operand_with_temporary_owner(operand_id)
+            .0
+    }
+
+    /// Materialize a borrowed boxed-runtime operand and report whether that
+    /// materialization minted a temporary owner which the caller must retire.
+    /// Raw full-width integers can allocate a heap BigInt; inline-safe raw
+    /// integers and already-boxed values do not transfer an owner.
+    pub(super) fn materialize_dynbox_operand_with_temporary_owner(
+        &self,
+        operand_id: ValueId,
+    ) -> (inkwell::values::IntValue<'ctx>, bool) {
         let operand = self.resolve(operand_id);
         let operand_ty = self
             .value_types
             .get(&operand_id)
             .cloned()
             .unwrap_or(TirType::DynBox);
-        self.materialize_dynbox_bits(operand, &operand_ty)
+        let owns_temporary =
+            operand_ty == TirType::I64 && !self.repr_facts.is_inline_safe_int(operand_id);
+        (
+            self.materialize_dynbox_bits(operand, &operand_ty),
+            owns_temporary,
+        )
     }
 
     pub(super) fn build_entry_i64_alloca(&self, name: &str) -> inkwell::values::PointerValue<'ctx> {

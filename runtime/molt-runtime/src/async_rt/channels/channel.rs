@@ -1,8 +1,8 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 
 use crate::{
-    GilReleaseGuard, MoltObject, PyToken, dec_ref_bits, inc_ref_bits, obj_from_bits,
-    opaque_handle_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr, to_i64,
+    GilReleaseGuard, MoltObject, PyToken, dec_ref_bits, inc_ref_bits, opaque_handle_bits,
+    pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
 };
 
 pub struct MoltChannel {
@@ -97,24 +97,9 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
     crate::with_gil_entry_nopanic!(_py, {
-        let capacity = match to_i64(obj_from_bits(capacity_bits)) {
-            Some(val) => val,
-            None => {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "channel capacity must be an integer",
-                );
-            }
+        let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
+            return MoltObject::none().bits();
         };
-        if capacity < 0 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "channel capacity must be non-negative",
-            );
-        }
-        let capacity = capacity as usize;
         let (s, r) = if capacity == 0 {
             unbounded()
         } else {

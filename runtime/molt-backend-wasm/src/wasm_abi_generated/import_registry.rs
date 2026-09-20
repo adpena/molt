@@ -3550,6 +3550,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::StreamReaderRead,
+        name: "stream_reader_read",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::StreamReaderReadline,
+        name: "stream_reader_readline",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::StreamRecv,
         name: "stream_recv",
         type_idx: 2,
@@ -5333,36 +5343,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::GpuSquaredReluGateInterleavedContiguous,
         name: "gpu_squared_relu_gate_interleaved_contiguous",
         type_idx: 7,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimRealize,
-        name: "gpu_prim_realize",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimDtype,
-        name: "gpu_prim_dtype",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimNbytes,
-        name: "gpu_prim_nbytes",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimFree,
-        name: "gpu_prim_free",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimContiguous,
-        name: "gpu_prim_contiguous",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GpuPrimNumel,
-        name: "gpu_prim_numel",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EnumInitMember,
@@ -8747,16 +8727,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::StreamReaderNew,
         name: "stream_reader_new",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::StreamReaderRead,
-        name: "stream_reader_read",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::StreamReaderReadline,
-        name: "stream_reader_readline",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -16813,6 +16783,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_stream_drop" => Some(WasmRuntimeImport::StreamDrop),
         "stream_new" => Some(WasmRuntimeImport::StreamNew),
         "molt_stream_new" => Some(WasmRuntimeImport::StreamNew),
+        "stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
+        "molt_stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
+        "stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
+        "molt_stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
         "stream_recv" => Some(WasmRuntimeImport::StreamRecv),
         "molt_stream_recv" => Some(WasmRuntimeImport::StreamRecv),
         "stream_send" => Some(WasmRuntimeImport::StreamSend),
@@ -17603,18 +17577,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_gpu_squared_relu_gate_interleaved_contiguous" => {
             Some(WasmRuntimeImport::GpuSquaredReluGateInterleavedContiguous)
         }
-        "gpu_prim_realize" => Some(WasmRuntimeImport::GpuPrimRealize),
-        "molt_gpu_prim_realize" => Some(WasmRuntimeImport::GpuPrimRealize),
-        "gpu_prim_dtype" => Some(WasmRuntimeImport::GpuPrimDtype),
-        "molt_gpu_prim_dtype" => Some(WasmRuntimeImport::GpuPrimDtype),
-        "gpu_prim_nbytes" => Some(WasmRuntimeImport::GpuPrimNbytes),
-        "molt_gpu_prim_nbytes" => Some(WasmRuntimeImport::GpuPrimNbytes),
-        "gpu_prim_free" => Some(WasmRuntimeImport::GpuPrimFree),
-        "molt_gpu_prim_free" => Some(WasmRuntimeImport::GpuPrimFree),
-        "gpu_prim_contiguous" => Some(WasmRuntimeImport::GpuPrimContiguous),
-        "molt_gpu_prim_contiguous" => Some(WasmRuntimeImport::GpuPrimContiguous),
-        "gpu_prim_numel" => Some(WasmRuntimeImport::GpuPrimNumel),
-        "molt_gpu_prim_numel" => Some(WasmRuntimeImport::GpuPrimNumel),
         "enum_init_member" => Some(WasmRuntimeImport::EnumInitMember),
         "molt_enum_init_member" => Some(WasmRuntimeImport::EnumInitMember),
         "re_literal_matches" => Some(WasmRuntimeImport::ReLiteralMatches),
@@ -19203,10 +19165,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_multiprocessing_codec_loads" => Some(WasmRuntimeImport::MultiprocessingCodecLoads),
         "stream_reader_new" => Some(WasmRuntimeImport::StreamReaderNew),
         "molt_stream_reader_new" => Some(WasmRuntimeImport::StreamReaderNew),
-        "stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
-        "molt_stream_reader_read" => Some(WasmRuntimeImport::StreamReaderRead),
-        "stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
-        "molt_stream_reader_readline" => Some(WasmRuntimeImport::StreamReaderReadline),
         "stream_reader_at_eof" => Some(WasmRuntimeImport::StreamReaderAtEof),
         "molt_stream_reader_at_eof" => Some(WasmRuntimeImport::StreamReaderAtEof),
         "stream_reader_drop" => Some(WasmRuntimeImport::StreamReaderDrop),

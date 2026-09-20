@@ -10,15 +10,64 @@ use super::super::op_kinds_generated::{
     simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::super::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
-    is_variable, simple_var_field_is_transport_fact, simple_var_field_is_value_operand,
-    visit_simple_ir_ssa_definitions,
+    is_variable, simple_ir_ssa_result_count, simple_var_field_is_transport_fact,
+    simple_var_field_is_value_operand,
 };
 use super::*;
 
 impl<'a> SsaContext<'a> {
+    /// Reserved singleton reads and ordinary names have one resolution path
+    /// across argument, var, and terminator fields. Reserved `none` is never a
+    /// mutable stack entry or a textual string literal.
+    pub(super) fn resolve_known_or_reserved_operand(
+        &mut self,
+        op_idx: usize,
+        name: &str,
+        var_stacks: &HashMap<String, Vec<ValueId>>,
+    ) -> Option<ValueId> {
+        if name == "none" {
+            Some(self.materialize_simple_literal(op_idx, name))
+        } else if is_variable(name) {
+            self.resolve_known_var(name, var_stacks)
+        } else {
+            None
+        }
+    }
+
+    fn materialize_simple_literal(&mut self, op_idx: usize, value: &str) -> ValueId {
+        let mut attrs = AttrDict::new();
+        let opcode = if value == "none" {
+            OpCode::ConstNone
+        } else if let Ok(value) = value.parse::<i64>() {
+            attrs.insert("value".into(), AttrValue::Int(value));
+            OpCode::ConstInt
+        } else if let Ok(value) = value.parse::<f64>() {
+            attrs.insert("f_value".into(), AttrValue::Float(value));
+            OpCode::ConstFloat
+        } else {
+            // Existing nonnumeric metadata literals (for example class names)
+            // remain strings; this does not introduce boolean-token syntax.
+            attrs.insert("s_value".into(), AttrValue::Str(value.to_string()));
+            OpCode::ConstStr
+        };
+        let result = self.fresh_value_typed();
+        let mut constant = TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        };
+        self.stamp_source_identity(&mut constant, op_idx);
+        self.pending_inline_consts.push(constant);
+        result
+    }
+
     pub(super) fn translate_op(
         &mut self,
         op_idx: usize,
@@ -35,59 +84,10 @@ impl<'a> SsaContext<'a> {
                 .unwrap_or(args.len())
                 .min(args.len());
             for a in args.iter().take(read_arity) {
-                if let Some(vid) = self.resolve_known_var(a, var_stacks) {
-                    // Resolved as a variable
-                    operands.push(vid);
-                } else if let Ok(int_val) = a.parse::<i64>() {
-                    // Inline integer constant — emit a ConstInt op before the current op
-                    let vid = self.fresh_value_typed();
-                    let mut attrs = AttrDict::new();
-                    attrs.insert("value".into(), AttrValue::Int(int_val));
-                    let mut const_op = TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstInt,
-                        operands: vec![],
-                        results: vec![vid],
-                        attrs,
-                        source_span: None,
-                    };
-                    self.stamp_source_identity(&mut const_op, op_idx);
-                    self.pending_inline_consts.push(const_op);
-                    operands.push(vid);
-                } else if let Ok(float_val) = a.parse::<f64>() {
-                    // Inline float constant
-                    let vid = self.fresh_value_typed();
-                    let mut attrs = AttrDict::new();
-                    attrs.insert("f_value".into(), AttrValue::Float(float_val));
-                    let mut const_op = TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstFloat,
-                        operands: vec![],
-                        results: vec![vid],
-                        attrs,
-                        source_span: None,
-                    };
-                    self.stamp_source_identity(&mut const_op, op_idx);
-                    self.pending_inline_consts.push(const_op);
-                    operands.push(vid);
-                } else {
-                    // Unresolved non-numeric arg — treat as string constant
-                    // (e.g., class names in isinstance, function names in call)
-                    let vid = self.fresh_value_typed();
-                    let mut attrs = AttrDict::new();
-                    attrs.insert("s_value".into(), AttrValue::Str(a.clone()));
-                    let mut const_op = TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::ConstStr,
-                        operands: vec![],
-                        results: vec![vid],
-                        attrs,
-                        source_span: None,
-                    };
-                    self.stamp_source_identity(&mut const_op, op_idx);
-                    self.pending_inline_consts.push(const_op);
-                    operands.push(vid);
-                }
+                let value = self
+                    .resolve_known_or_reserved_operand(op_idx, a, var_stacks)
+                    .unwrap_or_else(|| self.materialize_simple_literal(op_idx, a));
+                operands.push(value);
             }
         }
         // If `var` is an input (not a local-slot mutation target or transport
@@ -96,8 +96,7 @@ impl<'a> SsaContext<'a> {
         let mut var_operand_index = None;
         if simple_var_field_is_value_operand(op)
             && let Some(v) = &op.var
-            && is_variable(v)
-            && let Some(vid) = self.resolve_known_var(v, var_stacks)
+            && let Some(vid) = self.resolve_known_or_reserved_operand(op_idx, v, var_stacks)
         {
             var_operand_index = Some(operands.len());
             operands.push(vid);
@@ -118,10 +117,7 @@ impl<'a> SsaContext<'a> {
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
-        let mut result_count = 0;
-        visit_simple_ir_ssa_definitions(op, |_, index| {
-            result_count = result_count.max(index + 1);
-        });
+        let result_count = simple_ir_ssa_result_count(op);
         results.reserve(result_count);
         for _ in 0..result_count {
             results.push(self.fresh_value_typed());
@@ -211,14 +207,23 @@ impl<'a> SsaContext<'a> {
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
-        if op.kind == "iter_next_unboxed" || op.kind == "checked_add" || op.kind == "checked_mul" {
-            if let Some(ref value_out) = op.var {
-                attrs.insert("_simple_result_0".into(), AttrValue::Str(value_out.clone()));
+        let mut positional_results = false;
+        visit_simple_ir_results(op, |result| {
+            positional_results |= result.field == SimpleIrResultField::Var;
+            if positional_results && let Some(name) = result.name {
+                let index = match result.field {
+                    SimpleIrResultField::Var => 0,
+                    SimpleIrResultField::Out => 1,
+                    SimpleIrResultField::Arg(_) => {
+                        unreachable!("fixed results cannot carry trailing outputs")
+                    }
+                };
+                attrs.insert(
+                    format!("_simple_result_{index}"),
+                    AttrValue::Str(name.to_string()),
+                );
             }
-            if let Some(ref done_out) = op.out {
-                attrs.insert("_simple_result_1".into(), AttrValue::Str(done_out.clone()));
-            }
-        }
+        });
         // Preserve only the structural class-id hint needed by object
         // allocation round-trips. Scalar `fast_int` / `fast_float` flags are
         // SimpleIR transport metadata and must not become TIR attributes; TIR
@@ -295,8 +300,8 @@ impl<'a> SsaContext<'a> {
             && let Some(ref v) = op.var
         {
             attrs.insert("_var".into(), AttrValue::Str(v.clone()));
-            // Record only a value actually resolved above. Unresolved or
-            // reserved var spellings remain transport metadata; lowering must
+            // Record only a value actually resolved above. Unresolved var
+            // spellings remain transport metadata; lowering must
             // never guess that the final positional argument came from var.
             if let Some(index) = var_operand_index {
                 attrs.insert("_simple_var_operand".into(), AttrValue::Int(index as i64));
@@ -351,4 +356,79 @@ impl<'a> SsaContext<'a> {
 /// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
 fn kind_to_opcode(kind: &str) -> OpCode {
     kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
+}
+
+#[cfg(test)]
+mod positional_result_tests {
+    use super::*;
+    use crate::tir::cfg::CFG;
+
+    #[test]
+    fn fixed_results_allocate_discarded_slots_and_keep_surviving_return_identity() {
+        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+            for discarded in [None, Some("none")] {
+                for (var, out, returned, index) in [
+                    (discarded, Some("flag"), Some("flag"), 1),
+                    (Some("value"), discarded, Some("value"), 0),
+                    (discarded, discarded, None, 0),
+                ] {
+                    let ops = vec![
+                        OpIR {
+                            kind: "const_int".into(),
+                            out: Some("source".into()),
+                            value: Some(1),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: kind.into(),
+                            var: var.map(str::to_string),
+                            out: out.map(str::to_string),
+                            args: Some(if kind == "iter_next_unboxed" {
+                                vec!["source".into()]
+                            } else {
+                                vec!["source".into(), "source".into()]
+                            }),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: if returned.is_some() {
+                                "ret"
+                            } else {
+                                "ret_void"
+                            }
+                            .into(),
+                            args: returned.map(|name| vec![name.to_string()]),
+                            ..OpIR::default()
+                        },
+                    ];
+                    let cfg = CFG::build(&ops);
+                    let output = super::super::convert_to_ssa(&cfg, &ops);
+                    let op = output
+                        .blocks
+                        .iter()
+                        .flat_map(|block| &block.ops)
+                        .find(|op| op.opcode == kind_to_opcode(kind))
+                        .unwrap();
+                    assert_eq!(op.results.len(), 2, "{kind}");
+                    if let Some(name) = returned {
+                        assert_eq!(
+                            op.attrs.get(&format!("_simple_result_{index}")),
+                            Some(&AttrValue::Str(name.into()))
+                        );
+                        let returned = output
+                            .blocks
+                            .iter()
+                            .find_map(|block| match &block.terminator {
+                                crate::tir::blocks::Terminator::Return { values } => {
+                                    values.first().copied()
+                                }
+                                _ => None,
+                            })
+                            .expect("returned surviving result");
+                        assert_eq!(returned, op.results[index], "{kind}");
+                    }
+                }
+            }
+        }
+    }
 }

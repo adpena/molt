@@ -47,7 +47,7 @@ impl WasmConstOpPolicy {
             }
             WasmConstInlineSeed::None => unreachable!("inline seed checked above"),
         }
-        let local_idx = locals[out];
+        let local_idx = locals.result_slot(out);
         func.instruction(&Instruction::LocalSet(local_idx));
         true
     }

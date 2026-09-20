@@ -1,4 +1,4 @@
-use super::super::result_sink::store_owned_result_or_release;
+use super::super::result_sink::{discard_runtime_result, store_runtime_result};
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
@@ -55,12 +55,13 @@ fn emit_code_new(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, op: 
         call_ctx.reloc_enabled,
         call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CodeNew],
     );
-    store_owned_result_or_release(
+    store_runtime_result(
         func,
         op,
         call_ctx.locals,
         call_ctx.import_ids,
         call_ctx.reloc_enabled,
+        WasmRuntimeImport::CodeNew,
     );
 }
 
@@ -76,7 +77,7 @@ fn emit_value_then_two_locals_drop_call(
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }
 
 fn emit_table_two_local_drop_call(
@@ -101,7 +102,7 @@ fn emit_table_two_local_drop_call(
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }
 
 fn emit_value_drop_call(
@@ -112,7 +113,7 @@ fn emit_value_drop_call(
 ) {
     func.instruction(&Instruction::I64Const(op.value.unwrap_or(0)));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }
 
 fn emit_no_arg_drop_call(
@@ -121,7 +122,7 @@ fn emit_no_arg_drop_call(
     import: WasmRuntimeImport,
 ) {
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }
 
 fn emit_one_local_drop_call(
@@ -136,5 +137,5 @@ fn emit_one_local_drop_call(
         .expect("one-local metadata op args missing");
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
 }

@@ -1,4 +1,5 @@
 use super::*;
+use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 
 impl LuauBackend {
     pub(super) fn emit_scalar_kernel_op(&mut self, op: &OpIR) -> bool {
@@ -93,13 +94,13 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let mut results = [None, None];
-                    let mut result_count = 0;
-                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-                        results[result_count] = Some(name);
-                        result_count += 1;
+                    let mut sum_out = None;
+                    let mut flag_out = None;
+                    visit_simple_ir_results(op, |result| match result.field {
+                        SimpleIrResultField::Var => sum_out = result.name,
+                        SimpleIrResultField::Out => flag_out = result.name,
+                        SimpleIrResultField::Arg(_) => {}
                     });
-                    let [sum_out, flag_out] = results;
                     let sum_out = sum_out.map(sanitize_ident);
                     let flag_out = flag_out.map(sanitize_ident);
                     match (sum_out, flag_out) {
@@ -127,13 +128,13 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let mut results = [None, None];
-                    let mut result_count = 0;
-                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-                        results[result_count] = Some(name);
-                        result_count += 1;
+                    let mut product_out = None;
+                    let mut flag_out = None;
+                    visit_simple_ir_results(op, |result| match result.field {
+                        SimpleIrResultField::Var => product_out = result.name,
+                        SimpleIrResultField::Out => flag_out = result.name,
+                        SimpleIrResultField::Arg(_) => {}
                     });
-                    let [product_out, flag_out] = results;
                     let product_out = product_out.map(sanitize_ident);
                     let flag_out = flag_out.map(sanitize_ident);
                     match (product_out, flag_out) {

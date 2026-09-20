@@ -746,16 +746,16 @@ pub(super) fn define_process_host(
             };
 
             let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-                match call_i64(&exports.stream_new, &mut caller, &[Val::I64(0)]) {
-                    Ok(bits) => Some(bits as u64),
+                match new_stream(&mut caller, &exports, 0) {
+                    Ok(bits) => Some(bits),
                     Err(_) => return -libc::EFAULT,
                 }
             } else {
                 None
             };
             let stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-                match call_i64(&exports.stream_new, &mut caller, &[Val::I64(0)]) {
-                    Ok(bits) => Some(bits as u64),
+                match new_stream(&mut caller, &exports, 0) {
+                    Ok(bits) => Some(bits),
                     Err(_) => return -libc::EFAULT,
                 }
             } else {

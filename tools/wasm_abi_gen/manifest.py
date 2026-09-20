@@ -89,12 +89,15 @@ CALLABLE_DISPATCH_MODES = {
     "direct",
     "trampoline",
 }
-OP_LOOP_RUNTIME_SINKS = {
-    "result_or_drop": "ResultOrDrop",
-    "owned_result_or_release": "OwnedResultOrRelease",
-    "non_none_result_or_drop": "NonNoneResultOrDrop",
-    "drop": "Drop",
-    "none": "None",
+RUNTIME_RETURN_CONTRACTS = {
+    "owned_object": "OwnedObject",
+    "borrowed_object": "BorrowedObject",
+    "unpublished_object": "UnpublishedObject",
+    "scratch_allocation": "ScratchAllocation",
+    "execution_token": "ExecutionToken",
+    "poll_result": "PollResult",
+    "raw_bits": "RawBits",
+    "void": "Void",
 }
 CONTAINER_RUNTIME_SELECTOR_OPS = {
     "contains",
@@ -703,7 +706,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
                 f"import {name!r} has conflicting boxed LIR arities"
             )
         lir_arities[name] = arity
-    op_loop_shapes: dict[str, tuple[int, str]] = {}
+    op_loop_arities: dict[str, int] = {}
     for source in data.get("op_loop_runtime_call", []):
         boxed = source.get("boxed_call", False)
         if not isinstance(boxed, bool):
@@ -717,23 +720,12 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call {source['kind']!r} boxed_call requires positional locals"
             )
-        sink = source["sink"]
-        if sink not in (
-            "result_or_drop",
-            "owned_result_or_release",
-            "non_none_result_or_drop",
-            "none",
-        ):
-            raise WasmAbiManifestError(
-                f"op_loop_runtime_call {source['kind']!r} boxed_call requires an explicit value or void sink"
-            )
-        shape = (len(args), "void" if sink == "none" else "i64")
         name = source["import_name"]
-        if name in op_loop_shapes and op_loop_shapes[name] != shape:
+        if name in op_loop_arities and op_loop_arities[name] != len(args):
             raise WasmAbiManifestError(
-                f"import {name!r} has conflicting boxed op-loop shapes"
+                f"import {name!r} has conflicting boxed op-loop arities"
             )
-        op_loop_shapes[name] = shape
+        op_loop_arities[name] = len(args)
     for import_entry in data["import"]:
         entry = {**import_entry, **reserved.get(import_entry["name"], {})}
         explicit = entry.get("boxed_call", False)
@@ -743,9 +735,9 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             )
         callable_arity = entry.get("callable_arity")
         lir_arity = lir_arities.get(entry["name"])
-        op_loop_shape = op_loop_shapes.get(entry["name"])
+        op_loop_arity = op_loop_arities.get(entry["name"])
         direct = entry.get("callable_dispatch", "direct") == "direct"
-        compiler_boxed = explicit or lir_arity is not None or op_loop_shape is not None
+        compiler_boxed = explicit or lir_arity is not None or op_loop_arity is not None
         if compiler_boxed and not direct:
             raise WasmAbiManifestError(
                 f"import {entry['name']!r} cannot combine boxed_call with trampoline dispatch"
@@ -766,7 +758,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"import {entry['name']!r} boxed LIR shape disagrees with its import ABI"
             )
-        if op_loop_shape is not None and op_loop_shape != (arity, result):
+        if op_loop_arity is not None and op_loop_arity != arity:
             raise WasmAbiManifestError(
                 f"import {entry['name']!r} boxed op-loop shape disagrees with its import ABI"
             )
@@ -780,7 +772,93 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
         if symbol in specs:
             raise WasmAbiManifestError(f"duplicate boxed runtime symbol {symbol!r}")
         specs[symbol] = {"runtime_name": symbol, "arity": arity, "result": result}
+        if "poll_table_slot" in entry:
+            if arity != 1 or result != "i64":
+                raise WasmAbiManifestError(
+                    f"import {entry['name']!r} poll table requires unary i64 -> i64 ABI"
+                )
+            specs[symbol]["ownership"] = "poll_result"
+        declared = entry.get("return_contract")
+        if declared is not None:
+            if (
+                declared not in ("borrowed_object", "poll_result")
+                or result != "i64"
+                or "poll_table_slot" in entry
+            ):
+                raise WasmAbiManifestError(
+                    f"import {entry['name']!r} return_contract {declared!r} "
+                    "contradicts or duplicates its boxed return authority"
+                )
+            # Provider-backed borrowed and suspending returns refine the boxed ABI;
+            # every target projection consumes this same refinement.
+            specs[symbol]["ownership"] = declared
     return [specs[symbol] for symbol in sorted(specs)]
+
+
+def runtime_import_return_specs(data: dict) -> dict[str, str]:
+    """Resolve every runtime return from one semantic authority, fail closed.
+
+    The boxed ABI promises an owned object (or void), refined by borrowed or
+    suspending return declarations and poll-table membership. Machine signatures
+    prove void and non-i64 scalars. Only compiler-only i64 returns still need a
+    provider-backed import declaration. An i64 carrier proves no ownership.
+    Redundant declarations are rejected so lanes cannot drift.
+    """
+    boxed = {spec["runtime_name"]: spec for spec in runtime_boxed_call_specs(data)}
+    contracts: dict[str, str] = {}
+    for entry in data["import"]:
+        name = entry["name"]
+        results = data["static_type"][entry["type"]]["results"]
+        declared = entry.get("return_contract")
+        if declared is not None and (
+            not isinstance(declared, str) or declared not in RUNTIME_RETURN_CONTRACTS
+        ):
+            raise WasmAbiManifestError(
+                f"import {name!r} has invalid return_contract {declared!r}"
+            )
+        boxed_spec = boxed.get(runtime_export_name(entry))
+        if "poll_table_slot" in entry:
+            signature = data["static_type"][entry["type"]]
+            if signature["params"] != ["i64"] or results != ["i64"]:
+                raise WasmAbiManifestError(
+                    f"import {name!r} poll table requires unary i64 -> i64 ABI"
+                )
+            derived = "poll_result"
+        elif not results:
+            derived = "void"
+        elif len(results) != 1:
+            raise WasmAbiManifestError(
+                f"import {name!r} has unsupported multiple return values"
+            )
+        elif results != ["i64"]:
+            derived = "raw_bits"
+        elif boxed_spec is not None:
+            derived = boxed_spec.get("ownership", "owned_object")
+        else:
+            derived = None
+        if derived is not None:
+            if declared is not None and not (
+                boxed_spec is not None
+                and declared == derived
+                and declared in ("borrowed_object", "poll_result")
+            ):
+                raise WasmAbiManifestError(
+                    f"import {name!r} return_contract {declared!r} duplicates or "
+                    f"contradicts derived {derived!r}; remove the declaration"
+                )
+            contracts[name] = derived
+        elif declared is None:
+            raise WasmAbiManifestError(
+                f"import {name!r} has unclassified i64 return; declare a "
+                "provider-backed return_contract, not an ownership guess"
+            )
+        elif declared == "void":
+            raise WasmAbiManifestError(
+                f"import {name!r} void return_contract contradicts its i64 result"
+            )
+        else:
+            contracts[name] = declared
+    return contracts
 
 
 def _annotate_runtime_callable_features(
@@ -1462,6 +1540,10 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call entry {idx} must be a table"
             )
+        if "sink" in entry:
+            raise WasmAbiManifestError(
+                "op-loop sink policy is derived from the import return contract"
+            )
         expanded.append(dict(entry))
 
     groups = data.get("op_loop_runtime_call_group", [])
@@ -1482,10 +1564,14 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
             raise WasmAbiManifestError(
                 f"op_loop_runtime_call_group entry {idx} has invalid arg_count"
             )
-        sink = entry.get("sink")
-        if sink not in OP_LOOP_RUNTIME_SINKS:
+        if "sink" in entry:
             raise WasmAbiManifestError(
-                f"op_loop_runtime_call_group entry {idx} has invalid sink {sink!r}"
+                "op-loop sink policy is derived from the import return contract"
+            )
+        discard_result = entry.get("discard_result", False)
+        if not isinstance(discard_result, bool):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call_group entry {idx} has invalid discard_result"
             )
         import_name = entry.get("import_name")
         if import_name is not None and (
@@ -1514,8 +1600,9 @@ def _expand_op_loop_runtime_calls(data: dict) -> list[dict]:
                 "import_name": expanded_import_name,
                 "args": args,
                 "required_imports": [expanded_import_name],
-                "sink": sink,
             }
+            if discard_result:
+                expanded_entry["discard_result"] = True
             if marked_import_name is not None:
                 expanded_entry["marked_import_name"] = marked_import_name
             if boxed_call:
@@ -1987,17 +2074,10 @@ def validate_loaded_manifest(
                 f"marked import {marked_import_name!r}"
             )
         entry["required_imports"] = normalized_required_imports
-        sink = entry.get("sink")
-        if sink not in OP_LOOP_RUNTIME_SINKS:
+        if not isinstance(entry.get("discard_result", False), bool):
             raise WasmAbiManifestError(
-                f"op_loop_runtime_call {kind!r} has invalid sink {sink!r}"
+                f"op_loop_runtime_call {kind!r} has invalid discard_result"
             )
-        if sink == "owned_result_or_release" and "dec_ref_obj" not in required_seen:
-            if "dec_ref_obj" not in seen_imports:
-                raise WasmAbiManifestError(
-                    f"op_loop_runtime_call {kind!r} owned result requires dec_ref_obj"
-                )
-            normalized_required_imports.append("dec_ref_obj")
         args = entry.get("args")
         if not isinstance(args, list):
             raise WasmAbiManifestError(
@@ -2032,7 +2112,30 @@ def validate_loaded_manifest(
             )
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
-    runtime_boxed_call_specs(data)
+    return_contracts = runtime_import_return_specs(data)
+    for required, kinds in (
+        ("dec_ref_obj", {"owned_object", "poll_result"}),
+        ("inc_ref_obj", {"borrowed_object"}),
+    ):
+        if (
+            kinds.intersection(return_contracts.values())
+            and required not in seen_imports
+        ):
+            raise WasmAbiManifestError(f"runtime return contracts require {required}")
+    for entry in op_loop_runtime_calls:
+        kind = entry["kind"]
+        contract = return_contracts[entry["import_name"]]
+        if contract in ("unpublished_object", "scratch_allocation", "execution_token"):
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} cannot sink {contract}"
+            )
+        marked = entry.get("marked_import_name")
+        if marked is not None and return_contracts[marked] != contract:
+            raise WasmAbiManifestError(
+                f"op_loop_runtime_call {kind!r} marked import return contract disagrees"
+            )
+        # Refcount imports are rooted by the actual emitted result sink's
+        # TrackedImportIds access, not a speculative per-op dependency list.
 
     bulk_memory_ops = data.get("wasm_bulk_memory_op", [])
     if not isinstance(bulk_memory_ops, list) or not bulk_memory_ops:
@@ -2185,6 +2288,10 @@ def validate_loaded_manifest(
         if kind in seen_const_policy_kinds:
             raise WasmAbiManifestError(f"duplicate const_op_policy kind {kind!r}")
         seen_const_policy_kinds.add(kind)
+        if "parse_scalar_literal" in entry:
+            raise WasmAbiManifestError(
+                f"const_op_policy {kind!r} parse_scalar_literal is retired"
+            )
 
         inline_seed = entry.get("inline_seed", "none")
         if inline_seed not in CONST_POLICY_INLINE_SEEDS:
@@ -2224,21 +2331,12 @@ def validate_loaded_manifest(
                     f"const_op_policy {kind!r} references unknown import "
                     f"{materializer_import!r}"
                 )
-        parse_scalar_literal = entry.get("parse_scalar_literal", False)
-        if not isinstance(parse_scalar_literal, bool):
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} parse_scalar_literal must be a bool"
-            )
         dispatch_seed = entry.get(
             "dispatch_runtime_seed", materializer_import is not None
         )
         if not isinstance(dispatch_seed, bool):
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} dispatch_runtime_seed must be a bool"
-            )
-        if literal_payload == "none" and parse_scalar_literal:
-            raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} cannot parse scalar literals without payload"
             )
         if literal_payload != "none" and materializer_import is None:
             raise WasmAbiManifestError(
@@ -2273,7 +2371,6 @@ def validate_loaded_manifest(
         entry["scalar_payload"] = scalar_payload
         entry["raw_int_effect"] = raw_int_effect
         entry["lir_fast"] = lir_fast
-        entry["parse_scalar_literal"] = parse_scalar_literal
         entry["dispatch_runtime_seed"] = dispatch_seed
     prefixes = data.get("pure_skip_prefix", [])
     if not isinstance(prefixes, list):

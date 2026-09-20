@@ -1,9 +1,9 @@
-use super::super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_local_prefix_call_id};
+use super::super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_local_prefix_call};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
-use crate::wasm_abi_generated::{OpLoopRuntimeSinkSpec, WasmRuntimeImport};
-use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
+use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
 use wasm_encoder::Function;
 
@@ -30,32 +30,14 @@ pub(super) fn emit_sequence_runtime_op(
             // Dispatch: list_int / dict / tuple -> generic.
             let import_key = selected_container_runtime_import(scalar_plan, op_idx, "index", op)
                 .unwrap_or(WasmRuntimeImport::Index);
-            let import_id =
-                selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
-            emit_op_loop_local_prefix_call_id(
-                &call_context,
-                func,
-                op,
-                import_id,
-                2,
-                OpLoopRuntimeSinkSpec::ResultOrDrop,
-            );
+            emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 2, &func_ir.name);
         }
         "store_index" => {
             // Dispatch: list_int / dict -> generic.
             let import_key =
                 selected_container_runtime_import(scalar_plan, op_idx, "store_index", op)
                     .unwrap_or(WasmRuntimeImport::StoreIndex);
-            let import_id =
-                selected_import_id(import_ids, import_key, &func_ir.name, op.kind.as_str());
-            emit_op_loop_local_prefix_call_id(
-                &call_context,
-                func,
-                op,
-                import_id,
-                3,
-                OpLoopRuntimeSinkSpec::ResultOrDrop,
-            );
+            emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 3, &func_ir.name);
         }
         _ => return false,
     }

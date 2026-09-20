@@ -1,3 +1,4 @@
+pub(super) use super::super::result_sink::store_runtime_result;
 mod boxed;
 mod float_fast;
 mod int_fast;
@@ -5,7 +6,7 @@ mod operands;
 
 pub(super) use boxed::{
     emit_boxed_binary_call, emit_boxed_binary_result, emit_boxed_ternary_result,
-    emit_boxed_unary_result, store_numeric_result,
+    emit_boxed_unary_result,
 };
 pub(super) use float_fast::{
     emit_plain_f64_arithmetic_result, emit_plain_f64_binary_result,

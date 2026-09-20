@@ -1247,6 +1247,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1267,6 +1269,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -1476,6 +1480,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // handle_coroutine_op family - extracted to fc::coroutine (M1)

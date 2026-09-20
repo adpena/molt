@@ -173,7 +173,9 @@ fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
 
     for abi in RUNTIME_BOXED_ABIS {
         let result = match abi.result {
-            RuntimeBoxedReturn::OwnedValue => RuntimeReturnAbi::I64,
+            RuntimeBoxedReturn::OwnedValue
+            | RuntimeBoxedReturn::BorrowedValue
+            | RuntimeBoxedReturn::PollValue => RuntimeReturnAbi::I64,
             RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
         };
         assert_eq!(

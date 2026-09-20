@@ -17,7 +17,7 @@ impl WasmConstOpPolicy {
             .out
             .as_ref()
             .unwrap_or_else(|| panic!("const op {} requires an output", self.0.kind));
-        self.simple_ir_materialization_into(op, locals, locals[out_name])
+        self.simple_ir_materialization_into(op, locals, locals.result_slot(out_name))
     }
 
     pub(in crate::wasm) fn simple_ir_materialization_into(

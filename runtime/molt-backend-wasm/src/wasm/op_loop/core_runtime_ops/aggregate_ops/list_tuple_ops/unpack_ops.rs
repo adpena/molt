@@ -1,6 +1,8 @@
+use super::super::super::super::result_sink::{discard_runtime_result, store_owned_value};
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use molt_codegen_abi::box_none_bits;
 use wasm_encoder::{BlockType, Function, Instruction, MemArg};
@@ -49,7 +51,12 @@ pub(super) fn emit_unpack_sequence(
         func.instruction(&Instruction::I64Const(0));
         func.instruction(&Instruction::I64Const(0));
         emit_call(func, ctx.reloc_enabled, unpack_import);
-        func.instruction(&Instruction::Drop);
+        discard_runtime_result(
+            func,
+            ctx.import_ids,
+            ctx.reloc_enabled,
+            WasmRuntimeImport::UnpackSequence,
+        );
         return;
     }
 
@@ -57,8 +64,10 @@ pub(super) fn emit_unpack_sequence(
     // checked scratch allocator raises on failure; success transfers exactly
     // one owned result from the runtime buffer into each local.
     molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |out_name| {
-        func.instruction(&Instruction::I64Const(box_none_bits() as i64));
-        func.instruction(&Instruction::LocalSet(ctx.locals[out_name]));
+        if let Some(out) = ctx.locals.bound_result_slot(Some(out_name)) {
+            func.instruction(&Instruction::I64Const(box_none_bits() as i64));
+            func.instruction(&Instruction::LocalSet(out));
+        }
     });
 
     let scratch = ctx.locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
@@ -81,14 +90,24 @@ pub(super) fn emit_unpack_sequence(
     func.instruction(&Instruction::I64Const(expected_count as i64));
     func.instruction(&Instruction::LocalGet(scratch));
     emit_call(func, ctx.reloc_enabled, unpack_import);
-    func.instruction(&Instruction::Drop);
+    discard_runtime_result(
+        func,
+        ctx.import_ids,
+        ctx.reloc_enabled,
+        WasmRuntimeImport::UnpackSequence,
+    );
 
     let mut index = 0;
     molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |out_name| {
         func.instruction(&Instruction::LocalGet(scratch));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::I64Load(result_memarg(index)));
-        func.instruction(&Instruction::LocalSet(ctx.locals[out_name]));
+        store_owned_value(
+            func,
+            ctx.locals.bound_result_slot(Some(out_name)),
+            ctx.import_ids,
+            ctx.reloc_enabled,
+        );
         index += 1;
     });
 

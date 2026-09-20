@@ -273,7 +273,9 @@ def test_split_runtime_publication_transform_rewrites_raw_cpython_abi_names(
     )
     assert metrics.changed
 
-    exports = {export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)}
+    exports = {
+        export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)
+    }
     assert "molt_PyType_Ready" in exports
     assert "PyType_Ready" not in exports
     assert "molt_socket_drop" in exports
@@ -451,13 +453,24 @@ def test_wasm_runtime_export_link_args_cover_all_runtime_owned_gpu_intrinsics() 
         assert f" -C link-arg=--export-if-defined={name}" in flags
 
 
-def test_wasm_runtime_export_link_args_keeps_host_runtime_exports_in_minimal_mode() -> (
-    None
-):
-    flags = wasm_runtime_export_link_args({"runtime_init"})
+@pytest.mark.parametrize("required_imports", [None, {"runtime_init"}])
+def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
+    required_imports: set[str] | None,
+) -> None:
+    flags = wasm_runtime_export_link_args(required_imports)
     assert " -C link-arg=--export-if-defined=molt_runtime_init" in flags
     assert " -C link-arg=--export-if-defined=molt_runtime_shutdown" in flags
     assert " -C link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
+    for name in (
+        "molt_stream_new",
+        "molt_stream_send",
+        "molt_stream_close",
+        "molt_stream_drop",
+        "molt_int_from_i64",
+        "molt_exception_pending_fast",
+        "molt_dec_ref_obj",
+    ):
+        assert f" -C link-arg=--export-if-defined={name}" in flags
 
 
 def test_wasm_runtime_export_link_args_expands_browser_runtime_fallback_exports() -> (

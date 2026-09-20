@@ -699,8 +699,8 @@ fn handle_db_host(
         }
     };
 
-    let stream_bits = match call_i64(&exports.stream_new, &mut caller, &[Val::I64(0)]) {
-        Ok(bits) => bits as u64,
+    let stream_bits = match new_stream(&mut caller, &exports, 0) {
+        Ok(bits) => bits,
         Err(err) => {
             eprintln!("{err}");
             return 7;

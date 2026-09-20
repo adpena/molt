@@ -52,6 +52,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -82,60 +84,19 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     };
     match op.kind.as_str() {
         "dict_new" => {
-            let empty_args: Vec<String> = Vec::new();
-            let args = op.args.as_ref().unwrap_or(&empty_args);
-            let Some(out_name) = op.out.as_ref() else {
-                return OpFlow::Continue;
-            };
-            let size = builder.ins().iconst(types::I64, (args.len() / 2) as i64);
-
-            let new_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_dict_new",
-                &[types::I64],
-                &[types::I64],
+            emit_hash_container_constructor(
+                op,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let new_local = module.declare_func_in_func(new_callee, builder.func);
-            let new_call = builder.ins().call(new_local, &[size]);
-            let dict_bits = builder.inst_results(new_call)[0];
-
-            let set_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_dict_set",
-                &[types::I64, types::I64, types::I64],
-                &[types::I64],
-            );
-            let set_local = module.declare_func_in_func(set_callee, builder.func);
-            let mut current = dict_bits;
-            for pair in args.chunks(2) {
-                let key = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &pair[0],
-                    representation_plan,
-                )
-                .expect("Dict key not found");
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &pair[1],
-                    representation_plan,
-                )
-                .expect("Dict val not found");
-                let set_call = builder.ins().call(set_local, &[current, *key, *val]);
-                current = builder.inst_results(set_call)[0];
-            }
-            def_var_named(&mut *builder, vars, out_name, current);
         }
         "dict_from_obj" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -909,9 +870,16 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 .ins()
                 .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_runtime_import_result(
+                op,
+                res,
+                "molt_store_index",
+                3,
+                module,
+                import_ids,
+                builder,
+                vars,
+            );
         }
         "dict_update_missing" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -960,9 +928,16 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 .ins()
                 .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
+            bind_runtime_import_result(
+                op,
+                res,
+                "molt_dict_update_missing",
+                3,
+                module,
+                import_ids,
+                builder,
+                vars,
+            );
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }

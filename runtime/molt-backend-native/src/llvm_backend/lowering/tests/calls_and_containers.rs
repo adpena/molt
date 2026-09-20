@@ -446,12 +446,31 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
 }
 
 #[test]
-fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
-    for (opcode, preserved, dict) in [
-        (OpCode::BuildDict, None, true),
-        (OpCode::BuildSet, None, false),
-        (OpCode::Copy, Some("dict_new"), true),
-        (OpCode::Copy, Some("set_new"), false),
+fn hash_constructors_share_typed_and_preserved_failure_cfg() {
+    for (opcode, preserved, new_symbol, mutate_symbol, width) in [
+        (OpCode::BuildDict, None, "molt_dict_new", "molt_dict_set", 2),
+        (OpCode::BuildSet, None, "molt_set_new", "molt_set_add", 1),
+        (
+            OpCode::Copy,
+            Some("dict_new"),
+            "molt_dict_new",
+            "molt_dict_set",
+            2,
+        ),
+        (
+            OpCode::Copy,
+            Some("set_new"),
+            "molt_set_new",
+            "molt_set_add",
+            1,
+        ),
+        (
+            OpCode::Copy,
+            Some("frozenset_new"),
+            "molt_frozenset_new",
+            "molt_frozenset_add",
+            1,
+        ),
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
@@ -467,7 +486,7 @@ fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode,
-            operands: if dict { vec![raw, raw] } else { vec![raw] },
+            operands: vec![raw; width * 2],
             results: vec![result],
             attrs,
             source_span: None,
@@ -478,29 +497,29 @@ fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().expect("owned hash aggregate CFG");
         let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains(&format!("@{new_symbol}(i64 2)")), "{ir}");
+        assert!(ir.contains(&format!("call i64 @{mutate_symbol}")), "{ir}");
         assert!(
-            ir.contains(if dict {
-                "@molt_dict_new(i64 1)"
-            } else {
-                "@molt_set_new(i64 1)"
-            }),
-            "{ir}"
-        );
-        assert!(
-            ir.contains(if dict {
-                "call i64 @molt_dict_set"
-            } else {
-                "call i64 @molt_set_add"
-            }),
-            "{ir}"
+            ir.find("aggregate_created").unwrap() < ir.find("call i64 @molt_int_from_i64").unwrap(),
+            "allocation failure must branch before any operand boxing/hashing: {ir}"
         );
         assert!(
             ir.contains("aggregate_abort")
-                && ir.matches("call void @molt_dec_ref_obj").count() >= if dict { 5 } else { 3 },
+                && ir.matches("call void @molt_dec_ref_obj").count()
+                    >= if width == 2 { 5 } else { 3 },
             "{ir}"
         );
         assert!(ir.contains("aggregate_result = phi i64"), "{ir}");
-        let mutation = ir.find("aggregate_insert").unwrap();
+        assert!(
+            !ir.contains("aggregate_result = phi i64 [ %aggregate_insert"),
+            "mutator return must never replace the constructor owner: {ir}"
+        );
+        let mutations: Vec<_> = ir
+            .match_indices(&format!("call i64 @{mutate_symbol}"))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(mutations.len(), 2, "{ir}");
+        let mutation = mutations[0];
         assert!(
             ir[..mutation].contains("@molt_exception_pending()"),
             "boxing failure must precede mutation: {ir}"
@@ -510,8 +529,218 @@ fn direct_dict_and_set_transactions_share_typed_and_preserved_failure_cfg() {
             "mutation failure must precede commit: {ir}"
         );
         assert!(
+            ir[mutations[0]..mutations[1]].contains("@molt_exception_pending()"),
+            "first insertion failure must branch before later operand hashing/mutation: {ir}"
+        );
+        assert!(
             !ir.contains("_builder_"),
-            "dict/set have no scratch builder ABI: {ir}"
+            "hash constructors have no scratch builder ABI: {ir}"
+        );
+        assert_eq!(
+            ir.contains("call void @molt_dec_ref_obj(i64 %aggregate_insert"),
+            width == 1,
+            "generated mutator ownership must dispose owned set/frozenset returns without releasing borrowed dict returns: {ir}"
+        );
+    }
+}
+
+#[test]
+fn handwritten_container_owned_results_release_when_discarded() {
+    for (opcode, preserved, operand_count, result_name) in [
+        (OpCode::BuildList, None, 1, "sequence_builder_result"),
+        (OpCode::BuildTuple, None, 1, "sequence_builder_result"),
+        (OpCode::BuildSet, None, 1, "aggregate_result"),
+        (OpCode::BuildDict, None, 2, "aggregate_result"),
+        (OpCode::Copy, Some("frozenset_new"), 1, "aggregate_result"),
+        (OpCode::BuildSlice, None, 3, "slice"),
+        (OpCode::GetIter, None, 1, "molt_iter_checked"),
+        (OpCode::IterNext, None, 1, "molt_iter_next"),
+        (OpCode::ForIter, None, 1, "molt_iter_next"),
+    ] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        if let Some(symbol) = match opcode {
+            OpCode::GetIter => Some("molt_iter_checked"),
+            OpCode::IterNext | OpCode::ForIter => Some("molt_iter_next"),
+            _ => None,
+        } {
+            backend.runtime_callable_symbols.insert(symbol.into());
+        }
+        let mut func = TirFunction::new("discard_container_result".into(), vec![], TirType::DynBox);
+        let fallback = func.fresh_value();
+        let operands: Vec<_> = (0..operand_count).map(|_| func.fresh_value()).collect();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(fallback));
+        for &operand in &operands {
+            entry.ops.push(const_none_def(operand));
+        }
+        let mut attrs = AttrDict::new();
+        if let Some(kind) = preserved {
+            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        }
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results: vec![],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![fallback],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .unwrap_or_else(|error| panic!("{opcode:?} {preserved:?}: {error}"));
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(
+            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result_name}")),
+            "{opcode:?} {preserved:?} must retire its discarded owner: {ir}"
+        );
+    }
+
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "discard_unboxed_iter_results".into(),
+        vec![],
+        TirType::DynBox,
+    );
+    let fallback = func.fresh_value();
+    let iterator = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_none_def(fallback));
+    entry.ops.push(const_none_def(iterator));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::IterNextUnboxed,
+        operands: vec![iterator],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![fallback],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend
+        .module
+        .verify()
+        .expect("discarded unboxed iterator results");
+    let ir = llvm_fn.print_to_string().to_string();
+    for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
+        assert!(
+            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result}")),
+            "discarded unboxed iterator result {result} must be retired: {ir}"
+        );
+    }
+}
+
+#[test]
+fn iterator_calls_box_and_retire_raw_inputs() {
+    for (opcode, symbol) in [
+        (OpCode::GetIter, "molt_iter_checked"),
+        (OpCode::IterNext, "molt_iter_next"),
+        (OpCode::ForIter, "molt_iter_next"),
+    ] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.runtime_callable_symbols.insert(symbol.into());
+        let mut func = TirFunction::new("raw_iterator_input".into(), vec![], TirType::DynBox);
+        let raw = func.fresh_value();
+        let fallback = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, i64::MAX));
+        entry.ops.push(const_none_def(fallback));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![raw],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![fallback],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .unwrap_or_else(|error| panic!("{opcode:?}: {error}"));
+        let ir = llvm_fn.print_to_string().to_string();
+        let call = format!("call i64 @{symbol}(i64 %boxed_int)");
+        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+        assert!(
+            ir.contains("call i64 @molt_int_from_i64(i64 9223372036854775807)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains(&call),
+            "raw iterator input must reach {symbol} boxed: {ir}"
+        );
+        assert!(
+            ir.contains(input_release),
+            "temporary iterator owner must be retired: {ir}"
+        );
+        assert!(
+            ir.find(&call).unwrap() < ir.find(input_release).unwrap(),
+            "iterator input must remain owned through the runtime borrow: {ir}"
+        );
+        assert!(
+            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{symbol})")),
+            "discarded iterator result must be retired: {ir}"
+        );
+    }
+
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new("raw_unboxed_iterator_input".into(), vec![], TirType::DynBox);
+    let raw = func.fresh_value();
+    let fallback = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_int_def(raw, i64::MAX));
+    entry.ops.push(const_none_def(fallback));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::IterNextUnboxed,
+        operands: vec![raw],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![fallback],
+    };
+
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend
+        .module
+        .verify()
+        .expect("raw unboxed iterator input ownership");
+    let ir = llvm_fn.print_to_string().to_string();
+    let call = "call i64 @molt_iter_next_unboxed(i64 %boxed_int, i64 %iter_next_unboxed_value_ptr)";
+    let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+    assert!(
+        ir.contains(call),
+        "mixed iterator input must be boxed: {ir}"
+    );
+    assert!(
+        ir.contains(input_release),
+        "mixed iterator input owner must be retired: {ir}"
+    );
+    assert!(
+        ir.find(call).unwrap() < ir.find(input_release).unwrap(),
+        "{ir}"
+    );
+    for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
+        assert!(
+            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result})")),
+            "discarded mixed iterator result {result} must be retired: {ir}"
         );
     }
 }

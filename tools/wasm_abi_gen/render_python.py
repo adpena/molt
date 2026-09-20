@@ -274,7 +274,7 @@ def render_py(
         lines.append(f'    "{import_name}",\n')
     lines.append(")\n\n")
     lines.append(
-        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, bool, str, str], ...] = (\n"
+        "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, str, str], ...] = (\n"
     )
     for entry in data.get("const_op_policy", []):
         materializer = entry.get("materializer_import")
@@ -283,7 +283,7 @@ def render_py(
             f'    ("{entry["kind"]}", "{entry["inline_seed"]}", {materializer_repr}, '
             f'"{entry["literal_payload"]}", "{entry["scalar_payload"]}", '
             f"{entry['dispatch_runtime_seed']}, "
-            f'{entry["parse_scalar_literal"]}, "{entry["raw_int_effect"]}", '
+            f'"{entry["raw_int_effect"]}", '
             f'"{entry["lir_fast"]}"),\n'
         )
     lines.append(")\n\n")

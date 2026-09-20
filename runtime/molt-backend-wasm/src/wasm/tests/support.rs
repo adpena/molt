@@ -17,6 +17,23 @@ pub(super) use crate::{FunctionIR, OpIR, SimpleIR};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
 pub(super) use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
+/// Host resources for emitted-module execution, derived from the module ABI.
+pub(super) fn wasm_import_minimums(wasm: &[u8]) -> (u64, u64) {
+    let (mut memory_pages, mut table_entries) = (0, 0);
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ImportSection(reader) = payload.expect("valid WASM payload") {
+            for import in reader.into_imports() {
+                match import.expect("valid WASM import").ty {
+                    TypeRef::Memory(ty) => memory_pages = memory_pages.max(ty.initial),
+                    TypeRef::Table(ty) => table_entries = table_entries.max(ty.initial),
+                    _ => {}
+                }
+            }
+        }
+    }
+    (memory_pages, table_entries)
+}
+
 pub(super) fn wasm_test_function(
     name: &str,
     params: Vec<&str>,

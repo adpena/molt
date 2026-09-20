@@ -43,7 +43,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let return_abi = match abi.result {
-            RuntimeBoxedReturn::OwnedValue => RuntimeReturnAbi::I64,
+            RuntimeBoxedReturn::OwnedValue
+            | RuntimeBoxedReturn::BorrowedValue
+            | RuntimeBoxedReturn::PollValue => RuntimeReturnAbi::I64,
             RuntimeBoxedReturn::Void => RuntimeReturnAbi::Void,
         };
         // Keep declaration custody distinct from value semantics. Dedicated
@@ -75,10 +77,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .operands
             .iter()
             .map(|&id| {
-                let bits = self.materialize_dynbox_operand(id);
-                if self.value_types.get(&id) == Some(&TirType::I64)
-                    && !self.repr_facts.is_inline_safe_int(id)
-                {
+                let (bits, owns_temporary) =
+                    self.materialize_dynbox_operand_with_temporary_owner(id);
+                if owns_temporary {
                     temporary_owners.push(bits);
                 }
                 bits.into()
@@ -105,6 +106,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 Some(result)
             }
         };
+        // A borrowed return can alias a temporary boxed argument. Retain a
+        // named result before releasing those argument owners; discarded
+        // borrowed results acquire no credit and require no release.
+        if abi.result == RuntimeBoxedReturn::BorrowedValue
+            && !op.results.is_empty()
+            && let Some(result) = result
+        {
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[result.into()], "")
+                .unwrap();
+        }
         if !temporary_owners.is_empty() {
             let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
             for bits in temporary_owners {
@@ -114,9 +128,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
             }
         }
-        if let Some(result) = result {
-            // The boxed-call contract transfers an owned result. A call
-            // without an SSA result still has to retire that ownership.
+        if let Some(result) = result
+            && (matches!(
+                abi.result,
+                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue
+            ) || !op.results.is_empty())
+        {
+            // Bound borrowed results now own the retain acquired above.
             self.bind_owned_runtime_result(op, result);
         }
     }

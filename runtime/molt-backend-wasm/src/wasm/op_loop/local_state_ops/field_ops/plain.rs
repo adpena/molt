@@ -54,7 +54,6 @@ fn emit_load(context: &mut LocalStateOpContext<'_>, func: &mut Function, op: &Op
     let obj = context.locals[&args[0]];
     let offset = op.value.unwrap();
     let tmp_val = context.locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
-    let out = op.out.as_ref().unwrap();
 
     func.instruction(&Instruction::LocalGet(obj));
     emit_qnan_ptr_test(context, func);
@@ -62,33 +61,27 @@ fn emit_load(context: &mut LocalStateOpContext<'_>, func: &mut Function, op: &Op
 
     emit_field_needs_runtime(func, FieldObject::Tagged(obj));
     func.instruction(&Instruction::If(BlockType::Empty));
-    emit_runtime_field_read(context, func, obj, offset, out);
+    emit_runtime_field_read(context, func, op, obj, offset);
     func.instruction(&Instruction::Else);
     emit_field_address(func, FieldObject::Tagged(obj), offset);
     emit_i64_load(func);
     func.instruction(&Instruction::LocalSet(tmp_val));
-    emit_inline_field_value_to_output(
-        context,
-        func,
-        tmp_val,
-        Some(out.as_str()),
-        |context, func| {
-            emit_runtime_field_read(context, func, obj, offset, out);
-        },
-    );
+    emit_inline_field_value_to_output(context, func, tmp_val, op, |context, func| {
+        emit_runtime_field_read(context, func, op, obj, offset);
+    });
     func.instruction(&Instruction::End);
 
     func.instruction(&Instruction::Else);
-    emit_runtime_field_read(context, func, obj, offset, out);
+    emit_runtime_field_read(context, func, op, obj, offset);
     func.instruction(&Instruction::End);
 }
 
 fn emit_runtime_field_read(
     context: &LocalStateOpContext<'_>,
     func: &mut Function,
+    op: &OpIR,
     obj: u32,
     offset: i64,
-    out: &str,
 ) {
     func.instruction(&Instruction::LocalGet(obj));
     func.instruction(&Instruction::I64Const(offset));
@@ -97,7 +90,7 @@ fn emit_runtime_field_read(
         context.reloc_enabled,
         context.import_ids[WasmRuntimeImport::ObjectFieldGet],
     );
-    func.instruction(&Instruction::LocalSet(context.locals[out]));
+    emit_runtime_output(context, func, op, WasmRuntimeImport::ObjectFieldGet);
 }
 
 fn emit_runtime_field_write(
@@ -116,5 +109,5 @@ fn emit_runtime_field_write(
         context.reloc_enabled,
         context.import_ids[WasmRuntimeImport::ObjectFieldSet],
     );
-    emit_runtime_output(context, func, op);
+    emit_runtime_output(context, func, op, WasmRuntimeImport::ObjectFieldSet);
 }

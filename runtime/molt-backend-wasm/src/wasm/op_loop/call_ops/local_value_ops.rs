@@ -1,6 +1,6 @@
+use super::super::result_sink::store_borrowed_value;
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 /// Lower representation aliases that are not ordinary local-slot moves.
@@ -25,23 +25,8 @@ fn emit_conversion_alias(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Functi
         .first()
         .expect("conversion op requires one source arg");
     let src = call_ctx.locals[src_name];
-    if let Some(out_name) = op.out.as_ref() {
-        if out_name != "none" {
-            func.instruction(&Instruction::LocalGet(src));
-            emit_call(
-                func,
-                call_ctx.reloc_enabled,
-                call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
-            );
-            func.instruction(&Instruction::LocalGet(src));
-            let out = call_ctx.locals[out_name];
-            func.instruction(&Instruction::LocalSet(out));
-        } else {
-            func.instruction(&Instruction::LocalGet(src));
-            func.instruction(&Instruction::Drop);
-        }
-    } else {
+    if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
         func.instruction(&Instruction::LocalGet(src));
-        func.instruction(&Instruction::Drop);
+        store_borrowed_value(func, Some(out), call_ctx.import_ids, call_ctx.reloc_enabled);
     }
 }

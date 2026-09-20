@@ -35,10 +35,7 @@ fn emit_inc_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
             call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
         );
     }
-    if let Some(out_name) = op.out.as_ref()
-        && out_name != "none"
-    {
-        let out = call_ctx.locals[out_name];
+    if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
         func.instruction(&Instruction::LocalGet(src));
         func.instruction(&Instruction::LocalSet(out));
     }
@@ -64,10 +61,7 @@ fn emit_dec_ref_like(call_ctx: &CallOpContext<'_, '_, '_>, func: &mut Function, 
         call_ctx.reloc_enabled,
         call_ctx.import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
     );
-    if let Some(out_name) = op.out.as_ref()
-        && out_name != "none"
-    {
-        let out = call_ctx.locals[out_name];
+    if let Some(out) = call_ctx.locals.bound_op_result_slot(op) {
         call_ctx.const_cache.emit_none(func);
         func.instruction(&Instruction::LocalSet(out));
     }

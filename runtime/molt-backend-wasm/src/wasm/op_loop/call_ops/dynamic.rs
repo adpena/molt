@@ -1,4 +1,7 @@
-use super::super::result_sink::{store_owned_result_or_release, store_result_or_drop};
+use super::super::result_sink::{
+    finish_owned_local_result, store_owned_result_or_release, store_result_or_drop,
+    store_runtime_result,
+};
 use super::site::{
     build_positional_callargs, collect_live_object_locals_for_call, emit_call_site_id,
     emit_pending_exception_return, release_live_object_locals, retain_live_object_locals,
@@ -39,10 +42,7 @@ pub(super) fn emit_dynamic_call_op(
             let target_name = op.s_value.as_ref().unwrap();
             let args_names = op.args.as_ref().unwrap();
             let callee_bits = locals[&args_names[0]];
-            let out = op.out.as_ref().map_or_else(
-                || locals.synthetic(WasmFrameSyntheticLocal::DeadSink),
-                |name| locals[name],
-            );
+            let out = locals.op_result_or_sink_slot(op);
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp1);
             let arity = args_names.len().saturating_sub(1);
             let direct_shape = !call_site_abi.is_escaped_callable(target_name)
@@ -130,7 +130,12 @@ pub(super) fn emit_dynamic_call_op(
                     reloc_enabled,
                     import_ids[WasmRuntimeImport::FrameInvocationExit],
                 );
-                func.instruction(&Instruction::Drop);
+                super::super::result_sink::discard_runtime_result(
+                    func,
+                    import_ids,
+                    reloc_enabled,
+                    WasmRuntimeImport::FrameInvocationExit,
+                );
                 emit_call(
                     func,
                     reloc_enabled,
@@ -181,10 +186,7 @@ pub(super) fn emit_dynamic_call_op(
             if direct_shape {
                 func.instruction(&Instruction::End);
             }
-            if op.out.is_none() {
-                func.instruction(&Instruction::LocalGet(out));
-                store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
-            }
+            finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
         "call_func" => {
             let args_names = op.args.as_ref().unwrap();
@@ -206,7 +208,14 @@ pub(super) fn emit_dynamic_call_op(
                     import_ids
                         [crate::wasm_abi_generated::WasmRuntimeImport::RequireIntrinsicRuntime],
                 );
-                store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+                store_runtime_result(
+                    func,
+                    op,
+                    locals,
+                    import_ids,
+                    reloc_enabled,
+                    WasmRuntimeImport::RequireIntrinsicRuntime,
+                );
                 release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 return CallOpEmission::Handled;
             }
@@ -229,7 +238,14 @@ pub(super) fn emit_dynamic_call_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallFuncDispatch],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::CallFuncDispatch,
+            );
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "invoke_ffi" => {
@@ -290,7 +306,14 @@ pub(super) fn emit_dynamic_call_op(
                         reloc_enabled,
                         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
                     );
-                    store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+                    store_runtime_result(
+                        func,
+                        op,
+                        locals,
+                        import_ids,
+                        reloc_enabled,
+                        WasmRuntimeImport::InvokeFfiIc,
+                    );
                     release_live_object_locals(
                         func,
                         import_ids,
@@ -318,10 +341,7 @@ pub(super) fn emit_dynamic_call_op(
                 retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
                 match native_import.abi_contract.lowering() {
                     NativeCallableLowering::ForwardF32 => {
-                        let out = op.out.as_ref().map_or_else(
-                            || locals.synthetic(WasmFrameSyntheticLocal::DeadSink),
-                            |name| locals[name],
-                        );
+                        let out = locals.op_result_or_sink_slot(op);
                         emit_forward_f32_native_call(
                             func,
                             import_ids,
@@ -331,16 +351,7 @@ pub(super) fn emit_dynamic_call_op(
                             out,
                             native_import,
                         );
-                        if op.out.is_none() {
-                            func.instruction(&Instruction::LocalGet(out));
-                            store_owned_result_or_release(
-                                func,
-                                op,
-                                locals,
-                                import_ids,
-                                reloc_enabled,
-                            );
-                        }
+                        finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
                     }
                     NativeCallableLowering::PyinitModule => {
                         emit_call(func, reloc_enabled, native_import.function_index);
@@ -394,7 +405,14 @@ pub(super) fn emit_dynamic_call_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::InvokeFfiIc],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                WasmRuntimeImport::InvokeFfiIc,
+            );
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_bind" | "call_indirect" => {
@@ -416,20 +434,13 @@ pub(super) fn emit_dynamic_call_op(
             emit_call_site_id(func, func_ir.name.as_str(), op_idx, call_site_label);
             func.instruction(&Instruction::LocalGet(func_bits));
             func.instruction(&Instruction::LocalGet(builder_ptr));
-            if op.kind == "call_indirect" {
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallIndirectIc],
-                );
+            let import = if op.kind == "call_indirect" {
+                WasmRuntimeImport::CallIndirectIc
             } else {
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
-                );
-            }
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+                WasmRuntimeImport::CallBindIc
+            };
+            emit_call(func, reloc_enabled, import_ids[import]);
+            store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         "call_method" => {
@@ -445,91 +456,25 @@ pub(super) fn emit_dynamic_call_op(
 
             // Fast-path: dispatch known bound-method patterns
             // directly without callargs allocation or IC lookup.
-            let fast_dispatched = if let Some(sv) = op.s_value.as_deref() {
-                let arity = args_names.len().saturating_sub(1);
-                match sv {
-                    "BoundMethod:list:append" if arity == 1 => {
-                        let arg = locals[&args_names[1]];
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids
-                                [crate::wasm_abi_generated::WasmRuntimeImport::FastListAppend],
-                        );
-                        true
-                    }
-                    "BoundMethod:str:join" if arity == 1 => {
-                        let arg = locals[&args_names[1]];
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrJoin],
-                        );
-                        true
-                    }
-                    "BoundMethod:dict:get" if arity == 2 => {
-                        let key = locals[&args_names[1]];
-                        let default = locals[&args_names[2]];
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(key));
-                        func.instruction(&Instruction::LocalGet(default));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastDictGet],
-                        );
-                        true
-                    }
-                    "BoundMethod:str:startswith" if arity == 1 => {
-                        let arg = locals[&args_names[1]];
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        func.instruction(&Instruction::LocalGet(arg));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids
-                                [crate::wasm_abi_generated::WasmRuntimeImport::FastStrStartswith],
-                        );
-                        true
-                    }
-                    "BoundMethod:str:upper" if arity == 0 => {
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrUpper],
-                        );
-                        true
-                    }
-                    "BoundMethod:str:lower" if arity == 0 => {
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrLower],
-                        );
-                        true
-                    }
-                    "BoundMethod:str:strip" if arity == 0 => {
-                        func.instruction(&Instruction::LocalGet(method_bits));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::FastStrStrip],
-                        );
-                        true
-                    }
-                    _ => false,
+            let arity = args_names.len().saturating_sub(1);
+            let fast_import = match (op.s_value.as_deref(), arity) {
+                (Some("BoundMethod:list:append"), 1) => Some(WasmRuntimeImport::FastListAppend),
+                (Some("BoundMethod:str:join"), 1) => Some(WasmRuntimeImport::FastStrJoin),
+                (Some("BoundMethod:dict:get"), 2) => Some(WasmRuntimeImport::FastDictGet),
+                (Some("BoundMethod:str:startswith"), 1) => {
+                    Some(WasmRuntimeImport::FastStrStartswith)
                 }
-            } else {
-                false
+                (Some("BoundMethod:str:upper"), 0) => Some(WasmRuntimeImport::FastStrUpper),
+                (Some("BoundMethod:str:lower"), 0) => Some(WasmRuntimeImport::FastStrLower),
+                (Some("BoundMethod:str:strip"), 0) => Some(WasmRuntimeImport::FastStrStrip),
+                _ => None,
             };
-
-            if !fast_dispatched {
+            let import = if let Some(import) = fast_import {
+                for arg_name in args_names {
+                    func.instruction(&Instruction::LocalGet(locals[arg_name]));
+                }
+                import
+            } else {
                 // Generic path: allocate callargs and dispatch via IC.
                 let callargs_tmp = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
                 build_positional_callargs(
@@ -543,13 +488,10 @@ pub(super) fn emit_dynamic_call_op(
                 emit_call_site_id(func, func_ir.name.as_str(), op_idx, "call_method");
                 func.instruction(&Instruction::LocalGet(method_bits));
                 func.instruction(&Instruction::LocalGet(callargs_tmp));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallBindIc],
-                );
-            }
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+                WasmRuntimeImport::CallBindIc
+            };
+            emit_call(func, reloc_enabled, import_ids[import]);
+            store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
         _ => return CallOpEmission::NotHandled,

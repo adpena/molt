@@ -1,13 +1,9 @@
-use super::result_sink::{
-    store_non_none_result_or_drop, store_owned_result_or_release, store_result_or_drop,
-};
+use super::result_sink::{discard_runtime_result, store_runtime_result};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm_abi_generated::{
-    OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, OpLoopRuntimeSinkSpec,
-};
+use crate::wasm_abi_generated::{OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec, WasmRuntimeImport};
 use crate::wasm_binary::emit_call;
-use crate::wasm_import_tracking::TrackedImportIds;
+use crate::wasm_import_tracking::{TrackedImportIds, selected_import_id};
 use wasm_encoder::{Function, Instruction};
 
 #[derive(Clone, Copy)]
@@ -46,16 +42,27 @@ pub(super) fn emit_op_loop_runtime_call(
     }
 
     emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
-    emit_op_loop_runtime_sink(context, func, op, call.sink);
+    if call.discard_result {
+        discard_runtime_result(func, context.import_ids, context.reloc_enabled, call.import);
+    } else {
+        store_runtime_result(
+            func,
+            op,
+            context.locals,
+            context.import_ids,
+            context.reloc_enabled,
+            call.import,
+        );
+    }
 }
 
-pub(super) fn emit_op_loop_local_prefix_call_id(
+pub(super) fn emit_op_loop_local_prefix_call(
     context: &OpLoopRuntimeCallContext<'_>,
     func: &mut Function,
     op: &OpIR,
-    import_id: u32,
+    import: WasmRuntimeImport,
     arg_count: usize,
-    sink: OpLoopRuntimeSinkSpec,
+    function_name: &str,
 ) {
     let args = op.args.as_ref().unwrap_or_else(|| {
         panic!(
@@ -72,31 +79,14 @@ pub(super) fn emit_op_loop_local_prefix_call_id(
     for arg in &args[..arg_count] {
         func.instruction(&Instruction::LocalGet(context.locals[arg]));
     }
+    let import_id = selected_import_id(context.import_ids, import, function_name, &op.kind);
     emit_call(func, context.reloc_enabled, import_id);
-    emit_op_loop_runtime_sink(context, func, op, sink);
-}
-
-pub(super) fn emit_op_loop_runtime_sink(
-    context: &OpLoopRuntimeCallContext<'_>,
-    func: &mut Function,
-    op: &OpIR,
-    sink: OpLoopRuntimeSinkSpec,
-) {
-    match sink {
-        OpLoopRuntimeSinkSpec::ResultOrDrop => store_result_or_drop(func, op, context.locals),
-        OpLoopRuntimeSinkSpec::OwnedResultOrRelease => store_owned_result_or_release(
-            func,
-            op,
-            context.locals,
-            context.import_ids,
-            context.reloc_enabled,
-        ),
-        OpLoopRuntimeSinkSpec::NonNoneResultOrDrop => {
-            store_non_none_result_or_drop(func, op, context.locals)
-        }
-        OpLoopRuntimeSinkSpec::Drop => {
-            func.instruction(&Instruction::Drop);
-        }
-        OpLoopRuntimeSinkSpec::None => {}
-    }
+    store_runtime_result(
+        func,
+        op,
+        context.locals,
+        context.import_ids,
+        context.reloc_enabled,
+        import,
+    );
 }

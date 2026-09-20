@@ -1,7 +1,7 @@
 use super::super::common::{
     binary_operands, emit_boxed_binary_call, emit_guarded_int_binary_result_or_boxed,
     emit_plain_f64_arithmetic_result, emit_plain_f64_binary_result_or_boxed, int_binary_temps,
-    store_numeric_result,
+    store_runtime_result,
 };
 use super::raw::emit_nonzero_rhs_raw_division_or_boxed;
 use crate::OpIR;
@@ -89,5 +89,12 @@ pub(super) fn emit_division_binary_op(
         numeric_lane_stats.record_op_loop_division_boxed_runtime_site();
         emit_boxed_binary_call(func, operands, import_ids, import_name, reloc_enabled);
     }
-    store_numeric_result(func, op, locals);
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        selection.import,
+    );
 }

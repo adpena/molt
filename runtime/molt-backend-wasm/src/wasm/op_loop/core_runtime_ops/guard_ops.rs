@@ -1,5 +1,7 @@
+use super::super::result_sink::store_runtime_result;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
@@ -28,11 +30,13 @@ pub(super) fn emit_guard_runtime_op(
         reloc_enabled,
         import_ids[crate::wasm_abi_generated::WasmRuntimeImport::GuardLayout],
     );
-    if let Some(out) = op.out.as_ref() {
-        let res = locals[out];
-        func.instruction(&Instruction::LocalSet(res));
-    } else {
-        func.instruction(&Instruction::Drop);
-    }
+    store_runtime_result(
+        func,
+        op,
+        locals,
+        import_ids,
+        reloc_enabled,
+        WasmRuntimeImport::GuardLayout,
+    );
     true
 }

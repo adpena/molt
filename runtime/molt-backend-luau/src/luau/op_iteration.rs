@@ -1,4 +1,5 @@
 use super::*;
+use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 
 impl LuauBackend {
     pub(super) fn emit_iteration_op(&mut self, op: &OpIR) -> bool {
@@ -23,13 +24,13 @@ impl LuauBackend {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
-                    let mut results = [None, None];
-                    let mut result_count = 0;
-                    molt_tir::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
-                        results[result_count] = Some(name);
-                        result_count += 1;
+                    let mut value_out = None;
+                    let mut done_out = None;
+                    visit_simple_ir_results(op, |result| match result.field {
+                        SimpleIrResultField::Var => value_out = result.name,
+                        SimpleIrResultField::Out => done_out = result.name,
+                        SimpleIrResultField::Arg(_) => {}
                     });
-                    let [value_out, done_out] = results;
                     let value_out = value_out.map(sanitize_ident);
                     let done_out = done_out.map(sanitize_ident);
                     let tmp_seed = done_out

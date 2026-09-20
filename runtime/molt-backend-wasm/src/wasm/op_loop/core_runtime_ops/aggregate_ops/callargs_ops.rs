@@ -1,4 +1,4 @@
-use super::super::super::result_sink::store_owned_result_or_release;
+use super::super::super::result_sink::store_runtime_result;
 use super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm_binary::emit_call;
@@ -22,7 +22,14 @@ pub(super) fn emit_callargs_op(
                 reloc_enabled,
                 import_ids[crate::wasm_abi_generated::WasmRuntimeImport::CallargsNew],
             );
-            store_owned_result_or_release(func, op, locals, import_ids, reloc_enabled);
+            store_runtime_result(
+                func,
+                op,
+                locals,
+                import_ids,
+                reloc_enabled,
+                crate::wasm_abi_generated::WasmRuntimeImport::CallargsNew,
+            );
         }
         _ => return false,
     }

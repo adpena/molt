@@ -463,8 +463,8 @@ pub unsafe extern "C" fn molt_stream_reader_readline(reader_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(capacity) = usize_from_bits(capacity_bits) else {
-            return raise_exception::<u64>(_py, "MemoryError", "stream capacity is too large");
+        let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
+            return MoltObject::none().bits();
         };
         stream_new_with_byte_budget(capacity, default_stream_max_queued_bytes())
     })
@@ -609,8 +609,19 @@ pub unsafe extern "C" fn molt_stream_send_obj(stream_bits: u64, data_bits: u64) 
         };
         let _owned_guard = owned;
         // SAFETY: pointer/length pair comes from validated bytes-like object.
-        unsafe { molt_stream_send(stream_bits, data_ptr, data_len as u64) as u64 }
+        send_result_into_object(unsafe { molt_stream_send(stream_bits, data_ptr, data_len as u64) })
     })
+}
+
+/// Raw byte-send ABIs and their hooks use zero for ready success. Python-facing
+/// wrappers instead return an integer object, or preserve Pending/error bits.
+#[inline]
+pub(super) fn send_result_into_object(result: i64) -> u64 {
+    if result == 0 {
+        MoltObject::from_int(0).bits()
+    } else {
+        result as u64
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -713,13 +724,78 @@ pub unsafe extern "C" fn molt_stream_drop(stream_bits: u64) {
 mod stream_tests {
     use super::{
         MoltStream, STREAM_MIN_MAX_QUEUED_BYTES, molt_stream_drop, molt_stream_recv,
-        molt_stream_send, stream_enqueue_bytes_blocking, stream_new_with_byte_budget,
-        stream_release_queued_bytes,
+        molt_stream_send, molt_stream_send_obj, stream_enqueue_bytes_blocking,
+        stream_new_with_byte_budget, stream_release_queued_bytes,
     };
     use crate::{MoltObject, dec_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn stream_send_object_boxes_ready_and_preserves_pending() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let stream_bits = super::molt_stream_new(MoltObject::from_int(1).bits());
+            let payload = crate::alloc_bytes(_py, b"payload");
+            assert!(!payload.is_null());
+            let payload_bits = MoltObject::from_ptr(payload).bits();
+
+            let ready = unsafe { molt_stream_send_obj(stream_bits, payload_bits) };
+            assert_eq!(obj_from_bits(ready).as_int(), Some(0));
+            let pending = unsafe { molt_stream_send_obj(stream_bits, payload_bits) };
+            assert_eq!(pending, pending_bits_i64() as u64);
+            let received = unsafe { molt_stream_recv(stream_bits) as u64 };
+            dec_ref_bits(_py, received);
+            assert_eq!(
+                unsafe { molt_stream_send(stream_bits, b"raw".as_ptr(), 3) },
+                0
+            );
+
+            let invalid = unsafe { molt_stream_send_obj(stream_bits, MoltObject::none().bits()) };
+            assert_eq!(invalid, MoltObject::none().bits());
+            assert!(crate::exception_pending(_py));
+            crate::clear_exception(_py);
+            dec_ref_bits(_py, payload_bits);
+            unsafe { molt_stream_drop(stream_bits) };
+            let unbounded = super::molt_stream_new(MoltObject::from_int(0).bits());
+            let stream = unsafe { &*(ptr_from_bits(unbounded) as *mut MoltStream) };
+            assert_eq!(stream.sender.capacity(), None);
+            unsafe { molt_stream_drop(unbounded) };
+        });
+    }
+
+    #[test]
+    fn stream_send_object_preserves_hook_closed_and_exception_results() {
+        extern "C" fn send_hook(ctx: *mut u8, _data: *const u8, _len: usize) -> i64 {
+            if ctx.is_null() {
+                MoltObject::none().bits() as i64
+            } else {
+                crate::with_gil_entry_nopanic!(_py, {
+                    crate::raise_exception::<i64>(_py, "OSError", "send failed")
+                })
+            }
+        }
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let payload = crate::alloc_bytes(_py, b"payload");
+            assert!(!payload.is_null());
+            let payload_bits = MoltObject::from_ptr(payload).bits();
+            let mut marker = 0u8;
+            for ctx in [std::ptr::null_mut(), &mut marker as *mut u8] {
+                let stream =
+                    super::molt_stream_new_with_hooks(send_hook as *const () as usize, 0, ctx);
+                let stream_bits = crate::opaque_handle_bits(stream);
+                let result = unsafe { molt_stream_send_obj(stream_bits, payload_bits) };
+                assert_eq!(result, MoltObject::none().bits());
+                assert_eq!(crate::exception_pending(_py), !ctx.is_null());
+                crate::clear_exception(_py);
+                unsafe { molt_stream_drop(stream_bits) };
+            }
+            dec_ref_bits(_py, payload_bits);
+        });
+    }
 
     #[test]
     fn stream_byte_budget_returns_pending_until_recv_releases_bytes() {

@@ -84,6 +84,31 @@
     return result;
   };
 
+  // The constructor takes a borrowed Python integer. Its result is an opaque
+  // stream handle with explicit drop custody, not a generic object owner.
+  const createRuntimeStream = (instance, capacity) => {
+    const exports = requireExports(instance, ['molt_stream_new', 'molt_stream_drop',
+      'molt_exception_pending_fast']);
+    let stream;
+    let created = false;
+    try {
+      return withRuntimeOwnedValues(instance, [capacity],
+        value => boxRuntimeInt(instance, value), ([capacityBits]) => {
+          stream = exports.molt_stream_new(capacityBits);
+          if (Number(exports.molt_exception_pending_fast()) !== 0) {
+            throw new Error('stream allocation failed');
+          }
+          created = true;
+          return stream;
+        });
+    } catch (error) {
+      if (!created) throw error;
+      const errors = [error];
+      try { exports.molt_stream_drop(stream); } catch (cleanup) { errors.push(cleanup); }
+      throw combinedError(errors);
+    }
+  };
+
   // Borrowed append / consuming finish, shared by every host adapter. Both
   // temporary integer owners and failed unpublished aggregates are released.
   const makeRuntimeIntList = (instance, values) => {
@@ -284,6 +309,6 @@
     };
     return { execute, initialize, dispose, assertLive, admit: resolve };
   };
-  return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt,
+  return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
     withRuntimeOwnedValues, makeRuntimeIntList, combinedError };
 });

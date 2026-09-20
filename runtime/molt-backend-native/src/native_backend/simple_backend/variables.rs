@@ -19,6 +19,12 @@ pub(crate) fn var_get(
     vars: &BTreeMap<String, Variable>,
     name: &str,
 ) -> Option<VarValue> {
+    // The reserved singleton is a read operand, not a declared mutable home.
+    // Preanalysis intentionally omits it from vars; every generic native
+    // operand consumer must still receive its boxed value.
+    if name == "none" {
+        return Some(VarValue(builder.ins().iconst(types::I64, box_none())));
+    }
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
 }
 
