@@ -83,9 +83,7 @@ def load_intrinsic_availability(
     if not isinstance(builtin, dict):
         raise TypeError("builtin must be a table")
     for category, raw_symbols in builtin.items():
-        builtin_symbols.extend(
-            _string_list(raw_symbols, field=f"builtin.{category}")
-        )
+        builtin_symbols.extend(_string_list(raw_symbols, field=f"builtin.{category}"))
 
     for mod_name, mod_data in data.get("stdlib", {}).items():
         if not isinstance(mod_data, dict):

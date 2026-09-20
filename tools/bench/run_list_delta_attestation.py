@@ -32,19 +32,11 @@ import run_l7_numeric_attestation as l7  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
 
 DEFAULT_OUTPUT = (
-    REPO_ROOT
-    / "logs"
-    / "benchmarks"
-    / "sequence_container_attestation"
-    / "latest.json"
+    REPO_ROOT / "logs" / "benchmarks" / "sequence_container_attestation" / "latest.json"
 )
 CAPSULE_ACTIVE_DIR = active_guard_marker_dir(REPO_ROOT)
 CAPSULE_ARCHIVE_DIR = (
-    REPO_ROOT
-    / "logs"
-    / "benchmarks"
-    / "sequence_container_attestation"
-    / "custody"
+    REPO_ROOT / "logs" / "benchmarks" / "sequence_container_attestation" / "custody"
 )
 PREFIX = "SEQUENCE_CONTAINER_ATTESTATION="
 CASE_NAMES = (
@@ -139,7 +131,9 @@ def _validate_payload(
         raise RuntimeError("container attestation was not built in release mode")
     if payload.get("source") != expected_source:
         raise RuntimeError("container attestation source provenance echo mismatch")
-    if payload.get("execution_control") != l7._child_execution_control(execution_control):
+    if payload.get("execution_control") != l7._child_execution_control(
+        execution_control
+    ):
         raise RuntimeError("container attestation affinity control drift")
     expected_mode = {
         "deterministic_default": True,
@@ -148,9 +142,13 @@ def _validate_payload(
         "benchmark_threads": 1,
     }
     if payload.get("execution_mode") != expected_mode:
-        raise RuntimeError("container attestation escaped deterministic GIL-default mode")
+        raise RuntimeError(
+            "container attestation escaped deterministic GIL-default mode"
+        )
     cases = payload.get("cases")
-    if not isinstance(cases, list) or [case.get("name") for case in cases] != list(CASE_NAMES):
+    if not isinstance(cases, list) or [case.get("name") for case in cases] != list(
+        CASE_NAMES
+    ):
         raise RuntimeError("container attestation ordered case manifest drift")
     sample_count = payload.get("sample_count")
     if sample_count != l7.SAMPLE_COUNT:
@@ -170,7 +168,10 @@ def _validate_payload(
         if zero_gate.get("required") is not required:
             raise RuntimeError(f"{name}: zero-allocation gate scope drift")
         positive_gate = case.get("gates", {}).get("allocator_probe_positive_control")
-        if not isinstance(positive_gate, dict) or positive_gate.get("passed") is not True:
+        if (
+            not isinstance(positive_gate, dict)
+            or positive_gate.get("passed") is not True
+        ):
             raise RuntimeError(f"{name}: allocator positive-control gate did not pass")
         if positive_gate.get("required") is required:
             raise RuntimeError(f"{name}: allocator positive-control scope drift")
@@ -193,7 +194,9 @@ def _validate_payload(
             if not isinstance(metric_summary, dict):
                 raise RuntimeError(f"{name}: {metric} summary missing")
             for field in ("median", "cv", "robust_cv"):
-                _finite_nonnegative(metric_summary.get(field), f"{name}/{metric}/{field}")
+                _finite_nonnegative(
+                    metric_summary.get(field), f"{name}/{metric}/{field}"
+                )
         timing_robust_cv = _finite_nonnegative(
             summary["ns_per_op"]["robust_cv"], f"{name}/ns_per_op/robust_cv"
         )
@@ -218,7 +221,10 @@ def _aggregate(attestations: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         metrics = {
             metric: l7._summary(
-                [_finite_nonnegative(case["summary"][metric]["median"], metric) for case in cases]
+                [
+                    _finite_nonnegative(case["summary"][metric]["median"], metric)
+                    for case in cases
+                ]
             )
             for metric in METRICS
         }
@@ -292,6 +298,7 @@ def run_attestation(
         }
         l7._write_json_atomic(active_capsule, capsule)
         try:
+
             def record_child_pid(pid: int) -> None:
                 capsule.update(
                     {
@@ -349,14 +356,18 @@ def run_attestation(
                 f"rc={measured.returncode} timeout={measured.timed_out}"
             )
         if measured.peak_rss_bytes is None:
-            raise RuntimeError("container attestation process-tree peak RSS was unavailable")
+            raise RuntimeError(
+                "container attestation process-tree peak RSS was unavailable"
+            )
         if measured.peak_rss_bytes > MAX_PEAK_RSS_BYTES:
             raise RuntimeError(
                 f"run {run_index} peak RSS {measured.peak_rss_bytes} exceeds "
                 f"{MAX_PEAK_RSS_BYTES}"
             )
         if sys.platform == "win32" and measured.peak_job_commit_bytes is None:
-            raise RuntimeError("container attestation Windows Job peak commit was unavailable")
+            raise RuntimeError(
+                "container attestation Windows Job peak commit was unavailable"
+            )
         if (
             measured.peak_job_commit_bytes is not None
             and measured.peak_job_commit_bytes > MAX_PEAK_JOB_COMMIT_BYTES
@@ -408,9 +419,7 @@ def run_attestation(
                 f"{case_name}: cross-process timing robust CV {robust_cv:.4f} exceeds "
                 f"{MAX_TIMING_ROBUST_CV:.4f}"
             )
-    rss_summary = l7._summary(
-        [float(row["peak_rss_bytes"]) for row in process_runs]
-    )
+    rss_summary = l7._summary([float(row["peak_rss_bytes"]) for row in process_runs])
     rss_robust_cv = _finite_nonnegative(
         rss_summary["robust_cv"], "process/peak_rss_bytes/robust_cv"
     )

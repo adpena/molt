@@ -76,7 +76,7 @@ def test_backend_publication_is_owned_by_the_shared_artifact_crate() -> None:
             r"pub(?:\([^)]*\))?\s+use\s+molt_artifact_publish", text
         ), source
     authority = (crate / "src/lib.rs").read_text(encoding="utf-8")
-    assert 'feature = ' not in authority
+    assert "feature = " not in authority
     assert "pub enum PublicationState" in authority
     plan = tomllib.loads((ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8"))
     commands = {command["id"]: command for command in plan["command"]}

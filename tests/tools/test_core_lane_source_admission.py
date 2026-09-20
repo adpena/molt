@@ -11,7 +11,9 @@ def test_core_manifest_excludes_newer_syntax_before_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     future = tmp_path / "future.py"
-    future.write_text("# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8")
+    future.write_text(
+        "# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8"
+    )
     common = tmp_path / "common.py"
     common.write_text("import math\n", encoding="utf-8")
     manifest = tmp_path / "manifest.txt"

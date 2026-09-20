@@ -125,7 +125,9 @@ def test_version_excluded_source_never_reaches_parser_or_generator(
 ) -> None:
     tool = _load_tool()
     source = tmp_path / "future.py"
-    source.write_text("# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8")
+    source.write_text(
+        "# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8"
+    )
 
     def forbidden(*args, **kwargs):
         raise AssertionError("version-excluded source reached compilation")
@@ -172,13 +174,24 @@ def test_cli_version_skip_is_reported_without_fail_on_error_failure(
 ) -> None:
     tool = _load_tool()
     source = tmp_path / "future.py"
-    source.write_text("# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8")
+    source.write_text(
+        "# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8"
+    )
     out_dir = tmp_path / "profile"
-    rc = tool.main([
-        "--source", str(source), "--target-python", "3.12",
-        "--out-dir", str(out_dir), "--fail-on-error",
-    ])
-    report = json.loads((out_dir / "frontend_hot_pass_profile.json").read_text(encoding="utf-8"))
+    rc = tool.main(
+        [
+            "--source",
+            str(source),
+            "--target-python",
+            "3.12",
+            "--out-dir",
+            str(out_dir),
+            "--fail-on-error",
+        ]
+    )
+    report = json.loads(
+        (out_dir / "frontend_hot_pass_profile.json").read_text(encoding="utf-8")
+    )
     assert rc == 0
     assert report["schema_version"] == "1.2"
     assert report["status_counts"] == {"skip": 1}

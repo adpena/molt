@@ -24,7 +24,9 @@ def test_all_canaries_live():
 
 
 def test_target_subset_canary_uses_live_admission_authority(monkeypatch):
-    canary = next(item for item in cgl._canaries() if item.gate == "cpython_version_boundary")
+    canary = next(
+        item for item in cgl._canaries() if item.gate == "cpython_version_boundary"
+    )
     assert canary.fires()
     admitted = []
 
