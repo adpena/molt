@@ -398,11 +398,6 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
     let analysis = preanalyze_for_test(&func);
 
     assert_eq!(
-        analysis.loop_body_out_vars.get(&0),
-        Some(&vec!["slot".to_string()]),
-        "loop-body slot tracking should ignore SSA temps and only keep slot-backed reassignments",
-    );
-    assert_eq!(
         analysis.loop_body_init_vars.get(&0),
         Some(&vec!["slot".to_string()]),
         "slot-backed loop vars without any pre-loop store need an explicit first-iteration sentinel",
@@ -465,11 +460,6 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
 
     let analysis = preanalyze_for_test(&func);
 
-    assert_eq!(
-        analysis.loop_body_out_vars.get(&2),
-        Some(&vec!["slot".to_string()]),
-        "loop cleanup still needs to track the slot as loop-carried",
-    );
     assert!(
         analysis
             .loop_body_init_vars

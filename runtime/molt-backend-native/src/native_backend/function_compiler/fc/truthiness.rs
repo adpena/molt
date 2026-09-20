@@ -41,13 +41,11 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     builder.append_block_param(merge, types::I8);
     append_live_through_params(builder, merge, &live_through);
 
+    let bool_shadow = list_index_fast_paths.bool_shadow(cond_name, builder);
     emit_conditional_list_bool_truthiness(
         builder,
         sealed_blocks,
-        &list_index_fast_paths.list_is_bool_cache,
-        list_index_fast_paths
-            .conditional_list_bool_shadows
-            .get(cond_name),
+        bool_shadow,
         merge,
         &live_through,
     );

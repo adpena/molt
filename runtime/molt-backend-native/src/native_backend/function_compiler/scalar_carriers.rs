@@ -315,23 +315,37 @@ pub(in crate::native_backend::function_compiler) fn compare_bool_result_value(
 }
 
 /// Truthiness carrier for an unknown-list getitem whose source list has a
-/// cached runtime `TYPE_ID_LIST_BOOL` check.
+/// snapshotted runtime `TYPE_ID_LIST_BOOL` check.
 ///
-/// `payload` is raw 0/1 only when `list_name` is a list_bool at runtime; when
+/// `payload` is raw 0/1 only when `is_bool` was true at the element read; when
 /// the list is a regular list, the same payload is the NaN-boxed element and
 /// consumers must continue through the normal tag/runtime truthiness path.
 #[cfg(feature = "native-backend")]
 #[derive(Clone)]
 pub(in crate::native_backend::function_compiler) struct ConditionalListBoolShadow {
-    pub(in crate::native_backend::function_compiler) list_name: String,
+    pub(in crate::native_backend::function_compiler) is_bool: Value,
     pub(in crate::native_backend::function_compiler) payload: Value,
+}
+
+#[cfg(feature = "native-backend")]
+impl ConditionalListBoolShadow {
+    pub(in crate::native_backend::function_compiler) fn from_boxed(
+        builder: &mut FunctionBuilder<'_>,
+        is_bool: Value,
+        boxed: Value,
+    ) -> Self {
+        // Runtime fallback (notably negative indexing) returns a boxed value
+        // even for list_bool. Match the fast path's layout-dependent payload.
+        let raw_bit = builder.ins().band_imm(boxed, 1);
+        let payload = builder.ins().select(is_bool, raw_bit, boxed);
+        Self { is_bool, payload }
+    }
 }
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_conditional_list_bool_truthiness(
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,
-    list_is_bool_cache: &BTreeMap<String, Variable>,
     shadow: Option<&ConditionalListBoolShadow>,
     truthy_merge: Block,
     live_through: &[LiveThroughValue],
@@ -339,13 +353,8 @@ pub(in crate::native_backend::function_compiler) fn emit_conditional_list_bool_t
     let Some(shadow) = shadow else {
         return false;
     };
-    let Some(&ibvar) = list_is_bool_cache.get(&shadow.list_name) else {
-        return false;
-    };
-
-    let ib = builder.use_var(ibvar);
     let zero_i8 = builder.ins().iconst(types::I8, 0);
-    let is_bool_check = builder.ins().icmp(IntCC::NotEqual, ib, zero_i8);
+    let is_bool_check = builder.ins().icmp(IntCC::NotEqual, shadow.is_bool, zero_i8);
     let raw_bool_block = builder.create_block();
     let speculative_block = builder.create_block();
     builder

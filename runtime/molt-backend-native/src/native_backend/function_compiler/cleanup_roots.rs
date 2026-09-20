@@ -12,6 +12,7 @@ pub(in crate::native_backend::function_compiler) struct NativeCleanupRoots {
     borrowed_params: BTreeSet<String>,
     explicit_credits: BTreeMap<String, Variable>,
     empty_token: Option<Value>,
+    release_generation: std::rc::Rc<std::cell::Cell<u64>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -74,6 +75,7 @@ impl NativeCleanupRoots {
             borrowed_params,
             explicit_credits,
             empty_token: None,
+            release_generation: Default::default(),
         }
     }
 
@@ -144,6 +146,12 @@ impl NativeCleanupRoots {
         self.token(name).is_some()
     }
 
+    /// Emission custody for observations invalidated by arbitrary finalizers.
+    /// Shared consumers check this at use time, including within one IR op.
+    pub(super) fn release_generation(&self) -> std::rc::Rc<std::cell::Cell<u64>> {
+        self.release_generation.clone()
+    }
+
     pub(super) fn shares_owner(&self, source: &str, destination: &str) -> bool {
         alias_root_name(&self.aliases, source) == alias_root_name(&self.aliases, destination)
     }
@@ -171,7 +179,7 @@ impl NativeCleanupRoots {
                 let zero = builder.ins().iconst(types::I64, 0);
                 builder.def_var(credits, zero);
             }
-            Self::release_value(builder, callee, previous);
+            self.release_value(builder, callee, previous);
         }
     }
 
@@ -225,10 +233,10 @@ impl NativeCleanupRoots {
         };
         let value = builder.use_var(token);
         self.transfer(builder, name);
-        Self::release_value(builder, callee, value);
+        self.release_value(builder, callee, value);
     }
 
-    fn release_value(builder: &mut FunctionBuilder, callee: FuncRef, value: Value) {
+    fn release_value(&self, builder: &mut FunctionBuilder, callee: FuncRef, value: Value) {
         // Avoid emitting calls for statically empty tokens. Mixed-path tokens
         // remain ordinary boxed SSA values; dec_ref_obj(None) is a no-op.
         let value = builder.func.dfg.resolve_aliases(value);
@@ -241,6 +249,12 @@ impl NativeCleanupRoots {
             _ => false,
         };
         if !empty {
+            self.release_generation.set(
+                self.release_generation
+                    .get()
+                    .checked_add(1)
+                    .expect("native release emission generation overflow"),
+            );
             builder.ins().call(callee, &[value]);
         }
     }

@@ -1,6 +1,7 @@
 use super::super::*;
 use super::list_index_fast_path::{
-    ListIndexFastPathState, generic_list_int_lane_eligible, index_fallback_import_name,
+    ListIndexFastPathState, ListStorageField, generic_list_int_lane_eligible,
+    index_fallback_import_name,
 };
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -119,8 +120,8 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
             if let Some(raw_idx) = raw_idx_lookup {
                 // Extract storage_ptr, data_ptr, len (cached across loop iterations).
                 let (data_ptr, len_val) = {
-                    let dp = if let Some(&var) =
-                        list_index_fast_paths.list_int_data_cache.get(&args[0])
+                    let dp = if let Some(var) =
+                        list_index_fast_paths.get(ListStorageField::IntData, &args[0], builder)
                     {
                         builder.use_var(var)
                     } else {
@@ -139,9 +140,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         );
                         let var = builder.declare_var(types::I64);
                         builder.def_var(var, dp);
-                        list_index_fast_paths
-                            .list_int_data_cache
-                            .insert(args[0].clone(), var);
+                        list_index_fast_paths.insert(
+                            ListStorageField::IntData,
+                            args[0].clone(),
+                            var,
+                            builder,
+                        );
                         // Also cache len
                         let len = builder.ins().load(
                             types::I64,
@@ -151,13 +155,16 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_int_len_cache
-                            .insert(args[0].clone(), lvar);
+                        list_index_fast_paths.insert(
+                            ListStorageField::IntLen,
+                            args[0].clone(),
+                            lvar,
+                            builder,
+                        );
                         dp
                     };
-                    let lv = if let Some(&var) =
-                        list_index_fast_paths.list_int_len_cache.get(&args[0])
+                    let lv = if let Some(var) =
+                        list_index_fast_paths.get(ListStorageField::IntLen, &args[0], builder)
                     {
                         builder.use_var(var)
                     } else {
@@ -177,9 +184,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         );
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_int_len_cache
-                            .insert(args[0].clone(), lvar);
+                        list_index_fast_paths.insert(
+                            ListStorageField::IntLen,
+                            args[0].clone(),
+                            lvar,
+                            builder,
+                        );
                         len
                     };
                     (dp, lv)
@@ -331,7 +341,8 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 });
                 // Extract data_ptr, len, and is_bool flag (cached across loop iterations).
                 let (data_ptr, len_val, is_bool_val) = {
-                    let dp = if let Some(&var) = list_index_fast_paths.list_data_cache.get(&args[0])
+                    let dp = if let Some(var) =
+                        list_index_fast_paths.get(ListStorageField::Data, &args[0], builder)
                     {
                         builder.use_var(var)
                     } else {
@@ -349,9 +360,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let ibvar = builder.declare_var(types::I8);
                             let const_true = builder.ins().iconst(types::I8, 1);
                             builder.def_var(ibvar, const_true);
-                            list_index_fast_paths
-                                .list_is_bool_cache
-                                .insert(args[0].clone(), ibvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::IsBool,
+                                args[0].clone(),
+                                ibvar,
+                                builder,
+                            );
                             let dp = builder.ins().load(
                                 types::I64,
                                 MemFlagsData::trusted(),
@@ -366,14 +380,20 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             );
                             let var = builder.declare_var(types::I64);
                             builder.def_var(var, dp);
-                            list_index_fast_paths
-                                .list_data_cache
-                                .insert(args[0].clone(), var);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Data,
+                                args[0].clone(),
+                                var,
+                                builder,
+                            );
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_index_fast_paths
-                                .list_len_cache
-                                .insert(args[0].clone(), lvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Len,
+                                args[0].clone(),
+                                lvar,
+                                builder,
+                            );
                             dp
                         } else if getitem_out_is_non_bool {
                             // Proven non-bool list -- skip type_id check, use
@@ -381,9 +401,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let ibvar = builder.declare_var(types::I8);
                             let const_false = builder.ins().iconst(types::I8, 0);
                             builder.def_var(ibvar, const_false);
-                            list_index_fast_paths
-                                .list_is_bool_cache
-                                .insert(args[0].clone(), ibvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::IsBool,
+                                args[0].clone(),
+                                ibvar,
+                                builder,
+                            );
                             let dp = builder.ins().load(
                                 types::I64,
                                 MemFlagsData::trusted(),
@@ -398,14 +421,20 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             );
                             let var = builder.declare_var(types::I64);
                             builder.def_var(var, dp);
-                            list_index_fast_paths
-                                .list_data_cache
-                                .insert(args[0].clone(), var);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Data,
+                                args[0].clone(),
+                                var,
+                                builder,
+                            );
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_index_fast_paths
-                                .list_len_cache
-                                .insert(args[0].clone(), lvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Len,
+                                args[0].clone(),
+                                lvar,
+                                builder,
+                            );
                             dp
                         } else {
                             // Unknown element type -- load type_id and both layouts.
@@ -419,9 +448,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                             let ibvar = builder.declare_var(types::I8);
                             builder.def_var(ibvar, is_bool);
-                            list_index_fast_paths
-                                .list_is_bool_cache
-                                .insert(args[0].clone(), ibvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::IsBool,
+                                args[0].clone(),
+                                ibvar,
+                                builder,
+                            );
                             let dp_bool = builder.ins().load(
                                 types::I64,
                                 MemFlagsData::trusted(),
@@ -450,18 +482,25 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let len = builder.ins().select(is_bool, len_bool, len_vec);
                             let var = builder.declare_var(types::I64);
                             builder.def_var(var, dp);
-                            list_index_fast_paths
-                                .list_data_cache
-                                .insert(args[0].clone(), var);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Data,
+                                args[0].clone(),
+                                var,
+                                builder,
+                            );
                             let lvar = builder.declare_var(types::I64);
                             builder.def_var(lvar, len);
-                            list_index_fast_paths
-                                .list_len_cache
-                                .insert(args[0].clone(), lvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::Len,
+                                args[0].clone(),
+                                lvar,
+                                builder,
+                            );
                             dp
                         }
                     };
-                    let lv = if let Some(&var) = list_index_fast_paths.list_len_cache.get(&args[0])
+                    let lv = if let Some(var) =
+                        list_index_fast_paths.get(ListStorageField::Len, &args[0], builder)
                     {
                         builder.use_var(var)
                     } else {
@@ -473,9 +512,9 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             builder
                                 .ins()
                                 .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-                        // Use is_bool_cache if available, otherwise re-probe.
-                        let is_bool = if let Some(&ibv) =
-                            list_index_fast_paths.list_is_bool_cache.get(&args[0])
+                        // Reuse a scoped layout observation or re-probe.
+                        let is_bool = if let Some(ibv) =
+                            list_index_fast_paths.get(ListStorageField::IsBool, &args[0], builder)
                         {
                             builder.use_var(ibv)
                         } else {
@@ -489,9 +528,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let ib = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
                             let ibvar = builder.declare_var(types::I8);
                             builder.def_var(ibvar, ib);
-                            list_index_fast_paths
-                                .list_is_bool_cache
-                                .insert(args[0].clone(), ibvar);
+                            list_index_fast_paths.insert(
+                                ListStorageField::IsBool,
+                                args[0].clone(),
+                                ibvar,
+                                builder,
+                            );
                             ib
                         };
                         let len_bool = builder.ins().load(
@@ -509,18 +551,22 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         let len = builder.ins().select(is_bool, len_bool, len_vec);
                         let lvar = builder.declare_var(types::I64);
                         builder.def_var(lvar, len);
-                        list_index_fast_paths
-                            .list_len_cache
-                            .insert(args[0].clone(), lvar);
+                        list_index_fast_paths.insert(
+                            ListStorageField::Len,
+                            args[0].clone(),
+                            lvar,
+                            builder,
+                        );
                         len
                     };
-                    let ibv =
-                        if let Some(&v) = list_index_fast_paths.list_is_bool_cache.get(&args[0]) {
-                            builder.use_var(v)
-                        } else {
-                            // Fallback: assume regular list (is_bool = 0).
-                            builder.ins().iconst(types::I8, 0)
-                        };
+                    let ibv = if let Some(v) =
+                        list_index_fast_paths.get(ListStorageField::IsBool, &args[0], builder)
+                    {
+                        builder.use_var(v)
+                    } else {
+                        // Fallback: assume regular list (is_bool = 0).
+                        builder.ins().iconst(types::I8, 0)
+                    };
                     (dp, lv, ibv)
                 };
                 let bce_safe_list = op.bce_safe == Some(true);
@@ -591,11 +637,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     // extraction.
                     // For the "proven bool" path: the shadow is always the
                     // raw byte, enabling ZERO NaN-box overhead at consumers.
-                    let has_raw_bool_carrier_unknown = !out_is_bool
-                        && !out_is_non_bool
-                        && list_index_fast_paths
-                            .list_is_bool_cache
-                            .contains_key(&args[0]);
+                    let has_raw_bool_carrier_unknown = !out_is_bool && !out_is_non_bool;
                     let has_raw_bool_carrier = out_is_bool || has_raw_bool_carrier_unknown;
                     if has_raw_bool_carrier {
                         builder.append_block_param(merge_block, types::I64);
@@ -699,8 +741,12 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             let raw_bit = builder.ins().band_imm(slow_res, 1);
                             jump_block(&mut *builder, merge_block, &[slow_res, raw_bit]);
                         } else {
-                            // Unknown path: shadow = NaN-boxed element when not bool.
-                            jump_block(&mut *builder, merge_block, &[slow_res, slow_res]);
+                            let shadow = ConditionalListBoolShadow::from_boxed(
+                                builder,
+                                is_bool_val,
+                                slow_res,
+                            );
+                            jump_block(&mut *builder, merge_block, &[slow_res, shadow.payload]);
                         }
                     } else {
                         jump_block(&mut *builder, merge_block, &[slow_res]);
@@ -731,12 +777,13 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                                 def_var_named(&mut *builder, vars, out__, merged);
                                 // Unknown path: shadow is raw 0/1 when
                                 // list is bool, NaN-boxed otherwise.
-                                list_index_fast_paths.conditional_list_bool_shadows.insert(
+                                list_index_fast_paths.insert_bool_shadow(
                                     out__.to_string(),
                                     ConditionalListBoolShadow {
-                                        list_name: args[0].clone(),
+                                        is_bool: is_bool_val,
                                         payload: raw_carrier,
                                     },
+                                    builder,
                                 );
                             }
                         } else {

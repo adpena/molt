@@ -2,46 +2,151 @@ use super::super::*;
 
 /// Shared list/index fast-path state for native codegen.
 ///
-/// These Cranelift Variables cache list storage facts across loop iterations
-/// through SSA phis. Mutating list ops must invalidate the list's cached data,
-/// length, and element-kind variables through this authority instead of editing
-/// each map independently.
+/// Ordinary storage observations are block-local. Cross-block reuse is only
+/// admitted inside a CFG/effect-certified loop, never by name presence alone.
 #[cfg(feature = "native-backend")]
 #[derive(Default)]
 pub(in crate::native_backend::function_compiler) struct ListIndexFastPathState {
-    pub(in crate::native_backend::function_compiler) list_int_data_cache:
-        BTreeMap<String, Variable>,
-    pub(in crate::native_backend::function_compiler) list_int_len_cache: BTreeMap<String, Variable>,
-    pub(in crate::native_backend::function_compiler) list_data_cache: BTreeMap<String, Variable>,
-    pub(in crate::native_backend::function_compiler) list_len_cache: BTreeMap<String, Variable>,
-    pub(in crate::native_backend::function_compiler) list_is_bool_cache: BTreeMap<String, Variable>,
-    pub(in crate::native_backend::function_compiler) conditional_list_bool_shadows:
-        BTreeMap<String, ConditionalListBoolShadow>,
+    storage: BTreeMap<String, BTreeMap<ListStorageField, ScopedListVariable>>,
+    bool_shadows: BTreeMap<String, (Block, ConditionalListBoolShadow)>,
+    current_op: usize,
+    publishing_loop: Option<ListStorageLoopScope>,
+    cleanup_generation: std::rc::Rc<std::cell::Cell<u64>>,
     // Immutable derivation of the function's canonical CFG, built only if a
     // loop survives effect filtering and shared by every hoist scan.
     loop_execution_dominators: Option<Vec<Option<usize>>>,
 }
 
 #[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::native_backend::function_compiler) enum ListStorageField {
+    IntData,
+    IntLen,
+    Data,
+    Len,
+    IsBool,
+}
+
+#[cfg(feature = "native-backend")]
+struct ScopedListVariable {
+    variable: Variable,
+    block: Block,
+    loop_scope: Option<ListStorageLoopScope>,
+    cleanup_generation: u64,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy)]
+struct ListStorageLoopScope {
+    start: usize,
+    end: usize,
+    preheader: Block,
+}
+
+#[cfg(feature = "native-backend")]
 impl ListIndexFastPathState {
-    pub(in crate::native_backend::function_compiler) fn invalidate_for_list_mutation(
-        &mut self,
-        list_name: &str,
-    ) {
-        self.list_int_data_cache.remove(list_name);
-        self.list_int_len_cache.remove(list_name);
-        self.list_data_cache.remove(list_name);
-        self.list_len_cache.remove(list_name);
-        self.list_is_bool_cache.remove(list_name);
-        self.conditional_list_bool_shadows
-            .retain(|_, shadow| shadow.list_name != list_name);
+    pub(in crate::native_backend::function_compiler) fn new(cleanup: &NativeCleanupRoots) -> Self {
+        Self {
+            cleanup_generation: cleanup.release_generation(),
+            ..Self::default()
+        }
     }
 
-    pub(in crate::native_backend::function_compiler) fn invalidate_for_store_index(
+    pub(in crate::native_backend::function_compiler) fn begin_op(
         &mut self,
-        list_name: &str,
+        op_idx: usize,
+        op: &OpIR,
+        plan: &ScalarRepresentationPlan,
     ) {
-        self.invalidate_for_list_mutation(list_name);
+        self.current_op = op_idx;
+        self.publishing_loop = None;
+        if !self.storage.is_empty() && !list_storage_op_preserves_heap(op_idx, op, plan) {
+            self.storage.clear();
+        }
+        let generation = self.cleanup_generation.get();
+        self.storage.retain(|_, fields| {
+            fields.retain(|_, cached| {
+                cached.cleanup_generation == generation
+                    && cached
+                        .loop_scope
+                        .is_none_or(|scope| scope.start <= op_idx && op_idx <= scope.end)
+            });
+            !fields.is_empty()
+        });
+        crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
+            self.storage.remove(name);
+            self.bool_shadows.remove(name);
+        });
+    }
+
+    pub(in crate::native_backend::function_compiler) fn get(
+        &self,
+        field: ListStorageField,
+        name: &str,
+        builder: &FunctionBuilder,
+    ) -> Option<Variable> {
+        let cached = self.storage.get(name)?.get(&field)?;
+        let in_scope = cached.loop_scope.map_or_else(
+            || builder.current_block() == Some(cached.block),
+            |scope| {
+                cached.block == scope.preheader
+                    && scope.start <= self.current_op
+                    && self.current_op <= scope.end
+            },
+        );
+        (in_scope && cached.cleanup_generation == self.cleanup_generation.get())
+            .then_some(cached.variable)
+    }
+
+    pub(in crate::native_backend::function_compiler) fn insert(
+        &mut self,
+        field: ListStorageField,
+        name: String,
+        variable: Variable,
+        builder: &FunctionBuilder,
+    ) {
+        let block = builder
+            .current_block()
+            .expect("cached storage has a defining block");
+        self.storage.entry(name).or_default().insert(
+            field,
+            ScopedListVariable {
+                variable,
+                block,
+                // Only the actual certified preheader may publish loop invariants.
+                // An internal lowering split cannot inherit this privilege.
+                loop_scope: self
+                    .publishing_loop
+                    .filter(|scope| scope.preheader == block),
+                cleanup_generation: self.cleanup_generation.get(),
+            },
+        );
+    }
+
+    pub(in crate::native_backend::function_compiler) fn insert_bool_shadow(
+        &mut self,
+        name: String,
+        shadow: ConditionalListBoolShadow,
+        builder: &FunctionBuilder,
+    ) {
+        self.bool_shadows.insert(
+            name,
+            (
+                builder
+                    .current_block()
+                    .expect("list bool shadow has a defining block"),
+                shadow,
+            ),
+        );
+    }
+
+    pub(in crate::native_backend::function_compiler) fn bool_shadow(
+        &self,
+        name: &str,
+        builder: &FunctionBuilder,
+    ) -> Option<&ConditionalListBoolShadow> {
+        let (block, shadow) = self.bool_shadows.get(name)?;
+        (builder.current_block() == Some(*block)).then_some(shadow)
     }
 }
 #[cfg(feature = "native-backend")]
@@ -62,6 +167,106 @@ pub(in crate::native_backend::function_compiler) fn loop_start_has_index_prelude
         return false;
     }
     false
+}
+
+#[cfg(feature = "native-backend")]
+enum ListIndexLayout {
+    FlatInt,
+    Generic,
+}
+
+#[cfg(feature = "native-backend")]
+fn typed_list_index_layout(
+    index: usize,
+    op: &OpIR,
+    plan: &ScalarRepresentationPlan,
+) -> Option<ListIndexLayout> {
+    if op.kind != "index"
+        || !op
+            .args
+            .as_ref()
+            .is_some_and(|args| args.len() == 2 && plan.name_is_integer_scalar(&args[1]))
+    {
+        return None;
+    }
+    if plan.op_has_container_storage(index, op, ContainerStorageKind::FlatListInt) {
+        Some(ListIndexLayout::FlatInt)
+    } else if plan.op_has_container_kind(op, ContainerKind::List) {
+        Some(ListIndexLayout::Generic)
+    } else {
+        None
+    }
+}
+
+/// One effect admission decision for both loop lifetime certification and
+/// ordinary op-boundary invalidation. Non-capture is not non-mutation.
+#[cfg(feature = "native-backend")]
+fn list_storage_op_preserves_heap(
+    index: usize,
+    op: &OpIR,
+    plan: &ScalarRepresentationPlan,
+) -> bool {
+    use crate::tir::op_kinds_generated::{
+        copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
+        kind_to_opcode_table, opcode_effects_table, simpleir_kind_is_cfg_or_ssa_consumed,
+        simpleir_kind_is_conditional_branch,
+    };
+    use crate::tir::ops::OpCode;
+    use crate::tir::types::TirType;
+
+    if op.is_async_work_poll() {
+        return false;
+    }
+    if typed_list_index_layout(index, op, plan).is_some() {
+        return true;
+    }
+    let mut operand_types = Vec::new();
+    crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+        operand_types.push(match plan.name_scalar_kind(read.name) {
+            Some(ScalarKind::Int) => TirType::I64,
+            Some(ScalarKind::Bool) => TirType::Bool,
+            Some(ScalarKind::Float) => TirType::F64,
+            Some(ScalarKind::Str) => TirType::Str,
+            Some(ScalarKind::NoneValue) => TirType::None,
+            None => TirType::DynBox,
+        });
+    });
+    let kind = op.kind.as_str();
+    let opcode = kind_to_opcode_table(kind);
+    let scalar_binding = simple_ir_binding(op).is_none_or(|binding| {
+        plan.name_is_non_heap_scalar(binding.destination)
+            && operand_types.iter().all(|ty| {
+                matches!(
+                    ty,
+                    TirType::I64 | TirType::Bool | TirType::F64 | TirType::None
+                )
+            })
+    });
+    // Acquiring a credit is not releasing an owner. These instructions retain
+    // their runtime ownership behavior; only list-buffer observation is admitted.
+    if (copy_kind_is_explicit_no_heap_move_table(kind) && scalar_binding)
+        || copy_kind_mints_owned_alias_ref_table(kind)
+        || opcode == Some(OpCode::IncRef)
+    {
+        return true;
+    }
+    if opcode.is_none()
+        && simpleir_kind_is_cfg_or_ssa_consumed(kind)
+        && (!simpleir_kind_is_conditional_branch(kind)
+            || operand_types.iter().all(|ty| {
+                matches!(
+                    ty,
+                    TirType::I64 | TirType::Bool | TirType::F64 | TirType::Str | TirType::None
+                )
+            }))
+    {
+        return true;
+    }
+    opcode.is_some_and(|opcode| {
+        let effects = molt_ir::tir::op_semantics::op_instance_facts(opcode, &operand_types)
+            .map_or_else(|| opcode_effects_table(opcode), |facts| facts.effects);
+        effects.effect_free && !effects.may_access_arbitrary_heap
+    })
 }
 
 /// Scan a loop body (from `start_idx+1` to the matching `loop_end`) and return
@@ -87,15 +292,10 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     pre_loop_defined: &BTreeSet<String>,
     representation_plan: &ScalarRepresentationPlan,
     fast_paths: &mut ListIndexFastPathState,
+    preheader: Block,
+    cleanup: Option<&NativeCleanupRoots>,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
-    use crate::tir::op_kinds_generated::{
-        copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
-        kind_to_opcode_table, opcode_effects_table, simpleir_kind_is_cfg_or_ssa_consumed,
-        simpleir_kind_is_conditional_branch,
-    };
-    use crate::tir::ops::OpCode;
-    use crate::tir::types::TirType;
-
+    fast_paths.publishing_loop = None;
     let mut list_int_accessed: BTreeSet<String> = BTreeSet::new();
     let mut list_generic_accessed: BTreeSet<String> = BTreeSet::new();
     let mut body_definitions = BTreeSet::new();
@@ -113,9 +313,18 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     let mut depth = 0i32;
     for idx in (body_start + 1)..ops.len() {
         let op = &ops[idx];
+        let mut may_finalize = false;
         crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
             body_definitions.insert(name.to_string());
+            // Native owner replacement may run last iteration's finalizer even
+            // when this opcode itself is pure. TIR-owned drops stay explicit.
+            // Without concrete custody, a heap result may own a finalizer.
+            may_finalize |= cleanup.is_none_or(|roots| roots.contains(name))
+                && !representation_plan.name_is_non_heap_scalar(name);
         });
+        if may_finalize {
+            return (BTreeSet::new(), BTreeSet::new());
+        }
         match op.kind.as_str() {
             "loop_start" if loop_start_has_index_prelude(ops, idx) => continue,
             "loop_start" | "loop_index_start" => {
@@ -132,85 +341,20 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
             }
             _ => {}
         }
-        if op.is_async_work_poll() {
-            return (BTreeSet::new(), BTreeSet::new());
-        }
-        let flat_index = op.kind == "index"
-            && representation_plan.op_has_container_storage(
-                idx,
-                op,
-                ContainerStorageKind::FlatListInt,
-            );
-        let list_index = op.kind == "index"
-            && representation_plan.op_has_container_kind(op, ContainerKind::List);
-        if (flat_index || list_index)
-            && op.args.as_ref().is_some_and(|args| {
-                args.len() == 2 && representation_plan.name_is_integer_scalar(&args[1])
-            })
-        {
-            // Only current-depth accesses become candidates, but nested reads
-            // still need this same no-callback proof before crossing the fence.
+        if let Some(layout) = typed_list_index_layout(idx, op, representation_plan) {
             if depth == 0 {
                 let name = op.args.as_ref().unwrap()[0].clone();
-                if flat_index {
-                    list_int_accessed.insert(name);
-                } else {
-                    list_generic_accessed.insert(name);
+                match layout {
+                    ListIndexLayout::FlatInt => {
+                        list_int_accessed.insert(name);
+                    }
+                    ListIndexLayout::Generic => {
+                        list_generic_accessed.insert(name);
+                    }
                 }
             }
-            continue;
         }
-        let mut operand_types = Vec::new();
-        crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
-            operand_types.push(match representation_plan.name_scalar_kind(read.name) {
-                Some(ScalarKind::Int) => TirType::I64,
-                Some(ScalarKind::Bool) => TirType::Bool,
-                Some(ScalarKind::Float) => TirType::F64,
-                Some(ScalarKind::Str) => TirType::Str,
-                Some(ScalarKind::NoneValue) => TirType::None,
-                None => TirType::DynBox,
-            });
-        });
-        let kind = op.kind.as_str();
-        let opcode = kind_to_opcode_table(kind);
-        // Reference acquisition and no-heap transport do not mutate list
-        // storage. They remain real instructions with their own owner credits.
-        // A binding replacement can run an old owner's finalizer, so it only
-        // qualifies when both old home and incoming value are proven scalars.
-        let scalar_binding = simple_ir_binding(op).is_none_or(|binding| {
-            representation_plan.name_is_non_heap_scalar(binding.destination)
-                && operand_types.iter().all(|ty| {
-                    matches!(
-                        ty,
-                        TirType::I64 | TirType::Bool | TirType::F64 | TirType::None
-                    )
-                })
-        });
-        if (copy_kind_is_explicit_no_heap_move_table(kind) && scalar_binding)
-            || copy_kind_mints_owned_alias_ref_table(kind)
-            || opcode == Some(OpCode::IncRef)
-        {
-            continue;
-        }
-        if opcode.is_none() && simpleir_kind_is_cfg_or_ssa_consumed(kind) {
-            if !simpleir_kind_is_conditional_branch(kind)
-                || operand_types.iter().all(|ty| {
-                    matches!(
-                        ty,
-                        TirType::I64 | TirType::Bool | TirType::F64 | TirType::Str | TirType::None
-                    )
-                })
-            {
-                continue;
-            }
-        }
-        let effects = opcode.map(|opcode| {
-            crate::tir::op_semantics::op_instance_facts(opcode, &operand_types)
-                .map_or_else(|| opcode_effects_table(opcode), |facts| facts.effects)
-        });
-        // Non-capture is not non-mutation. Unknown/Copy-lifted runtime ops and
-        // opaque callbacks invalidate every candidate, including unpassed lists.
-        if effects.is_none_or(|effects| effects.may_access_arbitrary_heap || !effects.effect_free) {
+        if !list_storage_op_preserves_heap(idx, op, representation_plan) {
             return (BTreeSet::new(), BTreeSet::new());
         }
     }
@@ -264,6 +408,18 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     };
     list_int_accessed.retain(available);
     list_generic_accessed.retain(available);
+    // Block-local observations cannot silently become loop invariants. Only
+    // existing certified outer-loop observations may satisfy these producers.
+    fast_paths.storage.retain(|_, fields| {
+        fields.retain(|_, cached| cached.loop_scope.is_some());
+        !fields.is_empty()
+    });
+    fast_paths.current_op = start_idx;
+    fast_paths.publishing_loop = Some(ListStorageLoopScope {
+        start: start_idx,
+        end: loop_end,
+        preheader,
+    });
     (list_int_accessed, list_generic_accessed)
 }
 
@@ -286,6 +442,137 @@ pub(in crate::native_backend::function_compiler) fn collect_pre_loop_defined_nam
         });
     }
     defined
+}
+
+/// The sole preheader producer for plain and indexed native loops. Scope
+/// certification and all storage/layout observations must move together.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoists(
+    func_ir: &FunctionIR,
+    op_idx: usize,
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    representation_plan: &ScalarRepresentationPlan,
+    fast_paths: &mut ListIndexFastPathState,
+    cleanup_roots: &NativeCleanupRoots,
+    nbc: &crate::NanBoxConsts,
+) {
+    let mut pre_loop_defined = collect_pre_loop_defined_names(&func_ir.ops, op_idx);
+    pre_loop_defined.extend(
+        func_ir
+            .params
+            .iter()
+            .filter(|name| name.as_str() != "none")
+            .cloned(),
+    );
+    let (flat, generic) = scan_loop_hoistable_lists(
+        &func_ir.ops,
+        op_idx,
+        &pre_loop_defined,
+        representation_plan,
+        fast_paths,
+        builder.current_block().expect("list hoist has a preheader"),
+        Some(cleanup_roots),
+    );
+    for (names, layout) in [
+        (flat, ListIndexLayout::FlatInt),
+        (generic, ListIndexLayout::Generic),
+    ] {
+        let (data_field, len_field) = match layout {
+            ListIndexLayout::FlatInt => (ListStorageField::IntData, ListStorageField::IntLen),
+            ListIndexLayout::Generic => (ListStorageField::Data, ListStorageField::Len),
+        };
+        for name in names {
+            if fast_paths.get(data_field, &name, builder).is_some() {
+                continue; // A certified outer loop already owns this observation.
+            }
+            let Some(obj) = super::var_get_boxed_overflow_safe_fn(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                &name,
+                representation_plan,
+                nbc,
+            ) else {
+                continue;
+            };
+            let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
+            let shifted = builder.ins().ishl_imm(masked, 16);
+            let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+            let storage_ptr = builder
+                .ins()
+                .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
+            let (data, len) = match layout {
+                ListIndexLayout::FlatInt => (
+                    builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        storage_ptr,
+                        LIST_INT_STORAGE_DATA_OFFSET,
+                    ),
+                    builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        storage_ptr,
+                        LIST_INT_STORAGE_LEN_OFFSET,
+                    ),
+                ),
+                ListIndexLayout::Generic => {
+                    let tid = builder.ins().load(
+                        types::I32,
+                        MemFlagsData::trusted(),
+                        obj_ptr,
+                        HEADER_TYPE_ID_OFFSET,
+                    );
+                    let bool_tid = builder.ins().iconst(types::I32, JIT_TYPE_ID_LIST_BOOL);
+                    let is_bool = builder.ins().icmp(IntCC::Equal, tid, bool_tid);
+                    let layout_var = builder.declare_var(types::I8);
+                    builder.def_var(layout_var, is_bool);
+                    fast_paths.insert(ListStorageField::IsBool, name.clone(), layout_var, builder);
+                    let vec_layout = vec_u64_layout();
+                    // ListBoolStorage is repr(C); Vec<u64> uses probed offsets.
+                    let bool_data =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::trusted(), storage_ptr, 0);
+                    let bool_len =
+                        builder
+                            .ins()
+                            .load(types::I64, MemFlagsData::trusted(), storage_ptr, 8);
+                    let vec_data = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        storage_ptr,
+                        vec_layout.data_offset,
+                    );
+                    let vec_len = builder.ins().load(
+                        types::I64,
+                        MemFlagsData::trusted(),
+                        storage_ptr,
+                        vec_layout.len_offset,
+                    );
+                    (
+                        builder.ins().select(is_bool, bool_data, vec_data),
+                        builder.ins().select(is_bool, bool_len, vec_len),
+                    )
+                }
+            };
+            let data_var = builder.declare_var(types::I64);
+            builder.def_var(data_var, data);
+            fast_paths.insert(data_field, name.clone(), data_var, builder);
+            let len_var = builder.declare_var(types::I64);
+            builder.def_var(len_var, len);
+            fast_paths.insert(len_field, name, len_var, builder);
+        }
+    }
 }
 
 #[cfg(feature = "native-backend")]
