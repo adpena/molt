@@ -7,10 +7,10 @@
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `190`
+- `implemented-exact`: `191`
 - `implemented-target-limited`: `13`
 - `not-admitted`: `221`
-- `total`: `424`
+- `total`: `425`
 
 ## Matrix
 
@@ -42,6 +42,7 @@
 | `bor` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `borrow` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bound_method_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `box` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `box_from_raw_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `br_if` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `branch` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -284,7 +285,6 @@
 | `list_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `list_pop` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `list_remove` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
-| `list_repeat_range` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `list_reverse` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `load_local` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
@@ -434,6 +434,7 @@
 | `type_of` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `unary_invert` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `unary_op` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `unbox` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `unbox_to_raw_int` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `unpack_sequence` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `vec_max_*` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |

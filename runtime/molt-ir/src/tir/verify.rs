@@ -185,12 +185,9 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 Some(AttrValue::Int(value)) => Some(*value),
                 _ => None,
             };
-            if let Err(error) = crate::ir_schema::validate_op_shape(
-                kind,
-                Some(op.operands.len()),
-                !op.results.is_empty(),
-                value,
-            ) {
+            if let Err(error) =
+                crate::ir_schema::validate_op_shape(kind, Some(op.operands.len()), value)
+            {
                 errors.push(VerifyError::op(*bid, op_index, error.to_string()));
             }
         }
@@ -923,11 +920,7 @@ mod tests {
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: (0..shape.operands).map(|i| ValueId(i as u32)).collect(),
-                    results: if shape.requires_result {
-                        vec![ValueId(100)]
-                    } else {
-                        vec![]
-                    },
+                    results: vec![],
                     attrs,
                     source_span: None,
                 });
@@ -949,6 +942,37 @@ mod tests {
                         .contains("explicit nonnegative")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn retired_preserved_operations_share_wire_admission() {
+        for (kind, operands) in [
+            ("store_init", 2),
+            ("guarded_field_init", 2),
+            ("object_new_bound_stack", 1),
+            ("list_repeat_range", 2),
+            ("list_repeat_range", 4),
+        ] {
+            let mut func = TirFunction::new("retired_operation".into(), vec![], TirType::None);
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Copy,
+                    operands: (0..operands).map(ValueId).collect(),
+                    results: vec![ValueId(100)],
+                    attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                    source_span: None,
+                });
+            let expected = crate::ir_schema::validate_op_shape(kind, Some(operands as usize), None)
+                .unwrap_err()
+                .to_string();
+            let errors = verify_operation_shapes(&func).unwrap_err();
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].message, expected);
         }
     }
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};

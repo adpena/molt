@@ -2079,7 +2079,7 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 # Libtests belong to the implementation crate. The driver's contract target
 # additionally proves the public checked SimpleIR-to-LLVM admission boundary.
-argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection"]
+argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection", "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]

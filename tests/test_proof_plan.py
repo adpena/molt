@@ -356,6 +356,10 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
     assert "llvm_backend::runtime_imports" in lowering
     assert lowering[lowering.index("--test") + 1] == "ir_contract_validation"
     assert "direct_checked_backends_share_generated_shape_rejection" in lowering
+    assert (
+        "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"
+        in lowering
+    )
     assert "molt-backend/llvm" in lowering[lowering.index("--features") + 1].split(",")
     linkage = commands["linker.test.generated-object-admission"].argv
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"

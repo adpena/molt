@@ -2013,11 +2013,10 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
             "kind",
             "family",
             "operands",
-            "requires_result",
             "value_rule",
         }:
             raise OpKindTableError(
-                "simpleir_op_shape requires exactly kind, family, operands, requires_result and value_rule"
+                "simpleir_op_shape requires exactly kind, family, operands and value_rule"
             )
         kind = row["kind"]
         if not isinstance(kind, str) or kind not in registered or kind in aliases:
@@ -2034,10 +2033,6 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
         if type(row["operands"]) is not int or row["operands"] < 0:
             raise OpKindTableError(
                 f"simpleir_op_shape {kind}: operands must be a nonnegative integer"
-            )
-        if not isinstance(row["requires_result"], bool):
-            raise OpKindTableError(
-                f"simpleir_op_shape {kind}: requires_result must be boolean"
             )
         if (
             not isinstance(row["value_rule"], str)
