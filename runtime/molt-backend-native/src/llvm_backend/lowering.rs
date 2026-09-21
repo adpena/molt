@@ -950,6 +950,37 @@ mod operation_shape_tests {
     use crate::tir::values::ValueId;
 
     #[test]
+    fn retired_typed_origins_are_rejected_before_llvm_module_mutation() {
+        for (kind, operands) in [("store_init", 2), ("guarded_field_init", 4)] {
+            let context = inkwell::context::Context::create();
+            let backend = LlvmBackend::new(&context, "retired_origin_admission");
+            let before = backend.module.print_to_string().to_string();
+            let mut func = TirFunction::new("retired_store".into(), vec![], TirType::None);
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::StoreAttr,
+                    operands: (0..operands).map(ValueId).collect(),
+                    results: vec![],
+                    attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                    source_span: None,
+                });
+            let error = try_lower_tir_to_llvm(&func, &backend)
+                .err()
+                .expect("retired typed origin must fail before mutation");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("retired compiler operation `{kind}`"))
+            );
+            assert_eq!(backend.module.print_to_string().to_string(), before);
+        }
+    }
+
+    #[test]
     fn malformed_preserved_metadata_is_rejected_before_llvm_module_mutation() {
         for (operands, value) in [(1, Some(0)), (3, Some(0)), (2, None), (2, Some(-1))] {
             let context = inkwell::context::Context::create();
