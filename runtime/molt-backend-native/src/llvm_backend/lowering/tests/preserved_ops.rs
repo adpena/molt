@@ -427,6 +427,8 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity, shape) in [
             ("dict_set", "molt_dict_set", 3, "borrowed"),
+            ("dict_update", "molt_dict_update", 2, "owned"),
+            ("dict_update_kwstar", "molt_dict_update_kwstar", 2, "owned"),
             (
                 "dict_update_missing",
                 "molt_dict_update_missing",
@@ -529,18 +531,33 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
 #[test]
 fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
     for opcode in [OpCode::Call, OpCode::Copy] {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let func = runtime_call_shape_function(opcode, "dict_set", "molt_dict_set", 3, true, true);
-        let error = try_lower_tir_to_llvm(&func, &backend)
-            .expect_err("generated semantics must not imply runtime availability");
-        assert_lowering_error_contains(
-            &error,
-            "boxed runtime symbol `molt_dict_set` is unavailable in the selected runtime",
-        );
-        assert!(backend.module.get_function("molt_dict_set").is_none());
-        let ir = backend.module.print_to_string().to_string();
-        assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
+        for (kind, symbol, arity) in [
+            ("dict_set", "molt_dict_set", 3),
+            ("dict_update", "molt_dict_update", 2),
+            ("dict_update_kwstar", "molt_dict_update_kwstar", 2),
+            ("dict_update_missing", "molt_dict_update_missing", 3),
+        ] {
+            for with_result in [false, true] {
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                backend.runtime_callable_symbols.remove(symbol);
+                let func =
+                    runtime_call_shape_function(opcode, kind, symbol, arity, with_result, true);
+                let error = try_lower_tir_to_llvm(&func, &backend)
+                    .expect_err("generated semantics must not imply runtime availability");
+                assert_lowering_error_contains(
+                    &error,
+                    &format!(
+                        "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
+                    ),
+                );
+                assert!(backend.module.get_function(symbol).is_none());
+                let ir = backend.module.print_to_string().to_string();
+                assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
+                assert!(!ir.contains("call void @molt_inc_ref_obj("), "{ir}");
+                assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
+            }
+        }
     }
 }
 
