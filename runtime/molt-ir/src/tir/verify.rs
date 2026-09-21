@@ -173,14 +173,23 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
     let mut errors = Vec::new();
     for (bid, block) in &func.blocks {
         for (op_index, op) in block.ops.iter().enumerate() {
+            let original_kind = match op.attrs.get("_original_kind") {
+                Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+                _ => None,
+            };
             let kind = if op.opcode == super::ops::OpCode::Copy {
-                match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(kind)) => kind.as_str(),
-                    _ => opcode_canonical_kind_table(op.opcode),
-                }
+                original_kind.unwrap_or_else(|| opcode_canonical_kind_table(op.opcode))
             } else {
                 opcode_canonical_kind_table(op.opcode)
             };
+            // A typed carrier does not erase a retired origin. Live aliases
+            // still use the carrier's own shape rather than being reinterpreted.
+            if let Some(original_kind) = original_kind.filter(|original| *original != kind)
+                && let Err(error) = crate::ir_schema::validate_op_not_retired(original_kind)
+            {
+                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                continue;
+            }
             let value = match op.attrs.get("value") {
                 Some(AttrValue::Int(value)) => Some(*value),
                 _ => None,
@@ -954,25 +963,30 @@ mod tests {
             ("list_repeat_range", 2),
             ("list_repeat_range", 4),
         ] {
-            let mut func = TirFunction::new("retired_operation".into(), vec![], TirType::None);
-            func.blocks
-                .get_mut(&func.entry_block)
-                .unwrap()
-                .ops
-                .push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
-                    operands: (0..operands).map(ValueId).collect(),
-                    results: vec![ValueId(100)],
-                    attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
-                    source_span: None,
-                });
             let expected = crate::ir_schema::validate_op_shape(kind, Some(operands as usize), None)
                 .unwrap_err()
                 .to_string();
-            let errors = verify_operation_shapes(&func).unwrap_err();
-            assert_eq!(errors.len(), 1);
-            assert_eq!(errors[0].message, expected);
+            for &opcode in super::super::op_kinds_generated::ALL_OPCODES {
+                let mut func = TirFunction::new("retired_operation".into(), vec![], TirType::None);
+                func.blocks
+                    .get_mut(&func.entry_block)
+                    .unwrap()
+                    .ops
+                    .push(TirOp {
+                        dialect: Dialect::Molt,
+                        opcode,
+                        operands: (0..operands).map(ValueId).collect(),
+                        results: vec![ValueId(100)],
+                        attrs: AttrDict::from([(
+                            "_original_kind".into(),
+                            AttrValue::Str(kind.into()),
+                        )]),
+                        source_span: None,
+                    });
+                let errors = verify_operation_shapes(&func).unwrap_err();
+                assert_eq!(errors.len(), 1, "{opcode:?}/{kind}");
+                assert_eq!(errors[0].message, expected, "{opcode:?}/{kind}");
+            }
         }
     }
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};

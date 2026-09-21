@@ -154,16 +154,9 @@ impl std::fmt::Display for OpShapeDiagnostic {
 
 impl std::error::Error for OpShapeDiagnostic {}
 
-/// Reject retired spellings and validate generated operand/integer shape without
-/// assuming a complete program, value definitions, slot-table initialization or
-/// execution-context ownership. Existing result-role/cardinality facts remain
-/// the result authority; this checker does not duplicate them.
-/// Both SimpleIR and preserved TIR operations project into this same checker.
-pub fn validate_op_shape(
-    kind: &str,
-    operands: Option<usize>,
-    value: Option<i64>,
-) -> Result<(), OpShapeDiagnostic> {
+/// Retirement applies to both wire spellings and preserved origins, regardless
+/// of which typed opcode currently carries the operation.
+pub(crate) fn validate_op_not_retired(kind: &str) -> Result<(), OpShapeDiagnostic> {
     let retired = match kind {
         "store_init" => Some((
             "store_init",
@@ -190,6 +183,20 @@ pub fn validate_op_shape(
             violation: OpShapeViolation::Retired { reason },
         });
     }
+    Ok(())
+}
+
+/// Reject retired spellings and validate generated operand/integer shape without
+/// assuming a complete program, value definitions, slot-table initialization or
+/// execution-context ownership. Existing result-role/cardinality facts remain
+/// the result authority; this checker does not duplicate them.
+/// Both SimpleIR and preserved TIR operations project into this same checker.
+pub fn validate_op_shape(
+    kind: &str,
+    operands: Option<usize>,
+    value: Option<i64>,
+) -> Result<(), OpShapeDiagnostic> {
+    validate_op_not_retired(kind)?;
     let Some(shape) = simpleir_op_shape(kind) else {
         return Ok(());
     };
