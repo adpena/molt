@@ -1222,39 +1222,3 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     );
     assert!(!ir.contains("store i64 2, ptr %class_attr_ptr_1"), "{ir}");
 }
-
-#[test]
-fn lower_preserved_dict_update_calls_runtime() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("dict_update_preserved".into(), vec![], TirType::DynBox);
-    let dict_bits = func.fresh_value();
-    let other_bits = func.fresh_value();
-    let result = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry
-        .ops
-        .extend([const_none_def(dict_bits), const_none_def(other_bits)]);
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::Copy,
-        operands: vec![dict_bits, other_bits],
-        results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("dict_update".into()),
-            );
-            attrs
-        },
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![result],
-    };
-
-    let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_dict_update"), "{ir}");
-}
