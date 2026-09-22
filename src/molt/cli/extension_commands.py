@@ -1438,9 +1438,6 @@ def extension_build(
                 ]
         build_payload["object_count"] = len(object_facts)
         build_payload["linked_object_count"] = len(object_paths)
-        build_payload["object_closure_sha256"] = (
-            source_plan_object_closure.closure_sha256
-        )
         required_c_api_by_source = {
             fact.source_path.resolve(): tuple(
                 sorted(
@@ -1479,6 +1476,9 @@ def extension_build(
                 ),
             )
         )
+        build_payload["object_closure_sha256"] = manifest_payload["object_closure"][
+            "closure_sha256"
+        ]
         if python_exports:
             manifest_payload["python_exports"] = python_exports
         if callable_exports:
@@ -1636,7 +1636,7 @@ def extension_build(
                 "wheel_sha256": wheel_sha,
                 "extension_sha256": extension_sha,
                 "object_closure_sha256": (
-                    source_plan_object_closure.closure_sha256
+                    manifest_payload["object_closure"]["closure_sha256"]
                     if source_plan_object_closure is not None
                     else None
                 ),
