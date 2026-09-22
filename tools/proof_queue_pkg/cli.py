@@ -331,13 +331,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     retire_p = sub.add_parser(
         "retire-terminal-sealed-generation",
-        help="inspect one failed sealed Cargo generation; retain receipts and legacy artifacts",
+        help="inspect one non-reusable sealed Cargo generation; failed-only unless explicitly widened",
     )
     retire_p.add_argument("--run-id", required=True)
     retire_p.add_argument(
         "--apply",
         action="store_true",
-        help="retire only failed non-reusable sealed output after receipt-preserving capture",
+        help="retire policy-admitted non-reusable sealed output after receipt-preserving capture",
+    )
+    retire_p.add_argument(
+        "--allow-passed",
+        action="store_true",
+        help="explicitly admit passed non-reusable sealed output for this inspection or apply",
     )
     retire_p.set_defaults(func=commands._cmd_retire_terminal_sealed_generation)
 
