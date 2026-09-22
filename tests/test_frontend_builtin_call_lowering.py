@@ -1277,20 +1277,15 @@ def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
         and const_str.get(op["args"][1]) == "TypeVar"
     }
     assert imported_typevar_values, "expected from-import to materialize TypeVar"
-    typevar_global_values = {
-        op["out"]
-        for op in main_ops
-        if op.get("kind") == "module_get_global"
-        and len(op.get("args") or []) == 2
-        and const_str.get(op["args"][1]) == "TypeVar"
-    }
-    assert typevar_global_values, "expected bare TypeVar read to use LOAD_GLOBAL"
+    # A from-imported name is a module-scope binding the frontend resolves at
+    # compile time: the bare `TypeVar` read binds the call to the value the
+    # import materialized, never to a re-lookup or to the bare name string.
     assert any(
         op.get("kind") == "call_bind"
         and len(op.get("args") or []) == 2
-        and op["args"][0] in typevar_global_values
+        and op["args"][0] in imported_typevar_values
         for op in main_ops
-    )
+    ), "expected the bind fallback to call the imported TypeVar value"
     assert all(
         not (
             op.get("kind") == "call_bind"
