@@ -82,6 +82,7 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
         repo_root=str(source),
         run_id="reclaim-unit",
         apply=False,
+        allow_passed=False,
     )
     with closing(state._connect(Path(args.db))) as conn:
         scheduling._insert_run(
@@ -201,6 +202,14 @@ def test_final_queue_outcome_binds_database_generation_and_retention(
     assert not lease.target.exists()
 
 
+@pytest.mark.parametrize("invalid", ["false", "true", 0, 1, None])
+def test_retirement_policy_rejects_truthy_nonboolean_opt_in(invalid):
+    with pytest.raises(ValueError, match="must be boolean"):
+        commands._cmd_retire_terminal_sealed_generation(
+            argparse.Namespace(run_id="unused", apply=False, allow_passed=invalid)
+        )
+
+
 def test_parser_requires_explicit_apply():
     parsed = cli._build_parser().parse_args(
         ["reclaim-cargo-generation", "--run-id", "unit"]
@@ -213,6 +222,17 @@ def test_parser_requires_explicit_apply():
     )
     assert retire.func is commands._cmd_retire_terminal_sealed_generation
     assert retire.apply is False
+    assert retire.allow_passed is False
+
+    admitted = cli._build_parser().parse_args(
+        [
+            "retire-terminal-sealed-generation",
+            "--run-id",
+            "unit",
+            "--allow-passed",
+        ]
+    )
+    assert admitted.allow_passed is True
 
 
 @pytest.mark.parametrize("generation", [(101, True, True)], indirect=True)
@@ -222,7 +242,13 @@ def test_retirement_cli_preserves_terminal_receipt_and_records_disposition(
     args, lease, context = generation
     before = lease.owner_path.read_bytes()
     assert commands._cmd_retire_terminal_sealed_generation(args) == 0
-    assert json.loads(capsys.readouterr().out)["retirement_eligible"] is True
+    inspection = json.loads(capsys.readouterr().out)
+    assert inspection["retirement_eligible"] is True
+    assert inspection["terminal_status"] == "failed"
+    assert inspection["retirement_policy"] == {
+        "allow_passed": False,
+        "eligible_terminal_statuses": ["failed"],
+    }
     assert lease.owner_path.read_bytes() == before
     args.apply = True
     assert commands._cmd_retire_terminal_sealed_generation(args) == 0
@@ -235,10 +261,57 @@ def test_retirement_cli_preserves_terminal_receipt_and_records_disposition(
         row = state._row_by_run_id(conn, args.run_id)
         assert json.loads(row["receipt_context_json"]) == context
         evidence._validate_terminal_evidence(row, context)
-        assert {row[0] for row in conn.execute("SELECT kind FROM proof_notes")} == {
+        notes = list(
+            conn.execute("SELECT kind, body FROM proof_notes ORDER BY note_id")
+        )
+        assert {row[0] for row in notes} == {
             "decision",
             "finding",
         }
+        for _, body in notes:
+            note = json.loads(body)
+            assert note["terminal_status"] == "failed"
+            assert note["retirement_policy"] == inspection["retirement_policy"]
+
+
+@pytest.mark.parametrize("generation", [(0, True, True)], indirect=True)
+def test_retirement_cli_requires_opt_in_and_records_passed_policy(generation, capsys):
+    args, lease, _ = generation
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    denied = json.loads(capsys.readouterr().out)
+    assert denied["retirement_eligible"] is False
+    assert denied["retirement_reason"] == "terminal-run-not-failed"
+    assert denied["terminal_status"] == "passed"
+    assert lease.target.is_dir()
+
+    args.allow_passed = True
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    admitted = json.loads(capsys.readouterr().out)
+    policy = {
+        "allow_passed": True,
+        "eligible_terminal_statuses": ["failed", "passed"],
+    }
+    assert admitted["retirement_eligible"] is True
+    assert admitted["retirement_policy"] == policy
+    assert admitted["terminal_status"] == "passed"
+    assert lease.target.is_dir()
+
+    args.apply = True
+    assert commands._cmd_retire_terminal_sealed_generation(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "retired-sealed"
+    assert result["retirement_policy"] == policy
+    assert result["terminal_status"] == "passed"
+    assert not lease.target.exists()
+    with closing(state._connect(Path(args.db))) as conn:
+        notes = list(
+            conn.execute("SELECT kind, body FROM proof_notes ORDER BY note_id")
+        )
+    assert [kind for kind, _ in notes] == ["decision", "finding"]
+    for _, body in notes:
+        note = json.loads(body)
+        assert note["retirement_policy"] == policy
+        assert note["terminal_status"] == "passed"
 
 
 def test_default_inspection_preserves_artifacts_and_queue(generation, capsys):
@@ -252,10 +325,12 @@ def test_default_inspection_preserves_artifacts_and_queue(generation, capsys):
         assert conn.execute("SELECT count(*) FROM proof_notes").fetchone()[0] == 0
 
 
-def test_sealed_retirement_inspection_and_apply_reject_unsealed_generation(
+@pytest.mark.parametrize("generation", [(0, True)], indirect=True)
+def test_passed_opt_in_inspection_and_apply_reject_unsealed_generation(
     generation, capsys
 ):
     args, lease, _ = generation
+    args.allow_passed = True
     before = lease.owner_path.read_bytes()
     assert commands._cmd_retire_terminal_sealed_generation(args) == 0
     inspection = json.loads(capsys.readouterr().out)
@@ -293,6 +368,7 @@ def test_apply_reclaims_fixture_and_retains_original_terminal_custody(
     [
         ((101, True), commands._cmd_reclaim_cargo_generation),
         ((101, True, True), commands._cmd_retire_terminal_sealed_generation),
+        ((0, True, True), commands._cmd_retire_terminal_sealed_generation),
     ],
     indirect=["generation"],
 )
@@ -321,7 +397,11 @@ def test_apply_rejects_ambiguous_or_substituted_custody(
     generation, command, capsys, mutation
 ):
     args, lease, context = generation
+    if command is commands._cmd_retire_terminal_sealed_generation:
+        args.allow_passed = True
     updates = {}
+    with closing(state._connect(Path(args.db))) as conn:
+        database_returncode = state._row_by_run_id(conn, args.run_id)["returncode"]
     if mutation in {"queued", "dispatched", "running", "stale", "blocked"}:
         updates["status"] = mutation
     elif mutation == "no-finished-at":
@@ -341,7 +421,10 @@ def test_apply_rejects_ambiguous_or_substituted_custody(
             elif mutation == "wrong-queue-returncode":
                 context["queue_terminal"]["returncode"] = 2
             elif mutation == "wrong-command-returncode":
-                context["queue_terminal"]["command_returncode"] = 0
+                original_returncode = context["queue_terminal"]["command_returncode"]
+                context["queue_terminal"]["command_returncode"] = (
+                    101 if original_returncode == 0 else 0
+                )
             elif mutation == "wrong-custody":
                 context["execution_custody_sha256"] = "d" * 64
             elif mutation == "wrong-generation":
@@ -351,7 +434,7 @@ def test_apply_rejects_ambiguous_or_substituted_custody(
                 context.pop("derived_root_custody")
             context["terminal_evidence_sha256"] = (
                 supervisor_custody.terminal_evidence_sha256(
-                    context, run_id=args.run_id, returncode=101
+                    context, run_id=args.run_id, returncode=database_returncode
                 )
             )
         updates["receipt_context_json"] = json.dumps(context)
