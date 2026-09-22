@@ -66,17 +66,24 @@ def classify_apparatus_event(root: Path, path: Path) -> str | None:
     """Name the apparatus class of an event beneath ``root``, or None.
 
     `git status` (run by custody's own source snapshots and by tools that
-    validate the tree) refreshes the index through `.git/index.lock` and
-    touches the `.git` directory entry. Neither changes any source input, so
-    those events are `git-index-refresh`. Every other `.git` write (HEAD, refs,
-    objects, a rewritten index) stays an input mutation.
+    validate the tree, including a package source checkout that is a git
+    worktree whose gitdir lives inside the watched tree) refreshes the index
+    through `index.lock` and touches the `.git` directory entry, or the
+    `.git/worktrees/<name>` entry for a linked worktree. Neither changes any
+    source input, so those events are `git-index-refresh`. Every other `.git`
+    write (HEAD, refs, objects, a rewritten index) stays an input mutation.
     """
     try:
         relative = Path(_norm(path)).relative_to(Path(_norm(root)))
     except ValueError:
         return None
     parts = relative.parts
-    if parts == (".git",) or parts == (".git", "index.lock"):
+    if ".git" not in parts:
+        return None
+    tail = parts[parts.index(".git") + 1 :]
+    if tail in ((), ("index.lock",)):
+        return APPARATUS_GIT_INDEX_REFRESH
+    if len(tail) >= 2 and tail[0] == "worktrees" and tail[2:] in ((), ("index.lock",)):
         return APPARATUS_GIT_INDEX_REFRESH
     return None
 

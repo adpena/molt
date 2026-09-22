@@ -246,3 +246,59 @@ def test_wheel_manifest_core_is_invariant_to_all_operational_roots(
 
     assert first == second
     assert str(tmp_path) not in json.dumps(first)
+
+
+def test_location_roots_canonicalize_every_spelling_of_the_same_directory(
+    tmp_path: Path,
+) -> None:
+    """A version-alias junction and its real directory are one producer root."""
+    import os
+    import sys
+
+    from molt.cli.source_extension_reproducibility import (
+        _canonicalize_location_string,
+    )
+
+    real = tmp_path / "cpython-3.12.13"
+    real.mkdir()
+    alias = tmp_path / "cpython-3.12"
+    if sys.platform == "win32":
+        from tests.process_guard_common import run_guarded_test_process
+
+        created = run_guarded_test_process(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(real)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode != 0:
+            pytest.skip(f"junction creation is unavailable: {created.stderr}")
+    else:
+        os.symlink(real, alias, target_is_directory=True)
+    assert alias.resolve() == real.resolve()
+    roots = [(alias, "@python-base")]
+
+    assert (
+        _canonicalize_location_string(f"-I{real.as_posix()}/Include", roots)
+        == "-I@python-base/Include"
+    )
+    assert (
+        _canonicalize_location_string(f"-I{alias.as_posix()}/Include", roots)
+        == "-I@python-base/Include"
+    )
+
+
+def test_virtual_posix_root_canonicalizes_the_install_prefix() -> None:
+    from pathlib import PurePosixPath
+
+    from molt.cli.source_extension_reproducibility import (
+        _canonicalize_location_string,
+        _residual_producer_paths,
+    )
+
+    roots = [(PurePosixPath("/molt-install-prefix"), "@install-prefix")]
+    canonical = _canonicalize_location_string(
+        "/molt-install-prefix/Lib/site-packages/numpy/version.py", roots
+    )
+    assert canonical == "@install-prefix/Lib/site-packages/numpy/version.py"
+    assert _residual_producer_paths([canonical]) == []

@@ -1579,6 +1579,7 @@ def test_meson_setup_uses_typed_driver(
             str(tmp_path / "metadata/meson.cross"),
             "--cross-file",
             str(tmp_path / "metadata/build-tools.cross"),
+            f"--prefix={producer.MESON_INSTALL_PREFIX}",
             "-Dblas=none",
         )
     ]
