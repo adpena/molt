@@ -2813,11 +2813,10 @@ gates = [
 # --- Static first-party from-import symbol resolution ---------------------
 [[rule]]
 name = "import-symbol-gate"
-description = "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane."
+description = "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane. The property itself runs in the repository docs-tests command; this rule covers edits to the gate."
 globs = [
-  "src/molt/**/*.py",
-  "tools/**/*.py",
-  "tests/**/*.py",
+  "tools/import_symbol_gate.py",
+  "tests/tools/test_import_symbol_gate.py",
 ]
 gates = [
   "python3 tools/venv_exec.py python tools/import_symbol_gate.py",
