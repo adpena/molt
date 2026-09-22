@@ -329,6 +329,11 @@ def test_child_policy_carries_the_derived_environment_rows() -> None:
     assert policy["derived_environments"] == [
         {**rows[0], "base_executable_sha256s": ["b" * 64]}
     ]
+    located = {**python, "base_executable_sha256": "b" * 64}
+    located.pop("runtime")
+    assert execution_custody.child_policy(
+        envelope, {"python": located}, derived_environments=rows
+    )["derived_environments"] == [{**rows[0], "base_executable_sha256s": ["b" * 64]}]
     assert execution_custody.child_policy(envelope, {})["derived_environments"] == []
     with pytest.raises(ValueError, match="base interpreter"):
         execution_custody.child_policy(envelope, {}, derived_environments=rows)
