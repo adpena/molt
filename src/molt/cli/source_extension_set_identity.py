@@ -230,8 +230,12 @@ def _source_extension_set_identity(
     extensions = set_manifest.get("extensions")
     if not isinstance(extensions, list) or not extensions:
         raise ValueError("extension-set identity requires extension sidecars")
-    if not all(isinstance(item, Mapping) for item in extensions):
-        raise ValueError("extension-set identity has invalid extension entries")
+    typed_extensions: list[Mapping[str, object]] = []
+    for item in extensions:
+        if not isinstance(item, Mapping):
+            raise ValueError("extension-set identity has invalid extension entries")
+        typed_extensions.append({str(key): value for key, value in item.items()})
+    extensions = typed_extensions
     extension_keys = [
         validate_source_extension_module_target(item.get("module"), item.get("target"))
         for item in extensions
