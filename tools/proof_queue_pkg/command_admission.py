@@ -365,7 +365,11 @@ def _proof_command_registry() -> dict[str, object]:
     named_entrypoints: dict[tuple[str, str], list[str]] = {}
     for lane in plan.named_lanes:
         argv = tuple(lane.argv)
-        named[argv] = {"id": lane.id, "toolchains": tuple(lane.toolchains)}
+        named[argv] = {
+            "id": lane.id,
+            "toolchains": tuple(lane.toolchains),
+            "derived_environments": tuple(lane.derived_environments),
+        }
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
             entrypoints.setdefault(entrypoint, []).append(lane.id)
@@ -424,6 +428,22 @@ def _toolchain_dependency_closure(names: Sequence[str]) -> list[str]:
     if not isinstance(plan, proof_plan.ProofPlan):
         raise TypeError("proof command registry has no canonical proof plan")
     return list(plan.toolchain_closure(str(name) for name in names))
+
+
+def _named_lane_derived_environments(
+    registration_kind: str, proof_plan_command_ids: Sequence[str]
+) -> list[str]:
+    """Derived environment kinds a named lane declared in the proof plan."""
+    if registration_kind != "named-lane":
+        return []
+    registry = _proof_command_registry()
+    named = registry["named"]
+    assert isinstance(named, dict)
+    kinds: list[str] = []
+    for lane in named.values():
+        if lane["id"] in proof_plan_command_ids:
+            kinds.extend(str(kind) for kind in lane["derived_environments"])
+    return sorted(set(kinds))
 
 
 def _command_registration(
@@ -1038,6 +1058,9 @@ def _envelope_for_command(
             "kind": registration_kind,
             "descendants": "declared-toolchains",
             "toolchains": list(toolchains),
+            "derived_environments": _named_lane_derived_environments(
+                registration_kind, proof_plan_command_ids
+            ),
         }
     elif delegated is not None:
         process_closure = {

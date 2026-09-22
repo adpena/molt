@@ -1,0 +1,82 @@
+schema_version = 1
+
+# Pinned releases of standalone tool binaries that both CI and the local
+# custody toolchain root install from. One authority: the CI workflow pin
+# (taiki-e/install-action `tool: <name>@<version>`) and the proof-plan
+# toolchain policy are gated against it, and src/molt/tool_releases.py
+# provisions the host asset into `<toolchain root>/<name>-<version>/bin`
+# only after the download matches the recorded size and SHA-256 exactly.
+# Digests come from the GitHub release asset records at `provenance_url`
+# and were re-verified by hashing the downloaded archive.
+
+[tools.wasm-tools]
+version = "1.259.0"
+executable = "wasm-tools"
+provenance_url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.259.0"
+release_id = 386504111
+
+[tools.wasm-tools.assets.x86_64-windows]
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.259.0/wasm-tools-1.259.0-x86_64-windows.zip"
+size = 4625989
+sha256 = "3c669d3706a5db7611a11afc422124df53a2c67294575e21f28c9b3deb95fa08"
+archive_member = "wasm-tools-1.259.0-x86_64-windows/wasm-tools.exe"
+
+[tools.wasm-tools.assets.x86_64-linux]
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.259.0/wasm-tools-1.259.0-x86_64-linux.tar.gz"
+size = 5853150
+sha256 = "3e9b374b4c7715b771b69bf0d65a337990ed4546ec5e97e01c0ff587dfc52160"
+archive_member = "wasm-tools-1.259.0-x86_64-linux/wasm-tools"
+
+[tools.wasm-tools.assets.aarch64-linux]
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.259.0/wasm-tools-1.259.0-aarch64-linux.tar.gz"
+size = 5948610
+sha256 = "9e1644f3841f2b783dd8af82de054667388e46689806fba4909ed45f3182800f"
+archive_member = "wasm-tools-1.259.0-aarch64-linux/wasm-tools"
+
+[tools.wasm-tools.assets.x86_64-macos]
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.259.0/wasm-tools-1.259.0-x86_64-macos.tar.gz"
+size = 5541806
+sha256 = "7ffdbb9f00207bd16e0612931c63ac1012255a0c805241b339dfe0cf39356a25"
+archive_member = "wasm-tools-1.259.0-x86_64-macos/wasm-tools"
+
+[tools.wasm-tools.assets.aarch64-macos]
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.259.0/wasm-tools-1.259.0-aarch64-macos.tar.gz"
+size = 5121483
+sha256 = "b662d939220b2c49ea9f1d81a19776e47d72bb5ba580f08107c7dc865e1f8c66"
+archive_member = "wasm-tools-1.259.0-aarch64-macos/wasm-tools"
+
+[tools.sccache]
+version = "0.18.0"
+executable = "sccache"
+provenance_url = "https://api.github.com/repos/mozilla/sccache/releases/tags/v0.18.0"
+release_id = 388303267
+
+[tools.sccache.assets.x86_64-windows]
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-pc-windows-msvc.zip"
+size = 9694400
+sha256 = "8965c74d5e8a225244f741e18ad2f3f504f48228dc1bac948fc22761a348363d"
+archive_member = "sccache-v0.18.0-x86_64-pc-windows-msvc/sccache.exe"
+
+[tools.sccache.assets.x86_64-linux]
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz"
+size = 9730540
+sha256 = "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+archive_member = "sccache-v0.18.0-x86_64-unknown-linux-musl/sccache"
+
+[tools.sccache.assets.aarch64-linux]
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-unknown-linux-musl.tar.gz"
+size = 8968665
+sha256 = "2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
+archive_member = "sccache-v0.18.0-aarch64-unknown-linux-musl/sccache"
+
+[tools.sccache.assets.x86_64-macos]
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-apple-darwin.tar.gz"
+size = 9259357
+sha256 = "1dade83cc49eeb42337565eccd534b05982820a8e44b851bd7937467a18c7aef"
+archive_member = "sccache-v0.18.0-x86_64-apple-darwin/sccache"
+
+[tools.sccache.assets.aarch64-macos]
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-apple-darwin.tar.gz"
+size = 7997637
+sha256 = "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e"
+archive_member = "sccache-v0.18.0-aarch64-apple-darwin/sccache"

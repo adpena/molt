@@ -136,10 +136,17 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
         "terminate_job",
         lambda _job: calls.append("terminate"),
     )
+
+    def wait(_job, *, timeout):
+        calls.append(f"wait:{timeout}")
+        if timeout < 2.5:
+            raise TimeoutError("still owned")
+
+    monkeypatch.setattr(win_job, "wait_until_empty", wait)
     monkeypatch.setattr(
         win_job,
-        "wait_until_empty",
-        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
+        "remaining_process_images",
+        lambda _job: ((4242, "C:\tools\lingering.exe"),),
     )
 
     cleanup = win_job.complete_job_custody(777, timeout=2.5)
@@ -147,9 +154,42 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
     assert cleanup is not None
     assert cleanup.completed
     assert cleanup.terminated_remaining_processes
+    assert cleanup.remaining_processes == ((4242, "C:\tools\lingering.exe"),)
     assert cleanup.before.active_processes == 3
     assert cleanup.after.active_processes == 0
-    assert calls == ["terminate", "wait:2.5"]
+    assert calls == [
+        f"wait:{win_job.CONSOLE_RELEASE_GRACE_S}",
+        "terminate",
+        "wait:2.5",
+    ]
+
+
+def test_complete_job_custody_lets_console_hosts_release_before_terminating(
+    monkeypatch,
+) -> None:
+    busy = win_job.WindowsJobAccounting(8, 1, 7, 4096, 100, 200, 300)
+    empty = win_job.WindowsJobAccounting(8, 0, 8, 4096, 400, 500, 600)
+    accounting = iter((busy, empty))
+    resources = win_job.WindowsSystemResources(100, 800, 4000, 30, 1, 2, 2, 3, 1)
+    calls: list[str] = []
+    monkeypatch.setattr(win_job, "job_accounting", lambda _job: next(accounting))
+    monkeypatch.setattr(win_job, "system_resources", lambda: resources)
+    monkeypatch.setattr(
+        win_job, "terminate_job", lambda _job: calls.append("terminate")
+    )
+    monkeypatch.setattr(
+        win_job,
+        "wait_until_empty",
+        lambda _job, *, timeout: calls.append(f"wait:{timeout}"),
+    )
+
+    cleanup = win_job.complete_job_custody(777, timeout=5.0)
+
+    assert cleanup is not None
+    assert cleanup.completed
+    assert not cleanup.terminated_remaining_processes
+    assert cleanup.remaining_processes == ()
+    assert calls == [f"wait:{win_job.CONSOLE_RELEASE_GRACE_S}", "wait:5.0"]
 
 
 def test_complete_job_custody_does_not_terminate_an_empty_job(monkeypatch) -> None:

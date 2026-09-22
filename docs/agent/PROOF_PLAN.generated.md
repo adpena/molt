@@ -110,8 +110,12 @@ Receipts record resolved path, version text, and the repository-relative probe w
 | `quint` | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
 | `cargo-deny` | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
+| `llvm-ar` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-ranlib` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-nm` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-strip` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-ld` | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `wasm-tools` | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
+| `wasm-tools` | `^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.259.0` | 2 |
 
 ## Cargo execution contracts
 

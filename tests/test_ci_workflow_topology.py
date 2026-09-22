@@ -7,6 +7,8 @@ import tomllib
 import pytest
 import yaml
 
+from molt import tool_releases
+
 from tools.proof_counts import fail_closed_proof_exit_code
 
 
@@ -1208,7 +1210,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b"
         in wasm_text
     )
-    assert "tool: wasm-tools@1.253.0" in wasm_text
+    assert (
+        f"tool: wasm-tools@{tool_releases.tool_release('wasm-tools').version}"
+        in wasm_text
+    )
     assert "fallback: none" in wasm_text
     assert (
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"
