@@ -7,21 +7,13 @@ as one class-resolution authority rather than inside a single consumer mixin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import ClassInfo, MethodInfo, MoltOp, MoltValue
 from molt.frontend.sema import c3_merge
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ClassResolutionMixin(_MixinBase):
+class ClassResolutionMixin(GeneratorMixinBase):
     def _class_layout_stable(self, class_name: str) -> bool:
         class_info = self.classes.get(class_name)
         if not class_info:
@@ -114,7 +106,10 @@ class ClassResolutionMixin(_MixinBase):
         if cached is not None:
             return cached
         for base_name in self._class_mro_names(class_name)[1:]:
-            if self._builtin_exception_is_available(base_name) and base_name not in self.classes:
+            if (
+                self._builtin_exception_is_available(base_name)
+                and base_name not in self.classes
+            ):
                 class_info["exception_subclass"] = True
                 return True
             base_info = self.classes.get(base_name)

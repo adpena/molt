@@ -26,16 +26,11 @@ from molt.frontend._types import (
     ScratchCell,
 )
 from molt.frontend.sema import FunctionKind, SemaResult
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
-    from molt.frontend._protocol import _GeneratorProtocol
     from molt.type_facts import TypeFacts
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
@@ -147,7 +142,7 @@ FUNCTION_STATE_SNAPSHOT_ATTRS = (
 )
 
 
-class GeneratorStateMixin(_MixinBase):
+class GeneratorStateMixin(GeneratorMixinBase):
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]:
         missing = [name for name in attrs if not hasattr(self, name)]
         if missing:

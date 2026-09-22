@@ -9,11 +9,11 @@ the curated attribute-type table that already lives in the two generated files.
 Why this generator exists
 =========================
 The god-class ``SimpleTIRGenerator`` was decomposed (move-only) into a package of
-mixins composed via MRO. Each mixin annotates ``self`` as ``_GeneratorProtocol``
-under ``TYPE_CHECKING`` (``if TYPE_CHECKING: _MixinBase = _GeneratorProtocol`` /
-``else: _MixinBase = object``) so that cross-mixin ``self.<method>`` /
-``self.<attr>`` references type-check across files - the guarantee the single
-class form had implicitly. That guarantee only holds while the Protocol is a
+mixins composed via MRO. Each mixin derives from
+``molt.frontend._mixin_base.GeneratorMixinBase`` - ``object`` at runtime, and
+under ``TYPE_CHECKING`` ``ast.NodeVisitor`` followed by ``_GeneratorProtocol`` -
+so that cross-mixin ``self.<method>`` / ``self.<attr>`` references type-check
+across files - the guarantee the single class form had implicitly. That guarantee only holds while the Protocol is a
 SUPERSET of the assembled class's real method+attribute surface; if a method
 moves into a mixin and the Protocol is not regenerated, the moved method - and
 every sibling-mixin call to it - silently loses static checking.

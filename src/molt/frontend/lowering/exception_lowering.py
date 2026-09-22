@@ -10,7 +10,7 @@ call, import, annotation, comprehension, and async visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
 from molt.frontend._types import (
     ActiveException,
@@ -19,17 +19,10 @@ from molt.frontend._types import (
     MoltValue,
     TryScope,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ExceptionLoweringMixin(_MixinBase):
+class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_exception_class(self, name: str) -> MoltValue:
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=kind_val))

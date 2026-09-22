@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import (
     MoltOp,
@@ -12,17 +12,10 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class SerializationCollectionOpsMixin(_MixinBase):
+class SerializationCollectionOpsMixin(GeneratorMixinBase):
     def _serialize_collection_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
         if op.kind == "LEN":
             len_entry: dict[str, object] = {

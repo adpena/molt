@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 
 from typing import (
-    TYPE_CHECKING,
     Any,
     Iterable,
     Sequence,
@@ -26,17 +25,10 @@ from molt.compiler_analysis.static_truth import (
     SysPlatformStaticTruthKwargs,
     static_if_live_branch,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AnalysisCollectStaticMixin(_MixinBase):
+class AnalysisCollectStaticMixin(GeneratorMixinBase):
     def _sys_platform_static_truth_kwargs(
         self, extra_sys_platform_module_aliases: Iterable[str] = ()
     ) -> SysPlatformStaticTruthKwargs:

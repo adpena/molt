@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import MoltOp, MoltValue
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class OwnershipLoweringMixin(_MixinBase):
+class OwnershipLoweringMixin(GeneratorMixinBase):
     def _emit_inc_ref(self, value: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(MoltOp(kind="INC_REF", args=[value], result=res))

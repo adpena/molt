@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 import bisect
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -37,17 +36,10 @@ from molt.frontend.sema import (
     signature_contains_yield,
     stateful_function_frame_plan,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AsyncGenVisitorMixin(_MixinBase):
+class AsyncGenVisitorMixin(GeneratorMixinBase):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if self.current_func_name == "molt_main":
             new_globals = self._collect_global_decls(node.body)

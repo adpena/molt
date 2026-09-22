@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import Any, NoReturn
 
 from molt.frontend._types import (
     CFGGraph,
@@ -12,17 +12,10 @@ from molt.frontend._types import (
     build_cfg,
 )
 from molt.frontend.lowering.try_regions import try_region_id
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class MidendCFGMixin(_MixinBase):
+class MidendCFGMixin(GeneratorMixinBase):
     def _can_hoist_guard_pair(self, first: MoltOp, second: MoltOp) -> bool:
         if first.kind != second.kind:
             return False
@@ -1245,7 +1238,10 @@ class MidendCFGMixin(_MixinBase):
             terminal_start = len(rewritten)
             if rewritten and rewritten[-1].kind in {"ret", "ret_void", "RETURN"}:
                 terminal_start -= 1
-                if terminal_start > 0 and rewritten[terminal_start - 1].kind == "TRACE_EXIT":
+                if (
+                    terminal_start > 0
+                    and rewritten[terminal_start - 1].kind == "TRACE_EXIT"
+                ):
                     terminal_start -= 1
             rewritten[terminal_start:terminal_start] = trailing_closes
 

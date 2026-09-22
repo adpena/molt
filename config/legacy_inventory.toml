@@ -42,3 +42,11 @@ pattern = '^def remove_legacy_pid_files\('
 superseded_by = "typed backend daemon identity files (remove_backend_daemon_identity)"
 removal_release = "1.0.0"
 reason = "Migration sweep for pre-identity-file `*.pid` daemon records; a compatibility path kept after its replacement was attested."
+
+[[item]]
+id = "concurrency-runtime-duplicate-module"
+path = "src/moltlib/_concurrency_runtime.py"
+pattern = '^class Channel\(Generic\[T\]\):'
+superseded_by = "src/molt/concurrency.py (one channel/task authority; moltlib.concurrency re-exports it)"
+removal_release = "1.0.0"
+reason = "Byte-for-byte duplicate of molt.concurrency kept only because compiled-module resolution of moltlib.concurrency has not been routed through the single authority; a duplicate registry is drift by construction."

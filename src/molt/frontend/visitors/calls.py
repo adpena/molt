@@ -7,7 +7,7 @@ only the MRO composition and the small visit_Call phase order.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -25,14 +25,7 @@ from molt.frontend.visitors.call_method_dispatch import CallMethodDispatchMixin
 from molt.frontend.visitors.call_module_dispatch import CallModuleDispatchMixin
 from molt.frontend.visitors.call_reductions import CallReductionMixin
 from molt.frontend.visitors.call_runtime_helpers import CallRuntimeHelperMixin
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 class CallVisitorMixin(
@@ -45,7 +38,7 @@ class CallVisitorMixin(
     CallModuleDispatchMixin,
     CallDefaultsMixin,
     CallReductionMixin,
-    _MixinBase,
+    GeneratorMixinBase,
 ):
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)

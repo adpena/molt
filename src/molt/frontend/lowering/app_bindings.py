@@ -9,7 +9,7 @@ entry module initializer in TIR.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import MoltValue
 from molt.frontend.sema import (
@@ -17,17 +17,10 @@ from molt.frontend.sema import (
     normalize_function_kind,
     parse_stateful_function_type_hint,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AppBindingAuthorityMixin(_MixinBase):
+class AppBindingAuthorityMixin(GeneratorMixinBase):
     def _is_entry_app_binding_scope(self) -> bool:
         return (
             self.current_func_name == "molt_main"
