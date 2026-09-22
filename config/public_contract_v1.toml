@@ -1,0 +1,205 @@
+schema = "molt.public-contract.v1"
+
+# Artifact and receipt formats a downstream consumer may depend on.
+public_schemas = [
+  "molt.release-supply-chain.v1",
+  "molt.release-candidate.v1",
+  "molt.release-manifest.v2",
+  "molt.release-targets.v1",
+  "molt-release-exit/3",
+  "molt-pact-witness-acceptance/2",
+  "molt.phase-exit-manifest.v1",
+  "molt.phase-exit-requirements.v1",
+  "molt.legacy-inventory.v1",
+  "molt.public-contract.v1",
+  "molt.public-contract-surface.v1",
+  "molt.verified-subset.v1",
+]
+
+# Molt v1 public stable contract: the reviewed declaration half.
+#
+# Every command the CLI exposes must be tiered here (tools/public_contract_gate.py
+# --check fails otherwise). `stable` commands keep their surface within a major
+# version; changing one requires `--update` of the generated snapshot in the
+# same landing, which is the reviewable act of changing the contract.
+# `preview` commands are snapshotted for visibility but may change between
+# minor releases. `internal` commands serve the repository's own apparatus and
+# carry no compatibility promise. See docs/spec/PUBLIC_CONTRACT_V1.md.
+
+[policy]
+versioning = "semver"
+python_target_range = ">=3.12"
+stable_within = "major"
+preview_may_change_within = "minor"
+deprecation = "time-bounded public transition recorded in config/legacy_inventory.toml with a removal_release; no silent removal"
+release_gate = "tools/release/release_authority.py refuses a v1+ tag without a green H0 phase-exit manifest for the tagged commit"
+
+# Core product surface.
+[[command]]
+name = "build"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "run"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "test"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "check"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "bench"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "deploy"
+tier = "preview"
+since = "1.0.0"
+
+# Package surface.
+[[command]]
+name = "package"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "publish"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "deps"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "vendor"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "install"
+tier = "stable"
+since = "1.0.0"
+
+# Toolchain surface.
+[[command]]
+name = "clean"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "doctor"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "update"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "config"
+tier = "stable"
+since = "1.0.0"
+
+[[command]]
+name = "completion"
+tier = "stable"
+since = "1.0.0"
+
+# Development surface: valuable, exposed, and allowed to evolve within minors.
+[[command]]
+name = "compare"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "diff"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "parity-run"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "profile"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "lint"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "extension"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "factgraph"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "debug"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "repl"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "setup"
+tier = "preview"
+since = "1.0.0"
+
+[[command]]
+name = "verify"
+tier = "preview"
+since = "1.0.0"
+
+# Repository apparatus exposed through the same entrypoint: no public promise.
+[[command]]
+name = "dx"
+tier = "internal"
+since = "1.0.0"
+
+[[command]]
+name = "harness"
+tier = "internal"
+since = "1.0.0"
+
+[[command]]
+name = "queue"
+tier = "internal"
+since = "1.0.0"
+
+[[command]]
+name = "validate"
+tier = "internal"
+since = "1.0.0"
+
+[[command]]
+name = "internal-batch-build-server"
+tier = "internal"
+since = "1.0.0"
+
+[[command]]
+name = "internal-runtime-wasm-build"
+tier = "internal"
+since = "1.0.0"

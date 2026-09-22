@@ -13,6 +13,8 @@ import tomllib
 from typing import Any, Iterable
 import zipfile
 
+from molt.release_matrix import RELEASE_TARGETS
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
@@ -44,8 +46,17 @@ def load_config() -> dict[str, Any]:
 
 
 def release_targets() -> tuple[ReleaseTarget, ...]:
-    document = load_config()
-    targets = tuple(ReleaseTarget(**raw) for raw in document.get("target", []))
+    """Release targets are the generated release matrix; there is no second table."""
+    targets = tuple(
+        ReleaseTarget(
+            id=str(record["id"]),
+            runner=str(record["runner"]),
+            platform=str(record["platform"]),
+            arch=str(record["arch"]),
+            archive=str(record["archive"]),
+        )
+        for record in RELEASE_TARGETS
+    )
     ids = [target.id for target in targets]
     coordinates = [(target.platform, target.arch) for target in targets]
     if not targets or len(ids) != len(set(ids)):

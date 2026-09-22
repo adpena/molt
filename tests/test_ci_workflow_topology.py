@@ -1097,7 +1097,7 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "push:" in release_text
     assert "tags:" in release_text
     assert "workflow_dispatch:" in release_text
-    release_config = _read("config/release_supply_chain.toml")
+    release_config = _read("config/release_targets.toml")
     assert "macos-15" in release_config
     assert "ubuntu-24.04" in release_config
     assert "windows-2022" in release_config

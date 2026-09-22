@@ -910,7 +910,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         ("windows", "windows-2022"),
     ]
     assert all(entry["family"] == "platform_portability" for entry in matrix)
-    assert [len(entry["command_ids"]) for entry in matrix] == [1, 2, 2]
+    assert [len(entry["command_ids"]) for entry in matrix] == [2, 3, 3]
     for entry in matrix:
         commands = proof_plan._topological_commands(
             PLAN,

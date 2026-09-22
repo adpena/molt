@@ -35,6 +35,11 @@ def _expected_rust_target(platform: str, architecture: str) -> str:
     return f"{rust_arch}-{suffix}"
 
 
+def _expected_archive(platform: str) -> str:
+    """Release archives are zip on Windows and tar.gz elsewhere (packaging/install.sh)."""
+    return "zip" if platform == "windows" else "tar.gz"
+
+
 def _runner_matches_coordinate(
     runner: str, *, platform: str, architecture: str
 ) -> bool:
@@ -95,7 +100,7 @@ def load_release_target_authority(path: Path = SOURCE) -> dict[str, object]:
         expected_id = f"{target['platform']}-{target['arch']}"
         if (
             target["id"] != expected_id
-            or target["archive"] != "zip"
+            or target["archive"] != _expected_archive(target["platform"])
             or "latest" in target["runner"]
             or "self-hosted" in target["runner"]
             or re.fullmatch(r"[a-z0-9_]+(?:-[a-z0-9_]+)+", target["rust_target"])
