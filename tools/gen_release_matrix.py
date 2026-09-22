@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import re
 import tomllib
-from typing import Any, Mapping
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
-from molt.file_publication import atomic_write_bytes
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
-
+from tools.generator_io import generated_file_matches, write_generated_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "config" / "release_targets.toml"
@@ -189,10 +189,10 @@ def main() -> int:
     args = parser.parse_args()
     rendered = render_release_matrix(load_release_target_authority())
     if args.check:
-        if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != rendered:
+        if not generated_file_matches(OUTPUT, rendered):
             raise SystemExit("generated release matrix is stale")
         return 0
-    atomic_write_bytes(OUTPUT, rendered.encode("utf-8"))
+    write_generated_text(OUTPUT, rendered)
     return 0
 
 
