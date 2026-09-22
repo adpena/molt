@@ -317,10 +317,17 @@ def _canonical_distribution_roots() -> tuple[str, ...]:
     return tuple(roots)
 
 
-def _installed_distributions() -> list[dict[str, str]]:
+def _installed_distributions(
+    roots: Sequence[str] | None = None,
+) -> list[dict[str, str]]:
+    """Distributions under the given site roots (default: the active interpreter's).
+
+    Metadata is read from the directories directly, never by executing an
+    interpreter: attesting an environment must not launch anything from it.
+    """
     rows: dict[str, dict[str, str]] = {}
     for distribution in importlib_metadata.distributions(
-        path=list(_canonical_distribution_roots())
+        path=list(_canonical_distribution_roots() if roots is None else roots)
     ):
         raw_name = distribution.metadata.get("Name")
         if not isinstance(raw_name, str) or not raw_name.strip():
@@ -338,73 +345,38 @@ def _installed_distributions() -> list[dict[str, str]]:
     return [rows[name] for name in sorted(rows)]
 
 
-_DISTRIBUTION_PROBE = """
-import importlib.metadata as m, json, os, sysconfig
-from pathlib import Path
-from packaging.utils import canonicalize_name
-roots = []
-seen = set()
-for scheme in ('purelib', 'platlib'):
-    raw_root = sysconfig.get_path(scheme)
-    if not isinstance(raw_root, str) or not raw_root.strip():
-        raise SystemExit('missing sysconfig path: ' + scheme)
-    root = str(Path(raw_root).resolve())
-    identity = os.path.normcase(root)
-    if identity not in seen:
-        seen.add(identity)
-        roots.append(root)
-rows = {}
-for distribution in m.distributions(path=roots):
-    raw_name = distribution.metadata.get('Name')
-    if not isinstance(raw_name, str) or not raw_name.strip():
-        raise SystemExit('distribution without Name metadata')
-    name = canonicalize_name(raw_name)
-    row = {'name': name, 'version': distribution.version}
-    if name in rows and rows[name] != row:
-        raise SystemExit('duplicate distribution: ' + name)
-    rows[name] = row
-print(json.dumps([rows[name] for name in sorted(rows)], separators=(',', ':')))
-"""
+def _environment_distribution_roots(root: Path, python_version: str) -> tuple[str, ...]:
+    """The purelib/platlib roots of a virtual environment at ``root``."""
+    major_minor = ".".join(python_version.split(".")[:2])
+    variables = {
+        "base": str(root),
+        "platbase": str(root),
+        "py_version_short": major_minor,
+    }
+    roots: list[str] = []
+    seen: set[str] = set()
+    for scheme in ("purelib", "platlib"):
+        raw = sysconfig.get_path(scheme, scheme="venv", vars=variables)
+        if not isinstance(raw, str) or not raw.strip():
+            raise SourceBuildEnvironmentError(
+                f"virtual environment layout has no {scheme} path"
+            )
+        candidate = str(Path(raw))
+        identity = os.path.normcase(candidate)
+        if identity not in seen:
+            seen.add(identity)
+            roots.append(candidate)
+    return tuple(roots)
 
 
-def _probe_environment_distributions(python_executable: Path) -> list[dict[str, str]]:
-    # This bounded, read-only bootstrap probe is the trust boundary used to
-    # decide whether an environment may launch guarded package build work.
-    probe_environment = os.environ.copy()
-    probe_environment.pop("PYTHONHOME", None)
-    probe_environment.pop("PYTHONPATH", None)
-    probe_environment["PYTHONNOUSERSITE"] = "1"
-    result = process_guard.run_completed_command(
-        [str(python_executable), "-P", "-c", _DISTRIBUTION_PROBE],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        env=probe_environment,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
+def _environment_distributions(root: Path, python_version: str) -> list[dict[str, str]]:
+    """Distributions installed in the locked environment at ``root``, read in place."""
+    roots = _environment_distribution_roots(root, python_version)
+    if not any(Path(candidate).is_dir() for candidate in roots):
         raise SourceBuildEnvironmentError(
-            "cannot attest provisioned source-build distributions: "
-            f"{detail or f'returncode={result.returncode}'}"
+            f"provisioned source-build environment has no site-packages: {root}"
         )
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise SourceBuildEnvironmentError(
-            "source-build distribution probe returned invalid JSON"
-        ) from exc
-    if not isinstance(payload, list) or not all(
-        isinstance(item, dict)
-        and set(item) == {"name", "version"}
-        and all(isinstance(value, str) and value for value in item.values())
-        for item in payload
-    ):
-        raise SourceBuildEnvironmentError(
-            "source-build distribution probe returned an invalid payload"
-        )
-    return payload
+    return _installed_distributions(roots)
 
 
 def _validate_declared_group_resolutions(
@@ -544,7 +516,9 @@ def provision_source_build_environment(
             if actual_core == expected_core and existing.get(
                 "executable_images"
             ) == environment_executable_images(root):
-                installed = _probe_environment_distributions(python_executable)
+                installed = _environment_distributions(
+                    root, str(custody["python"]["version"])
+                )
                 if existing.get("installed_distributions") == installed:
                     if provisioning is not None:
                         if provisioning != expected_provisioning:
@@ -613,7 +587,10 @@ def provision_source_build_environment(
             raise SourceBuildEnvironmentError(
                 f"uv sync did not create source-build Python: {python_executable}"
             )
-        installed = _probe_environment_distributions(python_executable)
+        # Attestation precedes every launch from the environment: distributions
+        # and executable images are read from the tree, the manifest is written,
+        # and only then may custody admit the environment's Python.
+        installed = _environment_distributions(root, str(custody["python"]["version"]))
         _validate_declared_group_resolutions(
             custody["dependency_group_requirements"], installed
         )
