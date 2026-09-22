@@ -220,3 +220,56 @@ def test_llvm_family_is_derived_from_the_release_manifest_evidence() -> None:
     family = ge.llvm_family_toolchains(PLAN)
     assert {"clang", "wasm-ld", "llvm-config", "ld.lld"} <= family
     assert "python" not in family and "cargo" not in family
+
+
+def test_tool_release_lanes_run_the_pinned_release_first_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from molt import tool_releases
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    assert "wasm-tools" in ge.tool_release_toolchains(PLAN)
+    assert "python" not in ge.tool_release_toolchains(PLAN)
+
+    release = tool_releases.tool_release("wasm-tools")
+    toolchain_root = tmp_path / "target-root"
+    prefix = tool_releases.tool_prefix(toolchain_root, release)
+    executable = tool_releases.tool_executable(prefix, release)
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"pinned")
+    provisioned: list[str] = []
+
+    def provision(requested, root):
+        provisioned.append(requested.name)
+        assert root == toolchain_root
+        return tool_releases.ToolDiscovery(
+            release=requested,
+            prefix=prefix,
+            executable=executable,
+            executable_sha256="0" * 64,
+            asset=next(iter(requested.assets.values())),
+        )
+
+    class Custody:
+        pass
+
+    Custody.toolchain_root = toolchain_root
+    monkeypatch.setattr(tool_releases, "provision_tool", provision)
+    monkeypatch.setattr(
+        "molt.dx.checkout_custody", lambda root, env=None, **_kwargs: Custody()
+    )
+    ambient = os.pathsep.join([str(tmp_path / "cargo-bin"), str(tmp_path / "other")])
+    env, prefixes = ge.prefer_tool_release_prefixes(
+        {"PATH": ambient}, ["python", "wasm-tools"], cwd=tmp_path
+    )
+    assert provisioned == ["wasm-tools"]
+    assert prefixes == {"wasm-tools": str(prefix)}
+    assert env["PATH"].split(os.pathsep)[0] == str(executable.parent.resolve())
+    assert env["PATH"].split(os.pathsep)[1:] == ambient.split(os.pathsep)
+
+    untouched, prefixes = ge.prefer_tool_release_prefixes(
+        {"PATH": ambient}, ["python", "uv"], cwd=tmp_path
+    )
+    assert prefixes == {} and untouched["PATH"] == ambient

@@ -107,6 +107,10 @@ def windows_job_cleanup_payload(cleanup: Any | None) -> dict[str, object] | None
     return {
         "completed": cleanup.completed,
         "terminated_remaining_processes": cleanup.terminated_remaining_processes,
+        "remaining_processes": [
+            {"pid": pid, "image": image}
+            for pid, image in getattr(cleanup, "remaining_processes", ())
+        ],
         "elapsed_s": cleanup.elapsed_s,
         "before": _windows_job_accounting_payload(cleanup.before),
         "after": _windows_job_accounting_payload(cleanup.after),

@@ -33,7 +33,7 @@ def test_python_payload_cannot_replace_private_audit_enforcement(
         "assert blocked"
     )
     policy = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "forbidden",
         "allowed": [],
     }

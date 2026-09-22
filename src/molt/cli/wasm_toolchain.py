@@ -9,6 +9,8 @@ import shutil
 from pathlib import Path
 import tomllib
 
+from molt.dx import TOOLCHAINS_DIRNAME
+
 from molt.cli.command_runtime import _run_completed_command
 from molt.file_hashing import _sha256_file
 from molt.cli.llvm_wasi_tools import (
@@ -307,12 +309,12 @@ def _resolve_wasi_sysroot_cached(
     candidates.extend(_wasi_sdk_sysroot_candidates(wasi_sdk_prefix))
     if molt_target_root:
         target_root = Path(molt_target_root).expanduser()
-        target_toolchains = target_root / "toolchains"
+        target_toolchains = target_root / TOOLCHAINS_DIRNAME
         candidates.extend(
             [
-                target_root / "toolchains" / "wasi-sysroot",
-                target_root / "toolchains" / "wasi-sdk" / "share" / "wasi-sysroot",
-                target_root / "toolchains" / "wasi-sdk" / "wasi-sysroot",
+                target_toolchains / "wasi-sysroot",
+                target_toolchains / "wasi-sdk" / "share" / "wasi-sysroot",
+                target_toolchains / "wasi-sdk" / "wasi-sysroot",
                 target_root / "wasi-sysroot",
                 target_root / "wasi-sdk" / "share" / "wasi-sysroot",
                 target_root / "wasi-sdk" / "wasi-sysroot",

@@ -78,6 +78,12 @@ REQUIRED_SCHEDULED_FAMILY_FIELDS = (
     "timeout_minutes",
     "resource_class",
 )
+# Derived environments a named lane may provision and launch children from.
+# Each kind names one custody-root location whose entries are content-addressed,
+# attested environments; the proof queue admits their launchers only through
+# that attestation (tools/proof_queue_pkg/execution_custody.py).
+DERIVED_ENVIRONMENT_KINDS = ("uv-source-build-environment",)
+OPTIONAL_NAMED_LANE_FIELDS = ("derived_environments",)
 REQUIRED_NAMED_LANE_FIELDS = (
     "description",
     "argv",
@@ -179,6 +185,10 @@ class NamedLane:
     @property
     def scratch_roots(self) -> tuple[str, ...]:
         return tuple(str(value) for value in self.data.get("scratch_roots", ()))
+
+    @property
+    def derived_environments(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.data.get("derived_environments", ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,7 +468,12 @@ class ProofPlan:
             for field in REQUIRED_NAMED_LANE_FIELDS:
                 if field not in lane.data:
                     errors.append(f"{lane.id}: missing {field}")
-            extra = set(lane.data) - set(REQUIRED_NAMED_LANE_FIELDS) - {"id"}
+            extra = (
+                set(lane.data)
+                - set(REQUIRED_NAMED_LANE_FIELDS)
+                - set(OPTIONAL_NAMED_LANE_FIELDS)
+                - {"id"}
+            )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
             argv = lane.argv
@@ -497,6 +512,20 @@ class ProofPlan:
                 value = lane.data.get(key)
                 if not isinstance(value, str) or not value:
                     errors.append(f"{lane.id}: {key} must be a non-empty string")
+            raw_derived = lane.data.get("derived_environments", [])
+            if not isinstance(raw_derived, list) or len(set(raw_derived)) != len(
+                raw_derived
+            ):
+                errors.append(
+                    f"{lane.id}: derived_environments must be a list of distinct kinds"
+                )
+            else:
+                for kind in raw_derived:
+                    if kind not in DERIVED_ENVIRONMENT_KINDS:
+                        errors.append(
+                            f"{lane.id}: unknown derived environment kind {kind!r}; "
+                            f"known: {list(DERIVED_ENVIRONMENT_KINDS)}"
+                        )
             raw_scratch = lane.data.get("scratch_roots")
             if not isinstance(raw_scratch, list):
                 errors.append(f"{lane.id}: scratch_roots must be a list")

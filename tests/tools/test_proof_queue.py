@@ -30,7 +30,10 @@ from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt.cli.extension_manifest import _default_molt_c_api_version
-from molt.cli.source_build_environment import canonical_source_marker_environment
+from molt.cli.source_build_environment import (
+    SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+    canonical_source_marker_environment,
+)
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
 )
@@ -208,21 +211,21 @@ def _synthetic_v3_custody(
 
 def _synthetic_live_custody(directory: Path) -> dict[str, object]:
     raw = {
-        "schema": "molt.proof-live-custody.v1",
+        "schema": execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA,
         "watch_roots": 0,
         "events": [],
+        "apparatus_events": [],
         "errors": [],
         "state": "DRAINED",
         "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
         "stable": True,
     }
-    raw["identity_sha256"] = supervisor_custody._canonical_payload_sha256(
-        {
-            "events": raw["events"],
-            "errors": raw["errors"],
-            "state": raw["state"],
-            "lifecycle": raw["lifecycle"],
-        }
+    raw["identity_sha256"] = execution_custody.live_custody_identity_sha256(
+        events=[],
+        apparatus_events=[],
+        errors=[],
+        state=raw["state"],
+        lifecycle=["CREATED", "ARMED", "DRAINING", "DRAINED"],
     )
     return supervisor_custody._publish_live_custody_receipt(
         raw, cas_root=directory / "custody-cas"
@@ -386,7 +389,8 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
         "live_input_custody": _synthetic_live_custody(result_path.parent),
         "child_process_custody": {
             "policy": {
-                "descendants": request["envelope"]["process_closure"]["descendants"]
+                "descendants": request["envelope"]["process_closure"]["descendants"],
+                "derived_environments": [],
             },
             "receipt": {"broker_complete": True},
         },
@@ -461,6 +465,7 @@ def _write_synthetic_guarded_execution(command: list[str], *, returncode: int) -
                     "completed": True,
                     "after": {"active_processes": 0},
                     "terminated_remaining_processes": False,
+                    "remaining_processes": [],
                 },
                 "sampling_telemetry": {
                     "attempts": 1,
@@ -1954,6 +1959,7 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
             "completed": True,
             "after": {"active_processes": 0},
             "terminated_remaining_processes": False,
+            "remaining_processes": [],
         },
         "sampling_telemetry": {
             "attempts": 1,
@@ -1985,6 +1991,7 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
                     "completed": True,
                     "after": {"active_processes": 1},
                     "terminated_remaining_processes": False,
+                    "remaining_processes": [],
                 }
             },
             "cleanup is incomplete",
@@ -2046,7 +2053,7 @@ def test_execution_context_rehashes_nonce_custody_and_transcript_artifacts(
         "toolchain_capture": v3["capture"],
         "live_input_custody": _synthetic_live_custody(tmp_path),
         "child_process_custody": {
-            "policy": {"descendants": "forbidden"},
+            "policy": {"descendants": "forbidden", "derived_environments": []},
             "receipt": {"broker_complete": True},
         },
         "process_supervisor": v3["supervisor"],
@@ -2754,7 +2761,7 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
         "catch(error){blocked=true;} if(!blocked) process.exit(17);"
     )
     policy_payload = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "forbidden",
         "allowed": [],
     }
@@ -13124,7 +13131,7 @@ def _write_current_scientific_seal(
         "base_executable_sha256": "b" * 64,
     }
     build_custody_address = {
-        "schema_version": 2,
+        "schema_version": SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": extension_set.build_dependency_group,
         "dependency_group_requirements": ["ninja==1.13.0"],
         "uv_lock_sha256": "c" * 64,

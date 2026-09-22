@@ -19,6 +19,7 @@ from molt.file_publication import durable_publish_directory_exclusive
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
+from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
 
 
@@ -94,14 +95,19 @@ def supervisor_source_identity(env: Mapping[str, str]) -> dict[str, object]:
     }
 
 
-def supervisor_cache_root(cwd: Path, env: Mapping[str, str]) -> Path:
+def supervisor_cache_root(
+    env: Mapping[str, str], *, source_root: Path = admission._REPO_ROOT
+) -> Path:
     """Shared, custody-external root for content-addressed supervisor binaries.
 
-    The durable checkout custody root is the authority; when that root is the
-    source tree itself (explicit scratch projects, hosted fixtures) the cache
-    moves to the host temp root so it never lands under admitted source.
+    A supervisor binary is derived from the queue's own checkout (its Rust
+    source plus the Rust toolchain), never from the project a proof runs in,
+    so the cache lives under that checkout's durable custody root and is
+    shared by every proof root on the host. When that checkout is itself
+    scratch (hosted fixtures) the cache moves to the host temp root so it
+    never lands under admitted source.
     """
-    source_root = Path(cwd).resolve()
+    source_root = Path(source_root).resolve()
     custody_root = checkout_custody(source_root, env, require_exists=False).custody_root
     if custody_root == source_root or host_path_is_within(custody_root, source_root):
         custody_root = Path(tempfile.gettempdir()) / "molt-custody"
@@ -199,7 +205,7 @@ def _provision_proof_supervisor(
     """
     started = time.perf_counter()
     identity = supervisor_source_identity(env)
-    cache_dir = supervisor_cache_root(cwd, env) / str(identity["identity"])
+    cache_dir = supervisor_cache_root(env) / str(identity["identity"])
     cached = _cached_supervisor(cache_dir)
     cache_state = "hit"
     if cached is None:
@@ -316,13 +322,32 @@ def _supervisor_fixed_images(
     return "root-command", [images[key] for key in sorted(images)]
 
 
+BUILD_OUTPUT_ROLE = "build-output"
+ATTESTED_ENVIRONMENT_ROLE = "attested-environment"
+
+
 def _supervisor_derived_roots(
-    *, descendants: object, env: Mapping[str, str]
+    *,
+    descendants: object,
+    env: Mapping[str, str],
+    derived_environments: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, str]]:
     if descendants == "forbidden":
+        if derived_environments:
+            raise ValueError("a leaf closure cannot launch from derived environments")
         return []
     roots: list[dict[str, str]] = []
-    for role, name in (("build-output", "CARGO_TARGET_DIR"),):
+    for row in derived_environments:
+        path = Path(str(row.get("root") or ""))
+        if not path.is_absolute() or not path.is_dir():
+            raise ValueError(
+                "declared derived environment root must be an existing absolute "
+                f"directory: {path}"
+            )
+        roots.append(
+            {"role": ATTESTED_ENVIRONMENT_ROLE, "path": str(path.resolve(strict=True))}
+        )
+    for role, name in ((BUILD_OUTPUT_ROLE, "CARGO_TARGET_DIR"),):
         raw = env.get(name)
         if not raw:
             continue
@@ -335,14 +360,46 @@ def _supervisor_derived_roots(
     return roots
 
 
+def derived_root_row_consistent(row: Mapping[str, object]) -> bool:
+    """Whether a prelaunch derived-root row states its role's invariant.
+
+    A build-output root is run-owned and was empty at launch. An attested
+    environment root is shared, content-addressed custody: its launch-time
+    listing is recorded so the receipt names which environments pre-existed.
+    """
+    role = row.get("role")
+    if role == BUILD_OUTPUT_ROLE:
+        return (
+            row.get("run_owned") is True
+            and row.get("initial_entry_count") == 0
+            and row.get("initial_manifest_sha256") == _canonical_payload_sha256([])
+        )
+    if role == ATTESTED_ENVIRONMENT_ROLE:
+        entries = row.get("initial_entries")
+        return (
+            row.get("run_owned") is False
+            and isinstance(entries, list)
+            and all(isinstance(entry, str) for entry in entries)
+            and entries == sorted(entries)
+            and row.get("initial_entry_count") == len(entries)
+            and row.get("initial_manifest_sha256") == _canonical_payload_sha256(entries)
+        )
+    return False
+
+
 def _derived_root_provenance(
     *,
     descendants: object,
     env: Mapping[str, str],
     source_root: Path,
     result_path: Path,
+    derived_environments: Sequence[Mapping[str, object]] = (),
 ) -> list[dict[str, object]]:
-    roots = _supervisor_derived_roots(descendants=descendants, env=env)
+    roots = _supervisor_derived_roots(
+        descendants=descendants,
+        env=env,
+        derived_environments=derived_environments,
+    )
     source = source_root.resolve(strict=True)
     cas_root = Path(os.path.abspath(result_path.parent / "custody-cas"))
     admitted: list[dict[str, object]] = []
@@ -366,7 +423,18 @@ def _derived_root_provenance(
             raise ValueError("derived executable root overlaps proof custody CAS")
         if resolved == Path(os.path.abspath(result_path)):
             raise ValueError("derived executable root overlaps terminal result")
-        entries = list(resolved.iterdir())
+        entries = sorted(entry.name for entry in resolved.iterdir())
+        if row["role"] == ATTESTED_ENVIRONMENT_ROLE:
+            admitted.append(
+                {
+                    **row,
+                    "initial_entry_count": len(entries),
+                    "initial_entries": entries,
+                    "initial_manifest_sha256": _canonical_payload_sha256(entries),
+                    "run_owned": False,
+                }
+            )
+            continue
         if entries:
             raise ValueError(
                 f"derived executable root is not fresh and empty: {resolved}"
@@ -392,6 +460,7 @@ def _supervisor_policy(
     toolchains: Mapping[str, object],
     environment_executables: Mapping[str, object],
     platform_process_images: Sequence[Mapping[str, object]],
+    derived_environments: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
     if not isinstance(closure, Mapping):
@@ -416,7 +485,9 @@ def _supervisor_policy(
         "root_role": root_role,
         "fixed_images": fixed_images,
         "derived_roots": _supervisor_derived_roots(
-            descendants=descendants, env=execution_env
+            descendants=descendants,
+            env=execution_env,
+            derived_environments=derived_environments,
         ),
     }
 
@@ -684,31 +755,38 @@ def _publish_live_custody_receipt(
     receipt: Mapping[str, object], *, cas_root: Path
 ) -> dict[str, object]:
     events = receipt.get("events")
+    apparatus_events = receipt.get("apparatus_events")
     errors = receipt.get("errors")
     lifecycle = receipt.get("lifecycle")
     state = receipt.get("state")
-    if not isinstance(events, list) or not isinstance(errors, list):
+    if (
+        not isinstance(events, list)
+        or not isinstance(apparatus_events, list)
+        or not isinstance(errors, list)
+        or not isinstance(lifecycle, list)
+    ):
         raise ValueError("live custody receipt event authority is malformed")
     artifact_payload = {
         "schema": custody_cas.ARTIFACT_SCHEMA,
         "kind": "live-input-custody-events",
         "events": events,
+        "apparatus_events": apparatus_events,
         "errors": errors,
     }
     artifact = custody_cas.put_json(cas_root, artifact_payload).as_dict()
-    material = {
-        "events": events,
-        "errors": errors,
-        "state": state,
-        "lifecycle": lifecycle,
-    }
-    if receipt.get("identity_sha256") != _canonical_payload_sha256(material):
+    if receipt.get("identity_sha256") != execution_custody.live_custody_identity_sha256(
+        events=events,
+        apparatus_events=apparatus_events,
+        errors=errors,
+        state=state,
+        lifecycle=lifecycle,
+    ):
         raise ValueError("live custody receipt identity is inconsistent")
     return {
         **{
             key: value
             for key, value in receipt.items()
-            if key not in {"events", "errors"}
+            if key not in {"events", "apparatus_events", "errors"}
         },
         "event_artifact": artifact,
         "event_count": len(events),

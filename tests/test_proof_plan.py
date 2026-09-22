@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from molt import tool_releases
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from tools import (
     check_subprocess_guard_coverage,
@@ -476,10 +477,12 @@ def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> Non
     )
     pattern = str(policy.data["version_pattern"])
 
-    assert re.fullmatch(pattern, "wasm-tools 1.253.0")
-    assert re.fullmatch(pattern, "wasm-tools 1.253.0 (c799bb87b 2026-07-07)")
-    assert not re.fullmatch(pattern, "wasm-tools 1.253.1")
-    assert not re.fullmatch(pattern, "wasm-tools 1.253.0 (local build)")
+    version = tool_releases.tool_release("wasm-tools").version
+    assert policy.data["setup_value"] == version
+    assert re.fullmatch(pattern, f"wasm-tools {version}")
+    assert re.fullmatch(pattern, f"wasm-tools {version} (7fc33f279 2026-09-10)")
+    assert not re.fullmatch(pattern, f"wasm-tools {version}1")
+    assert not re.fullmatch(pattern, f"wasm-tools {version} (local build)")
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from collections.abc import Sequence
 import json
 import os
 import shlex
@@ -19,6 +20,7 @@ from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
+    execution_custody,
     execution_environment as environment_authority,
     supervisor_custody,
     custody,
@@ -54,6 +56,7 @@ def _validated_guard_receipt(
     run_id: str,
     execution_nonce: str,
     guard_pid: int,
+    admitted_broker_images: Sequence[str] = (),
 ) -> dict[str, object]:
     payload = json.loads(summary_json.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -87,13 +90,38 @@ def _validated_guard_receipt(
         raise ValueError("memory-guard Windows job cleanup is missing")
     if isinstance(windows_cleanup, dict):
         after_cleanup = windows_cleanup.get("after")
+        remaining = windows_cleanup.get("remaining_processes")
+        terminated = windows_cleanup.get("terminated_remaining_processes")
         if (
             windows_cleanup.get("completed") is not True
             or not isinstance(after_cleanup, dict)
             or after_cleanup.get("active_processes") != 0
-            or windows_cleanup.get("terminated_remaining_processes") is not False
+            or terminated not in {True, False}
+            or not isinstance(remaining, list)
+            or bool(remaining) != terminated
+            or any(
+                not isinstance(row, dict)
+                or not isinstance(row.get("pid"), int)
+                or not isinstance(row.get("image"), (str, type(None)))
+                for row in remaining
+            )
         ):
             raise ValueError("memory-guard Windows job cleanup is incomplete")
+        # A member that outlived the guarded command past the console release
+        # window was terminated. Only the OS brokers the platform custody admits
+        # with a terminate-at-root-exit disposition may be among them; anything
+        # else is a process the proof leaked, and the receipt names it.
+        admitted = {os.path.normcase(str(image)) for image in admitted_broker_images}
+        leaked = [
+            row
+            for row in remaining
+            if os.path.normcase(str(row.get("image") or "")) not in admitted
+        ]
+        if leaked:
+            raise ValueError(
+                "memory-guard terminated processes outside the admitted platform "
+                f"brokers: {json.dumps(leaked, sort_keys=True)}"
+            )
     sampling = payload.get("sampling_telemetry")
     if (
         not isinstance(sampling, dict)
@@ -220,7 +248,7 @@ def _validated_execution_context(
     live_custody = context.get("live_input_custody")
     if (
         not isinstance(live_custody, dict)
-        or live_custody.get("schema") != "molt.proof-live-custody.v1"
+        or live_custody.get("schema") != execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA
         or live_custody.get("stable") is not True
     ):
         raise ValueError("guarded receipt has no stable live input custody")
@@ -231,21 +259,24 @@ def _validated_execution_context(
         live_event_artifact, expected_root=cas_root
     )
     live_events = live_event_payload.get("events")
+    live_apparatus_events = live_event_payload.get("apparatus_events")
     live_errors = live_event_payload.get("errors")
+    live_lifecycle = live_custody.get("lifecycle")
     if (
         live_event_payload.get("kind") != "live-input-custody-events"
         or not isinstance(live_events, list)
+        or not isinstance(live_apparatus_events, list)
         or not isinstance(live_errors, list)
+        or not isinstance(live_lifecycle, list)
         or live_custody.get("event_count") != len(live_events)
         or live_custody.get("error_count") != len(live_errors)
         or live_custody.get("identity_sha256")
-        != supervisor_custody._canonical_payload_sha256(
-            {
-                "events": live_events,
-                "errors": live_errors,
-                "state": live_custody.get("state"),
-                "lifecycle": live_custody.get("lifecycle"),
-            }
+        != execution_custody.live_custody_identity_sha256(
+            events=live_events,
+            apparatus_events=live_apparatus_events,
+            errors=live_errors,
+            state=live_custody.get("state"),
+            lifecycle=live_lifecycle,
         )
     ):
         raise ValueError("guarded receipt live-custody event binding is invalid")
@@ -436,10 +467,26 @@ def _validated_execution_context(
             )
         )
     expected_derived_roots = None
-    if isinstance(policy_environment, dict):
+    child_custody_context = context.get("child_process_custody")
+    child_policy_payload = (
+        child_custody_context.get("policy")
+        if isinstance(child_custody_context, dict)
+        else None
+    )
+    declared_derived_environments = (
+        child_policy_payload.get("derived_environments")
+        if isinstance(child_policy_payload, dict)
+        else None
+    )
+    if isinstance(policy_environment, dict) and isinstance(
+        declared_derived_environments, list
+    ):
         expected_derived_roots = supervisor_custody._supervisor_derived_roots(
             descendants=closure.get("descendants"),
             env={str(key): str(value) for key, value in policy_environment.items()},
+            derived_environments=[
+                row for row in declared_derived_environments if isinstance(row, dict)
+            ],
         )
     if (
         receipt_payload != supervisor_receipt
@@ -485,10 +532,7 @@ def _validated_execution_context(
         or derived_root_custody.get("policy_roots") != policy_derived_roots
         or any(
             not isinstance(row, dict)
-            or row.get("run_owned") is not True
-            or row.get("initial_entry_count") != 0
-            or row.get("initial_manifest_sha256")
-            != supervisor_custody._canonical_payload_sha256([])
+            or not supervisor_custody.derived_root_row_consistent(row)
             for row in derived_root_prelaunch
         )
         or [
@@ -1336,6 +1380,12 @@ def _run_one(
                 execution_nonce=execution_nonce,
                 returncode=command_rc,
             )
+            platform_custody_context = receipt_context.get("platform_process_custody")
+            platform_broker_rows = (
+                platform_custody_context.get("prelaunch")
+                if isinstance(platform_custody_context, dict)
+                else None
+            )
             guard_receipt = _validated_guard_receipt(
                 summary_json,
                 guarded_command=guarded_command,
@@ -1343,6 +1393,12 @@ def _run_one(
                 run_id=run_id,
                 execution_nonce=execution_nonce,
                 guard_pid=proc.pid,
+                admitted_broker_images=[
+                    str(row.get("path"))
+                    for row in (platform_broker_rows or [])
+                    if isinstance(row, dict)
+                    and row.get("root_exit_disposition") == "terminate"
+                ],
             )
             receipt_context["guard_receipt"] = guard_receipt
             receipt_context["terminal_evidence_sha256"] = (

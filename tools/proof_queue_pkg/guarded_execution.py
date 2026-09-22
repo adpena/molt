@@ -39,6 +39,7 @@ from tools.proof_queue_pkg import (  # noqa: E402
     execution_custody,
     execution_environment as environment,
     process_image_capture,
+    state,
     supervisor_custody as supervisor,
     toolchain_capture,
 )
@@ -58,6 +59,59 @@ def llvm_family_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
         ):
             names.add(policy.name)
     return frozenset(names)
+
+
+TOOL_RELEASES_MANIFEST = "config/tool_releases.toml"
+
+
+def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
+    """Toolchain policies whose setup evidence is the pinned tool-release manifest."""
+    names: set[str] = set()
+    for policy in plan.toolchain_policies:
+        evidence = policy.data.get("setup_evidence")
+        if isinstance(evidence, list) and any(
+            isinstance(item, str) and item.startswith(TOOL_RELEASES_MANIFEST + "::")
+            for item in evidence
+        ):
+            names.add(policy.name)
+    return frozenset(names)
+
+
+def prefer_tool_release_prefixes(
+    env: Mapping[str, str], toolchains: object, *, cwd: Path
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Provision each declared pinned tool release and put its bin first on PATH.
+
+    A lane that declares a tool the manifest pins (wasm-tools today) must run
+    exactly that release, never whatever the ambient PATH happens to carry.
+    The release is provisioned under the checkout custody toolchain root
+    (idempotent, digest-verified, fail-closed) before toolchains are located,
+    so the version policy sees the pinned binary first.
+    """
+    resolved = dict(env)
+    declared = (
+        {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
+    )
+    names = sorted(declared & tool_release_toolchains(proof_plan.ProofPlan.load()))
+    if not names:
+        return resolved, {}
+    from molt import tool_releases
+    from molt.dx import checkout_custody
+
+    toolchain_root = checkout_custody(Path(cwd), dict(resolved)).toolchain_root
+    prefixes: dict[str, str] = {}
+    for name in names:
+        release = tool_releases.tool_release(name, state.ROOT)
+        discovery = tool_releases.provision_tool(release, toolchain_root)
+        prefixes[name] = str(discovery.prefix)
+        bin_dir = str(discovery.executable.parent.resolve())
+        entries = [
+            entry
+            for entry in resolved.get("PATH", "").split(os.pathsep)
+            if entry and os.path.normcase(entry) != os.path.normcase(bin_dir)
+        ]
+        resolved["PATH"] = os.pathsep.join([bin_dir, *entries])
+    return resolved, prefixes
 
 
 def prefer_canonical_llvm_prefix(
@@ -166,6 +220,9 @@ def execute_guarded_request(request_path: Path) -> int:
         inherited_env, llvm_prefix = prefer_canonical_llvm_prefix(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )
+        inherited_env, tool_release_prefixes = prefer_tool_release_prefixes(
+            inherited_env, envelope.get("toolchains", []), cwd=cwd
+        )
         canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             node_hook = (
@@ -189,11 +246,19 @@ def execute_guarded_request(request_path: Path) -> int:
         process_closure = envelope.get("process_closure")
         if not isinstance(process_closure, Mapping):
             raise ValueError("proof command envelope has no process closure")
+        derived_environment_rows = execution_custody.derived_environment_policy_rows(
+            envelope, cwd=effective_cwd
+        )
+        for row in derived_environment_rows:
+            # The custody-root home of attested environments is the run's to
+            # create; its entries are content-addressed and shared across runs.
+            Path(row["root"]).mkdir(parents=True, exist_ok=True)
         derived_root_provenance = supervisor._derived_root_provenance(
             descendants=process_closure.get("descendants"),
             env=execution_env,
             source_root=effective_cwd,
             result_path=result_path,
+            derived_environments=derived_environment_rows,
         )
         # Provisioning belongs before the custody snapshot.  No tool may change
         # after its bytes become the authority consumed by the proof command.
@@ -270,7 +335,11 @@ def execute_guarded_request(request_path: Path) -> int:
                 supervisor_binary=supervisor_binary,
             )
         )
-        child_policy = execution_custody.child_policy(envelope, policy_identities)
+        child_policy = execution_custody.child_policy(
+            envelope,
+            policy_identities,
+            derived_environments=derived_environment_rows,
+        )
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
             admission.parse_python_invocation(
@@ -445,7 +514,14 @@ def execute_guarded_request(request_path: Path) -> int:
         for name, identity in toolchains_full.items():
             assert isinstance(identity, Mapping)
             command_identity._validate_toolchain_identity(plan, name, identity)
-        if execution_custody.child_policy(envelope, toolchains_full) != child_policy:
+        if (
+            execution_custody.child_policy(
+                envelope,
+                toolchains_full,
+                derived_environments=derived_environment_rows,
+            )
+            != child_policy
+        ):
             raise ValueError("toolchain closure changed while live custody armed")
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full
@@ -480,6 +556,7 @@ def execute_guarded_request(request_path: Path) -> int:
             toolchains=toolchains,
             environment_executables=environment_executables_pre,
             platform_process_images=platform_process_images_pre,
+            derived_environments=derived_environment_rows,
         )
         supervisor._atomic_json(supervisor_policy_path, supervisor_policy)
         supervisor_policy_identity = command_identity._file_identity(

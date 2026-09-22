@@ -37,7 +37,7 @@ def _run_node(
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     node = _node()
     policy = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "declared-toolchains",
         "allowed": authorities,
     }
@@ -282,3 +282,16 @@ def test_node_hook_contains_no_executable_identity_authority() -> None:
         assert forbidden not in source
     assert "spawn-intent" in source
     assert "spawn-decision" in source
+
+
+def test_node_hook_pins_the_current_child_policy_schema() -> None:
+    """The Node hook is a second consumer of the policy contract.
+
+    It cannot import the Python authority, so its literal is a hand-synced
+    table: this gate keeps it equal to `CHILD_POLICY_SCHEMA` so a policy
+    schema bump can never leave Node payloads refusing every launch.
+    """
+    hook = Path(execution_custody.__file__).with_name("node_child_custody.cjs")
+    source = hook.read_text(encoding="utf-8")
+    assert f"policy.schema !== '{execution_custody.CHILD_POLICY_SCHEMA}'" in source
+    assert source.count("molt.proof-child-custody.") == 1

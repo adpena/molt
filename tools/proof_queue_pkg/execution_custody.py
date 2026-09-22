@@ -50,6 +50,12 @@ class WatchSpec:
         return any(path.startswith(prefix) for path in self.paths)
 
 
+CHILD_POLICY_SCHEMA = "molt.proof-child-custody.v2"
+# v2: the receipt separates the apparatus's own writes (`apparatus_events`) from
+# input mutations and binds them into its identity.
+LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v2"
+DERIVED_ENVIRONMENT_UV_SOURCE_BUILD = "uv-source-build-environment"
+
 # Filesystem events that the proof apparatus itself causes inside a watched
 # root. They carry no information about the proof's inputs and are recorded
 # under their own class instead of as input mutations.
@@ -101,6 +107,27 @@ def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
             for broad in broad_roots
         )
     ]
+
+
+def live_custody_identity_sha256(
+    *,
+    events: Sequence[Mapping[str, str]],
+    apparatus_events: Sequence[Mapping[str, str]],
+    errors: Sequence[str],
+    state: object,
+    lifecycle: Sequence[str],
+) -> str:
+    """The one identity of a live custody receipt, shared by producer and publisher."""
+    material = {
+        "events": list(events),
+        "apparatus_events": list(apparatus_events),
+        "errors": list(errors),
+        "state": state,
+        "lifecycle": list(lifecycle),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class LiveCustodyMonitor:
@@ -195,15 +222,8 @@ class LiveCustodyMonitor:
             lifecycle = list(self._lifecycle)
         if state != "DRAINED":
             errors.append(f"proof live custody receipt requested in state {state}")
-        material = {
-            "events": events,
-            "apparatus_events": apparatus_events,
-            "errors": errors,
-            "state": state,
-            "lifecycle": lifecycle,
-        }
         return {
-            "schema": "molt.proof-live-custody.v1",
+            "schema": LIVE_CUSTODY_RECEIPT_SCHEMA,
             "watch_roots": len(self.specs),
             "events": events,
             "apparatus_events": apparatus_events,
@@ -211,9 +231,13 @@ class LiveCustodyMonitor:
             "state": state,
             "lifecycle": lifecycle,
             "stable": state == "DRAINED" and not events and not errors,
-            "identity_sha256": hashlib.sha256(
-                json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest(),
+            "identity_sha256": live_custody_identity_sha256(
+                events=events,
+                apparatus_events=apparatus_events,
+                errors=errors,
+                state=state,
+                lifecycle=lifecycle,
+            ),
         }
 
     def _record_error(self, message: str) -> None:
@@ -757,8 +781,52 @@ def watch_specs(
     return _compact_specs(specs)
 
 
+def derived_environment_policy_rows(
+    envelope: Mapping[str, object], *, cwd: Path
+) -> list[dict[str, str]]:
+    """Resolve the envelope's declared derived environments to policy rows.
+
+    A row names the kind, the custody-root home of that kind's environments
+    (one authority shared with the producer) and the identity of the admitted
+    lock file every environment under it must have been provisioned from.
+    """
+    closure = envelope.get("process_closure")
+    kinds = (
+        closure.get("derived_environments", []) if isinstance(closure, Mapping) else []
+    )
+    if not isinstance(kinds, list):
+        raise ValueError("proof envelope derived environments must be a list")
+    rows: list[dict[str, str]] = []
+    for kind in kinds:
+        if kind != DERIVED_ENVIRONMENT_UV_SOURCE_BUILD:
+            raise ValueError(f"unknown derived environment kind {kind!r}")
+        from molt.cli.source_build_environment import (
+            source_build_environments_root,
+        )
+
+        lock = Path(cwd) / "uv.lock"
+        if not lock.is_file():
+            raise ValueError(
+                "derived uv environments require the admitted uv.lock input"
+            )
+        with lock.open("rb") as handle:
+            lock_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        rows.append(
+            {
+                "kind": kind,
+                "root": _norm(source_build_environments_root(Path(cwd)).resolve()),
+                "uv_lock_sha256": lock_digest,
+            }
+        )
+    rows.sort(key=lambda row: (row["kind"], row["root"]))
+    return rows
+
+
 def child_policy(
-    envelope: Mapping[str, object], toolchains: Mapping[str, object]
+    envelope: Mapping[str, object],
+    toolchains: Mapping[str, object],
+    *,
+    derived_environments: Sequence[Mapping[str, str]] = (),
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
     if not isinstance(closure, Mapping):
@@ -788,9 +856,10 @@ def child_policy(
     ]
     allowed.sort(key=lambda row: (row["toolchain"], row["path"], row["sha256"]))
     return {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": CHILD_POLICY_SCHEMA,
         "descendants": descendants,
         "allowed": allowed,
+        "derived_environments": [dict(row) for row in derived_environments],
     }
 
 
@@ -1079,7 +1148,19 @@ class ChildCustodyEventServer:
                     {"admitted": True, "toolchain": authority.get("toolchain")}
                 )
                 return decision
-        decision["reason"] = "outside-declared-toolchain-closure"
+        admitted, reason, environment = _admit_derived_environment_child(
+            self.policy, normalized, digest
+        )
+        if admitted:
+            decision.update(
+                {
+                    "admitted": True,
+                    "toolchain": "python",
+                    "derived_environment": environment,
+                }
+            )
+            return decision
+        decision["reason"] = reason
         return decision
 
     def receipt(self) -> dict[str, object]:
@@ -1123,6 +1204,78 @@ class ChildCustodyEventServer:
                 json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest(),
         }
+
+
+def _admit_derived_environment_child(
+    policy: Mapping[str, object], normalized: str, digest: str
+) -> tuple[bool, str, dict[str, object] | None]:
+    """Admit an attested image of an environment under a declared derived root.
+
+    The image is admissible only when the environment's attestation validates
+    and names its own directory, links to admitted images (base interpreter
+    and provisioner) and to the admitted lock file, and lists this exact path
+    with these exact bytes among the executables the provisioner installed.
+    Anything else stays outside the closure, with the precise reason recorded.
+    """
+    for row in policy.get("derived_environments", []) or []:
+        if not isinstance(row, Mapping):
+            continue
+        root = str(row.get("root") or "")
+        prefix = root.rstrip(os.sep) + os.sep
+        if not root or not normalized.startswith(prefix):
+            continue
+        relative_parts = Path(normalized[len(prefix) :]).parts
+        if not relative_parts:
+            return False, "derived-environment-root-is-not-an-image", None
+        environment_id = relative_parts[0]
+        from molt.cli.source_build_environment import (
+            SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+            locked_environment_manifest_problems,
+        )
+
+        environment_root = Path(root) / environment_id
+        try:
+            raw = (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).read_bytes()
+            manifest = json.loads(raw)
+        except (OSError, ValueError):
+            return False, "derived-environment-attestation-unreadable", None
+        if locked_environment_manifest_problems(
+            manifest, environment_id=environment_id
+        ):
+            return False, "derived-environment-attestation-invalid", None
+        admitted_images: dict[str, set[str]] = {}
+        for authority in policy.get("allowed", []) or []:
+            if isinstance(authority, Mapping):
+                admitted_images.setdefault(str(authority.get("toolchain")), set()).add(
+                    str(authority.get("sha256"))
+                )
+        base_sha256 = manifest["python"]["base_executable_sha256"]
+        if base_sha256 not in admitted_images.get("python", set()):
+            return False, "derived-environment-base-interpreter-unadmitted", None
+        if manifest["uv"]["sha256"] not in admitted_images.get("uv", set()):
+            return False, "derived-environment-provisioner-unadmitted", None
+        if manifest["uv_lock_sha256"] != row.get("uv_lock_sha256"):
+            return False, "derived-environment-lock-drift", None
+        attested_images = {
+            _norm(environment_root / Path(*image.split("/"))): sha256
+            for image, sha256 in manifest["executable_images"].items()
+        }
+        attested = attested_images.get(normalized)
+        if attested is None:
+            return False, "derived-environment-image-unattested", None
+        if attested != digest:
+            return False, "derived-environment-image-drift", None
+        return (
+            True,
+            "",
+            {
+                "kind": str(row.get("kind")),
+                "root": root,
+                "environment_id": environment_id,
+                "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            },
+        )
+    return False, "outside-declared-toolchain-closure", None
 
 
 class ExecutionCustodySession:
@@ -1361,10 +1514,7 @@ def install_python_child_custody() -> None:
     if not raw:
         return
     policy = json.loads(raw)
-    if (
-        not isinstance(policy, dict)
-        or policy.get("schema") != "molt.proof-child-custody.v1"
-    ):
+    if not isinstance(policy, dict) or policy.get("schema") != CHILD_POLICY_SCHEMA:
         raise RuntimeError("malformed proof child custody policy")
     # Capture enforcement callables before payload execution.  The audit hook
     # must never resolve a mutable module-global name that proof code can replace

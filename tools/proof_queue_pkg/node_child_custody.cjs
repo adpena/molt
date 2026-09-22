@@ -32,7 +32,7 @@ const BROKER_TIMEOUT_MS = 10_000;
 const rawPolicy = process.env[POLICY_ENV];
 if (rawPolicy) {
     const policy = JSON.parse(rawPolicy);
-    if (!policy || policy.schema !== 'molt.proof-child-custody.v1') {
+    if (!policy || policy.schema !== 'molt.proof-child-custody.v2') {
       throw new Error('malformed proof child custody policy');
     }
 

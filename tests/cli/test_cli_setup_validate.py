@@ -516,7 +516,7 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
         "MOLT_USE_SCCACHE": "1",
     }
     monkeypatch.setattr(
-        CARGO_EXECUTION.shutil, "which", lambda _name: "/usr/bin/sccache"
+        CARGO_EXECUTION, "_pinned_sccache", lambda _env: "/usr/bin/sccache"
     )
     monkeypatch.setattr(
         CARGO_EXECUTION, "_sccache_server_responsive", lambda _sccache: True
