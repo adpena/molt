@@ -826,25 +826,30 @@ def base_interpreter_sha256s(toolchains: Mapping[str, object]) -> list[str]:
     """The attested base interpreter images behind the admitted python toolchain.
 
     A venv launcher is a copy of the base installation's python; the python
-    identity records that base executable as an explicit authority file, and
-    a derived environment must have been provisioned from the same one.
+    identity records that base executable (the launch-time location identity
+    as `base_executable_sha256`, the full probe as an explicit authority file)
+    and a derived environment must have been provisioned from the same one.
     """
     identity = toolchains.get("python")
     if not isinstance(identity, Mapping):
         return []
+    digests: set[str] = set()
+    located = identity.get("base_executable_sha256")
+    if isinstance(located, str) and located:
+        digests.add(located)
     runtime = identity.get("runtime")
     files = (
         runtime.get("explicit_authority_files")
         if isinstance(runtime, Mapping)
         else None
     )
-    digests = {
+    digests.update(
         str(row["sha256"])
         for row in (files or [])
         if isinstance(row, Mapping)
         and row.get("authority") == "base-executable"
         and isinstance(row.get("sha256"), str)
-    }
+    )
     return sorted(digests)
 
 
