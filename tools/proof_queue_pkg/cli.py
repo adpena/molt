@@ -23,7 +23,6 @@ def _command_after_dash(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv[:index], argv[index + 1 :]
 
 
-
 _PROOF_COMMAND_SUBCOMMANDS = frozenset({"exec", "cargo"})
 
 _GLOBAL_OPTIONS_WITH_VALUES = frozenset(
@@ -49,7 +48,6 @@ _PROOF_COMMAND_OPTIONS_WITH_VALUES = frozenset(
 _HELP_OPTIONS = frozenset({"-h", "--help"})
 
 
-
 def _proof_command_subcommand_index(raw: list[str]) -> int | None:
     index = 0
     while index < len(raw):
@@ -70,7 +68,6 @@ def _proof_command_subcommand_index(raw: list[str]) -> int | None:
     return None
 
 
-
 def _split_proof_command_argv(
     raw: list[str],
     *,
@@ -87,7 +84,6 @@ def _split_proof_command_argv(
             f"proof_queue.py {subcommand} requires a proof command after `--`."
         )
     return before, command
-
 
 
 def _proof_command_help_requested(raw: list[str]) -> bool:
@@ -110,7 +106,6 @@ def _proof_command_help_requested(raw: list[str]) -> bool:
     return False
 
 
-
 def _reject_pre_delimiter_remainder(
     args: argparse.Namespace,
     *,
@@ -129,7 +124,6 @@ def _reject_pre_delimiter_remainder(
         "or another metadata option lost shell quoting; refusing to run with "
         "possibly dropped queue metadata."
     )
-
 
 
 def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
@@ -159,7 +153,6 @@ def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-
 def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> None:
     parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument(
@@ -178,7 +171,6 @@ def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> 
     )
     execution.add_argument("--detach", action="store_true")
     parser.add_argument("--print-spec", action="store_true")
-
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = _build_parser()
         args = parser.parse_args(raw)
     return int(args.func(args))
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -460,6 +453,22 @@ def _build_parser() -> argparse.ArgumentParser:
     pact_accept_p.set_defaults(
         func=_dispatch_pact_command,
         pact_handler="_cmd_pact_witness_acceptance",
+    )
+
+    named_lane_p = sub.add_parser(
+        "named-lane",
+        help="submit a queue-owned named lane registered in tools/proof_plan.toml",
+    )
+    named_lane_p.add_argument(
+        "lane_id", help="named lane id, e.g. pact.seal.numpy.produce"
+    )
+    _add_named_lane_args(
+        named_lane_p,
+        note_help="append submission context to the named lane run",
+    )
+    named_lane_p.set_defaults(
+        func=_dispatch_pact_command,
+        pact_handler="_cmd_named_lane",
     )
 
     pact_oracle_p = sub.add_parser(

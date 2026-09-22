@@ -498,12 +498,22 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "produce-set":
-            return produce_source_extension_set(
+            from molt.cli.source_extension_producer import (
+                resolve_produce_set_selection,
+            )
+
+            selection = resolve_produce_set_selection(
                 package=args.package,
                 package_version=args.package_version,
-                module_set=args.module_set,
                 python_version=args.python_version,
                 source=args.source,
+            )
+            return produce_source_extension_set(
+                package=args.package,
+                package_version=selection.package_version,
+                module_set=args.module_set,
+                python_version=selection.python_version,
+                source=selection.source,
                 build_root=args.build_root,
                 target=args.target,
                 abi_tier=args.abi_tier,

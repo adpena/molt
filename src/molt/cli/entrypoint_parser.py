@@ -616,7 +616,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_produce_set_parser.add_argument(
         "--package-version",
-        required=True,
+        required=False,
         help="Registered upstream package version (for example: 1.18.0).",
     )
     extension_produce_set_parser.add_argument(
@@ -626,13 +626,17 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_produce_set_parser.add_argument(
         "--python-version",
-        required=True,
+        required=False,
         help="Registered target CPython feature version (for example: 3.12).",
     )
     extension_produce_set_parser.add_argument(
         "--source",
-        required=True,
-        help="Pinned upstream source checkout.",
+        required=False,
+        help=(
+            "Pinned upstream source checkout. Omit to resolve the registered "
+            "package commit under the checkout custody root "
+            "(package-sources/<package>-<version>-<commit12>)."
+        ),
     )
     extension_produce_set_parser.add_argument(
         "--build-root",

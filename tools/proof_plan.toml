@@ -2863,6 +2863,58 @@ gates = [
 ]
 
 # =========================================================================
+# NAMED LANES: queue-owned proofs that run under host custody, not CI families.
+#
+# The exact argv is the child-process admission authority. A queue submission
+# whose argv equals a named lane receives the lane's declared toolchain
+# closure (every child image located for those toolchains is admitted);
+# anything else that spawns processes is a leaf and is refused. Version and
+# source selection stay in their own authorities (config/scientific_stack_
+# versions.toml, config/source_extension_package_sets.toml, checkout custody);
+# a named lane argv never carries a host path.
+# =========================================================================
+
+[[named_lane]]
+id = "pact.witness.acceptance"
+description = "Pact Kernel A witness acceptance: build field_solve.py, execute the artifact, write candidate_outputs.npz, run check_parity.py."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_acceptance.py", "--out-dir", "tmp/pact_witness_acceptance_queue"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node"]
+resource_family = "wasm-browser"
+contention_key = "wasm:pact-witness"
+timeout_seconds = 1800
+scratch_roots = []
+
+[[named_lane]]
+id = "pact.witness.oracle"
+description = "Pact Kernel A fixture/reference regeneration and check_parity.py oracle proof."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_oracle.py"]
+toolchains = ["python", "uv"]
+resource_family = "wasm-browser"
+contention_key = "wasm:pact-witness"
+timeout_seconds = 900
+scratch_roots = []
+
+[[named_lane]]
+id = "pact.seal.numpy.produce"
+description = "Produce the canonical NumPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
+argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "numpy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/numpy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools"]
+resource_family = "wasm-source-extension"
+contention_key = "wasm:numpy-seal"
+timeout_seconds = 7200
+scratch_roots = ["tmp/pact_seal_build/numpy"]
+
+[[named_lane]]
+id = "pact.seal.scipy.produce"
+description = "Produce the canonical SciPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
+argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "scipy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/scipy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools"]
+resource_family = "wasm-source-extension"
+contention_key = "wasm:scipy-seal"
+timeout_seconds = 7200
+scratch_roots = ["tmp/pact_seal_build/scipy"]
+
+# =========================================================================
 # GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
 #
 # Uniform warn->strict lifecycle for molt gates, mirroring pact's discipline:
