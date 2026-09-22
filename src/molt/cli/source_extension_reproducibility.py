@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 _MESON_TRANSIENT_DEPENDENCY_ID_RE = re.compile(r"dep[0-9]+")
@@ -55,7 +55,7 @@ def _root_occurrence_is_path(value: str, index: int) -> bool:
     return any(prefix.endswith(flag) for flag in _JOINED_PATH_PREFIXES)
 
 
-def _filesystem_root_pattern(root: Path) -> re.Pattern[str]:
+def _filesystem_root_pattern(root: PurePath) -> re.Pattern[str]:
     rendered = root.as_posix().rstrip("/")
     if not rendered:
         raise ValueError("filesystem root cannot be a location identity authority")
@@ -140,19 +140,32 @@ def _require_location_neutral(value: Any, *, authority: str) -> None:
 
 
 def _ordered_location_roots(
-    roots: Sequence[tuple[Path | None, str]],
-) -> tuple[tuple[Path, str], ...]:
-    deduped: list[tuple[Path, str]] = []
-    seen: set[Path] = set()
+    roots: Sequence[tuple[PurePath | None, str]],
+) -> tuple[tuple[PurePath, str], ...]:
+    # A producer location may appear in build metadata under more than one
+    # spelling of the same directory: the lexical path the tool was handed
+    # (an installer's version alias junction, a relative segment) and the
+    # resolved real path. Both spellings map to the same token, so the
+    # canonical metadata is neutral however the producer spelled the root.
+    # A virtual root (a PurePosixPath such as the Meson install prefix) names
+    # no directory on this machine and is matched exactly as spelled.
+    deduped: list[tuple[PurePath, str]] = []
+    seen: set[str] = set()
     for path, replacement in roots:
         if path is None:
             continue
-        resolved = path.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            deduped.append((resolved, replacement))
+        candidates = (
+            (Path(os.path.abspath(path)), path.resolve())
+            if isinstance(path, Path)
+            else (path,)
+        )
+        for candidate in candidates:
+            key = os.path.normcase(os.fspath(candidate))
+            if key not in seen:
+                seen.add(key)
+                deduped.append((candidate, replacement))
 
-    def ancestor_count(candidate: Path) -> int:
+    def ancestor_count(candidate: PurePath) -> int:
         return sum(
             candidate != other and candidate.is_relative_to(other)
             for other, _replacement in deduped
@@ -170,7 +183,7 @@ def _ordered_location_roots(
 def _source_extension_deterministic_path_args(
     *,
     compiler_command: Sequence[str],
-    roots: Sequence[tuple[Path | None, str]],
+    roots: Sequence[tuple[PurePath | None, str]],
 ) -> list[str]:
     if not compiler_command:
         return []
@@ -190,7 +203,7 @@ def _source_extension_deterministic_path_args(
 
 
 def _canonicalize_location_string(
-    value: str, location_roots: Sequence[tuple[Path | None, str]]
+    value: str, location_roots: Sequence[tuple[PurePath | None, str]]
 ) -> str:
     return _canonicalize_location_string_ordered(
         value, _ordered_location_roots(location_roots)
@@ -198,7 +211,7 @@ def _canonicalize_location_string(
 
 
 def _canonicalize_location_string_ordered(
-    value: str, ordered_roots: Sequence[tuple[Path, str]]
+    value: str, ordered_roots: Sequence[tuple[PurePath, str]]
 ) -> str:
     canonical = value.replace("\\", "/")
     for root, token in ordered_roots:
@@ -217,7 +230,7 @@ def _canonicalize_location_string_ordered(
 
 def _canonicalize_locations(
     value: Any,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     source_paths: Mapping[Path, str] | None = None,
 ) -> Any:
     ordered_roots = _ordered_location_roots(location_roots)
@@ -261,7 +274,7 @@ def _canonicalize_locations(
 
 
 def _canonicalize_meson_metadata(
-    value: Any, location_roots: Sequence[tuple[Path | None, str]]
+    value: Any, location_roots: Sequence[tuple[PurePath | None, str]]
 ) -> Any:
     canonical = _canonicalize_locations(value, location_roots)
     dependency_ids: dict[str, str] = {}
@@ -290,7 +303,7 @@ def _canonicalize_meson_metadata(
 def _canonical_json_sha256(
     path: Path,
     *,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     normalize_meson_dependency_ids: bool,
 ) -> str:
     try:
@@ -312,7 +325,7 @@ def _canonical_json_sha256(
 def _canonical_extension_manifest_for_wheel(
     manifest: Mapping[str, Any],
     *,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     meson_plan_path: Path | None = None,
     compile_commands_path: Path | None = None,
 ) -> dict[str, Any]:

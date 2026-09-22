@@ -42,6 +42,16 @@ from tools.proof_queue_pkg.execution_custody import (  # noqa: E402
         (".git/objects/ab/cdef", None),
         ("src/molt/__init__.py", None),
         ("index.lock", None),
+        ("bench/friends/repos/numpy/.git", APPARATUS_GIT_INDEX_REFRESH),
+        ("bench/friends/repos/numpy/.git/index.lock", APPARATUS_GIT_INDEX_REFRESH),
+        ("bench/friends/repos/numpy/.git/worktrees/wt", APPARATUS_GIT_INDEX_REFRESH),
+        (
+            "bench/friends/repos/numpy/.git/worktrees/wt/index.lock",
+            APPARATUS_GIT_INDEX_REFRESH,
+        ),
+        ("bench/friends/repos/numpy/.git/worktrees/wt/HEAD", None),
+        ("bench/friends/repos/numpy/.git/worktrees", None),
+        ("bench/friends/repos/numpy/.git/index", None),
     ],
 )
 def test_only_the_index_refresh_is_apparatus(

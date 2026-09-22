@@ -15,7 +15,7 @@ import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from packaging.requirements import Requirement
@@ -705,6 +705,12 @@ def _materialize_meson_config_tool_cross(
     return path
 
 
+# Install prefix of every cross build: POSIX-absolute (Meson validates the
+# prefix by the host machine's rules) and free of producer identity, so the
+# install_filename entries in the build metadata are reproducible as written.
+MESON_INSTALL_PREFIX = "/molt-install-prefix"
+
+
 def _run_meson_setup(
     *,
     source_root: Path,
@@ -721,6 +727,11 @@ def _run_meson_setup(
     ]
     for meson_cross in meson_cross_files:
         argv.extend(("--cross-file", str(meson_cross)))
+    # Meson's default install prefix is a producer host path (`c:/` on
+    # Windows, `/usr/local` elsewhere) that leaks into every install_filename
+    # of the build metadata. The seal targets a POSIX host, so the prefix is
+    # one fixed POSIX-absolute location that names no machine at all.
+    argv.append(f"--prefix={MESON_INSTALL_PREFIX}")
     argv.extend(setup_args)
     result = _run_process(argv, cwd=source_root)
     if result.returncode != 0:
@@ -878,7 +889,7 @@ def _stage_installed_package_files(
     build_root: Path,
     package: str,
     publish_root: Path,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     required_installed_files: Sequence[str],
 ) -> tuple[Path, ...]:
     try:
@@ -1386,7 +1397,7 @@ def _stage_extension(
     produced: _ProducedExtension,
     *,
     publish_root: Path,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     plan_metadata: Mapping[str, Path],
 ) -> _ProducedExtension:
     relative_artifact = produced.artifact_path.relative_to(produced.output_root)
@@ -1612,7 +1623,7 @@ def _stage_canonical_metadata_file(
     source: Path,
     destination: Path,
     *,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     normalize_meson_dependency_ids: bool = False,
 ) -> Path:
     try:
@@ -1653,7 +1664,7 @@ def _stage_build_metadata(
     intro_installed: Path,
     config_tool_cross: Path | None,
     target_metadata_payload: Mapping[str, Any],
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
 ) -> tuple[dict[str, Path], dict[str, Any]]:
     metadata_publish_root = publish_root / "provenance" / "metadata"
     staged = {
@@ -1799,8 +1810,8 @@ def _producer_location_roots(
     transaction_root: Path,
     metadata_payload: Mapping[str, Any],
     config_tools: Sequence[_SourceBuildConfigTool],
-) -> tuple[tuple[Path, str], ...]:
-    roots: list[tuple[Path, str]] = [
+) -> tuple[tuple[PurePath, str], ...]:
+    roots: list[tuple[PurePath, str]] = [
         (source_root, "@source"),
         (build_root, "@build"),
         (transaction_root, "@transaction"),
@@ -1871,10 +1882,15 @@ def _producer_location_roots(
         for parent, names in sorted(config_by_parent.items()):
             role = "-".join(sorted(name.replace("_", "-") for name in names))
             roots.append((parent, f"@config-{role}-bin"))
-    deduped: dict[Path, str] = {}
+    roots.append((PurePosixPath(MESON_INSTALL_PREFIX), "@install-prefix"))
+    # Deduplicate by real directory but keep the spelling the producer was
+    # handed: the canonicalizer neutralizes both the lexical and the resolved
+    # spelling of each root, and only the lexical one can be preserved here.
+    deduped: dict[PurePath, tuple[PurePath, str]] = {}
     for path, token in roots:
-        deduped.setdefault(path.resolve(), token)
-    return tuple(deduped.items())
+        key = path.resolve() if isinstance(path, Path) else path
+        deduped.setdefault(key, (path, token))
+    return tuple(deduped.values())
 
 
 def _missing_installed_generated_inputs(
