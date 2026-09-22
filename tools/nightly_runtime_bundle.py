@@ -11,7 +11,6 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import stat
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -35,6 +34,7 @@ from molt.cli.static_archive_identity import (  # noqa: E402
     artifact_content_identity,
 )
 from molt.file_hashing import _sha256_file  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 from tools.artifact_publish import (  # noqa: E402
     fsync_file,
     publish_validated_outputs,
@@ -105,20 +105,24 @@ def _run_identity_command(
     argv: Sequence[str], *, cwd: Path, allow_empty: bool = False
 ) -> str:
     try:
-        result = subprocess.run(
+        result = harness_memory_guard.guarded_completed_process(
             list(argv),
+            prefix="MOLT_NIGHTLY",
             cwd=cwd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             encoding="utf-8",
             errors="strict",
         )
-    except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
+    except (OSError, UnicodeError) as exc:
         raise NightlyRuntimeBundleError(
             f"cannot establish bundle identity with {' '.join(argv)}: {exc}"
         ) from exc
+    if result.returncode != 0:
+        raise NightlyRuntimeBundleError(
+            f"cannot establish bundle identity with {' '.join(argv)}: "
+            f"returncode={result.returncode}: {str(result.stderr).strip()}"
+        )
     value = result.stdout.strip()
     if not value and not allow_empty:
         raise NightlyRuntimeBundleError(

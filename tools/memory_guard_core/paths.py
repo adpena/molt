@@ -7,6 +7,37 @@ from collections.abc import Mapping
 from pathlib import Path
 
 
+def memory_guard_state_root(
+    repo_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """The custody-external root queue-guarded proofs give the guard for its state.
+
+    Every file the memory guard family writes about itself (outer summaries,
+    the harness command profile) lands under this root when it is set, so the
+    watched source tree never sees an apparatus write.
+    """
+    source = os.environ if environ is None else environ
+    state_root = source.get("MOLT_MEMORY_GUARD_STATE_ROOT", "").strip()
+    if not state_root:
+        return None
+    root = Path(state_root).expanduser()
+    if not root.is_absolute():
+        root = repo_root / root
+    return root.resolve(strict=False)
+
+
+def harness_command_profile_log_path(
+    repo_root: Path,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Default location of the harness guard's structured command profile."""
+    state_root = memory_guard_state_root(repo_root, environ)
+    if state_root is not None:
+        return state_root / "harness_memory_guard" / "commands.jsonl"
+    return repo_root / "logs" / "harness_memory_guard" / "commands.jsonl"
+
+
 def pytest_outer_guard_summary_dir(
     repo_root: Path,
     environ: Mapping[str, str] | None = None,
@@ -18,13 +49,9 @@ def pytest_outer_guard_summary_dir(
     source tree, where live custody would report them as input mutations.
     Outside a guarded run the repository tmp/ root remains the home.
     """
-    source = os.environ if environ is None else environ
-    state_root = source.get("MOLT_MEMORY_GUARD_STATE_ROOT", "").strip()
-    if state_root:
-        root = Path(state_root).expanduser()
-        if not root.is_absolute():
-            root = repo_root / root
-        return root.resolve(strict=False) / "pytest-memory-guard"
+    state_root = memory_guard_state_root(repo_root, environ)
+    if state_root is not None:
+        return state_root / "pytest-memory-guard"
     return repo_root / "tmp" / "pytest-memory-guard"
 
 
