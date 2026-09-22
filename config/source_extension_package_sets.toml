@@ -36,7 +36,7 @@ meson_setup_args = [
 cpython = "3.12"
 abi_tier = "cpython-abi"
 target_triple = "wasm32-wasip1"
-expected_identity_sha256 = "f5249691fa583a51229056a7dee957ac626809843a581e31cbf55c3e1a886441"
+expected_identity_sha256 = "3b32683304a5394bf3525999b2168be825e4dec092ba04f9b0b9a31def1aed3e"
 
 [[packages.sets.extensions]]
 module = "numpy._core._multiarray_umath"
