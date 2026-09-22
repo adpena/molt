@@ -688,10 +688,11 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
                 let Some(entry) = registry.by_ref.get(weak_slot) else {
                     continue;
                 };
-                if entry.target == target_slot && obj_from_bits(entry.callback_bits).is_none() {
-                    if let Some(weak_bits) = try_retain_registered_ptr(&registry, weak_slot.0) {
-                        return weak_bits;
-                    }
+                if entry.target == target_slot
+                    && obj_from_bits(entry.callback_bits).is_none()
+                    && let Some(weak_bits) = try_retain_registered_ptr(&registry, weak_slot.0)
+                {
+                    return weak_bits;
                 }
             }
         }
@@ -761,10 +762,11 @@ pub(crate) fn weakref_head_for_target(_py: &PyToken<'_>, target_bits: u64) -> u6
         let Some(entry) = registry.by_ref.get(weak_slot) else {
             continue;
         };
-        if entry.target == target_slot && !entry.target.0.is_null() {
-            if let Some(bits) = try_retain_registered_ptr(&registry, weak_slot.0) {
-                return bits;
-            }
+        if entry.target == target_slot
+            && !entry.target.0.is_null()
+            && let Some(bits) = try_retain_registered_ptr(&registry, weak_slot.0)
+        {
+            return bits;
         }
     }
     MoltObject::none().bits()
