@@ -26,9 +26,12 @@ from tools.process_spawn import (  # noqa: E402
     hidden_windows_process_group_kwargs,
     inherit_stdio_kwargs,
 )
-from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from tools.memory_guard_core.paths import (  # noqa: E402
+    active_guard_marker_dir,
+    pytest_outer_guard_summary_dir,
+)
 
-PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
+PYTEST_OUTER_GUARD_SUMMARY_DIR = pytest_outer_guard_summary_dir(ROOT)
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
 PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
 WINDOWS_PYTEST_TEMP_ROOT_NAME = "pytest-temproot"
