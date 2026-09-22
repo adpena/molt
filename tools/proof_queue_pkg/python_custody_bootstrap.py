@@ -16,15 +16,27 @@ import zipfile
 
 def _install_custody() -> None:
     authority = Path(__file__).with_name("execution_custody.py").resolve(strict=True)
-    spec = importlib.util.spec_from_file_location(
-        "_molt_proof_execution_custody", authority
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("proof execution custody authority cannot be loaded")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    module.install_python_child_custody()
+    # The custody authority imports its siblings as `tools.proof_queue_pkg.*`.
+    # A bootstrap launched as a script (uv run, -I, any cwd) has no repository
+    # root on sys.path, so make the authority self-locating for the duration of
+    # its import and restore the payload's import path afterwards.
+    repo_root = str(authority.parents[2])
+    injected = repo_root not in sys.path
+    if injected:
+        sys.path.insert(0, repo_root)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_molt_proof_execution_custody", authority
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("proof execution custody authority cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        module.install_python_child_custody()
+    finally:
+        if injected and sys.path and sys.path[0] == repo_root:
+            del sys.path[0]
 
 
 def _reset_import_path(mode: str, target: str | None) -> Path | None:
