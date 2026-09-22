@@ -9,8 +9,8 @@
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
 | Hashed executable authority inputs | 1 | 127 |
-| Local path rules | 35 | 40 |
-| Unique local commands | 73 | 88 |
+| Local path rules | 35 | 43 |
+| Unique local commands | 73 | 94 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -145,9 +145,12 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
-| `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
-| `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
-| `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 0 |
+| `portability.supervisor.prewarm.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 900 s | `python-tests` | 0 |
+| `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 1 |
+| `portability.supervisor.prewarm.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 900 s | `python-tests` | 0 |
+| `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 1 |
+| `portability.supervisor.prewarm.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 900 s | `python-tests` | 0 |
+| `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 600 s | `python-tests` | 1 |
 | `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
@@ -270,6 +273,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
+| `import-symbol-gate` | 3 | 2 | no |
+| `phase-exit-manifest` | 6 | 2 | no |
+| `public-contract` | 10 | 2 | no |
 
 ## Selection contract
 

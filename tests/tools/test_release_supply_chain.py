@@ -166,6 +166,68 @@ def test_release_plan_requires_exact_project_tag_and_source(
         release_authority.plan_release("0.0.001", "a" * 40)
 
 
+def _stable_git(*args: str) -> str:
+    if args == ("rev-parse", "HEAD"):
+        return "a" * 40
+    if args == ("tag", "--points-at", "HEAD", "--list", "v1.0.0"):
+        return "v1.0.0"
+    if args == ("show", "-s", "--format=%ct", "HEAD"):
+        return "1700000000"
+    raise AssertionError(args)
+
+
+def test_stable_release_requires_green_h0_phase_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tools import phase_exit_manifest as pem
+
+    monkeypatch.setattr(release_authority, "_project_version", lambda: "1.0.0")
+    monkeypatch.setattr(release_authority, "_git", _stable_git)
+    with pytest.raises(ValueError, match="requires a green H0 phase-exit manifest"):
+        release_authority.plan_release("v1.0.0", "a" * 40)
+
+    phase = tmp_path / "H0.json"
+    bundle = tmp_path / "release-exit.json"
+    phase.touch()
+    bundle.touch()
+    monkeypatch.setattr(
+        pem,
+        "verify_phase_manifest",
+        lambda *_a, **_k: pem.PhaseReport(
+            "H0", "a" * 40, False, ("legacy: legacy_count is 5, not 0",)
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="H0 phase exit is not green.*legacy_count is 5"
+    ):
+        release_authority.plan_release(
+            "v1.0.0", "a" * 40, phase_exit_manifest=phase, release_exit_manifest=bundle
+        )
+
+    monkeypatch.setattr(
+        pem,
+        "verify_phase_manifest",
+        lambda *_a, **_k: pem.PhaseReport("H0", "a" * 40, True, ()),
+    )
+    plan = release_authority.plan_release(
+        "v1.0.0", "a" * 40, phase_exit_manifest=phase, release_exit_manifest=bundle
+    )
+    assert plan["version"] == "1.0.0"
+
+    # Pre-1.0 releases are not stable contracts and need no phase exit.
+    monkeypatch.setattr(release_authority, "_project_version", lambda: "0.0.001")
+    monkeypatch.setattr(
+        release_authority,
+        "_git",
+        lambda *args: {
+            ("rev-parse", "HEAD"): "a" * 40,
+            ("tag", "--points-at", "HEAD", "--list", "v0.0.001"): "v0.0.001",
+            ("show", "-s", "--format=%ct", "HEAD"): "1700000000",
+        }[args],
+    )
+    assert release_authority.plan_release("v0.0.001", "a" * 40)["version"] == "0.0.001"
+
+
 def test_release_input_selection_requires_exact_cardinality(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="exactly one"):
         release_authority.select_one(tmp_path, "*.whl")

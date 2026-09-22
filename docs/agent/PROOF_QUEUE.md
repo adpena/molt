@@ -466,6 +466,14 @@ cache, a broad selector, or a stale generated file.
   output is a structural DX defect, not background noise.
 - If a proof lane is already active, monitor it instead of stacking another
   Cargo/WASM proof unless the new command is independent and cheap.
+- The native proof supervisor is content-addressed: its binary is keyed by the
+  exact `tools/proof_supervisor` sources plus rustc identity and published once
+  under the durable custody root (`<custody root>/proof-supervisor/<identity>/`;
+  explicit-scratch projects fall back to the host temp root). Every fresh logs
+  root then hits that cache instead of paying a cold cargo release build inside
+  its own timed window. `python tools/proof_supervisor_cache.py prewarm` is the
+  prepare step the portability proof cells run first; `identity` prints the key.
+  A tampered entry fails closed with `failed verification`; delete the entry.
 
 ## TOML DSL
 

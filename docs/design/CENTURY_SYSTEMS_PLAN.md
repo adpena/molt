@@ -66,6 +66,7 @@ Do not duplicate detail from these authorities in this plan:
 | Security and formalization | [`docs/SECURITY.md`](../SECURITY.md), [`docs/spec/areas/security/`](../spec/areas/security/), [`docs/spec/areas/formal/FORMALIZATION_PLAN.md`](../spec/areas/formal/FORMALIZATION_PLAN.md), [`docs/spec/areas/formal/CERTIFICATION_STATUS.md`](../spec/areas/formal/CERTIFICATION_STATUS.md) |
 | Pact reports, obligations, and acceptance | [`collab/pact/README.md`](../../collab/pact/README.md), [`docs/agent/PACT_CONTRACT_LEDGER.md`](../agent/PACT_CONTRACT_LEDGER.md), [`docs/PACT_SUPPORT_MATRIX.md`](../PACT_SUPPORT_MATRIX.md) |
 | Long-running proof protocol | [`docs/agent/PROOF_QUEUE.md`](../agent/PROOF_QUEUE.md) |
+| Phase-exit predicate (§5) and legacy inventory (§4.10) | [`tools/phase_exit_manifest.py`](../../tools/phase_exit_manifest.py) over [`config/phase_exit_requirements.toml`](../../config/phase_exit_requirements.toml); [`tools/legacy_inventory.py`](../../tools/legacy_inventory.py) over [`config/legacy_inventory.toml`](../../config/legacy_inventory.toml) |
 
 ## 3. Dependency spine
 
@@ -313,6 +314,19 @@ phase_green := schema_valid
 Missing, stale, duplicate, waived, unevaluated, or indirectly inferred evidence
 evaluates false. A future validator may change implementation language, but not
 this predicate without a reviewed governance change and migration proof.
+
+The executable validator is `tools/phase_exit_manifest.py`: `assemble` projects
+a phase manifest from the typed release-exit bundle
+(`tools/release_exit_gate.py`), the exact verified-subset matrix, the legacy
+inventory, and a Sigstore attestation whose in-toto subject binds the manifest
+bytes; `verify` evaluates the predicate above clause by clause and names every
+failing clause. Requirements and obligations per phase live in
+`config/phase_exit_requirements.toml`; `legacy_count` is the registry-driven
+count from `tools/legacy_inventory.py`. When an authority does not yet record a
+required field (for example a Pact acceptance receipt without a command or
+toolchain digest), the assembled row carries `null` and the phase is false;
+those nulls are the schema work the authority owes, never something the
+validator infers.
 
 ### H0 - Recover truth and close current P0s (now to 1 year)
 
