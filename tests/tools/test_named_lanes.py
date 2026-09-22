@@ -144,3 +144,26 @@ def test_named_lane_cli_subcommand_is_registered() -> None:
     assert isinstance(args, argparse.Namespace)
     assert args.pact_handler == "_cmd_named_lane"
     assert args.lane_id == "pact.seal.numpy.produce"
+
+
+def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
+    from tools.proof_queue_pkg import command_identity
+
+    payload = ["python", "-m", "molt", "extension", "produce-set", "--target", "wasm"]
+    assert command_identity._rust_target(payload, {}) is None
+    assert (
+        command_identity._rust_target(payload, {"CARGO_BUILD_TARGET": "wasm32-wasip1"})
+        == "wasm32-wasip1"
+    )
+    assert (
+        command_identity._rust_target(
+            ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-tir"], {}
+        )
+        == "wasm32-wasip1"
+    )
+    assert (
+        command_identity._rust_target(
+            ["rustc", "--target=x86_64-pc-windows-msvc", "a.rs"], {}
+        )
+        == "x86_64-pc-windows-msvc"
+    )

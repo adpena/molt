@@ -504,6 +504,9 @@ def _tool_configuration_identities(
     return sorted(identities, key=lambda item: os.path.normcase(str(item["path"])))
 
 
+_RUST_TOOL_NAMES = frozenset({"cargo", "cargo.exe", "rustc", "rustc.exe"})
+
+
 def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
     selected_command = admission._nested_command(exact) or [
         str(value) for value in exact
@@ -511,6 +514,14 @@ def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
     selected: list[str] = []
     before_separator = True
     index = 1
+    # `--target` is a Rust target triple only on a Rust tool's own argv. A
+    # Python payload such as `molt extension produce-set --target wasm` names a
+    # Molt target alias, which must never reach rustc as a triple.
+    is_rust_tool = bool(selected_command) and (
+        admission._basename(str(selected_command[0])) in _RUST_TOOL_NAMES
+    )
+    if not is_rust_tool:
+        index = len(selected_command)
     while index < len(selected_command) and before_separator:
         value = str(selected_command[index])
         if value == "--":
