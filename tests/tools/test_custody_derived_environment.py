@@ -24,7 +24,11 @@ if str(ROOT) not in sys.path:
 
 from molt.cli import source_build_environment as sbe  # noqa: E402
 from tools import proof_plan  # noqa: E402
-from tools.proof_queue_pkg import execution_custody, supervisor_custody  # noqa: E402
+from tools.proof_queue_pkg import (  # noqa: E402
+    execution_custody,
+    process_image_capture,
+    supervisor_custody,
+)
 
 KIND = execution_custody.DERIVED_ENVIRONMENT_UV_SOURCE_BUILD
 
@@ -108,6 +112,7 @@ class _Fixture:
                     "kind": KIND,
                     "root": execution_custody._norm(self.root),
                     "uv_lock_sha256": self.lock_sha256,
+                    "base_executable_sha256s": [_sha256(self.base_bytes)],
                 }
             ],
         }
@@ -179,10 +184,8 @@ def test_environment_from_another_lock_file_is_refused(tmp_path: Path) -> None:
 
 def test_environment_must_link_to_an_admitted_base_interpreter(tmp_path: Path) -> None:
     fixture = _Fixture(tmp_path)
-    fixture.policy["allowed"] = [
-        row
-        for row in fixture.policy["allowed"]
-        if row["toolchain"] != "python"  # type: ignore[index,union-attr]
+    fixture.policy["derived_environments"][0]["base_executable_sha256s"] = [  # type: ignore[index]
+        _sha256(b"another interpreter")
     ]
     decision = fixture.decide(fixture.launcher)
     assert decision["admitted"] is False
@@ -306,10 +309,29 @@ def test_policy_rows_come_from_the_envelope_and_the_admitted_lock(
 def test_child_policy_carries_the_derived_environment_rows() -> None:
     envelope = {"process_closure": {"descendants": "declared-toolchains"}}
     rows = [{"kind": KIND, "root": "C:\\custody\\envs", "uv_lock_sha256": "a" * 64}]
-    policy = execution_custody.child_policy(envelope, {}, derived_environments=rows)
+    python = {
+        "process_images": [
+            process_image_capture.capture_image(
+                "python", Path(sys.executable), preserve_path=True
+            )
+        ],
+        "runtime": {
+            "explicit_authority_files": [
+                {"authority": "base-executable", "sha256": "b" * 64},
+                {"authority": "venv-executable", "sha256": "c" * 64},
+            ]
+        },
+    }
+    policy = execution_custody.child_policy(
+        envelope, {"python": python}, derived_environments=rows
+    )
     assert policy["schema"] == execution_custody.CHILD_POLICY_SCHEMA
-    assert policy["derived_environments"] == rows
+    assert policy["derived_environments"] == [
+        {**rows[0], "base_executable_sha256s": ["b" * 64]}
+    ]
     assert execution_custody.child_policy(envelope, {})["derived_environments"] == []
+    with pytest.raises(ValueError, match="base interpreter"):
+        execution_custody.child_policy(envelope, {}, derived_environments=rows)
 
 
 def test_supervisor_treats_the_environment_home_as_a_shared_derived_root(
