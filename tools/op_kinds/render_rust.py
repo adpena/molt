@@ -1092,20 +1092,22 @@ def _render_simpleir_field_roles(data: dict) -> str:
                 f"Some(SimpleIrCallTargetRole::{rust_role}),\n"
             )
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
-    lines.extend([
-        "/// Canonical role of the optional SimpleIR `var` field.\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum SimpleIrVarFieldRole {\n",
-        "    Read,\n",
-        "    Definition,\n",
-        "    Result,\n",
-        "    MetadataWhenArgs,\n",
-        "    Forbidden,\n",
-        "}\n\n",
-        "#[inline]\n",
-        "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
-        "    match kind {\n",
-    ])
+    lines.extend(
+        [
+            "/// Canonical role of the optional SimpleIR `var` field.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum SimpleIrVarFieldRole {\n",
+            "    Read,\n",
+            "    Definition,\n",
+            "    Result,\n",
+            "    MetadataWhenArgs,\n",
+            "    Forbidden,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {\n",
+            "    match kind {\n",
+        ]
+    )
     for key, role in var_roles:
         patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")

@@ -347,7 +347,7 @@ Expected: builtins attrs for `filter`, `sorted`, `zip`, etc. eliminated. Binary 
 **Shape 2: single builtin read**
 ```python
 # reads_sorted.py
-x = sorted([3,1,2])
+x = sorted([3, 1, 2])
 print(x)
 ```
 Expected: `sorted` body retained. `filter`, `zip`, `enumerate`, `vars`, `dir`, etc. eliminated.
@@ -363,6 +363,7 @@ Expected: all builtins retained (conservative fallback). Binary size same as tod
 ```python
 # dynamic_getattr.py
 import builtins
+
 name = input()
 f = getattr(builtins, name)
 ```
@@ -371,6 +372,7 @@ Expected: all builtins attrs retained (conservative — `getattr` lowers to a dy
 **Shape 5: stdlib import**
 ```python
 import math
+
 x = math.sqrt(2.0)
 ```
 Expected: `math.sqrt` body retained. `math.factorial`, `math.gcd`, etc. (if unread) eliminated.
@@ -378,15 +380,19 @@ Expected: `math.sqrt` body retained. `math.factorial`, `math.gcd`, etc. (if unre
 **Shape 6: adversarial — function read through intermediate variable**
 ```python
 import builtins
+
 f = builtins.sorted
-result = f([3,1,2])
+result = f([3, 1, 2])
 ```
 Expected: `sorted` retained (the `builtins.sorted` is a `module_get_attr("sorted")`).
 
 **Shape 7: bigint correctness (regression guard)**
 ```python
-def apply(f, x, n): return f(x, n)
-print(apply(lambda a,b: a**b, 1<<60, 7))
+def apply(f, x, n):
+    return f(x, n)
+
+
+print(apply(lambda a, b: a**b, 1 << 60, 7))
 ```
 Expected: correct bigint result (`1152921504606846983`) unchanged.
 
@@ -405,6 +411,7 @@ Expected: `ImportError` raised correctly. `molt_init_builtins` still runs (reads
 **Shape 10: import chain**
 ```python
 import os
+
 os.path.join("a", "b")
 ```
 Expected: `os.path.join` retained. `os.path.exists`, `os.path.abspath`, etc. (if not read) eliminated.

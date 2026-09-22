@@ -39,7 +39,9 @@ def _force_windows_model(module, monkeypatch) -> None:
     # ``is_molt_process`` casefolds path matching only under the Windows process
     # model; force it so the ownership gate exercises real Windows command lines
     # regardless of the host the test runs on.
-    monkeypatch.setattr(module.process_sentinel, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        module.process_sentinel, "_is_windows_process_model", lambda: True
+    )
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
 
 
@@ -125,12 +127,8 @@ def test_both_present_only_molt_owned_selected(monkeypatch) -> None:
     _force_windows_model(module, monkeypatch)
 
     samples = {
-        100: _sample(
-            module, pid=100, ppid=999, command=_molt_leaked_cargo_command()
-        ),
-        200: _sample(
-            module, pid=200, ppid=888, command=_unrelated_cargo_command()
-        ),
+        100: _sample(module, pid=100, ppid=999, command=_molt_leaked_cargo_command()),
+        200: _sample(module, pid=200, ppid=888, command=_unrelated_cargo_command()),
     }
 
     orphans = module.find_orphans(samples, root=WINDOWS_ROOT, self_pid=1)
@@ -201,12 +199,11 @@ def test_reap_one_refuses_on_pid_reuse_identity_mismatch(monkeypatch) -> None:
     # Route the shared identity-checked primitive at the recycled table and
     # observe whether it would signal. ``os.kill`` lives in the custody module.
     monkeypatch.setattr(
-        module.memory_guard, "sample_processes_windows_hard_timeout",
+        module.memory_guard,
+        "sample_processes_windows_hard_timeout",
         lambda: {4321: recycled_sample},
     )
-    monkeypatch.setattr(
-        module.memory_guard._process_custody.os, "kill", fake_os_kill
-    )
+    monkeypatch.setattr(module.memory_guard._process_custody.os, "kill", fake_os_kill)
 
     killed = module._reap_one(snapshot_sample, grace=0.0)
 
@@ -236,12 +233,11 @@ def test_reap_one_signals_when_identity_matches(monkeypatch) -> None:
         sent.append((pid, sig))
 
     monkeypatch.setattr(
-        module.memory_guard, "sample_processes_windows_hard_timeout",
+        module.memory_guard,
+        "sample_processes_windows_hard_timeout",
         lambda: {4321: sample},
     )
-    monkeypatch.setattr(
-        module.memory_guard._process_custody.os, "kill", fake_os_kill
-    )
+    monkeypatch.setattr(module.memory_guard._process_custody.os, "kill", fake_os_kill)
 
     killed = module._reap_one(sample, grace=0.0)
 

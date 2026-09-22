@@ -319,8 +319,7 @@ class RustIrVerifier:
         except queue.Empty as exc:
             self.close(graceful=False)
             raise TimeoutError(
-                f"Rust IR verifier request {request_id} exceeded "
-                f"{request_timeout:.3f}s"
+                f"Rust IR verifier request {request_id} exceeded {request_timeout:.3f}s"
             ) from exc
         if response is None:
             raise RuntimeError(self._process_failure("before response"))

@@ -52,9 +52,8 @@ def _parse_scalar(text: str) -> object:
         if not inner:
             return []
         return [_parse_scalar(part) for part in inner.split(",")]
-    if (
-        (value.startswith('"') and value.endswith('"'))
-        or (value.startswith("'") and value.endswith("'"))
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
     ):
         return value[1:-1]
     return value
@@ -192,7 +191,11 @@ def _parse_steps(lines: list[str], start: int, end: int) -> tuple[list[dict], in
                     child_indent == 6 and child_stripped.startswith("- ")
                 ):
                     break
-                if child_stripped and not child_stripped.startswith("#") and child_indent == 8:
+                if (
+                    child_stripped
+                    and not child_stripped.startswith("#")
+                    and child_indent == 8
+                ):
                     key, scalar = _split_key_value(child_stripped)
                     if key == "run" and scalar in ({}, "|", ">"):
                         run_lines: list[str] = []
@@ -364,9 +367,7 @@ def main() -> int:
         print("perf-gate-wiring: FAIL -- controlled perf authority drifted:")
         for p in problems:
             print(f"  - {p}")
-        print(
-            "  (controlled measurement must run to completion and fail honestly.)"
-        )
+        print("  (controlled measurement must run to completion and fail honestly.)")
         return 1
     print(
         "perf-gate-wiring: OK -- scheduled/manual measurement runs the blocking scoreboard without active cancellation."

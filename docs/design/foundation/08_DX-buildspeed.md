@@ -266,6 +266,7 @@ def apply(f, x, n):
         x = f(x)
     return x
 
+
 result = apply(lambda x: x * 2, 1 << 60, 7)
 assert result == 1 << 67
 print(result)
@@ -280,10 +281,14 @@ def f():
         raise ValueError("test")
     except ValueError as e:
         return str(e)
+
+
 assert f() == "test"
+
 
 def g(lst):
     return list(lst)
+
 
 try:
     g(x for x in [1, 2] if (lambda: None)())
@@ -301,6 +306,8 @@ def bench(n):
     for i in range(n):
         total += i
     return total
+
+
 print(bench(10_000_000))
 ```
 Covers: loop-IV accumulator (must not regress below CPython after Phase 1 LTO change, since thin LTO still enables cross-function inlining at import boundaries).
@@ -311,7 +318,9 @@ Covers: loop-IV accumulator (must not regress below CPython after Phase 1 LTO ch
 def fib(n):
     if n <= 1:
         return n
-    return fib(n-1) + fib(n-2)
+    return fib(n - 1) + fib(n - 2)
+
+
 print(fib(30))
 ```
 Run with `--target native`, `--target wasm`, `--target llvm` (where available). All three must produce 832040.
@@ -322,6 +331,7 @@ Run with `--target native`, `--target wasm`, `--target llvm` (where available). 
 def gen(n):
     for i in range(n):
         yield i * i
+
 
 result = list(gen(5))
 assert result == [0, 1, 4, 9, 16]

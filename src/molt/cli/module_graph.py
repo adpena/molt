@@ -674,9 +674,7 @@ def _support_source_import_bindings(
             )
             source_modules = require_static_import_modules(
                 plan_static_import_request(
-                    StaticImportRequest.statement(
-                        stmt.module or "", level=stmt.level
-                    ),
+                    StaticImportRequest.statement(stmt.module or "", level=stmt.level),
                     contexts,
                 ),
                 consumer="native support binding graph",

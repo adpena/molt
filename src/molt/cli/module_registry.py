@@ -296,7 +296,9 @@ class ModuleRegistry:
             )
             assert len(packed) == MODULE_REGISTRY_ROW_BYTES
             rows_blob.extend(packed)
-        blob = bytes(header) + bytes(rows_blob) + bytes(names_blob) + bytes(origins_blob)
+        blob = (
+            bytes(header) + bytes(rows_blob) + bytes(names_blob) + bytes(origins_blob)
+        )
         return blob, tuple(relocs)
 
 

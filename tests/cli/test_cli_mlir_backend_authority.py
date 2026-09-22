@@ -124,4 +124,7 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
 
 def test_mlir_backend_executable_name_is_host_specific() -> None:
     assert mlir_backend._mlir_backend_executable_name(os_name="nt").endswith(".exe")
-    assert mlir_backend._mlir_backend_executable_name(os_name="posix") == "molt-backend-mlir"
+    assert (
+        mlir_backend._mlir_backend_executable_name(os_name="posix")
+        == "molt-backend-mlir"
+    )

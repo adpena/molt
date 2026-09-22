@@ -411,6 +411,7 @@ def emit_header(authority: dict[str, Struct]) -> str:
         if c_type is None:
             continue  # struct exists in Rust authority but has no C spelling to assert
         ap(f"/* {rust_name}  <-  {AUTHORITY_RS.name} */")
+
         # sizeof + offsetof parity for BOTH pointer-width models. Both are computed
         # from the same parsed authority; the C compiler's _Static_assert on the
         # branch matching its own pointer width is the real proof.

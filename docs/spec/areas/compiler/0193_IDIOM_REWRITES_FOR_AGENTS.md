@@ -131,6 +131,7 @@ def handler(req):
 ```python
 DISPATCH = {"opA": opA, "opB": opB}
 
+
 def handler(req):
     fn = DISPATCH.get(req["op"])
     if fn is None:
@@ -202,14 +203,21 @@ This gives Molt explicit bounds and indexable access.
 **Before:**
 ```python
 import re
-def f(s): return re.match(PAT, s)
+
+
+def f(s):
+    return re.match(PAT, s)
 ```
 
 **After:**
 ```python
 import re
+
 R = re.compile(PAT)
-def f(s): return R.match(s)
+
+
+def f(s):
+    return R.match(s)
 ```
 
 This supports snapshotting and reduces cold start.

@@ -402,7 +402,9 @@ def main() -> int:
     if args.runs < 2:
         parser.error("--runs must be at least 2")
 
-    selected_modes = sum(value is not None for value in (args.batch, args.corpus, args.source))
+    selected_modes = sum(
+        value is not None for value in (args.batch, args.corpus, args.source)
+    )
     if selected_modes > 1:
         parser.error("choose exactly one source, --batch, or --corpus")
     sources = (
@@ -412,11 +414,7 @@ def main() -> int:
     )
     if not sources:
         parser.error("Either provide a source file or use --batch")
-    modes = (
-        [False, True]
-        if args.mode == "both"
-        else [args.mode == "deterministic"]
-    )
+    modes = [False, True] if args.mode == "both" else [args.mode == "deterministic"]
     tasks = [(source, mode) for source in sources for mode in modes]
     started = time.monotonic()
 

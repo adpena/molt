@@ -32,16 +32,14 @@ def staged_output_path(
     """
     stage_root = final.parent if root is None else root
     stage_root.mkdir(parents=True, exist_ok=True)
-    normalized_purpose = _STAGING_PURPOSE_RE.sub(
-        "-", purpose.strip().casefold()
-    ).strip("-")
+    normalized_purpose = _STAGING_PURPOSE_RE.sub("-", purpose.strip().casefold()).strip(
+        "-"
+    )
     if not normalized_purpose:
         normalized_purpose = "stage"
     normalized_purpose = normalized_purpose[:16]
     identity = hashlib.sha256(os.fsencode(str(final))).hexdigest()[:12]
-    return stage_root / (
-        f".{normalized_purpose}-{identity}-{uuid.uuid4().hex}{suffix}"
-    )
+    return stage_root / (f".{normalized_purpose}-{identity}-{uuid.uuid4().hex}{suffix}")
 
 
 def fsync_parent(path: Path) -> None:

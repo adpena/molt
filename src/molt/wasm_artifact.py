@@ -70,12 +70,16 @@ def wasm_runtime_manifest_entry_path(manifest: Path) -> Path:
     mode = payload.get("mode")
     label = {"linked": "linked", "split-runtime": "app"}.get(mode)
     if label is None:
-        raise ValueError(f"WASM execution manifest has unsupported mode {mode!r}: {manifest}")
+        raise ValueError(
+            f"WASM execution manifest has unsupported mode {mode!r}: {manifest}"
+        )
     modules = payload.get("modules")
     descriptor = modules.get(label) if isinstance(modules, dict) else None
     module_path = descriptor.get("path") if isinstance(descriptor, dict) else None
     if not isinstance(module_path, str) or not module_path:
-        raise ValueError(f"WASM execution manifest missing modules.{label}.path: {manifest}")
+        raise ValueError(
+            f"WASM execution manifest missing modules.{label}.path: {manifest}"
+        )
     return manifest.parent / module_path
 
 
@@ -93,12 +97,16 @@ def copy_wasm_runtime_manifest_for_artifact(
     payload = json.loads(source_manifest.read_text(encoding="utf-8"))
     modules = payload.get("modules")
     if not isinstance(modules, dict):
-        raise ValueError(f"WASM execution manifest has no modules object: {source_manifest}")
+        raise ValueError(
+            f"WASM execution manifest has no modules object: {source_manifest}"
+        )
     source_resolved = source_artifact.resolve()
     destination_root = destination_artifact.parent.resolve()
     matched = False
     for label, descriptor in modules.items():
-        if not isinstance(descriptor, dict) or not isinstance(descriptor.get("path"), str):
+        if not isinstance(descriptor, dict) or not isinstance(
+            descriptor.get("path"), str
+        ):
             continue
         resolved = (source_manifest.parent / descriptor["path"]).resolve()
         if resolved == source_resolved:

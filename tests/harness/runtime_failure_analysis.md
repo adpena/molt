@@ -254,6 +254,8 @@ rate should jump significantly.
 class Foo:
     def __init__(self):
         self.x = 42
+
+
 f = Foo()
 print(f.x)  # → 0.0 (should be 42)
 ```

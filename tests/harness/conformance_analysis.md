@@ -27,8 +27,8 @@ The `args__*` tests (11 files) and related argument-validation tests contain
 deliberately invalid code such as:
 
 ```python
-{}.items(1)     # TypeError: takes 0 arguments, got 1
-len()           # TypeError: missing required argument
+{}.items(1)  # TypeError: takes 0 arguments, got 1
+len()  # TypeError: missing required argument
 ```
 
 Molt's compiler rejects these at compile time rather than generating code that

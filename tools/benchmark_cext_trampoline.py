@@ -25,9 +25,7 @@ if str(SRC) not in sys.path:
 from molt.process_guard import run_completed_command  # noqa: E402
 
 
-TEST_NAME = (
-    "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench"
-)
+TEST_NAME = "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench"
 SAMPLE_PREFIX = "MOLT_CEXT_BENCH_SAMPLE "
 DEFAULT_OUTPUT = ROOT / "logs" / "benchmarks" / "cext_trampoline" / "latest.json"
 # One-sided 95% Student-t critical values, indexed by degrees of freedom.
@@ -97,7 +95,9 @@ def sampling_platform_admission() -> dict[str, object]:
         ]
         original = ctypes.c_size_t()
         system = ctypes.c_size_t()
-        if not get_affinity(get_process(), ctypes.byref(original), ctypes.byref(system)):
+        if not get_affinity(
+            get_process(), ctypes.byref(original), ctypes.byref(system)
+        ):
             return {
                 "admitted": False,
                 "platform": "windows",
@@ -199,7 +199,8 @@ def isolated_sampling_cpu():
         finally:
             if not set_affinity(process, original.value):
                 raise OSError(
-                    ctypes.get_last_error(), "failed to restore benchmark process affinity"
+                    ctypes.get_last_error(),
+                    "failed to restore benchmark process affinity",
                 )
         return
     if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
@@ -229,7 +230,9 @@ def isolated_sampling_cpu():
         finally:
             os.sched_setaffinity(0, set(available))
         return
-    raise RuntimeError(f"isolated benchmark process affinity is unsupported on {sys.platform}")
+    raise RuntimeError(
+        f"isolated benchmark process affinity is unsupported on {sys.platform}"
+    )
 
 
 def parse_sample(text: str) -> dict[str, object]:
@@ -239,13 +242,19 @@ def parse_sample(text: str) -> dict[str, object]:
         if SAMPLE_PREFIX in line
     ]
     if len(matches) != 1:
-        raise ValueError(f"expected exactly one {SAMPLE_PREFIX.strip()} record, got {len(matches)}")
+        raise ValueError(
+            f"expected exactly one {SAMPLE_PREFIX.strip()} record, got {len(matches)}"
+        )
     payload = json.loads(matches[0])
     if payload.get("candidate") not in {"admitted", "checked-nested"}:
         raise ValueError(f"invalid benchmark candidate: {payload.get('candidate')!r}")
     for key in ("baseline_ns_per_call", "candidate_ns_per_call"):
         value = payload.get(key)
-        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        if (
+            not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
             raise ValueError(f"invalid benchmark field {key}: {value!r}")
     pair_rounds = payload.get("pair_rounds")
     baseline_rounds = payload.get("baseline_rounds_ns_per_call")
@@ -273,7 +282,9 @@ def validate_sample_process_contract(
 ) -> None:
     child = sample.get("process_execution_contract")
     if not isinstance(child, dict) or child.get("verified_before_warmup") is not True:
-        raise RuntimeError("timed child did not verify its process contract before warmup")
+        raise RuntimeError(
+            "timed child did not verify its process contract before warmup"
+        )
     if child.get("pid") != evidence.get("pid"):
         raise RuntimeError(
             f"timed child PID {child.get('pid')!r} did not match guard custody "
@@ -282,10 +293,10 @@ def validate_sample_process_contract(
     if child.get("logical_cpu") != isolation_contract.get("child_logical_cpu"):
         raise RuntimeError("timed child did not acquire the isolated logical CPU")
     if sys.platform == "win32":
-        if (
-            child.get("affinity_mask") != isolation_contract.get("child_affinity_mask")
-            or child.get("priority_class")
-            != isolation_contract.get("child_priority_class")
+        if child.get("affinity_mask") != isolation_contract.get(
+            "child_affinity_mask"
+        ) or child.get("priority_class") != isolation_contract.get(
+            "child_priority_class"
         ):
             raise RuntimeError("timed Windows child affinity/priority contract drifted")
     elif child.get("nice") != isolation_contract.get("child_nice"):
@@ -296,7 +307,10 @@ def one_sided_ratio_ucb(samples: list[dict[str, object]]) -> dict[str, float]:
     if len(samples) < 5:
         raise ValueError("at least five independent process samples are required")
     log_ratios = [
-        math.log(float(sample["candidate_ns_per_call"]) / float(sample["baseline_ns_per_call"]))
+        math.log(
+            float(sample["candidate_ns_per_call"])
+            / float(sample["baseline_ns_per_call"])
+        )
         for sample in samples
     ]
     mean = statistics.fmean(log_ratios)
@@ -315,7 +329,9 @@ def one_sided_ratio_ucb(samples: list[dict[str, object]]) -> dict[str, float]:
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     os.replace(temporary, path)
 
 
@@ -368,7 +384,9 @@ def _run_with_evidence(
     return result, evidence
 
 
-def _discover_release_test_binary(run_dir: Path, timeout: float) -> tuple[Path, dict[str, object]]:
+def _discover_release_test_binary(
+    run_dir: Path, timeout: float
+) -> tuple[Path, dict[str, object]]:
     command = [
         "cargo",
         "test",
@@ -394,15 +412,21 @@ def _discover_release_test_binary(run_dir: Path, timeout: float) -> tuple[Path, 
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if event.get("reason") != "compiler-artifact" or not event.get("executable"):
+            if event.get("reason") != "compiler-artifact" or not event.get(
+                "executable"
+            ):
                 continue
             target = event.get("target") or {}
             profile = event.get("profile") or {}
-            if target.get("name") in {"molt-runtime", "molt_runtime"} and profile.get("test"):
+            if target.get("name") in {"molt-runtime", "molt_runtime"} and profile.get(
+                "test"
+            ):
                 executables.append(Path(event["executable"]))
     unique = sorted({path.resolve() for path in executables})
     if len(unique) != 1:
-        raise RuntimeError(f"expected exactly one molt-runtime release test binary, got {unique!r}")
+        raise RuntimeError(
+            f"expected exactly one molt-runtime release test binary, got {unique!r}"
+        )
     return unique[0], {"command": command, "evidence": evidence}
 
 
@@ -484,7 +508,9 @@ def benchmark(
                         f"sample {candidate}/{index} did not honor its process contract: {sample!r}"
                     )
                 if sample.get("allocation_probe_enabled") is not True:
-                    raise RuntimeError("release sample was not built with the allocation probe")
+                    raise RuntimeError(
+                        "release sample was not built with the allocation probe"
+                    )
                 validate_sample_process_contract(
                     sample, sampling_isolation_contract, evidence
                 )
@@ -493,7 +519,9 @@ def benchmark(
                 sample["process_evidence"] = evidence
                 raw_samples[candidate].append(sample)
     if executable_identity(binary) != identity:
-        raise RuntimeError("benchmark executable changed during direct fresh-process sampling")
+        raise RuntimeError(
+            "benchmark executable changed during direct fresh-process sampling"
+        )
 
     statistics_payload = {
         candidate: one_sided_ratio_ucb(candidate_samples)
@@ -501,8 +529,7 @@ def benchmark(
     }
     allocation_deltas = {
         candidate: [
-            int(sample["candidate_allocations"])
-            - int(sample["baseline_allocations"])
+            int(sample["candidate_allocations"]) - int(sample["baseline_allocations"])
             for sample in candidate_samples
         ]
         for candidate, candidate_samples in raw_samples.items()
@@ -578,10 +605,7 @@ def main() -> int:
         f"{candidate}={candidate_stats['one_sided_95_ucb_delta_pct']:.6f}%"
         for candidate, candidate_stats in stats.items()
     )
-    print(
-        f"C-extension trampoline UCBs: {ucb_summary} "
-        f"receipt={args.out.resolve()}"
-    )
+    print(f"C-extension trampoline UCBs: {ucb_summary} receipt={args.out.resolve()}")
     return 0
 
 

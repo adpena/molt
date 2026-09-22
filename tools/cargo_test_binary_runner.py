@@ -141,8 +141,12 @@ class BinaryExecution:
         return termination_payload(self.returncode, timed_out=self.timed_out)
 
     def receipt(self) -> dict[str, object]:
-        stdout_bytes, stdout_sha256 = _stream_identity(self.stdout_evidence, self.stdout)
-        stderr_bytes, stderr_sha256 = _stream_identity(self.stderr_evidence, self.stderr)
+        stdout_bytes, stdout_sha256 = _stream_identity(
+            self.stdout_evidence, self.stdout
+        )
+        stderr_bytes, stderr_sha256 = _stream_identity(
+            self.stderr_evidence, self.stderr
+        )
         payload: dict[str, object] = {
             "argv": list(self.argv),
             "returncode": self.returncode,
@@ -155,8 +159,12 @@ class BinaryExecution:
             "stderr_bytes": stderr_bytes,
             "stdout_sha256": stdout_sha256,
             "stderr_sha256": stderr_sha256,
-            "stdout_evidence": None if self.stdout_evidence is None else str(self.stdout_evidence),
-            "stderr_evidence": None if self.stderr_evidence is None else str(self.stderr_evidence),
+            "stdout_evidence": None
+            if self.stdout_evidence is None
+            else str(self.stdout_evidence),
+            "stderr_evidence": None
+            if self.stderr_evidence is None
+            else str(self.stderr_evidence),
             "stdout_tail": self.stdout[-RECEIPT_TAIL_BYTES:],
             "stderr_tail": self.stderr[-RECEIPT_TAIL_BYTES:],
         }
@@ -532,9 +540,7 @@ def _parse_libtest_selection(inherited_args: list[str]) -> LibtestSelectionDomai
         if argument in execution_value_options:
             index += 2
             continue
-        if any(
-            argument.startswith(f"{option}=") for option in execution_value_options
-        ):
+        if any(argument.startswith(f"{option}=") for option in execution_value_options):
             index += 1
             continue
         if argument == "--exact":
@@ -579,18 +585,16 @@ def _canonical_list_args(inherited_args: list[str]) -> list[str]:
     return _parse_libtest_selection(inherited_args).list_args()
 
 
-def _exact_reproduction_kind(
-    exact: BinaryExecution, identity: str
-) -> str | None:
+def _exact_reproduction_kind(exact: BinaryExecution, identity: str) -> str | None:
     if exact.timed_out:
         return None
     if identity in _test_results_for_execution(exact, "FAILED"):
         return "reported-test-failure"
     started = _started_tests_for_execution(exact)
-    if (
-        identity in started
-        and exact.termination.get("kind") in {"signal", "windows-exception"}
-    ):
+    if identity in started and exact.termination.get("kind") in {
+        "signal",
+        "windows-exception",
+    }:
         return "isolated-test"
     return None
 
@@ -913,7 +917,9 @@ def main(argv: list[str] | None = None) -> int:
         source_identity = decoded_identity
 
     executable, *inherited_args = command
-    executable_resolved, executable_size, executable_sha256 = _executable_identity(executable)
+    executable_resolved, executable_size, executable_sha256 = _executable_identity(
+        executable
+    )
     invocation_id = uuid.uuid4().hex
     _ACTIVE_EVIDENCE_DIR = args.receipt_dir / "evidence" / invocation_id
     _ACTIVE_EVIDENCE_DIR.mkdir(parents=True, exist_ok=False)
@@ -954,11 +960,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 executions.extend(diagnostic_executions)
                 identity = diagnosis.get("identity")
-                if (
-                    diagnosis.get("kind")
-                    in {"isolated-test", "reported-test-failure"}
-                    and isinstance(identity, str)
-                ):
+                if diagnosis.get("kind") in {
+                    "isolated-test",
+                    "reported-test-failure",
+                } and isinstance(identity, str):
                     print(f"test {identity} ... FAILED")
                 print(
                     "cargo-test-binary-runner: abnormal-exit-diagnosis="

@@ -132,9 +132,7 @@ def wasm_external_link_provider_symbol_classes(
 ) -> Mapping[str, str]:
     """Map every available provider export to its canonical provider class."""
 
-    return _provider_symbol_classes_from_key(
-        _provider_resolution_key(target_triple)
-    )
+    return _provider_symbol_classes_from_key(_provider_resolution_key(target_triple))
 
 
 @functools.lru_cache(maxsize=8)
@@ -143,8 +141,7 @@ def _provider_symbol_classes_from_key(
 ) -> Mapping[str, str]:
     classes: dict[str, str] = {}
     surfaces = {
-        surface.primitive_class: surface
-        for surface in _provider_surfaces_from_key(key)
+        surface.primitive_class: surface for surface in _provider_surfaces_from_key(key)
     }
     for primitive_class in _PROVIDER_CLASS_PRECEDENCE:
         for symbol in surfaces[primitive_class].symbols:

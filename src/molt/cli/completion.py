@@ -403,7 +403,7 @@ def _completion_script(shell: str) -> str:
             f"complete -c molt -f -n '__fish_use_subcommand' -a \"{' '.join(commands)}\"",
             "complete -c molt -f -n '__fish_seen_subcommand_from extension; and not "
             f"__fish_seen_subcommand_from {' '.join(extension_subcommands)}' -a "
-            f"\"{' '.join(extension_subcommands)}\"",
+            f'"{" ".join(extension_subcommands)}"',
         ]
         for cmd in commands:
             for opt in options.get(cmd, []):

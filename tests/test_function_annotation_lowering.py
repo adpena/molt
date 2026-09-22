@@ -92,9 +92,7 @@ class C:
         if op.get("kind") == "const_str" and "out" in op
     }
     class_attr_names = {
-        class_arg_values[arg]
-        for arg in class_def["args"]
-        if arg in class_arg_values
+        class_arg_values[arg] for arg in class_def["args"] if arg in class_arg_values
     }
     assert "__annotate__" in class_attr_names
     assert "__annotations__" not in class_attr_names
@@ -126,9 +124,7 @@ def test_python_314_module_annotation_execution_state_is_globally_resolvable() -
         op["out"]
         for op in main_ops
         if op.get("kind") == "const_str"
-        and str(op.get("s_value", "")).startswith(
-            "__molt_annotations_exec___main___"
-        )
+        and str(op.get("s_value", "")).startswith("__molt_annotations_exec___main___")
     }
 
     assert exec_map_keys
@@ -149,15 +145,12 @@ class Box[T]:
 """
     )
     annotate = next(
-        function
-        for function in ir["functions"]
-        if "__annotate__" in function["name"]
+        function for function in ir["functions"] if "__annotate__" in function["name"]
     )
 
     assert annotate["params"] == ["__molt_closure__", "format"]
     assert any(
-        op.get("kind") == "func_new_closure"
-        and op.get("s_value") == annotate["name"]
+        op.get("kind") == "func_new_closure" and op.get("s_value") == annotate["name"]
         for function in ir["functions"]
         for op in function["ops"]
     )

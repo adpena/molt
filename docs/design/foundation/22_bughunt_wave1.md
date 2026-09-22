@@ -334,7 +334,8 @@ break, not a known-fail.
 
 A clean, reachable, pre-existing **build** break. A 3-line program:
 ```python
-def f(x: float, y: float) -> float: return x // y
+def f(x: float, y: float) -> float:
+    return x // y
 ```
 fails to build (release-fast and dev) with:
 ```

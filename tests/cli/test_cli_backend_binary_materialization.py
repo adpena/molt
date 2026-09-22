@@ -117,7 +117,9 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
         del args, kwargs
         return dict(fingerprint)
 
-    def fake_probe(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_probe(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         nonlocal probe_calls
         del kwargs
         probe_calls += 1

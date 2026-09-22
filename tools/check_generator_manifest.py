@@ -373,7 +373,9 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
         else {}
     )
     plan_commands = [
-        dict(command) for command in plan_data.get("command", []) if isinstance(command, dict)
+        dict(command)
+        for command in plan_data.get("command", [])
+        if isinstance(command, dict)
     ]
     gated_commands: dict[str, dict] = {}
 

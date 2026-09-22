@@ -111,9 +111,12 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
     # Ordinary installed inventories live only in CAS; only editable source
     # custody remains in the compact receipt summary.
     assert summaries["python"]["distributions"] == []  # type: ignore[index]
-    assert toolchain_capture.verify_capture(
-        reference, workers=2, cas_root=tmp_path / "cas"
-    )["stable"] is True
+    assert (
+        toolchain_capture.verify_capture(
+            reference, workers=2, cas_root=tmp_path / "cas"
+        )["stable"]
+        is True
+    )
     owned.write_text("after\n", encoding="utf-8")
     verification = toolchain_capture.verify_capture(
         reference, workers=2, cas_root=tmp_path / "cas"
@@ -494,9 +497,7 @@ def test_platform_auxiliary_images_are_absent_off_windows_or_for_leaf_custody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(process_image_capture.sys, "platform", "linux")
-    assert (
-        process_image_capture.platform_auxiliary_images("declared-toolchains") == []
-    )
+    assert process_image_capture.platform_auxiliary_images("declared-toolchains") == []
 
     monkeypatch.setattr(process_image_capture.sys, "platform", "win32")
     assert process_image_capture.platform_auxiliary_images("forbidden") == []

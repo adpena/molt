@@ -158,7 +158,7 @@ def _gates_scaffold_json(kernel: str) -> str:
         "manifest can NEVER produce a PASS, no matter what 'outputs' holds. "
         "Once pact delivers the kernel source, replace 'outputs' with the real "
         "per-array gate declarations (see field_solve_gates.json for the "
-        "reference shape) and flip status to \"ready\"."
+        'reference shape) and flip status to "ready".'
     )
     manifest = {
         "schema_version": 1,
@@ -184,7 +184,9 @@ def _is_generated_scaffold(path: Path) -> bool:
             data = json.loads(text)
         except json.JSONDecodeError:
             return False
-        return isinstance(data, dict) and data.get("_scaffold_marker") == SCAFFOLD_MARKER
+        return (
+            isinstance(data, dict) and data.get("_scaffold_marker") == SCAFFOLD_MARKER
+        )
     return text.startswith(f"# {SCAFFOLD_MARKER}\n")
 
 

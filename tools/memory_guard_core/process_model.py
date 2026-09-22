@@ -450,9 +450,7 @@ def _linux_proc_stat_identity(
         pgid = int(tail[2])
         start_ticks = int(tail[19])
         ticks_per_second = (
-            int(os.sysconf("SC_CLK_TCK"))
-            if hasattr(os, "sysconf")
-            else 100
+            int(os.sysconf("SC_CLK_TCK")) if hasattr(os, "sysconf") else 100
         )
     except (IndexError, OSError, ValueError):
         return None
@@ -486,9 +484,9 @@ def _linux_proc_command(
 
 def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
     try:
-        lines = (proc_root / str(pid) / "status").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = (
+            (proc_root / str(pid) / "status").read_text(encoding="utf-8").splitlines()
+        )
     except OSError:
         return 0
     for line in lines:
@@ -504,8 +502,7 @@ def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
 def sample_processes_linux_proc(
     proc_root: Path = Path("/proc"),
     *,
-    stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None]
-    | None = None,
+    stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None] | None = None,
     uptime_sec: float | None = None,
 ) -> dict[int, ProcessSample]:
     """Sample Linux processes with instance-bound ancestry and identity."""
@@ -515,9 +512,7 @@ def sample_processes_linux_proc(
     samples: dict[int, ProcessSample] = {}
     try:
         pids = [
-            int(entry.name)
-            for entry in proc_root.iterdir()
-            if entry.name.isdigit()
+            int(entry.name) for entry in proc_root.iterdir() if entry.name.isdigit()
         ]
     except OSError as exc:
         raise ProcessSnapshotError(f"Linux /proc enumeration failed: {exc}") from exc
@@ -527,9 +522,7 @@ def sample_processes_linux_proc(
         except (AttributeError, OSError):
             try:
                 uptime_sec = float(
-                    (proc_root / "uptime")
-                    .read_text(encoding="utf-8")
-                    .split()[0]
+                    (proc_root / "uptime").read_text(encoding="utf-8").split()[0]
                 )
             except (IndexError, OSError, ValueError) as exc:
                 raise ProcessSnapshotError(
@@ -582,9 +575,10 @@ class _DarwinProcessAuthority:
         )
         if returned != size or info.pbi_start_tvsec <= 0:
             return None
-        started_at_ns = int(info.pbi_start_tvsec) * 1_000_000_000 + int(
-            info.pbi_start_tvusec
-        ) * 1_000
+        started_at_ns = (
+            int(info.pbi_start_tvsec) * 1_000_000_000
+            + int(info.pbi_start_tvusec) * 1_000
+        )
         raw_name = bytes(info.pbi_name).split(b"\0", 1)[0]
         if not raw_name:
             raw_name = bytes(info.pbi_comm).split(b"\0", 1)[0]

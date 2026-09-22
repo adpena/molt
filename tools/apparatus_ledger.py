@@ -17,12 +17,12 @@ manual log archaeology. The share of failure-mass carried by recurring, still-
 uncompressed signatures is the apparatus's compression DEBT; driving it down is
 compression PROGRESS. Read-only; reads the proof-queue SQLite DB + run logs.
 """
+
 from __future__ import annotations
 
 import argparse
 import re
 import sqlite3
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,15 +32,15 @@ DEFAULT_DB = ROOT / "logs" / "proof_queue" / "proof_queue.sqlite3"
 # Normalization rules: strip the volatile tokens so two runs of the SAME failure
 # collapse to one signature. Order matters (longest/most-specific first).
 _NORMALIZERS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b\d{8}T\d{6}\b"), "<ts>"),                 # queue run stamps
-    (re.compile(r"\b[0-9a-f]{12,64}\b"), "<hash>"),           # git/obj hashes, run suffixes
-    (re.compile(r"[A-Za-z]:[\\/][^\s:'\"]+"), "<path>"),      # windows abs paths
+    (re.compile(r"\b\d{8}T\d{6}\b"), "<ts>"),  # queue run stamps
+    (re.compile(r"\b[0-9a-f]{12,64}\b"), "<hash>"),  # git/obj hashes, run suffixes
+    (re.compile(r"[A-Za-z]:[\\/][^\s:'\"]+"), "<path>"),  # windows abs paths
     (re.compile(r"/(?:Users|home|mnt|tmp)/[^\s:'\"]+"), "<path>"),  # posix abs paths
-    (re.compile(r"\b\d+\.\d+s\b"), "<dur>"),                  # durations
-    (re.compile(r":\d+:\d+\b"), ":<lc>"),                     # line:col
+    (re.compile(r"\b\d+\.\d+s\b"), "<dur>"),  # durations
+    (re.compile(r":\d+:\d+\b"), ":<lc>"),  # line:col
     (re.compile(r"\bpid[= ]?\d+\b", re.I), "pid=<n>"),
     (re.compile(r"\belapsed=\d+\b"), "elapsed=<n>"),
-    (re.compile(r"\b\d{3,}\b"), "<n>"),                       # long bare integers
+    (re.compile(r"\b\d{3,}\b"), "<n>"),  # long bare integers
 )
 
 # The SPECIFIC inner error we want (rust/python/link/guard), most-specific first.
@@ -77,7 +77,11 @@ def _signature(log_path: str) -> str | None:
     if not p.is_absolute():
         p = ROOT / log_path
     try:
-        lines = [ln for ln in p.read_text("utf-8", errors="replace").splitlines() if ln.strip()]
+        lines = [
+            ln
+            for ln in p.read_text("utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
     except OSError:
         return None
     if not lines:
@@ -133,10 +137,16 @@ def build_ledger(db: Path) -> tuple[list[SigStat], dict[str, int]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
-    ap.add_argument("--recurring-threshold", type=int, default=3,
-                    help="a signature seen >= this many times is 'recurring' = compression debt")
+    ap.add_argument(
+        "--recurring-threshold",
+        type=int,
+        default=3,
+        help="a signature seen >= this many times is 'recurring' = compression debt",
+    )
     ap.add_argument("--top", type=int, default=15, help="curiosity-queue length")
     args = ap.parse_args(argv)
 
@@ -157,12 +167,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"failed/stale rows scanned : {counts['failed_rows']}")
     print(f"  no extractable signature: {counts['no_signature']}")
     print(f"distinct failure signatures: {counts['distinct_signatures']}")
-    print(f"recurring (>= {args.recurring_threshold}x) signatures : {len(recurring)}"
-          f"  carrying {recurring_mass}/{total_fail_mass} of failure-mass")
-    print(f"COMPRESSION DEBT (recurring-uncompressed share): {debt:.1%}   "
-          f"(lower = more compressed; drive to 0 by writing rules/fixes)")
+    print(
+        f"recurring (>= {args.recurring_threshold}x) signatures : {len(recurring)}"
+        f"  carrying {recurring_mass}/{total_fail_mass} of failure-mass"
+    )
+    print(
+        f"COMPRESSION DEBT (recurring-uncompressed share): {debt:.1%}   "
+        f"(lower = more compressed; drive to 0 by writing rules/fixes)"
+    )
     print()
-    print(f"=== CURIOSITY QUEUE — top {args.top} surprises to compress into rules/gates ===")
+    print(
+        f"=== CURIOSITY QUEUE — top {args.top} surprises to compress into rules/gates ==="
+    )
     print("(Schmidhuber: rank = recurrence × cost. Each recurring row is a diagnosis")
     print(" rule or fix waiting to be written — the pact Catalog #N move.)")
     for i, s in enumerate(ranked[: args.top], 1):

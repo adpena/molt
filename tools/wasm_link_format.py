@@ -85,6 +85,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
     _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 )
 
+
 @dataclass(frozen=True, slots=True)
 class CallableTableLayout:
     fixed_prefix_base: int
@@ -113,6 +114,8 @@ class CallableTableLayout:
         app_end = self.finalized_app_base + self.app_entry_count
         if app_end > 0xFFFF_FFFF:
             raise ValueError("callable-table finalized app boundary overflows u32")
+
+
 def wasm_runtime_import_name(name: str) -> str | None:
     return _WASM_ABI.wasm_runtime_import_name(name)
 

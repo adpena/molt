@@ -27,9 +27,7 @@ def _function_diagnostics(
         body.append({"kind": "ret_void"})
     functions = [{"name": name, "params": params, "ops": body}]
     for sibling in sorted((function_names or set()) - {name}):
-        functions.append(
-            {"name": sibling, "params": [], "ops": [{"kind": "ret_void"}]}
-        )
+        functions.append({"name": sibling, "params": [], "ops": [{"kind": "ret_void"}]})
     return verify_tir({"functions": functions}).errors
 
 
@@ -99,7 +97,9 @@ def test_multi_result_outputs_do_not_mask_a_real_undefined_source() -> None:
     ]
 
     diagnostics = _definition_diagnostics("bad_multi", [], ops)
-    assert [diagnostic.message.split(" used by", 1)[0] for diagnostic in diagnostics] == [
+    assert [
+        diagnostic.message.split(" used by", 1)[0] for diagnostic in diagnostics
+    ] == [
         'variable "missing_sequence"',
         'variable "missing_rhs"',
     ]
@@ -107,9 +107,7 @@ def test_multi_result_outputs_do_not_mask_a_real_undefined_source() -> None:
 
 def test_frontend_unpack_transport_uses_generated_field_roles() -> None:
     ir = compile_to_tir(
-        "def pair_sum(pair):\n"
-        "    left, right = pair\n"
-        "    return left + right\n"
+        "def pair_sum(pair):\n    left, right = pair\n    return left + right\n"
     )
 
     diagnostics = []
@@ -195,7 +193,11 @@ def test_rust_verifier_reuses_one_ordered_process() -> None:
     )
     first_pid = process_local_verifier_pid()
     second = verify_tir(
-        {"functions": [{"name": "second", "params": [], "ops": [{"kind": "ret_void"}]}]},
+        {
+            "functions": [
+                {"name": "second", "params": [], "ops": [{"kind": "ret_void"}]}
+            ]
+        },
         request_id=42,
     )
     try:
@@ -219,11 +221,7 @@ def test_ir_worker_defaults_come_from_calibrated_policy() -> None:
 
 
 def test_verifier_request_deadline_closes_a_wedged_owned_child() -> None:
-    script = (
-        "import sys,time\n"
-        "for line in sys.stdin:\n"
-        "    time.sleep(30)\n"
-    )
+    script = "import sys,time\nfor line in sys.stdin:\n    time.sleep(30)\n"
     verifier = RustIrVerifier(
         command=[sys.executable, "-u", "-c", script],
         request_timeout_seconds=0.05,

@@ -123,9 +123,7 @@ def identity_fact_is_proven(mask: IdentityMask) -> bool:
 
 def identity_fact_names(mask: IdentityMask) -> tuple[str, ...]:
     return tuple(
-        identity.name.lower()
-        for identity in PythonIdentity
-        if mask & int(identity)
+        identity.name.lower() for identity in PythonIdentity if mask & int(identity)
     )
 
 
@@ -264,7 +262,9 @@ class PythonBindingIndex:
             state_count=state_count,
             telemetry=telemetry,
             slot_names=slot_names,
-            _expression_lookup=MappingProxyType({fact.node: fact for fact in expressions}),
+            _expression_lookup=MappingProxyType(
+                {fact.node: fact for fact in expressions}
+            ),
             _call_lookup=MappingProxyType({fact.node: fact for fact in calls}),
         )
 
@@ -285,6 +285,7 @@ class PythonBindingIndex:
     def static_value(self, node: ast.expr) -> PythonStaticValue:
         fact = self._expression_lookup.get(PythonNodeKey.from_node(node))
         return None if fact is None else fact.static_value
+
 
 __all__ = [
     "ALL_INVALID_MEMBERS",

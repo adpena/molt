@@ -141,14 +141,19 @@ def resolve_native_target_spec(
     if triple:
         arch = _normalize_arch(triple.split("-", 1)[0])
         if "windows" in triple or "msvc" in triple or "mingw" in triple:
-            return NativeTargetSpec(target_triple, "windows", arch, NativeObjectFormat.COFF)
+            return NativeTargetSpec(
+                target_triple, "windows", arch, NativeObjectFormat.COFF
+            )
         if "apple" in triple or "darwin" in triple or "macos" in triple:
-            return NativeTargetSpec(target_triple, "macos", arch, NativeObjectFormat.MACHO)
+            return NativeTargetSpec(
+                target_triple, "macos", arch, NativeObjectFormat.MACHO
+            )
         if "linux" in triple:
-            return NativeTargetSpec(target_triple, "linux", arch, NativeObjectFormat.ELF)
+            return NativeTargetSpec(
+                target_triple, "linux", arch, NativeObjectFormat.ELF
+            )
         raise RuntimeError(
-            "Native linking has no object-format policy for target "
-            f"{target_triple!r}."
+            f"Native linking has no object-format policy for target {target_triple!r}."
         )
 
     arch = _normalize_arch(host_arch)
@@ -158,7 +163,9 @@ def resolve_native_target_spec(
         return NativeTargetSpec(None, "macos", arch, NativeObjectFormat.MACHO)
     if host_platform.startswith("linux"):
         return NativeTargetSpec(None, "linux", arch, NativeObjectFormat.ELF)
-    raise RuntimeError(f"Native linking is unsupported on host platform {host_platform!r}.")
+    raise RuntimeError(
+        f"Native linking is unsupported on host platform {host_platform!r}."
+    )
 
 
 def native_link_capabilities(

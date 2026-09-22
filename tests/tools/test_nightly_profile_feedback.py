@@ -18,8 +18,7 @@ def test_promotion_requires_an_exact_candidate_report_pair() -> None:
         "schema": nightly_profile_feedback.REPORT_SCHEMA,
         "candidate_profile_sha256": nightly_shard_profile.profile_digest(candidate),
         "programs": {
-            program: {"accepted": False}
-            for program in nightly_sharding.SHARD_COUNTS
+            program: {"accepted": False} for program in nightly_sharding.SHARD_COUNTS
         },
     }
 

@@ -37,7 +37,8 @@ def test_root_contract_budget_and_machine_state_fail_closed(tmp_path: Path) -> N
         "# Agent contract\n\n"
         "See `docs/INDEX.md`.\n"
         "cwd C:\\Users\\operator\\OneDrive\\molt; pid=4321\n"
-        + "padding\n" * checker.ROOT_AGENT_MAX_LINES,
+        + "padding\n"
+        * checker.ROOT_AGENT_MAX_LINES,
         encoding="utf-8",
     )
     failures = checker.audit(root).failures
@@ -60,7 +61,9 @@ def test_root_contract_byte_budget_fails_closed(tmp_path: Path) -> None:
 def test_claude_contract_is_only_the_canonical_import(tmp_path: Path) -> None:
     root = _valid_tree(tmp_path)
     (root / "CLAUDE.md").write_text("@AGENTS.md\nextra\n", encoding="utf-8")
-    assert any("must contain exactly" in failure for failure in checker.audit(root).failures)
+    assert any(
+        "must contain exactly" in failure for failure in checker.audit(root).failures
+    )
 
 
 def test_missing_pointer_and_unmarked_archive_fail_closed(tmp_path: Path) -> None:

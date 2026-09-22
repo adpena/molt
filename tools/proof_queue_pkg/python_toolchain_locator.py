@@ -20,7 +20,10 @@ def _editable_root(distribution: metadata.Distribution) -> Path | None:
         return None
     directory_info = payload.get("dir_info")
     url = payload.get("url")
-    if not isinstance(directory_info, dict) or directory_info.get("editable") is not True:
+    if (
+        not isinstance(directory_info, dict)
+        or directory_info.get("editable") is not True
+    ):
         return None
     if not isinstance(url, str):
         return None

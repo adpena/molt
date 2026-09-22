@@ -246,8 +246,10 @@ performance claim moved.
 **Phase 1 — bare raise/catch loop** (the model proof):
 ```python
 for i in range(N):
-    try: raise ValueError(i)
-    except ValueError: pass
+    try:
+        raise ValueError(i)
+    except ValueError:
+        pass
 ```
 Acceptance: `MOLT_ASSERT_NO_LEAK` passes (RSS plateaus under #76 `--inner-repeat`);
 exception_heavy no longer leaks per iteration; `sys.exception()` is the exception

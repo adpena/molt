@@ -49,9 +49,7 @@ _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_ent
 _module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
 
-_SharedStdlibCacheValidationToken = tuple[
-    str, tuple[tuple[str, int, int, int], ...]
-]
+_SharedStdlibCacheValidationToken = tuple[str, tuple[tuple[str, int, int, int], ...]]
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE: dict[
     tuple[str, int, int, int, str, str, str, str, tuple[str, ...]],
@@ -224,9 +222,7 @@ def _read_native_object_symbol_facts(
 ) -> _NativeObjectSymbolSets | None:
     try:
         payload = json.loads(
-            _native_object_symbol_facts_sidecar_path(path).read_text(
-                encoding="utf-8"
-            )
+            _native_object_symbol_facts_sidecar_path(path).read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         return None
@@ -431,7 +427,10 @@ def _native_archive_global_symbol_sets(
     else:
         defined, undefined = _parse_native_nm_global_symbol_sets(result.stdout)
         facts = (frozenset(defined), frozenset(undefined))
-    if len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE) >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT:
+    if (
+        len(_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE)
+        >= _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT
+    ):
         _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
     _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE[cache_key] = facts
     if facts is None:

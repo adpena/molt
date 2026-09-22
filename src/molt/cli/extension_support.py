@@ -158,13 +158,7 @@ def _package_internal_imports(
                 ),
             )
         )
-    return tuple(
-        sorted(
-            name
-            for name in imports
-            if name != module_name
-        )
-    )
+    return tuple(sorted(name for name in imports if name != module_name))
 
 
 def _module_attr_provider_modules(

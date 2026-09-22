@@ -31,7 +31,9 @@ def _fake_source(tmp_path: Path) -> Path:
 def test_is_molt_hook_and_chained_wrapper():
     assert ig._is_molt_hook("# molt-drift-gate-hook v1\n")
     assert not ig._is_molt_hook("#!/bin/sh\necho other\n")
-    wrapped = ig._chained_wrapper("#!/usr/bin/env bash\n# molt-drift-gate-hook v1\nbody\n")
+    wrapped = ig._chained_wrapper(
+        "#!/usr/bin/env bash\n# molt-drift-gate-hook v1\nbody\n"
+    )
     # shebang stays first; the preserved foreign hook is invoked before the gate body
     assert wrapped.startswith("#!/usr/bin/env bash\n")
     assert "pre-push.local" in wrapped

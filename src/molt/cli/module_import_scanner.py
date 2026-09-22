@@ -582,6 +582,7 @@ def _collect_imports(
             base_import_context.with_state(state)
             for state in import_flow.states_for(node)
         )
+
     module_body = list(getattr(tree, "body", []))
     function_walks: list[
         tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
@@ -631,9 +632,7 @@ def _collect_imports(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
     ) -> list[str] | None:
         value = _bound_static_value(node, bindings)
-        if isinstance(value, tuple) and all(
-            isinstance(item, str) for item in value
-        ):
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
             return [cast(str, item) for item in value]
         if isinstance(value, list) and all(isinstance(item, str) for item in value):
             return list(cast(list[str], value))
@@ -826,7 +825,10 @@ def _collect_imports(
         modules: list[str] = []
         seen: set[str] = set()
         for context in contexts:
-            if payload.target in {"importlib.import_module", "importlib.util.find_spec"}:
+            if payload.target in {
+                "importlib.import_module",
+                "importlib.util.find_spec",
+            }:
                 request = StaticImportRequest.import_module(
                     name,
                     metadata_value_from_expression(
@@ -1020,13 +1022,9 @@ def _collect_imports(
             level=node.level,
             fromlist=tuple(alias.name for alias in node.names),
         )
-        imports.extend(
-            _sealed_import_modules(request, _import_contexts(node))
-        )
+        imports.extend(_sealed_import_modules(request, _import_contexts(node)))
 
-    def _collect_import_call(
-        node: ast.Call, *, allow_possible: bool = False
-    ) -> None:
+    def _collect_import_call(node: ast.Call, *, allow_possible: bool = False) -> None:
         _record_helper_call_imports(node)
         target = _static_call_target(node, allow_possible=allow_possible)
         if not _is_static_import_target(target):
@@ -1105,9 +1103,7 @@ def _collect_imports(
             if getattr(node, "type_params", None):
                 needs_typing = True
             if isinstance(node, ast.ClassDef):
-                _visit_many(
-                    node.decorator_list, qualname_prefix
-                )
+                _visit_many(node.decorator_list, qualname_prefix)
                 _visit_many(node.bases, qualname_prefix)
                 _visit_many(
                     [keyword.value for keyword in node.keywords if keyword.value],
@@ -1121,9 +1117,7 @@ def _collect_imports(
                 _visit_many(node.body, class_prefix)
                 return
             _visit_many(node.decorator_list, qualname_prefix)
-            _visit_many(
-                list(node.args.defaults), qualname_prefix
-            )
+            _visit_many(list(node.args.defaults), qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 qualname_prefix,
@@ -1160,9 +1154,7 @@ def _collect_imports(
                 _visit_many(node.body, function_prefix)
             return
         if isinstance(node, ast.Lambda):
-            _visit_many(
-                list(node.args.defaults), qualname_prefix
-            )
+            _visit_many(list(node.args.defaults), qualname_prefix)
             _visit_many(
                 [default for default in node.args.kw_defaults if default is not None],
                 qualname_prefix,

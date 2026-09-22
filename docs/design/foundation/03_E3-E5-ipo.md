@@ -432,12 +432,15 @@ class Point:
         self.x = x
         self.y = y
 
-def get_x(p):      # p does NOT escape get_x
+
+def get_x(p):  # p does NOT escape get_x
     return p.x
+
 
 def caller():
     p = Point(1, 2)  # should stack-allocate: get_x doesn't capture
     return get_x(p)
+
 
 assert caller() == 1
 ```
@@ -448,11 +451,13 @@ assert caller() == 1
 def double(x):
     return x * 2
 
+
 def f(n):
     result = 0
     for i in range(n):
-        result += double(3)   # double(3) is loop-invariant; should hoist
+        result += double(3)  # double(3) is loop-invariant; should hoist
     return result
+
 
 assert f(100) == 600
 ```
@@ -462,6 +467,7 @@ assert f(100) == 600
 # tests/differential/basic/specialize_int_add.py
 def add(a, b):
     return a + b
+
 
 # Call site with proven small ints → specialization should produce RawI64Safe path
 assert add(1, 2) == 3
@@ -474,9 +480,10 @@ assert add(1 << 60, 1) == 1152921504606846977  # bigint fallback must be correct
 def square(n):
     return n * n
 
+
 assert square(3) == 9
-assert square(1 << 47) == (1 << 47) ** 2      # crosses inline int boundary
-assert square(1 << 60) == (1 << 60) ** 2      # bigint
+assert square(1 << 47) == (1 << 47) ** 2  # crosses inline int boundary
+assert square(1 << 60) == (1 << 60) ** 2  # bigint
 ```
 
 **Exception propagation through specialized callee**:
@@ -486,6 +493,7 @@ def maybe_raise(x):
     if x < 0:
         raise ValueError(x)
     return x
+
 
 try:
     maybe_raise(-1)
@@ -503,6 +511,7 @@ def show(x):
         return x * 2
     return str(x)
 
+
 assert show(5) == 10
 assert show("hi") == "hi"
 ```
@@ -511,14 +520,18 @@ assert show("hi") == "hi"
 ```python
 # tests/differential/basic/ip_escape_no_capture.py
 class Box:
-    def __init__(self, v): self.v = v
+    def __init__(self, v):
+        self.v = v
+
 
 def read_only(b):
-    return b.v   # b does not escape
+    return b.v  # b does not escape
+
 
 def caller():
-    b = Box(42)   # must remain stack-allocated (read_only doesn't capture)
+    b = Box(42)  # must remain stack-allocated (read_only doesn't capture)
     return read_only(b)
+
 
 assert caller() == 42
 ```
@@ -529,9 +542,10 @@ assert caller() == 42
 def compute(x):
     return x * x - x + 1
 
+
 total = 0
 for _ in range(10):
-    total += compute(3)   # loop-invariant, pure; LICM should hoist
+    total += compute(3)  # loop-invariant, pure; LICM should hoist
 
 assert total == 70
 ```

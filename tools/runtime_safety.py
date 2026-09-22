@@ -10,9 +10,9 @@ from pathlib import Path
 from collections.abc import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
-RUST_NIGHTLY = (ROOT / "config" / "rust_nightly_toolchain.txt").read_text(
-    encoding="utf-8"
-).strip()
+RUST_NIGHTLY = (
+    (ROOT / "config" / "rust_nightly_toolchain.txt").read_text(encoding="utf-8").strip()
+)
 RUNTIME_DIR = ROOT / "runtime/molt-runtime"
 ROOT_FUZZ_DIR = ROOT / "fuzz"
 RUNTIME_FUZZ_DIR = RUNTIME_DIR / "fuzz"

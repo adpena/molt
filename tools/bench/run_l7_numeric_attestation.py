@@ -35,6 +35,7 @@ if str(TOOLS_ROOT) not in sys.path:
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
 from memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -67,130 +68,136 @@ BASE_METRICS = (
     "peak_live_bytes",
 )
 
-ABI_CASES = tuple(
-    (
-        f"decimal.{digits}",
-        "abi_boundary_control_decimal",
-        {
-            "digits": digits,
-            "base": 10,
-            "digit": "9",
-            "measurement": (
-                "scanner and counted hook boundary only; no runtime BigInt payload"
-            ),
-        },
+ABI_CASES = (
+    tuple(
+        (
+            f"decimal.{digits}",
+            "abi_boundary_control_decimal",
+            {
+                "digits": digits,
+                "base": 10,
+                "digit": "9",
+                "measurement": (
+                    "scanner and counted hook boundary only; no runtime BigInt payload"
+                ),
+            },
+        )
+        for digits in (25, 37, 256, 4096, 4300)
     )
-    for digits in (25, 37, 256, 4096, 4300)
-) + tuple(
-    (
-        f"bytes.{width}",
-        "abi_boundary_control_bytes",
-        {
-            "bytes": width,
-            "little_endian": True,
-            "signed": False,
-            "operations": ["from_bytes", "to_bytes", "num_bits"],
-            "measurement": (
-                "counted hook boundary control only; no runtime BigInt payload"
-            ),
-        },
+    + tuple(
+        (
+            f"bytes.{width}",
+            "abi_boundary_control_bytes",
+            {
+                "bytes": width,
+                "little_endian": True,
+                "signed": False,
+                "operations": ["from_bytes", "to_bytes", "num_bits"],
+                "measurement": (
+                    "counted hook boundary control only; no runtime BigInt payload"
+                ),
+            },
+        )
+        for width in (8, 17, 256, 4096)
     )
-    for width in (8, 17, 256, 4096)
-) + (
-    (
-        "bridge.canonical_scalar_decode",
-        "bridge_c_header",
-        {
-            "representation": "canonical_PyLongObject",
-            "operation": "compiled_overlay_PyLong_AsLong",
-            "legacy_raw_pointer": False,
-        },
-    ),
-    (
-        "bridge.managed_proxy_lookup",
-        "bridge",
-        {
-            "representation": "managed_non_scalar",
-            "operation": "pyobj_to_handle",
-            "expected_proxy_churn": 0,
-        },
-    ),
-    (
-        "bridge.singleton_lookup",
-        "bridge",
-        {
-            "representation": "canonical_true_singleton",
-            "operation": "pyobj_to_handle",
-            "expected_proxy_churn": 0,
-        },
-    ),
-    (
-        "bridge.cold_proxy_cycle",
-        "bridge",
-        {
-            "representation": "unique_heap_handle",
-            "operation": "handle_to_pyobj+release",
-            "working_set": 4096,
-        },
-    ),
-    (
-        "bridge.c_header_foreign_decode",
-        "bridge_c_header",
-        {
-            "representation": "foreign_PyLongObject",
-            "operation": "compiled_overlay_PyLong_AsLong",
-            "scope": "native_test_probe",
-        },
-    ),
-    (
-        "bridge.c_header_canonical_scalar_chain",
-        "bridge_c_header",
-        {
-            "representation": "canonical_scalar_objects",
-            "operation": "constructor+Py_TYPE+exact+PyNumber_Add+decref",
-            "legacy_raw_pointer": False,
-        },
-    ),
-) + tuple(
-    (
-        f"{format_name}.{class_name}",
-        "float_pack",
-        {
-            "format": format_name,
-            "class": class_name,
-            "value_bits": value_bits,
-            "expect_error": expect_error,
-        },
+    + (
+        (
+            "bridge.canonical_scalar_decode",
+            "bridge_c_header",
+            {
+                "representation": "canonical_PyLongObject",
+                "operation": "compiled_overlay_PyLong_AsLong",
+                "legacy_raw_pointer": False,
+            },
+        ),
+        (
+            "bridge.managed_proxy_lookup",
+            "bridge",
+            {
+                "representation": "managed_non_scalar",
+                "operation": "pyobj_to_handle",
+                "expected_proxy_churn": 0,
+            },
+        ),
+        (
+            "bridge.singleton_lookup",
+            "bridge",
+            {
+                "representation": "canonical_true_singleton",
+                "operation": "pyobj_to_handle",
+                "expected_proxy_churn": 0,
+            },
+        ),
+        (
+            "bridge.cold_proxy_cycle",
+            "bridge",
+            {
+                "representation": "unique_heap_handle",
+                "operation": "handle_to_pyobj+release",
+                "working_set": 4096,
+            },
+        ),
+        (
+            "bridge.c_header_foreign_decode",
+            "bridge_c_header",
+            {
+                "representation": "foreign_PyLongObject",
+                "operation": "compiled_overlay_PyLong_AsLong",
+                "scope": "native_test_probe",
+            },
+        ),
+        (
+            "bridge.c_header_canonical_scalar_chain",
+            "bridge_c_header",
+            {
+                "representation": "canonical_scalar_objects",
+                "operation": "constructor+Py_TYPE+exact+PyNumber_Add+decref",
+                "legacy_raw_pointer": False,
+            },
+        ),
     )
-    for format_name, class_name, value_bits, expect_error in (
-        ("f16", "normal", "3ff8000000000000", False),
-        ("f16", "subnormal", "3e70000000000000", False),
-        ("f16", "tie", "3ff0020000000000", False),
-        ("f16", "error", "40effe0000000000", True),
-        ("f32", "normal", "3ff8000000000000", False),
-        ("f32", "subnormal", "36a0000000000000", False),
-        ("f32", "tie", "3ff0000010000000", False),
-        ("f32", "error", "7fefffffffffffff", True),
+    + tuple(
+        (
+            f"{format_name}.{class_name}",
+            "float_pack",
+            {
+                "format": format_name,
+                "class": class_name,
+                "value_bits": value_bits,
+                "expect_error": expect_error,
+            },
+        )
+        for format_name, class_name, value_bits, expect_error in (
+            ("f16", "normal", "3ff8000000000000", False),
+            ("f16", "subnormal", "3e70000000000000", False),
+            ("f16", "tie", "3ff0020000000000", False),
+            ("f16", "error", "40effe0000000000", True),
+            ("f32", "normal", "3ff8000000000000", False),
+            ("f32", "subnormal", "36a0000000000000", False),
+            ("f32", "tie", "3ff0000010000000", False),
+            ("f32", "error", "7fefffffffffffff", True),
+        )
     )
-) + (
-    (
-        "complex.sum",
-        "complex",
-        {
-            "operation": "_Py_c_sum",
-            "left": [1.25, -2.5],
-            "right": [-0.75, 4.0],
-        },
-    ),
-    (
-        "complex.pow",
-        "complex",
-        {
-            "operation": "_Py_c_pow",
-            "base": [1.25, -2.5],
-            "exponent": [-0.75, 4.0],
-        },
-    ),
+    + (
+        (
+            "complex.sum",
+            "complex",
+            {
+                "operation": "_Py_c_sum",
+                "left": [1.25, -2.5],
+                "right": [-0.75, 4.0],
+            },
+        ),
+        (
+            "complex.pow",
+            "complex",
+            {
+                "operation": "_Py_c_pow",
+                "base": [1.25, -2.5],
+                "exponent": [-0.75, 4.0],
+            },
+        ),
+    )
 )
 RUNTIME_CASES = tuple(
     (
@@ -327,7 +334,9 @@ def _normalize_affinity_mask(value: str) -> str:
     try:
         mask = int(value, 0)
     except ValueError as exc:
-        raise ValueError("affinity mask must be a hexadecimal or decimal integer") from exc
+        raise ValueError(
+            "affinity mask must be a hexadecimal or decimal integer"
+        ) from exc
     if mask <= 0 or mask & (mask - 1):
         raise ValueError("affinity mask must select exactly one logical CPU")
     if mask > sys.maxsize:
@@ -438,13 +447,13 @@ def _execution_control_errors(execution_control: dict[str, Any]) -> list[str]:
         errors.append("runner affinity selection policy does not match its mode")
     if selection == "auto":
         allowed_cpus = [
-            cpu
-            for cpu in range(allowed_mask.bit_length())
-            if allowed_mask & (1 << cpu)
+            cpu for cpu in range(allowed_mask.bit_length()) if allowed_mask & (1 << cpu)
         ]
         expected_cpu = allowed_cpus[min(2, len(allowed_cpus) - 1)]
         if affinity_mask != 1 << expected_cpu:
-            errors.append("runner automatic affinity does not follow its recorded policy")
+            errors.append(
+                "runner automatic affinity does not follow its recorded policy"
+            )
     return errors
 
 
@@ -1032,9 +1041,7 @@ def _validate_dispersion(
     robust_cv = float(summary["robust_cv"])
     raw_cv = float(summary["cv"])
     if robust_cv > max_robust_cv:
-        errors.append(
-            f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}"
-        )
+        errors.append(f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}")
     if raw_cv > max_raw_cv:
         errors.append(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
 
@@ -1127,9 +1134,7 @@ def _aggregate_bundle(
     max_raw_cv: float,
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
-    errors.extend(
-        _execution_control_errors(bundle["runner"]["execution_control"])
-    )
+    errors.extend(_execution_control_errors(bundle["runner"]["execution_control"]))
     aggregated: dict[str, Any] = {}
     source = bundle["source"]
     for label in ("start", "end"):
@@ -1376,9 +1381,7 @@ def _compare_to_baseline(
         return _invalid_comparison(
             [f"baseline schema: {error}" for error in schema_errors]
         )
-    current_agg, current_errors = _aggregate_bundle(
-        current, max_robust_cv, max_raw_cv
-    )
+    current_agg, current_errors = _aggregate_bundle(current, max_robust_cv, max_raw_cv)
     baseline_agg, baseline_errors = _aggregate_bundle(
         baseline, max_robust_cv, max_raw_cv
     )
@@ -1591,9 +1594,7 @@ def run_attestation(
         },
         "comparison": _invalid_comparison(["validation has not run"]),
     }
-    aggregated, validation_errors = _aggregate_bundle(
-        result, max_robust_cv, max_raw_cv
-    )
+    aggregated, validation_errors = _aggregate_bundle(result, max_robust_cv, max_raw_cv)
     result["aggregated_cases"] = aggregated
     result["validation"] = {
         "valid": not validation_errors,

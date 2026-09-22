@@ -10,9 +10,7 @@ PARITY_GATE = REPO_ROOT / "tools" / "parity_gate.py"
 
 
 def _load_parity_gate():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_parity_gate", PARITY_GATE
-    )
+    spec = importlib.util.spec_from_file_location("molt_tools_parity_gate", PARITY_GATE)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)

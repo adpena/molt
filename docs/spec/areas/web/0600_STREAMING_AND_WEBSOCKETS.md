@@ -33,10 +33,12 @@ Rules:
 ```python
 from moltlib import net
 
+
 async def handler(req):
     async for chunk in req.body:
         ...
     return net.Response(body=net.stream(iter_chunks()))
+
 
 async def ws_handler(ws):
     async for msg in ws.recv():

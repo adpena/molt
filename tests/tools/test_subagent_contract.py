@@ -31,7 +31,9 @@ _REPO = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("name", sc.CONTRACT_CONSTANT_NAMES)
 def test_constant_non_empty_and_keeps_key_phrase(name: str) -> None:
     value = getattr(sc, name)
-    assert isinstance(value, str) and value.strip(), f"{name} must be a non-empty string"
+    assert isinstance(value, str) and value.strip(), (
+        f"{name} must be a non-empty string"
+    )
     assert sc.KEY_PHRASES[name] in value, f"{name} lost its key phrase"
 
 
@@ -63,11 +65,23 @@ def test_compose_all_contains_every_block() -> None:
 def test_compose_subset_contains_only_requested_blocks() -> None:
     prompt = dp.compose("TASK BODY", sections=["landing", "web", "git", "verify"])
     # 'verify' expands to two constants; all four keys -> five blocks.
-    for name in ("LANDING_CONTRACT", "WEB_AUTHORITY", "GIT_CUSTODY",
-                 "VERIFY_FULL_SUITE", "FRESH_CONTEXT_VERIFIER"):
+    for name in (
+        "LANDING_CONTRACT",
+        "WEB_AUTHORITY",
+        "GIT_CUSTODY",
+        "VERIFY_FULL_SUITE",
+        "FRESH_CONTEXT_VERIFIER",
+    ):
         assert getattr(sc, name) in prompt, f"requested block {name} missing"
-    for name in ("NO_FAKES", "MODEL_TIER", "DISTILL", "BUILD_ENV",
-                 "GROUNDED_PROGRESS", "NO_ENDING_ON_PROMISES", "TRIALITY_WIRING"):
+    for name in (
+        "NO_FAKES",
+        "MODEL_TIER",
+        "DISTILL",
+        "BUILD_ENV",
+        "GROUNDED_PROGRESS",
+        "NO_ENDING_ON_PROMISES",
+        "TRIALITY_WIRING",
+    ):
         assert getattr(sc, name) not in prompt, f"unrequested block {name} leaked in"
 
 
@@ -158,7 +172,9 @@ def test_gate_cli_exit_codes() -> None:
     # PASS -> exit 0 on the real repo.
     proc = run_guarded_test_process(
         [sys.executable, str(_REPO / "tools" / "check_subagent_contract.py")],
-        capture_output=True, text=True, cwd=str(_REPO),
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "PASS" in proc.stdout
@@ -173,16 +189,18 @@ def test_example_real_lane_prompt_renders() -> None:
         "reconcile the carrier disagreement in value_range.rs / arith_division.rs / "
         "scalar_carriers.rs so the result stringifies as its integer value, not raw i64 bits."
     )
-    prompt = dp.compose(task, sections=["verify", "fakes", "git", "build", "landing", "triality"])
+    prompt = dp.compose(
+        task, sections=["verify", "fakes", "git", "build", "landing", "triality"]
+    )
     # Task body first, then the selected blocks, blank-line separated.
     assert prompt.startswith(task)
     assert "\n\n" in prompt
     # The lane inherits the exact clauses it needs, mechanically:
-    assert "cargo test -p <crate>" in prompt          # VERIFY_FULL_SUITE (M05)
-    assert "zero stubs, zero theater" in prompt        # NO_FAKES (M05)
-    assert "NEVER `git add -A`" in prompt              # GIT_CUSTODY
+    assert "cargo test -p <crate>" in prompt  # VERIFY_FULL_SUITE (M05)
+    assert "zero stubs, zero theater" in prompt  # NO_FAKES (M05)
+    assert "NEVER `git add -A`" in prompt  # GIT_CUSTODY
     assert "never change source, seal, worktree, or toolchain custody" in prompt
     assert "every work turn lands something real" in prompt  # LANDING_CONTRACT (M12)
-    assert "all three legs" in prompt                  # TRIALITY_WIRING (M63)
+    assert "all three legs" in prompt  # TRIALITY_WIRING (M63)
     # And does NOT carry the blocks it did not request.
-    assert "Fable orchestrates" not in prompt          # MODEL_TIER not selected
+    assert "Fable orchestrates" not in prompt  # MODEL_TIER not selected

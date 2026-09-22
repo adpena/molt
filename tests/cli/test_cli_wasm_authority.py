@@ -161,16 +161,13 @@ def test_split_runtime_callable_layout_reads_artifact_once(
         wasm_artifact.WASM_RESERVED_RUNTIME_CALLABLES
     )
     app_base = 1 + fixed_prefix_len + 16
-    import_section = (
-        wasm_artifact._write_wasm_varuint(1)
-        + _wasm_import(
-            "env",
-            "__indirect_function_table",
-            1,
-            b"\x70"
-            + wasm_artifact._write_wasm_varuint(0)
-            + wasm_artifact._write_wasm_varuint(app_base),
-        )
+    import_section = wasm_artifact._write_wasm_varuint(1) + _wasm_import(
+        "env",
+        "__indirect_function_table",
+        1,
+        b"\x70"
+        + wasm_artifact._write_wasm_varuint(0)
+        + wasm_artifact._write_wasm_varuint(app_base),
     )
     element_section = (
         wasm_artifact._write_wasm_varuint(1)
@@ -186,9 +183,7 @@ def test_split_runtime_callable_layout_reads_artifact_once(
     )
     wasm_path = tmp_path / "runtime.wasm"
     wasm_path.write_bytes(
-        wasm_artifact._build_wasm_sections(
-            [(2, import_section), (9, element_section)]
-        )
+        wasm_artifact._build_wasm_sections([(2, import_section), (9, element_section)])
     )
     path_type = type(wasm_path)
     real_read_bytes = path_type.read_bytes

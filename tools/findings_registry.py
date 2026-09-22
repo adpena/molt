@@ -164,6 +164,7 @@ VALID_EVENT_TYPES = frozenset(
     }
 )
 
+
 def advisory_leg_suggestion(text: str) -> str | None:
     """Suggest a triality leg for lint output; never writes registry state."""
     try:
