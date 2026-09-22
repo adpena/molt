@@ -87,7 +87,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.toolchain_policies) >= 15
     assert "src/molt/cargo_execution_policy.py" in PLAN.authority_inputs
     assert PLAN.executor_max_workers == 4
-    assert PLAN.inventory_hash_workers == 4
+    assert PLAN.inventory_hash_workers == 12
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
         "compiler-build-resource": 1,
         "formal-tools": 2,
@@ -153,7 +153,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "incident_command": "cargo metadata --locked --format-version 1",
     }
     assert projection["executor"]["max_workers"] == 4
-    assert projection["executor"]["inventory_hash_workers"] == 4
+    assert projection["executor"]["inventory_hash_workers"] == 12
     assert projection["executor"]["resource_policies"] == [
         {"name": policy.name, "max_parallel": policy.max_parallel}
         for policy in PLAN.resource_policies

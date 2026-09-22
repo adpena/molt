@@ -156,7 +156,7 @@ executor_max_workers = 4
 # Installed Python custody hashes a deterministic, locality-sorted file
 # worklist in coarse batches. This bounds the I/O fanout independently from
 # proof-command fanout; every pre/post scan still reads every admitted byte.
-inventory_hash_workers = 4
+inventory_hash_workers = 12
 
 [[resource_policy]]
 name = "compiler-build-resource"
