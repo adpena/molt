@@ -9,6 +9,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
 from typing import Any
 
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
@@ -143,7 +144,7 @@ def _config_path(config_path: Path | None) -> Path:
 
 
 def _require_exact_keys(
-    value: dict[str, Any], *, expected: set[str], field: str, path: Path
+    value: Mapping[Any, Any], *, expected: set[str], field: str, path: Path
 ) -> None:
     actual = set(value)
     if actual != expected:

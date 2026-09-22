@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 import tomllib
 import tracemalloc
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from molt.capability_manifest import (
     VALID_AUDIT_SINKS as _VALID_AUDIT_SINKS,
@@ -596,9 +596,9 @@ def _prepare_build_config(
             tier = (
                 MAXIMUM_BUILTIN_CAPABILITY_TIER
                 if trusted
-                else os.environ.get(
-                    "MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER
-                ).strip().casefold()
+                else os.environ.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER)
+                .strip()
+                .casefold()
             )
             resolved_runtime_policy = envelope.resolve(combined_policy, tier=tier)
         else:
@@ -1127,10 +1127,16 @@ def _parse_audit_log_flag(value: str) -> dict[str, str]:
     Format: SINK:OUTPUT (e.g., 'jsonl:stderr', 'stderr:stderr', 'jsonl:logs/audit.log')
     """
     parts = value.split(":", 1)
-    sink = parts[0]
-    if sink not in _VALID_AUDIT_SINKS:
+    raw_sink = parts[0]
+    if raw_sink == "null":
+        sink: Literal["null", "stderr", "jsonl"] = "null"
+    elif raw_sink == "stderr":
+        sink = "stderr"
+    elif raw_sink == "jsonl":
+        sink = "jsonl"
+    else:
         raise ValueError(
-            f"Invalid audit sink: {sink!r}. "
+            f"Invalid audit sink: {raw_sink!r}. "
             f"Must be one of: {', '.join(sorted(_VALID_AUDIT_SINKS))}"
         )
     output = parts[1] if len(parts) > 1 else "stderr"

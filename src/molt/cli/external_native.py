@@ -1478,6 +1478,7 @@ def _validate_external_package_native_artifact(
             link_requirements=(
                 link_requirements
                 if resolved_link_requirements is not None
+                and link_requirements is not None
                 else SourceExtensionLinkRequirements(
                     (target_triple or expected_target_triple).lower()
                 )
@@ -1530,7 +1531,7 @@ def _load_external_artifact_manifest(
     return manifest_path, manifest, []
 
 
-def _external_artifact_requested_target_triple(target: str) -> str:
+def _external_artifact_requested_target_triple(target: str | None) -> str:
     return resolve_source_extension_target_plan(
         target,
         host_target_triple=_host_target_triple(),
@@ -1669,7 +1670,7 @@ def _resolve_external_package_native_artifact_plan(
     *,
     external_module_roots: Sequence[Path],
     admitted_packages: Collection[str],
-    target: str,
+    target: str | None,
     required_modules: Collection[str] | None = None,
 ) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
     artifacts: list[_ExternalPackageNativeArtifact] = []

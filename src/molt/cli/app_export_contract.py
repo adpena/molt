@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from typing import Any
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
@@ -55,7 +56,12 @@ def _validated_call_abi(raw_abi: object) -> dict[str, object]:
             f"{expected['name']} schema {APP_EXPORT_CALL_ABI_SCHEMA} boundary"
         )
     assert isinstance(raw_abi, Mapping)
-    return dict(raw_abi)
+    return _str_keyed(raw_abi)
+
+
+def _str_keyed(mapping: Mapping[Any, Any]) -> dict[str, object]:
+    """Materialize a JSON-shaped mapping with statically typed string keys."""
+    return {str(key): value for key, value in mapping.items()}
 
 
 def _frontend_resolved_bindings(
@@ -70,8 +76,9 @@ def _frontend_resolved_bindings(
     for index, raw_function in enumerate(raw_functions):
         if not isinstance(raw_function, Mapping):
             raise ValueError(f"backend IR function {index} is not an object")
-        if "app_callable_bindings" in raw_function:
-            carriers.append(raw_function["app_callable_bindings"])
+        function = _str_keyed(raw_function)
+        if "app_callable_bindings" in function:
+            carriers.append(function["app_callable_bindings"])
     if len(carriers) != 1:
         raise ValueError(
             "backend IR must contain exactly one frontend-resolved app callable "
@@ -225,13 +232,15 @@ def exported_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
     validated = validate_app_export_contract(contract)
     bindings = validated["bindings"]
     assert isinstance(bindings, list)
-    return tuple(
-        binding["symbol"]
-        for binding in bindings
-        if isinstance(binding, Mapping)
-        and binding.get("disposition") == "export"
-        and isinstance(binding.get("symbol"), str)
-    )
+    symbols: list[str] = []
+    for binding in bindings:
+        if not isinstance(binding, Mapping):
+            continue
+        typed = _str_keyed(binding)
+        symbol = typed.get("symbol")
+        if typed.get("disposition") == "export" and isinstance(symbol, str):
+            symbols.append(symbol)
+    return tuple(symbols)
 
 
 def app_export_call_abi(contract: Mapping[str, object]) -> dict[str, object]:

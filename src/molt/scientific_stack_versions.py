@@ -8,6 +8,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
 from typing import Any
 
 from molt.cli.source_extension_set_registry import (
@@ -20,7 +21,7 @@ from molt.cli.source_extension_set_registry import (
 )
 from molt.target_python import (
     _parse_target_python_version,
-    require_known_cpython_coverage_version,
+    require_supported_target_python,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,7 +83,7 @@ def _config_path(config_path: Path | None) -> Path:
 
 
 def _require_exact_keys(
-    value: dict[str, Any], *, expected: set[str], field: str, path: Path
+    value: Mapping[Any, Any], *, expected: set[str], field: str, path: Path
 ) -> None:
     actual = set(value)
     if actual != expected:
@@ -138,7 +139,7 @@ def _extension_set_ref(value: str, *, field: str, path: Path) -> tuple[str, str]
 
 
 def _scientific_entry(
-    raw: dict[str, Any],
+    raw: Mapping[Any, Any],
     *,
     index: int,
     path: Path,
@@ -155,7 +156,7 @@ def _scientific_entry(
     scipy = _version(raw.get("scipy"), field=f"{field}.scipy", path=path)
     cpython = _version(raw.get("cpython"), field=f"{field}.cpython", path=path)
     try:
-        target_python = require_known_cpython_coverage_version(
+        target_python = require_supported_target_python(
             _parse_target_python_version(cpython)
         )
     except ValueError as exc:
