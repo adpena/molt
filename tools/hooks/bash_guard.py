@@ -63,10 +63,7 @@ def _ensure_disk_headroom_for_build() -> None:
     it before every build is cheap. Fail-open: any error is swallowed (logged by
     the guard) and the build proceeds.
     """
-    if any(
-        os.environ.get(k)
-        for k in ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")
-    ):
+    if any(os.environ.get(k) for k in ("PYTEST_CURRENT_TEST", "PYTEST_VERSION")):
         return  # never reclaim real artifacts during a test run
     try:
         from tools import disk_guard

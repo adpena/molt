@@ -246,6 +246,8 @@ Or a decorator:
 ```python
 @parallel.kernel
 def body(i: int) -> None: ...
+
+
 parallel.for_range(0, n, body)
 ```
 

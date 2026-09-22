@@ -720,7 +720,10 @@ def _linked_wasm_output(input_path: Path) -> Path | None:
         return None
     try:
         manifest = wasm_runtime_manifest_path(linked_wasm)
-        if wasm_runtime_manifest_entry_path(manifest).resolve() != linked_wasm.resolve():
+        if (
+            wasm_runtime_manifest_entry_path(manifest).resolve()
+            != linked_wasm.resolve()
+        ):
             return None
     except (FileNotFoundError, ValueError):
         return None

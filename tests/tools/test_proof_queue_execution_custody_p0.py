@@ -92,8 +92,7 @@ def test_source_watch_records_create_execute_delete_transient(
     receipt = monitor.receipt()
     assert receipt["stable"] is False
     assert any(
-        Path(str(event["path"])).name == "transient.py"
-        for event in receipt["events"]
+        Path(str(event["path"])).name == "transient.py" for event in receipt["events"]
     )
 
 

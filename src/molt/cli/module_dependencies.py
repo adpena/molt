@@ -257,7 +257,9 @@ def _condense_module_layers(
                     scc_successors[dep_scc].add(scc_id)
                     in_degree[scc_id] += 1
 
-    ready = deque(sorted(scc_id for scc_id in range(scc_count) if in_degree[scc_id] == 0))
+    ready = deque(
+        sorted(scc_id for scc_id in range(scc_count) if in_degree[scc_id] == 0)
+    )
     condensed_layers: list[list[int]] = []
     while ready:
         current_layer = sorted(ready)

@@ -91,7 +91,7 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     src.write_text(
         "#include <stdio.h>\n"
         "long double gv = 1.5L;\n"
-        "int run(char *buf, int n) { return snprintf(buf, n, \"%.10Lg\", gv); }\n",
+        'int run(char *buf, int n) { return snprintf(buf, n, "%.10Lg", gv); }\n',
         encoding="utf-8",
     )
     obj = tmp_path / "ld.o"
@@ -115,8 +115,16 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     # otherwise this test is no longer guarding the real capability.
     baseline = tmp_path / "baseline.wasm"
     run_guarded_test_process(
-        [wasm_ld, "-r", "--whole-archive", str(obj), "--no-whole-archive",
-         str(libc), "-o", str(baseline)],
+        [
+            wasm_ld,
+            "-r",
+            "--whole-archive",
+            str(obj),
+            "--no-whole-archive",
+            str(libc),
+            "-o",
+            str(baseline),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -159,6 +167,6 @@ def test_reloc_link_long_double_printf_overrides_stub(tmp_path: Path) -> None:
     # to a DEFINED symbol (upper-case type letter), never a dangling import.
     multf3 = [line for line in fixed_syms if line.rstrip().endswith("__multf3")]
     assert multf3, "no __multf3 symbol in the linked object at all"
-    assert any(
-        " T __multf3" in line or " t __multf3" in line for line in multf3
-    ), f"__multf3 unresolved (would trap as a missing import): {multf3}"
+    assert any(" T __multf3" in line or " t __multf3" in line for line in multf3), (
+        f"__multf3 unresolved (would trap as a missing import): {multf3}"
+    )

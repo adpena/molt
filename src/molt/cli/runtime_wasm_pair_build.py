@@ -407,9 +407,7 @@ class _RuntimeWasmPairBuild:
     def failure_details(self) -> dict[str, object]:
         identity = self.pre_identity
         return {
-            "pair_digest": (
-                None if identity is None else identity.shared.pair_digest
-            ),
+            "pair_digest": (None if identity is None else identity.shared.pair_digest),
             "stdlib_profile": self.stdlib_profile,
             "required_link_features": sorted(self.required_link_features),
             "required_exports": (

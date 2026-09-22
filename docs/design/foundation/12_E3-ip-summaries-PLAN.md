@@ -228,20 +228,27 @@ All shapes must be byte-identical vs CPython 3.12 / 3.13 / 3.14 on native + WASM
 
 ```python
 # Shape 1: basic does-not-capture → stack promotion across a user call
-def identity(x): return x  # does_not_capture_param[0]=true, is_pure=true
+def identity(x):
+    return x  # does_not_capture_param[0]=true, is_pure=true
+
 
 def f():
-    class Box: pass
+    class Box:
+        pass
+
     b = Box()
     identity(b)  # b should not escape through identity; stack-promotable
     return 42
+
 
 print(f())  # 42
 ```
 
 ```python
 # Shape 2: pure user call hoisted by LICM
-def square(x): return x * x
+def square(x):
+    return x * x
+
 
 def bench(n):
     result = 0
@@ -249,6 +256,7 @@ def bench(n):
     for i in range(n):
         result += square(k)  # invariant: k doesn't change; hoist square(k)
     return result
+
 
 print(bench(1000))  # 9000
 ```
@@ -258,12 +266,16 @@ print(bench(1000))  # 9000
 def capturer(lst, x):
     lst.append(x)  # x IS captured — list.append stores it
 
+
 def f():
-    class Point: pass
+    class Point:
+        pass
+
     p = Point()
     out = []
     capturer(out, p)  # p escapes through capturer's append
     return out
+
 
 r = f()
 print(type(r[0]).__name__)  # 'Point'
@@ -271,27 +283,41 @@ print(type(r[0]).__name__)  # 'Point'
 
 ```python
 # Shape 4: recursive SCC gets conservative bottom (no promotion)
-def even(n): return True if n == 0 else odd(n - 1)
-def odd(n): return False if n == 0 else even(n - 1)
+def even(n):
+    return True if n == 0 else odd(n - 1)
 
-class Box: pass
+
+def odd(n):
+    return False if n == 0 else even(n - 1)
+
+
+class Box:
+    pass
+
+
 def g():
     b = Box()
     even(b)  # b passed into recursive cycle — must stay GlobalEscape
     return 0
+
 
 print(g())  # 0 (no crash from UAF)
 ```
 
 ```python
 # Shape 5: BigInt correctness through a pure call
-def double(x): return x * 2
+def double(x):
+    return x * 2
+
+
 print(double(1 << 60))  # 2305843009213693952 — must not truncate
 ```
 
 ```python
 # Shape 6: exception propagation through a pure call
-def safe_div(a, b): return a // b
+def safe_div(a, b):
+    return a // b
+
 
 try:
     safe_div(1, 0)

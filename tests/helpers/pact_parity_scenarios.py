@@ -80,7 +80,9 @@ def scenario_missing_candidate_array(work: Path) -> None:
     _save(cand_bad, b=np.zeros((2, 3), dtype=np.int32))  # 'a' entirely absent
     manifest = _manifest(a={"gate": "exact", "dtype": "int32", "shape": [2, 3]})
 
-    _expect_pass(engine.check_parity(cand_ok, ref, manifest), "missing_candidate_array/true")
+    _expect_pass(
+        engine.check_parity(cand_ok, ref, manifest), "missing_candidate_array/true"
+    )
 
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "missing_candidate_array")
@@ -90,7 +92,9 @@ def scenario_missing_candidate_array(work: Path) -> None:
         f"the verdict: {bad.report()}",
     )
     _expect(not bad.results[0].ok, f"missing array result must be FAIL: {bad.report()}")
-    _expect("MISSING" in bad.results[0].detail, f"detail must say MISSING: {bad.report()}")
+    _expect(
+        "MISSING" in bad.results[0].detail, f"detail must say MISSING: {bad.report()}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +109,9 @@ def scenario_extra_candidate_array(work: Path) -> None:
     _save(cand_bad, a=np.arange(4, dtype=np.int32), surprise=np.zeros(3))
     manifest = _manifest(a={"gate": "exact", "dtype": "int32", "shape": [4]})
 
-    _expect_pass(engine.check_parity(cand_ok, ref, manifest), "extra_candidate_array/true")
+    _expect_pass(
+        engine.check_parity(cand_ok, ref, manifest), "extra_candidate_array/true"
+    )
 
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "extra_candidate_array")
@@ -125,14 +131,19 @@ def scenario_dtype_mismatch(work: Path) -> None:
     _save(ref, a=np.array([1.0, 2.0, 3.0], dtype=np.float32))
     _save(cand_ok, a=np.array([1.0, 2.0, 3.0], dtype=np.float32))
     _save(cand_bad, a=np.array([1.0, 2.0, 3.0], dtype=np.float64))  # wrong dtype
-    manifest = _manifest(a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [3]})
+    manifest = _manifest(
+        a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [3]}
+    )
 
     _expect_pass(engine.check_parity(cand_ok, ref, manifest), "dtype_mismatch/true")
 
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "dtype_mismatch")
     [r] = bad.results
-    _expect(not r.ok and "dtype" in r.detail, f"expected a dtype-mismatch FAIL: {bad.report()}")
+    _expect(
+        not r.ok and "dtype" in r.detail,
+        f"expected a dtype-mismatch FAIL: {bad.report()}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -152,7 +163,10 @@ def scenario_shape_mismatch(work: Path) -> None:
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "shape_mismatch")
     [r] = bad.results
-    _expect(not r.ok and "shape" in r.detail, f"expected a shape-mismatch FAIL: {bad.report()}")
+    _expect(
+        not r.ok and "shape" in r.detail,
+        f"expected a shape-mismatch FAIL: {bad.report()}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -168,7 +182,9 @@ def scenario_nan_mismatch(work: Path) -> None:
     bad_arr = ref_arr.copy()
     bad_arr[0] = np.nan  # candidate silently turns a finite value into NaN
     _save(cand_bad, a=bad_arr)
-    manifest = _manifest(a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4]})
+    manifest = _manifest(
+        a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4]}
+    )
 
     _expect_pass(engine.check_parity(cand_ok, ref, manifest), "nan_mismatch/true")
 
@@ -191,14 +207,18 @@ def scenario_inf_mismatch(work: Path) -> None:
     bad_arr = ref_arr.copy()
     bad_arr[1] = -np.inf  # +Inf flipped to -Inf: a sign mismatch, not a magnitude drift
     _save(cand_bad, a=bad_arr)
-    manifest = _manifest(a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4]})
+    manifest = _manifest(
+        a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4]}
+    )
 
     _expect_pass(engine.check_parity(cand_ok, ref, manifest), "inf_mismatch/true")
 
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "inf_mismatch")
     [r] = bad.results
-    _expect(not r.ok and "Inf" in r.detail, f"expected an Inf-mask FAIL: {bad.report()}")
+    _expect(
+        not r.ok and "Inf" in r.detail, f"expected an Inf-mask FAIL: {bad.report()}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -209,19 +229,31 @@ def scenario_atol_never_widened(work: Path) -> None:
     # (a) a manifest that DECLARES an atol above the ceiling is refused at
     #     validation time -- structurally, before any array is even loaded.
     too_wide = _manifest(
-        a={"gate": "atol", "atol": engine.ATOL_CEILING * 10, "dtype": "float32", "shape": [1]}
+        a={
+            "gate": "atol",
+            "atol": engine.ATOL_CEILING * 10,
+            "dtype": "float32",
+            "shape": [1],
+        }
     )
     try:
         engine.validate_gates(too_wide)
     except engine.GateSpecError as exc:
         _expect("ATOL_CEILING" in str(exc), f"refusal must cite the ceiling: {exc}")
     else:
-        raise AssertionError("a manifest atol above ATOL_CEILING must be REJECTED, not accepted")
+        raise AssertionError(
+            "a manifest atol above ATOL_CEILING must be REJECTED, not accepted"
+        )
 
     # (b) at exactly the ceiling, a manifest is legal (the ceiling is a
     #     ceiling, not itself forbidden).
     at_ceiling = _manifest(
-        a={"gate": "atol", "atol": engine.ATOL_CEILING, "dtype": "float32", "shape": [1]}
+        a={
+            "gate": "atol",
+            "atol": engine.ATOL_CEILING,
+            "dtype": "float32",
+            "shape": [1],
+        }
     )
     engine.validate_gates(at_ceiling)  # must not raise
 
@@ -233,7 +265,9 @@ def scenario_atol_never_widened(work: Path) -> None:
     _save(ref, a=np.array([1.0], dtype=np.float32))
     _save(cand_ok, a=np.array([1.0 + 5e-4], dtype=np.float32))  # within 1e-3
     _save(cand_bad, a=np.array([1.0 + 5e-2], dtype=np.float32))  # way beyond 1e-3
-    manifest = _manifest(a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [1]})
+    manifest = _manifest(
+        a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [1]}
+    )
 
     _expect_pass(engine.check_parity(cand_ok, ref, manifest), "atol_never_widened/true")
 
@@ -255,7 +289,9 @@ def scenario_empty_zero_size_candidate(work: Path) -> None:
     _save_empty(cand_bad)
     manifest = _manifest(a={"gate": "exact", "dtype": "int32", "shape": [4]})
 
-    _expect_pass(engine.check_parity(cand_ok, ref, manifest), "empty_zero_size_candidate/true")
+    _expect_pass(
+        engine.check_parity(cand_ok, ref, manifest), "empty_zero_size_candidate/true"
+    )
 
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "empty_zero_size_candidate")
@@ -275,7 +311,9 @@ def scenario_unevaluable_manifest_reference_drift(work: Path) -> None:
     _save(ref, a=np.zeros((4, 4), dtype=np.float32))
     _save(cand, a=np.zeros((4, 4), dtype=np.float32))
 
-    good_manifest = _manifest(a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4, 4]})
+    good_manifest = _manifest(
+        a={"gate": "atol", "atol": 1e-3, "dtype": "float32", "shape": [4, 4]}
+    )
     _expect_pass(
         engine.check_parity(cand, ref, good_manifest),
         "unevaluable_manifest_reference_drift/true",
@@ -330,7 +368,10 @@ def scenario_bitwise_exact_fp32(work: Path) -> None:
     bad = engine.check_parity(cand_bad, ref, manifest)
     _expect_fail(bad, "bitwise_exact_fp32")
     [r] = bad.results
-    _expect(not r.ok and "byte mismatch" in r.detail, f"expected a byte-level FAIL: {bad.report()}")
+    _expect(
+        not r.ok and "byte mismatch" in r.detail,
+        f"expected a byte-level FAIL: {bad.report()}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -414,7 +455,9 @@ def scenario_scaffold_manifest_never_passes(work: Path) -> None:
     try:
         engine.check_parity(cand, ref, scaffold_manifest)
     except engine.GateSpecError as exc:
-        _expect("NOT IMPLEMENTED" in str(exc), f"refusal must say NOT IMPLEMENTED: {exc}")
+        _expect(
+            "NOT IMPLEMENTED" in str(exc), f"refusal must say NOT IMPLEMENTED: {exc}"
+        )
     else:
         raise AssertionError(
             "a scaffold-status manifest must NEVER be evaluated, even with a "

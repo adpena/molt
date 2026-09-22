@@ -26,12 +26,15 @@ def test_parse_sample_requires_exactly_one_valid_record() -> None:
         "baseline_rounds_ns_per_call": [10.1, 9.9],
         "candidate_rounds_ns_per_call": [9.1, 8.9],
     }
-    assert bench.parse_sample(
-        "running 1 test\ntest module::bench ... "
-        + bench.SAMPLE_PREFIX
-        + json.dumps(payload)
-        + "\nok\n"
-    ) == payload
+    assert (
+        bench.parse_sample(
+            "running 1 test\ntest module::bench ... "
+            + bench.SAMPLE_PREFIX
+            + json.dumps(payload)
+            + "\nok\n"
+        )
+        == payload
+    )
     with pytest.raises(ValueError, match="exactly one"):
         bench.parse_sample("noise only")
     with pytest.raises(ValueError, match="invalid benchmark field"):

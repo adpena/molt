@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import cast
 
 from generator_io import generated_file_matches, write_generated_text
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution

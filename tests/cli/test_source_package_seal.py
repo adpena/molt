@@ -120,9 +120,7 @@ def test_durable_commit_record_recovers_interrupted_publication(
     seal = _stage_fixture(tmp_path)
     transaction_root = tmp_path / "transaction"
     destination = tmp_path / "published" / "package" / "1.0" / "canonical-seal"
-    commit = prepare_source_package_seal_commit(
-        transaction_root, seal, destination
-    )
+    commit = prepare_source_package_seal_commit(transaction_root, seal, destination)
     assert commit.state == "prepared"
     assert commit.record_path.is_file()
     assert commit.candidate_root.is_dir()

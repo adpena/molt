@@ -139,7 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(result.as_dict(), indent=2))
     elif result.ok:
-        print(f"PASS: subagent contract integrity ({len(REQUIRED_CONSTANTS)} constants present)")
+        print(
+            f"PASS: subagent contract integrity ({len(REQUIRED_CONSTANTS)} constants present)"
+        )
     else:
         print("FAIL: subagent contract integrity")
         for f in result.failures:

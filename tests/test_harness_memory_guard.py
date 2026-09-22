@@ -1543,8 +1543,12 @@ def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
         timeout=7,
     )
 
-    assert text_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-    assert bytes_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    assert (
+        text_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    )
+    assert (
+        bytes_result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    )
     for stderr in (text_result.stderr, bytes_result.stderr.decode()):
         assert "timeout; terminated the tracked process tree" in stderr
         assert '"schema":"molt.guard-repro-error.v1"' in stderr

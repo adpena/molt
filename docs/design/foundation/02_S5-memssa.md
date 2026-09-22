@@ -432,13 +432,16 @@ Assert: SROA does NOT fire (GlobalEscape).
 class P:
     x: int
     y: int
+
     def __init__(self, x: int = 0, y: int = 0) -> None:
         self.x = x
         self.y = y
 
+
 def f(n: int) -> int:
     p = P(3, 4)
     return p.x + p.y
+
 
 assert f(0) == 7
 ```
@@ -448,15 +451,18 @@ Expected: `p.x` and `p.y` forwarded from the constructor stores; no `LoadAttr` i
 ```python
 class P:
     x: int
+
     def __init__(self, x: int = 0) -> None:
         self.x = x
+
 
 def f(n: int) -> int:
     p = P(42)
     acc = 0
     for i in range(n):
-        acc += p.x   # p.x is loop-invariant
+        acc += p.x  # p.x is loop-invariant
     return acc
+
 
 assert f(1000) == 42000
 ```
@@ -467,9 +473,11 @@ Expected: `p.x` load hoisted out of the loop by LICM-of-loads.
 class Point:
     x: int
     y: int
+
     def __init__(self, x: int = 0, y: int = 0) -> None:
         self.x = x
         self.y = y
+
 
 def main() -> int:
     total = 0
@@ -480,6 +488,7 @@ def main() -> int:
         total += p.x + p.y
     return total
 
+
 assert main() == 100
 ```
 Expected: after SROA + DCE, the `Point` allocation is eliminated; `p.x` and `p.y` are SSA values.
@@ -488,8 +497,10 @@ Expected: after SROA + DCE, the `Point` allocation is eliminated; `p.x` and `p.y
 ```python
 class S:
     v: int
+
     def __init__(self, v: int = 0) -> None:
         self.v = v
+
 
 def f(cond: bool, n: int) -> int:
     s = S(0)
@@ -497,8 +508,9 @@ def f(cond: bool, n: int) -> int:
         s.v = 1
     else:
         s.v = 2
-    s.v = n   # overwrites both branches — the if/else stores are dead
+    s.v = n  # overwrites both branches — the if/else stores are dead
     return s.v
+
 
 assert f(True, 5) == 5
 assert f(False, 5) == 5
@@ -511,16 +523,19 @@ Expected: cross-block DSE removes the stores in both branches.
 # struct_with_try_block.py — must NOT forward/sroa across exception boundaries
 class C:
     x: int
-    def __init__(self, x=0): self.x = x
+
+    def __init__(self, x=0):
+        self.x = x
+
 
 def f():
     c = C(1)
     try:
-        c.x = 2    # store
-        risky()    # may raise — c.x must NOT be forwarded past this
+        c.x = 2  # store
+        risky()  # may raise — c.x must NOT be forwarded past this
     except:
         pass
-    return c.x     # must read 1 if risky() raised before store
+    return c.x  # must read 1 if risky() raised before store
 ```
 (Ensure: GenericHeap def from `risky()` call blocks forwarding. Result must be `c.x` = 2 or 1 depending on whether exception raised. CPython-correct.)
 
@@ -528,13 +543,17 @@ def f():
 ```python
 class N:
     v: int
-    def __init__(self, v=0): self.v = v
+
+    def __init__(self, v=0):
+        self.v = v
+
 
 def f(x: int) -> int:
     n = N(x)
     return n.v
 
-assert f(1 << 60) == 1 << 60   # must stay BigInt-correct after forwarding
+
+assert f(1 << 60) == 1 << 60  # must stay BigInt-correct after forwarding
 ```
 Expected: `n.v` forwarded to `x`, which is `MaybeBigInt`. The forwarded `Copy(x)` carries the `MaybeBigInt` repr — no trusted-unbox introduced.
 

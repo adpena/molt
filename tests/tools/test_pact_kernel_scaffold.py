@@ -89,7 +89,9 @@ def test_scaffold_fixture_generator_main_raises_not_implemented(tmp_path: Path) 
         text=True,
         check=False,
     )
-    assert result.returncode != 0, "fixture scaffold must never exit 0 (never a fake fixture)"
+    assert result.returncode != 0, (
+        "fixture scaffold must never exit 0 (never a fake fixture)"
+    )
     assert "NotImplementedError" in result.stderr
     assert "NOT IMPLEMENTED" in result.stderr
 
@@ -107,7 +109,9 @@ def test_scaffold_gates_json_carries_scaffold_status(tmp_path: Path) -> None:
     assert manifest["outputs"] == {}
 
 
-@pytest.mark.parametrize("bad_name", ["Kernel B", "kernel-c", "../evil", "7up", "", "k b"])
+@pytest.mark.parametrize(
+    "bad_name", ["Kernel B", "kernel-c", "../evil", "7up", "", "k b"]
+)
 def test_make_kernel_scaffold_rejects_unsafe_kernel_names(
     tmp_path: Path, bad_name: str
 ) -> None:
@@ -117,9 +121,13 @@ def test_make_kernel_scaffold_rejects_unsafe_kernel_names(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_make_kernel_scaffold_refuses_to_clobber_real_kernel_file(tmp_path: Path) -> None:
+def test_make_kernel_scaffold_refuses_to_clobber_real_kernel_file(
+    tmp_path: Path,
+) -> None:
     real_source = tmp_path / "kernel_c.py"
-    real_source.write_text("def kernel_c():\n    return {'real': True}\n", encoding="utf-8")
+    real_source.write_text(
+        "def kernel_c():\n    return {'real': True}\n", encoding="utf-8"
+    )
 
     with pytest.raises(FileExistsError):
         scaffold.make_kernel_scaffold("kernel_c", tmp_path)
@@ -135,14 +143,18 @@ def test_make_kernel_scaffold_refuses_to_clobber_real_kernel_file(tmp_path: Path
 
 def test_make_kernel_scaffold_force_overwrites_real_kernel_file(tmp_path: Path) -> None:
     real_source = tmp_path / "kernel_c.py"
-    real_source.write_text("def kernel_c():\n    return {'real': True}\n", encoding="utf-8")
+    real_source.write_text(
+        "def kernel_c():\n    return {'real': True}\n", encoding="utf-8"
+    )
 
     scaffold.make_kernel_scaffold("kernel_c", tmp_path, force=True)
 
     assert "NOT IMPLEMENTED" in real_source.read_text(encoding="utf-8")
 
 
-def test_make_kernel_scaffold_regenerating_a_scaffold_needs_no_force(tmp_path: Path) -> None:
+def test_make_kernel_scaffold_regenerating_a_scaffold_needs_no_force(
+    tmp_path: Path,
+) -> None:
     scaffold.make_kernel_scaffold("kernel_c", tmp_path)
     # Re-running without force must succeed because the existing files carry
     # the scaffold marker (they are not "real" delivered kernel files).

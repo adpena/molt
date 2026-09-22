@@ -414,9 +414,9 @@ def test_aggregate_requires_calibration_headroom() -> None:
 
 def test_aggregate_requires_child_execution_control() -> None:
     bundle = _bundle()
-    bundle["attestations"]["abi_boundary"][0]["execution_control"][
-        "affinity_mask"
-    ] = "0x2"
+    bundle["attestations"]["abi_boundary"][0]["execution_control"]["affinity_mask"] = (
+        "0x2"
+    )
     _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("execution control drift" in error for error in errors)
 

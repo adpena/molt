@@ -69,7 +69,9 @@ def _joined_child_effects(
 
 def _constant_hash_is_closed(node: ast.expr) -> bool:
     if isinstance(node, ast.Constant):
-        return isinstance(node.value, (str, bytes, int, float, complex, bool, type(None)))
+        return isinstance(
+            node.value, (str, bytes, int, float, complex, bool, type(None))
+        )
     if isinstance(node, ast.Tuple):
         return all(_constant_hash_is_closed(element) for element in node.elts)
     return False

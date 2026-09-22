@@ -22,7 +22,6 @@ tests/differential/stdlib/zlib_decompressobj_unused_data.py.
 
 from __future__ import annotations
 
-import builtins
 import importlib.util
 import sys
 import types
@@ -81,9 +80,7 @@ def mp_core(monkeypatch: pytest.MonkeyPatch):
     # already only advertised spawn); force posix so the test proves fork was
     # dropped even on the non-Windows path.
     monkeypatch.setattr("os.name", "posix", raising=False)
-    mod = _load_stdlib_module(
-        "molt_test__mp_core", "multiprocessing/_core.py"
-    )
+    mod = _load_stdlib_module("molt_test__mp_core", "multiprocessing/_core.py")
     yield mod
     sys.modules.pop("molt_test__mp_core", None)
     sys.modules.pop("_intrinsics", None)

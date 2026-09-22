@@ -39,10 +39,12 @@ def run_git_probe(args, *, cwd, text=False):
         timeout=30.0,
     )
 
+
 def file_key(path, stat):
     if stat.st_ino:
         return f"inode:{stat.st_dev}:{stat.st_ino}"
     return "path:" + os.path.normcase(str(path))
+
 
 def resolve_file(path, *, label):
     resolved = pathlib.Path(path).resolve(strict=True)
@@ -50,6 +52,7 @@ def resolve_file(path, *, label):
     if not stat_module.S_ISREG(stat.st_mode):
         raise RuntimeError(f"{label} is not a file: {resolved}")
     return resolved, stat, file_key(resolved, stat)
+
 
 def hash_work(item):
     key, path_text, algorithms = item
@@ -71,6 +74,7 @@ def hash_work(item):
         "hashes": {name: digest.digest() for name, digest in hashers.items()},
     }
 
+
 def hash_worklist(work):
     items = [
         (key, str(value["path"]), tuple(sorted(value["algorithms"])))
@@ -80,10 +84,15 @@ def hash_worklist(work):
         )
     ]
     batch_size = max(1, (len(items) + hash_workers - 1) // hash_workers)
-    batches = [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
+    batches = [
+        items[index : index + batch_size] for index in range(0, len(items), batch_size)
+    ]
     with concurrent.futures.ThreadPoolExecutor(max_workers=hash_workers) as executor:
-        results = executor.map(lambda batch: [hash_work(item) for item in batch], batches)
+        results = executor.map(
+            lambda batch: [hash_work(item) for item in batch], batches
+        )
         return dict(item for batch in results for item in batch)
+
 
 def fused_hash_work(item):
     preliminary, path_text, label, algorithms = item
@@ -102,13 +111,18 @@ def fused_hash_work(item):
     after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
     if before_identity != after_identity:
         raise RuntimeError(f"file changed while proof custody hashed it: {path}")
-    return preliminary, identity, {
-        "path": str(path),
-        "size": after.st_size,
-        "hashes": {name: digest.digest() for name, digest in hashers.items()},
-        "resolve_stat_s": resolve_elapsed,
-        "hash_s": hash_elapsed,
-    }
+    return (
+        preliminary,
+        identity,
+        {
+            "path": str(path),
+            "size": after.st_size,
+            "hashes": {name: digest.digest() for name, digest in hashers.items()},
+            "resolve_stat_s": resolve_elapsed,
+            "hash_s": hash_elapsed,
+        },
+    )
+
 
 def fused_hash_worklist(work):
     items = [
@@ -124,7 +138,9 @@ def fused_hash_worklist(work):
         )
     ]
     batch_size = max(1, (len(items) + hash_workers - 1) // hash_workers)
-    batches = [items[index:index + batch_size] for index in range(0, len(items), batch_size)]
+    batches = [
+        items[index : index + batch_size] for index in range(0, len(items), batch_size)
+    ]
     with concurrent.futures.ThreadPoolExecutor(max_workers=hash_workers) as executor:
         results = executor.map(
             lambda batch: [fused_hash_work(item) for item in batch], batches
@@ -156,6 +172,7 @@ def fused_hash_worklist(work):
             existing["path"] = payload["path"]
     return references, identities
 
+
 def editable_path(payload):
     try:
         parsed = json.loads(payload)
@@ -171,6 +188,7 @@ def editable_path(payload):
         raw = raw[1:]
     return pathlib.Path(raw).resolve(strict=True)
 
+
 def resolve_contained_path(path, root, *, label):
     resolved = pathlib.Path(path).resolve(strict=True)
     canonical_root = pathlib.Path(root).resolve(strict=True)
@@ -180,11 +198,13 @@ def resolve_contained_path(path, root, *, label):
         raise RuntimeError(f"{label} escapes {canonical_root}: {path}") from exc
     return resolved, relative
 
+
 def contained_relative(path, root):
     try:
         return pathlib.Path(path).relative_to(pathlib.Path(root))
     except ValueError:
         return None
+
 
 def python_runtime_manifest(admitted_root, admitted_import_roots):
     # Bind the CPython launcher, base runtime, stdlib, native modules, and import roots.
@@ -284,7 +304,8 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
                 "owner": owner,
                 "owner_root": str(owner_root),
                 "owner_relative": owner_relative.as_posix(),
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
+                "symlinked": os.path.normcase(str(lexical))
+                != os.path.normcase(str(resolved)),
                 "identity": identity,
             }
         )
@@ -294,7 +315,8 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
     for cfg in dict.fromkeys(
         (
             prefix / "pyvenv.cfg",
-            pathlib.Path(sys.executable).resolve(strict=True).parent.parent / "pyvenv.cfg",
+            pathlib.Path(sys.executable).resolve(strict=True).parent.parent
+            / "pyvenv.cfg",
         )
     ):
         if cfg.is_file():
@@ -317,18 +339,32 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
     libdir = sysconfig.get_config_var("LIBDIR")
     if libdir:
         shared_search_roots.add(pathlib.Path(str(libdir)))
-    for directory in sorted(shared_search_roots, key=lambda path: os.path.normcase(str(path))):
+    for directory in sorted(
+        shared_search_roots, key=lambda path: os.path.normcase(str(path))
+    ):
         if not directory.is_dir():
             continue
-        patterns = ["python*.dll"] if os.name == "nt" else ["libpython*.so*", "libpython*.dylib"]
+        patterns = (
+            ["python*.dll"]
+            if os.name == "nt"
+            else ["libpython*.so*", "libpython*.dylib"]
+        )
         for name in shared_library_names:
             candidate = directory / name
             if candidate.is_file():
-                add_file(candidate, authority="python-shared-library", allow_declared_external=True)
+                add_file(
+                    candidate,
+                    authority="python-shared-library",
+                    allow_declared_external=True,
+                )
         for pattern in patterns:
             for candidate in sorted(directory.glob(pattern)):
                 if candidate.is_file():
-                    add_file(candidate, authority="python-shared-library", allow_declared_external=True)
+                    add_file(
+                        candidate,
+                        authority="python-shared-library",
+                        allow_declared_external=True,
+                    )
 
     excluded_runtime_parts = {"site-packages", "dist-packages"}
     for authority, root in sorted(runtime_roots.items()):
@@ -376,7 +412,8 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
                 "owner_relative": relative.as_posix(),
                 "kind": kind,
                 "exists": exists,
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
+                "symlinked": os.path.normcase(str(lexical))
+                != os.path.normcase(str(resolved)),
             }
         )
 
@@ -384,11 +421,12 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
     manifest_rows = []
     symlinks = []
     ownership_counts = {}
-    for entry in sorted(entries, key=lambda item: (item["authority"], os.path.normcase(item["lexical_path"]))):
+    for entry in sorted(
+        entries,
+        key=lambda item: (item["authority"], os.path.normcase(item["lexical_path"])),
+    ):
         payload = hashed[entry["identity"]]
-        row = {
-            key: value for key, value in entry.items() if key != "identity"
-        }
+        row = {key: value for key, value in entry.items() if key != "identity"}
         row.update(
             {
                 "size": payload["size"],
@@ -402,12 +440,14 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
     manifest = json.dumps(manifest_rows, separators=(",", ":"), sort_keys=True)
     import_manifest = json.dumps(import_paths, separators=(",", ":"), sort_keys=True)
     explicit_authorities = [
-        row for row in manifest_rows
+        row
+        for row in manifest_rows
         if not str(row["authority"]).startswith("runtime-root:")
     ]
     extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
     native_extensions = [
-        row for row in manifest_rows
+        row
+        for row in manifest_rows
         if str(row["resolved_path"]).endswith(extension_suffixes)
     ]
     return {
@@ -433,9 +473,12 @@ def python_runtime_manifest(admitted_root, admitted_import_roots):
         },
         "symlink_inputs": symlinks,
         "import_paths": import_paths,
-        "import_path_manifest_sha256": hashlib.sha256(import_manifest.encode()).hexdigest(),
+        "import_path_manifest_sha256": hashlib.sha256(
+            import_manifest.encode()
+        ).hexdigest(),
         "elapsed_s": time.perf_counter() - started,
     }
+
 
 def top_level_source_owners(distribution, root, *, label):
     top_level = distribution.read_text("top_level.txt") or ""
@@ -464,6 +507,7 @@ def top_level_source_owners(distribution, root, *, label):
         owners.append(matches[0])
     return owners
 
+
 def source_distribution_root(distribution, metadata_root):
     git_root = run_git_probe(
         ["rev-parse", "--show-toplevel"],
@@ -484,6 +528,7 @@ def source_distribution_root(distribution, metadata_root):
         label=f"source-owned distribution {metadata_root}",
     )
     return root
+
 
 def editable_manifest(distribution, root, admitted_root):
     scan_started = time.perf_counter()
@@ -517,7 +562,9 @@ def editable_manifest(distribution, root, admitted_root):
             existing = work.get(identity)
             if existing is None:
                 work[identity] = {"path": resolved, "algorithms": {"sha256"}}
-            elif os.path.normcase(str(resolved)) < os.path.normcase(str(existing["path"])):
+            elif os.path.normcase(str(resolved)) < os.path.normcase(
+                str(existing["path"])
+            ):
                 existing["path"] = resolved
             file_rows.append((relative_key, identity))
     if not file_rows:
@@ -536,14 +583,24 @@ def editable_manifest(distribution, root, admitted_root):
     ]
     git_started = time.perf_counter()
     git = run_git_probe(
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
         cwd=root,
     )
     head = run_git_probe(
-        ["rev-parse", "HEAD"], cwd=root, text=True,
+        ["rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
     )
     tree = run_git_probe(
-        ["rev-parse", "HEAD^{tree}"], cwd=root, text=True,
+        ["rev-parse", "HEAD^{tree}"],
+        cwd=root,
+        text=True,
     )
     git_elapsed = time.perf_counter() - git_started
     manifest = json.dumps(files, separators=(",", ":"), sort_keys=True)
@@ -557,9 +614,13 @@ def editable_manifest(distribution, root, admitted_root):
         "inside_admitted_source": inside,
         "files": len(files),
         "content_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
-        "git_available": git.returncode == 0 and head.returncode == 0 and tree.returncode == 0,
+        "git_available": git.returncode == 0
+        and head.returncode == 0
+        and tree.returncode == 0,
         "git_clean": git.returncode == 0 and not git.stdout,
-        "git_status_sha256": hashlib.sha256(git.stdout if git.returncode == 0 else git.stderr).hexdigest(),
+        "git_status_sha256": hashlib.sha256(
+            git.stdout if git.returncode == 0 else git.stderr
+        ).hexdigest(),
         "git_commit": head.stdout.strip().lower() if head.returncode == 0 else None,
         "git_tree": tree.stdout.strip().lower() if tree.returncode == 0 else None,
         "_profile": {
@@ -571,6 +632,7 @@ def editable_manifest(distribution, root, admitted_root):
             "bytes": sum(value["size"] for value in hashed.values()),
         },
     }
+
 
 executable = sys.executable
 admitted_root = pathlib.Path(sys.argv[1]).resolve(strict=True)
@@ -691,7 +753,8 @@ for distribution in raw_distributions:
                 "owner": owner,
                 "owner_root": str(owner_root),
                 "owner_relative": owner_relative.as_posix(),
-                "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
+                "symlinked": os.path.normcase(str(lexical))
+                != os.path.normcase(str(resolved)),
             }
         )
         installed_references += 1
@@ -732,7 +795,9 @@ for (
         expected = row["declared_hash"]
         if algorithm is not None:
             actual_digest = hashed["hashes"][algorithm]
-            actual_declared = base64.urlsafe_b64encode(actual_digest).decode().rstrip("=")
+            actual_declared = (
+                base64.urlsafe_b64encode(actual_digest).decode().rstrip("=")
+            )
             if not hmac.compare_digest(expected, actual_declared):
                 raise RuntimeError(
                     f"installed distribution RECORD hash mismatch: {name}:{row['relative']}"
@@ -767,21 +832,21 @@ for (
     if editable_root is None:
         editable_root = source_owned_root
     payload = {
-            "name": name,
-            "version": distribution.version,
-            "record_sha256": hashlib.sha256(record.encode()).hexdigest(),
-            "file_manifest_sha256": hashlib.sha256(file_manifest.encode()).hexdigest(),
-            "installed_file_count": len(files),
-            "install_prefix": str(install_prefix),
-            "ownership_counts": {
-                owner: ownership_counts[owner] for owner in sorted(ownership_counts)
-            },
-            "installed_files": files,
-            "symlink_files": symlink_files,
-            "direct_url_sha256": hashlib.sha256(direct_url.encode()).hexdigest(),
-            "installer_sha256": hashlib.sha256(installer.encode()).hexdigest(),
-            "editable_source": None,
-        }
+        "name": name,
+        "version": distribution.version,
+        "record_sha256": hashlib.sha256(record.encode()).hexdigest(),
+        "file_manifest_sha256": hashlib.sha256(file_manifest.encode()).hexdigest(),
+        "installed_file_count": len(files),
+        "install_prefix": str(install_prefix),
+        "ownership_counts": {
+            owner: ownership_counts[owner] for owner in sorted(ownership_counts)
+        },
+        "installed_files": files,
+        "symlink_files": symlink_files,
+        "direct_url_sha256": hashlib.sha256(direct_url.encode()).hexdigest(),
+        "installer_sha256": hashlib.sha256(installer.encode()).hexdigest(),
+        "editable_source": None,
+    }
     distributions.append(payload)
     if editable_root is not None:
         editable_pending.append(
@@ -829,7 +894,9 @@ for index, distribution, editable_root, source_metadata_root in editable_pending
             metadata_inside = False
         editable["source_metadata_inside_admitted_source"] = metadata_inside
     distributions[index]["editable_source"] = editable
-distributions.sort(key=lambda item: (item["name"], item["version"], item["file_manifest_sha256"]))
+distributions.sort(
+    key=lambda item: (item["name"], item["version"], item["file_manifest_sha256"])
+)
 inventory = json.dumps(distributions, separators=(",", ":"), sort_keys=True)
 runtime_import_roots = []
 for distribution in distributions:
@@ -853,9 +920,7 @@ profile = {
     "installed_resolve_stat_cpu_s": sum(
         value["resolve_stat_s"] for value in installed_hashed.values()
     ),
-    "installed_hash_cpu_s": sum(
-        value["hash_s"] for value in installed_hashed.values()
-    ),
+    "installed_hash_cpu_s": sum(value["hash_s"] for value in installed_hashed.values()),
     "record_validation_s": validation_elapsed,
     "editable_scan_resolve_stat_s": editable_scan_elapsed,
     "editable_hash_s": editable_hash_elapsed,
@@ -883,9 +948,13 @@ print(
             "version": platform.python_version(),
             "executable_sha256": executable_sha256,
             "runtime": runtime,
-            "runtime_closure_sha256": hashlib.sha256(runtime_closure.encode()).hexdigest(),
+            "runtime_closure_sha256": hashlib.sha256(
+                runtime_closure.encode()
+            ).hexdigest(),
             "distributions": distributions,
-            "distribution_inventory_sha256": hashlib.sha256(inventory.encode()).hexdigest(),
+            "distribution_inventory_sha256": hashlib.sha256(
+                inventory.encode()
+            ).hexdigest(),
             "inventory_profile": profile,
         },
         sort_keys=True,

@@ -2183,6 +2183,7 @@ def _validate_terminators(data: dict) -> None:
             f"enum-only={sorted(set(_TERMINATOR_VARIANTS) - seen)}"
         )
 
+
 __all__ = [
     name
     for name in globals()

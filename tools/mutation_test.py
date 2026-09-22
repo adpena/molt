@@ -1085,7 +1085,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Mutate compiler source and prove differential detection.",
     )
-# --- Compiler-mode flags ---
+    # --- Compiler-mode flags ---
     parser.add_argument(
         "--target",
         type=Path,
@@ -1146,6 +1146,7 @@ def main() -> int:
     random.seed(args.seed)
 
     return _main_compiler(args)
+
 
 def _main_compiler(args: argparse.Namespace) -> int:
     """Compiler-mutation mode entry point."""

@@ -18,6 +18,7 @@ from molt.browser_asset_closure import (
     canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
 )
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution

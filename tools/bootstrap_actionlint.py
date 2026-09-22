@@ -18,6 +18,7 @@ import urllib.request
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -125,10 +126,15 @@ def _valid(
         check=False,
     )
     lines = result.stdout.splitlines()
-    return result.returncode == 0 and bool(lines) and lines[0] in {
-        version,
-        f"v{version}",
-    }
+    return (
+        result.returncode == 0
+        and bool(lines)
+        and lines[0]
+        in {
+            version,
+            f"v{version}",
+        }
+    )
 
 
 @contextmanager
@@ -155,7 +161,9 @@ def _install_lock(path: Path, timeout: float = 60.0):
         except OSError:
             if time.monotonic() >= deadline:
                 handle.close()
-                raise RuntimeError(f"timed out waiting for actionlint install lock: {path}")
+                raise RuntimeError(
+                    f"timed out waiting for actionlint install lock: {path}"
+                )
             time.sleep(0.05)
     try:
         yield
@@ -174,7 +182,9 @@ def _install_lock(path: Path, timeout: float = 60.0):
 
 def ensure_actionlint(*, install: bool = True) -> Path:
     version, platform_key, expected, expected_executable = _contract()
-    executable_name = "actionlint.exe" if platform_key.startswith("windows-") else "actionlint"
+    executable_name = (
+        "actionlint.exe" if platform_key.startswith("windows-") else "actionlint"
+    )
     destination = _install_root(version, platform_key)
     executable = destination / executable_name
     if _valid(executable, version, expected, expected_executable):
@@ -194,7 +204,10 @@ def ensure_actionlint(*, install: bool = True) -> Path:
         with tempfile.TemporaryDirectory(prefix="actionlint-bootstrap-") as tmp:
             temp_root = Path(tmp)
             archive = temp_root / asset
-            with urllib.request.urlopen(url, timeout=60) as response, archive.open("wb") as out:
+            with (
+                urllib.request.urlopen(url, timeout=60) as response,
+                archive.open("wb") as out,
+            ):
                 shutil.copyfileobj(response, out)
             actual = _sha256(archive)
             if actual != expected:

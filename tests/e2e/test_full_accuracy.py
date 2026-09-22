@@ -20,7 +20,6 @@ SNAP = os.path.expanduser(
 )
 
 
-
 def _skip_if_no_snapshot():
     """Skip test if the model snapshot is not available."""
     if not os.path.isdir(SNAP):

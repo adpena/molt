@@ -153,14 +153,10 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
     ).resolve(strict=False)
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
-        strict=False
-    )
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(
-        strict=False
-    )
+    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
     state_root = tmp_path / "proof-control" / "memory_guard"
     assert active_guard_marker_dir(
         repo_root,
@@ -1917,9 +1913,7 @@ def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
     def interrupting_sampler():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         max_rss_kb=1_000_000,
@@ -2132,9 +2126,7 @@ def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
             raise AssertionError("a telemetry timeout must not kill the child")
 
     process = FakePopen()
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
 
     def timed_out_sampler() -> Mapping[int, memory_guard.ProcessSample]:
         raise memory_guard.WindowsProcessSnapshotTimeout("snapshot deadline")
@@ -2179,9 +2171,7 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
             return self.returncode
 
     process = FakePopen()
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     sample_calls = 0
 
     def sampler() -> Mapping[int, memory_guard.ProcessSample]:
@@ -2256,9 +2246,7 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
         process.returncode = -15
         return _guard_termination_report(reason="sampler_failure", root_pid=root)
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(
         memory_guard,
@@ -2335,9 +2323,7 @@ def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
             return {root_pid: root_sample}
         raise RuntimeError("persistent snapshot failure")
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(
         memory_guard,
         "terminate_watched_processes",
@@ -2450,9 +2436,7 @@ def test_run_guarded_post_loop_sampler_failure_reaps_only_owned_child_handle(
             ),
         )
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     with pytest.raises(RuntimeError, match="post-loop snapshot failure"):
@@ -2544,9 +2528,7 @@ def test_run_guarded_weak_sampler_reaps_only_owned_child_handle(
             ),
         )
 
-    _patch_guard_popen_without_windows_job(
-        monkeypatch, lambda *_a, **_kw: process
-    )
+    _patch_guard_popen_without_windows_job(monkeypatch, lambda *_a, **_kw: process)
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", record_termination)
 
     result = memory_guard.run_guarded(
@@ -3195,9 +3177,7 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     # Exercise the explicit no-Job fallback; a live Windows Job is itself the
     # exact descendant cleanup authority and intentionally bypasses PID-table
     # orphan cleanup.
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "print('ok')"],
@@ -3233,9 +3213,7 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
         "cleanup_repo_scoped_orphans_since_baseline",
         fake_cleanup,
     )
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -3779,9 +3757,7 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
         )
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     monkeypatch.setattr(
         memory_guard,
         "_quarantine_cargo_incremental_state",
@@ -5083,9 +5059,7 @@ def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(
         "windows_process_handle_rss_kb",
         lambda _handle: 12_345,
     )
-    monkeypatch.setattr(
-        memory_guard._win_job, "create_kill_on_close_job", lambda: None
-    )
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "pass"],

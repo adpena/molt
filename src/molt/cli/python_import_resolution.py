@@ -24,6 +24,7 @@ from molt.compiler_analysis.python_imports import (
     project_static_import_request,
 )
 
+
 @dataclass(frozen=True)
 class PythonImportPolicy:
     """Resolution policy for one import-closure consumer.
@@ -350,6 +351,7 @@ def local_import_targets(
         return tuple(
             base_context.with_state(state) for state in import_flow.states_for(node)
         )
+
     nodes: list[ast.AST] = (
         list(tree.body) if policy.module_level_only else list(ast.walk(tree))
     )

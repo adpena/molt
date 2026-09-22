@@ -63,11 +63,13 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+
 def _worktree_canonical_molt_root(repo_root: Path) -> Path:
     """Load the invoking worktree's authority despite an older editable install."""
     module_path = SRC_ROOT / "molt" / "dx.py"
     module = load_module_from_path("_molt_worktree_dx", module_path)
     return module.canonical_molt_root(repo_root)
+
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
@@ -225,7 +227,9 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
     return rows
 
 
-def gate(rows: list[dict], now: float, *, max_worktrees: int, max_signal_age_hours: float) -> list[str]:
+def gate(
+    rows: list[dict], now: float, *, max_worktrees: int, max_signal_age_hours: float
+) -> list[str]:
     """Return a list of drift violations (empty == clean).
 
     The gate makes worktree/branch drift BLOCKING instead of a silent slow
@@ -400,7 +404,10 @@ def main() -> int:
                 # git-cherry merge-commit miscount), OR its commits were captured in
                 # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
                 on_main = (
-                    _git(["merge-base", "--is-ancestor", r["branch"], "origin/main"]).returncode == 0
+                    _git(
+                        ["merge-base", "--is-ancestor", r["branch"], "origin/main"]
+                    ).returncode
+                    == 0
                 )
                 flag = "-D" if (on_main or r["path"] in captured) else "-d"
                 if _git(["branch", flag, r["branch"]]).returncode == 0:
@@ -408,7 +415,9 @@ def main() -> int:
     _git(["worktree", "prune"])
     swept = _sweep_empty_orphan_worktree_dirs()
     # Delete any remaining fully-merged branches (not checked out anywhere).
-    merged = _git(["branch", "--merged", "origin/main", "--format=%(refname:short)"]).stdout
+    merged = _git(
+        ["branch", "--merged", "origin/main", "--format=%(refname:short)"]
+    ).stdout
     for b in merged.splitlines():
         b = b.strip()
         if b and b != "main":

@@ -331,6 +331,8 @@ def stride_sum(n, stride):
     for i in range(n):
         total += i * stride
     return total
+
+
 assert stride_sum(5, 3) == 30
 assert stride_sum(0, 7) == 0
 ```
@@ -349,11 +351,11 @@ Files to change:
 
 Differential tests:
 ```python
-assert 100 // 4 == 25     # FloorDiv by power-of-2
-assert 100 % 8 == 4       # Mod by power-of-2
-assert 7 // 3 == 2        # NOT a power-of-2 — unchanged
-assert (-8) // 4 == -2    # Negative operand (floor division)
-assert (-7) // 4 == -2    # Python floor division rounds toward -inf
+assert 100 // 4 == 25  # FloorDiv by power-of-2
+assert 100 % 8 == 4  # Mod by power-of-2
+assert 7 // 3 == 2  # NOT a power-of-2 — unchanged
+assert (-8) // 4 == -2  # Negative operand (floor division)
+assert (-7) // 4 == -2  # Python floor division rounds toward -inf
 ```
 
 WARNING: Python `//` is floor division, NOT truncating division. `Shr` on a negative integer is arithmetic right shift (matches floor division for `x // 2^k` when `x < 0`). `x & (2^k - 1)` for `x % 2^k` returns the Python-correct non-negative result for negative `x` in two's complement. Verify both cases with differential tests before shipping.

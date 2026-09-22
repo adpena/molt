@@ -166,8 +166,7 @@ def test_negative_control_reordered_field_changes_offsets() -> None:
         "\n"
         "    /// Pointer to the type object. Points into our static type registry.\n"
         "    pub ob_type: *mut PyTypeObject,",
-        "    pub ob_type: *mut PyTypeObject,\n"
-        "    pub ob_refcnt: Py_ssize_t,",
+        "    pub ob_type: *mut PyTypeObject,\n    pub ob_refcnt: Py_ssize_t,",
         1,
     )
     if mutated == real:

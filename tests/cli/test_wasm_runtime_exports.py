@@ -273,7 +273,9 @@ def test_split_runtime_publication_transform_rewrites_raw_cpython_abi_names(
     )
     assert metrics.changed
 
-    exports = {export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)}
+    exports = {
+        export.name for export in parse_wasm_exports(runtime.read_bytes(), kind=0)
+    }
     assert "molt_PyType_Ready" in exports
     assert "PyType_Ready" not in exports
     assert "molt_socket_drop" in exports

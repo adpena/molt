@@ -64,11 +64,16 @@ def _validated_wheel_entries(
     try:
         manifest = json.loads(by_path[_EMBEDDED_EXTENSION_MANIFEST])
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExtensionWheelError(f"embedded extension manifest is invalid: {exc}") from exc
+        raise ExtensionWheelError(
+            f"embedded extension manifest is invalid: {exc}"
+        ) from exc
     if not isinstance(manifest, Mapping):
         raise ExtensionWheelError("embedded extension manifest must be an object")
     extension = manifest.get("extension")
-    if not isinstance(extension, str) or _canonical_wheel_path(extension) not in by_path:
+    if (
+        not isinstance(extension, str)
+        or _canonical_wheel_path(extension) not in by_path
+    ):
         raise ExtensionWheelError(
             "embedded extension manifest does not name a wheel member"
         )
@@ -107,7 +112,9 @@ def _rewrite_staged_extension_wheel(
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise ExtensionWheelError("source wheel has duplicate member paths")
-            record_paths = [name for name in names if name.endswith(".dist-info/RECORD")]
+            record_paths = [
+                name for name in names if name.endswith(".dist-info/RECORD")
+            ]
             if len(record_paths) != 1:
                 raise ExtensionWheelError(
                     "source wheel must have exactly one .dist-info/RECORD member"
@@ -134,8 +141,7 @@ def _rewrite_staged_extension_wheel(
             entries = [
                 (info.filename, wheel.read(info))
                 for info in infos
-                if info.filename
-                not in {_EMBEDDED_EXTENSION_MANIFEST, record_paths[0]}
+                if info.filename not in {_EMBEDDED_EXTENSION_MANIFEST, record_paths[0]}
             ]
     except (OSError, zipfile.BadZipFile) as exc:
         raise ExtensionWheelError(f"cannot read source extension wheel: {exc}") from exc

@@ -184,9 +184,7 @@ def test_class_control_flow_type_alias_publishes_through_class_namespace() -> No
     member_keys = {
         op.result.name
         for op in ops
-        if op.kind == "CONST_STR"
-        and op.args == ["Member"]
-        and op.result is not None
+        if op.kind == "CONST_STR" and op.args == ["Member"] and op.result is not None
     }
 
     assert member_keys
@@ -446,8 +444,7 @@ def test_conditional_native_callable_import_guards_global_then_invokes_ffi() -> 
         i
         for i, op in enumerate(post_if_ops)
         if op["kind"] == "module_get_global"
-        and consts.get((op.get("args") or [None, None])[1])
-        == "distance_transform_edt"
+        and consts.get((op.get("args") or [None, None])[1]) == "distance_transform_edt"
     )
     invoke_index = next(i for i, op in enumerate(post_if_ops) if op is invoke_op)
     assert guard_index < invoke_index
@@ -632,8 +629,7 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
 
     gen.visit(
         ast.parse(
-            "import nativepkg\n"
-            "value = nativepkg.ndimage.distance_transform_edt(data)\n"
+            "import nativepkg\nvalue = nativepkg.ndimage.distance_transform_edt(data)\n"
         )
     )
     ir = gen.to_json()
@@ -699,9 +695,7 @@ def test_native_callable_module_attr_object_call_from_import_lowers_to_runtime_f
     assert invoke_op["source_line"] == 2
     # The witness call must never degrade to a dynamic bound/bridge call.
     assert not any(
-        op["kind"] == "call_bind"
-        for fn in ir["functions"]
-        for op in fn["ops"]
+        op["kind"] == "call_bind" for fn in ir["functions"] for op in fn["ops"]
     )
 
 
@@ -753,9 +747,7 @@ def test_conditional_reimport_reads_global_not_branch_local() -> None:
         "print(type(sys).__name__)\n"
     )
     consts = _const_str_map(ops)
-    end_if_index = next(
-        i for i, op in enumerate(ops) if op.get("kind") == "end_if"
-    )
+    end_if_index = next(i for i, op in enumerate(ops) if op.get("kind") == "end_if")
     post = ops[end_if_index + 1 :]
 
     # The post-branch read of `sys` is a module_get_global for 'sys'.

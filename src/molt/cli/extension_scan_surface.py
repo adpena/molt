@@ -209,9 +209,7 @@ def _extract_preprocessor_definitions(text: str) -> dict[str, int | None]:
         # No whitespace between the macro name and '(' means a function-like
         # macro. It is defined, but its replacement cannot be an integer fact.
         definitions[symbol] = (
-            None
-            if tail.startswith("(")
-            else _preprocessor_definition_value(tail)
+            None if tail.startswith("(") else _preprocessor_definition_value(tail)
         )
     version_core = tuple(
         definitions.get(symbol)
@@ -226,11 +224,7 @@ def _extract_preprocessor_definitions(text: str) -> dict[str, int | None]:
         assert isinstance(micro, int)
         if isinstance(level, int) and isinstance(serial, int):
             definitions["PY_VERSION_HEX"] = (
-                (major << 24)
-                | (minor << 16)
-                | (micro << 8)
-                | (level << 4)
-                | serial
+                (major << 24) | (minor << 16) | (micro << 8) | (level << 4) | serial
             )
     return definitions
 
@@ -339,9 +333,7 @@ def _evaluate_preprocessor_condition(
         return symbol not in definitions
 
     if stripped.startswith("!"):
-        value = _evaluate_preprocessor_condition(
-            stripped[1:], definitions=definitions
-        )
+        value = _evaluate_preprocessor_condition(stripped[1:], definitions=definitions)
         return None if value is None else not value
 
     identifier_match = re.fullmatch(_C_IDENTIFIER, stripped)

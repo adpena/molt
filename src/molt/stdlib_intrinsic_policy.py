@@ -164,6 +164,7 @@ def stdlib_module_static_imports(
         return tuple(
             base_context.with_state(state) for state in import_flow.states_for(node)
         )
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
