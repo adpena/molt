@@ -44,6 +44,56 @@ from tools.proof_queue_pkg import (  # noqa: E402
 )
 
 
+LLVM_RELEASE_MANIFEST = "config/llvm_toolchain_releases.toml"
+
+
+def llvm_family_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
+    """Toolchain policies whose setup evidence is the LLVM release manifest."""
+    names: set[str] = set()
+    for policy in plan.toolchain_policies:
+        evidence = policy.data.get("setup_evidence")
+        if isinstance(evidence, list) and any(
+            isinstance(item, str) and item.startswith(LLVM_RELEASE_MANIFEST + "::")
+            for item in evidence
+        ):
+            names.add(policy.name)
+    return frozenset(names)
+
+
+def prefer_canonical_llvm_prefix(
+    env: Mapping[str, str], toolchains: object, *, cwd: Path
+) -> tuple[dict[str, str], str | None]:
+    """Put the pinned LLVM SDK ahead of the ambient PATH for LLVM-family lanes.
+
+    Declared toolchains are located through the execution PATH, so an ambient
+    system LLVM (a different point release) used to shadow the canonical SDK
+    that molt.llvm_toolchain discovers under the checkout custody root and the
+    proof then failed closed on the version policy. The discovery authority is
+    the same one `molt doctor` reports; when it finds no SDK the environment is
+    left untouched and the policy check still fails closed.
+    """
+    resolved = dict(env)
+    declared = (
+        {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
+    )
+    if not declared & llvm_family_toolchains(proof_plan.ProofPlan.load()):
+        return resolved, None
+    from molt.llvm_toolchain import discover_llvm_toolchain
+
+    discovery = discover_llvm_toolchain(Path(cwd), environ=dict(resolved))
+    if discovery is None:
+        return resolved, None
+    bin_dir = str((Path(discovery.prefix) / "bin").resolve())
+    entries = [entry for entry in resolved.get("PATH", "").split(os.pathsep) if entry]
+    if not entries or os.path.normcase(entries[0]) != os.path.normcase(bin_dir):
+        entries = [
+            bin_dir,
+            *[e for e in entries if os.path.normcase(e) != os.path.normcase(bin_dir)],
+        ]
+    resolved["PATH"] = os.pathsep.join(entries)
+    return resolved, str(discovery.prefix)
+
+
 def execute_guarded_request(request_path: Path) -> int:
     """Run identity, preflight, proof, and completion custody under one guard."""
     request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -113,6 +163,9 @@ def execute_guarded_request(request_path: Path) -> int:
             )
             run_target.mkdir(parents=True, exist_ok=False)
             inherited_env["CARGO_TARGET_DIR"] = str(run_target.resolve(strict=True))
+        inherited_env, llvm_prefix = prefer_canonical_llvm_prefix(
+            inherited_env, envelope.get("toolchains", []), cwd=cwd
+        )
         canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             node_hook = (

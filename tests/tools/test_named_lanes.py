@@ -167,3 +167,56 @@ def test_rust_target_is_only_read_from_rust_tool_argv() -> None:
         )
         == "x86_64-pc-windows-msvc"
     )
+
+
+def test_llvm_family_lanes_prefer_the_canonical_sdk_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    prefix = tmp_path / "llvm-22.1.8"
+    (prefix / "bin").mkdir(parents=True)
+
+    class Discovery:
+        pass
+
+    Discovery.prefix = prefix
+    import molt.llvm_toolchain as llvm_toolchain
+
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda root, environ=None: Discovery(),
+    )
+    ambient = os.pathsep.join(
+        [str(tmp_path / "system-llvm" / "bin"), str(tmp_path / "other")]
+    )
+    env, found = ge.prefer_canonical_llvm_prefix(
+        {"PATH": ambient}, ["python", "clang"], cwd=tmp_path
+    )
+    assert found == str(prefix)
+    assert env["PATH"].split(os.pathsep)[0] == str((prefix / "bin").resolve())
+    assert env["PATH"].split(os.pathsep)[1:] == ambient.split(os.pathsep)
+
+    untouched, found = ge.prefer_canonical_llvm_prefix(
+        {"PATH": ambient}, ["python", "uv"], cwd=tmp_path
+    )
+    assert found is None and untouched["PATH"] == ambient
+
+    monkeypatch.setattr(
+        llvm_toolchain, "discover_llvm_toolchain", lambda root, environ=None: None
+    )
+    untouched, found = ge.prefer_canonical_llvm_prefix(
+        {"PATH": ambient}, ["python", "wasm-ld"], cwd=tmp_path
+    )
+    assert found is None and untouched["PATH"] == ambient
+
+
+def test_llvm_family_is_derived_from_the_release_manifest_evidence() -> None:
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    family = ge.llvm_family_toolchains(PLAN)
+    assert {"clang", "wasm-ld", "llvm-config", "ld.lld"} <= family
+    assert "python" not in family and "cargo" not in family
