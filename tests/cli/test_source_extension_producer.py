@@ -2416,3 +2416,41 @@ def test_recover_and_prune_fails_closed_on_legacy_retired_destination(
             )
     assert (retired / "legacy.txt").read_text(encoding="utf-8") == "preserved\n"
     assert not destination.exists()
+
+
+def test_incumbent_that_fails_the_seal_contract_is_a_defect(tmp_path: Path) -> None:
+    stale = tmp_path / "pact_numpy_multiarray_sealed_for_witness"
+    stale.mkdir()
+    (stale / "source-package-seal.json").write_text(
+        json.dumps({"files": [], "schema": 1, "seal_sha256": "0" * 64}),
+        encoding="utf-8",
+    )
+    (stale / "files").mkdir()
+
+    defect = producer._incumbent_seal_defect(stale)
+
+    assert defect is not None and "SourcePackageSeal" in defect
+    assert producer._incumbent_seal_defect(tmp_path / "absent") is not None
+
+
+def test_stale_incumbent_is_retired_beside_the_canonical_location(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "pact_numpy_multiarray_sealed_for_witness"
+    destination.mkdir()
+    (destination / "marker.txt").write_text("old schema", encoding="utf-8")
+
+    retired = producer._retire_stale_incumbent(destination, reason="old schema")
+
+    assert not destination.exists()
+    assert (
+        retired.parent == tmp_path / "pact_numpy_multiarray_sealed_for_witness.retired"
+    )
+    assert (retired / "marker.txt").read_text(encoding="utf-8") == "old schema"
+    record = json.loads(
+        (retired.parent / f"{retired.name}.json").read_text(encoding="utf-8")
+    )
+    assert record["kind"] == "retired-stale-incumbent"
+    assert record["reason"] == "old schema"
+    assert record["retired_to"] == str(retired)
+    assert record["canonical_location"] == str(destination)

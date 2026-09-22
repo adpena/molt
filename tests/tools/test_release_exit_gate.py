@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from tests.process_guard_common import run_guarded_test_process
 from tools import release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
@@ -872,14 +873,14 @@ def test_verify_rejects_windows_junction_reparse_point(
     outside.mkdir()
     (outside / "external.json").write_text("{}\n", encoding="utf-8")
     junction = manifest_path.parent / "junction-evidence"
-    created = subprocess.run(
+    created = run_guarded_test_process(
         ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(outside)],
         check=False,
         capture_output=True,
         text=True,
     )
     if created.returncode != 0:
-        pytest.skip(f"junction creation is unavailable: {created.stderr.strip()}")
+        pytest.skip(f"junction creation is unavailable: {str(created.stderr).strip()}")
     try:
         report = gate.verify_release_bundle(
             manifest_path,

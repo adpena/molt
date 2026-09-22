@@ -11,6 +11,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -2102,6 +2103,60 @@ def _materialize_generated_inputs(
     return tuple(sorted(missing))
 
 
+def _incumbent_seal_defect(destination: Path) -> str | None:
+    """Why the directory at the canonical location is not a canonical seal, or None.
+
+    A canonical seal verifies bit-exactly and projects to a source-extension
+    identity under the current contract. Anything else at that location (an
+    earlier seal schema, a partial write, foreign content) is stale debris that
+    compare-and-swap cannot name.
+    """
+    try:
+        seal = verify_source_package_seal(destination)
+        _source_extension_set_identity(
+            seal.payload_root,
+            inventory_sha256={
+                entry.relative_path: entry.sha256 for entry in seal.files
+            },
+        )
+    except (SourcePackageSealError, ValueError, OSError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _retire_stale_incumbent(destination: Path, *, reason: str) -> Path:
+    """Move a non-canonical incumbent aside, keeping its bytes as evidence.
+
+    The retirement lives beside the canonical location under
+    ``<name>.retired/<utc stamp>`` with a record of why it was retired; nothing
+    is deleted, and the canonical location becomes free for the first
+    publication under the current contract.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    retired_root = destination.parent / f"{destination.name}.retired"
+    retired = retired_root / stamp
+    retired_root.mkdir(parents=True, exist_ok=True)
+    if retired.exists():
+        raise SourceExtensionProducerError(
+            f"retirement slot already exists for this second: {retired}"
+        )
+    os.replace(destination, retired)
+    _atomic_write_json(
+        retired_root / f"{stamp}.json",
+        {
+            "schema_version": 1,
+            "kind": "retired-stale-incumbent",
+            "canonical_location": str(destination),
+            "retired_to": str(retired),
+            "retired_at": stamp,
+            "reason": reason,
+        },
+        sort_keys=True,
+        indent=2,
+    )
+    return retired
+
+
 def _recover_and_prune_producer_transactions(
     destination: Path, *, publication_custody: SourceExtensionPublicationCustody
 ) -> None:
@@ -2215,6 +2270,7 @@ def produce_source_extension_set(
     published = False
     incumbent_identity: Mapping[str, Any] | None = None
     incumbent_seal = None
+    retired_incumbent: Path | None = None
     try:
         if not source_root.is_dir():
             raise SourceExtensionProducerError(
@@ -2298,6 +2354,18 @@ def produce_source_extension_set(
         _recover_and_prune_producer_transactions(
             destination, publication_custody=publication_custody
         )
+        incumbent_defect = (
+            _incumbent_seal_defect(destination) if destination.exists() else None
+        )
+        if incumbent_defect is not None:
+            if expected_identity_sha256 is not None:
+                raise SourceExtensionProducerError(
+                    "--expected-identity-sha256 names an incumbent that is not a "
+                    f"canonical seal ({incumbent_defect}); nothing to compare against"
+                )
+            retired_incumbent = _retire_stale_incumbent(
+                destination, reason=incumbent_defect
+            )
         if destination.exists():
             if (
                 expected_identity_sha256 is None
@@ -2685,6 +2753,9 @@ def produce_source_extension_set(
             "installed_package_file_count": len(installed_files),
             "target": metadata.target_triple,
             "abi_tier": abi_tier,
+            "retired_incumbent": (
+                None if retired_incumbent is None else str(retired_incumbent)
+            ),
         }
         if json_output:
             _emit_json(
