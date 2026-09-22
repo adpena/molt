@@ -134,6 +134,24 @@ def _synthetic_v3_custody(
     descendants: str = "forbidden",
     environment: dict[str, str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    # Every toolchain identity carries its process-image closure: the runner
+    # recomputes the supervisor's fixed images from the full capture, so a
+    # synthetic identity without images is not a valid custody fixture.
+    toolchains = {
+        name: (
+            identity
+            if not isinstance(identity, dict) or "process_images" in identity
+            else {
+                **identity,
+                "process_images": [
+                    process_image_capture.capture_image(
+                        name, Path(sys.executable), preserve_path=True
+                    )
+                ],
+            }
+        )
+        for name, identity in toolchains.items()
+    }
     summaries, artifact, telemetry = toolchain_capture.publish_capture(
         directory / "custody-cas", toolchains
     )
@@ -156,13 +174,9 @@ def _synthetic_v3_custody(
         "command": command,
         "environment": dict(environment or {}),
         "root_role": "root-command",
-        "fixed_images": [
-            {
-                "role": "root-command",
-                "path": str(binary),
-                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-            }
-        ],
+        "fixed_images": supervisor_custody._supervisor_fixed_images(
+            toolchains, {}, command
+        )[1],
         "derived_roots": [],
     }
     policy_path = directory / "synthetic-supervisor-policy.json"

@@ -822,6 +822,46 @@ def derived_environment_policy_rows(
     return rows
 
 
+def base_interpreter_sha256s(toolchains: Mapping[str, object]) -> list[str]:
+    """The attested base interpreter images behind the admitted python toolchain.
+
+    A venv launcher is a copy of the base installation's python; the python
+    identity records that base executable as an explicit authority file, and
+    a derived environment must have been provisioned from the same one.
+    """
+    identity = toolchains.get("python")
+    if not isinstance(identity, Mapping):
+        return []
+    runtime = identity.get("runtime")
+    files = (
+        runtime.get("explicit_authority_files")
+        if isinstance(runtime, Mapping)
+        else None
+    )
+    digests = {
+        str(row["sha256"])
+        for row in (files or [])
+        if isinstance(row, Mapping)
+        and row.get("authority") == "base-executable"
+        and isinstance(row.get("sha256"), str)
+    }
+    return sorted(digests)
+
+
+def _derived_environment_rows(
+    rows: Sequence[Mapping[str, str]], toolchains: Mapping[str, object]
+) -> list[dict[str, object]]:
+    if not rows:
+        return []
+    bases = base_interpreter_sha256s(toolchains)
+    if not bases:
+        raise ValueError(
+            "derived environments require a python toolchain identity that "
+            "attests its base interpreter"
+        )
+    return [{**row, "base_executable_sha256s": list(bases)} for row in rows]
+
+
 def child_policy(
     envelope: Mapping[str, object],
     toolchains: Mapping[str, object],
@@ -859,7 +899,9 @@ def child_policy(
         "schema": CHILD_POLICY_SCHEMA,
         "descendants": descendants,
         "allowed": allowed,
-        "derived_environments": [dict(row) for row in derived_environments],
+        "derived_environments": _derived_environment_rows(
+            derived_environments, toolchains
+        ),
     }
 
 
@@ -1250,7 +1292,8 @@ def _admit_derived_environment_child(
                     str(authority.get("sha256"))
                 )
         base_sha256 = manifest["python"]["base_executable_sha256"]
-        if base_sha256 not in admitted_images.get("python", set()):
+        bases = row.get("base_executable_sha256s")
+        if not isinstance(bases, list) or base_sha256 not in bases:
             return False, "derived-environment-base-interpreter-unadmitted", None
         if manifest["uv"]["sha256"] not in admitted_images.get("uv", set()):
             return False, "derived-environment-provisioner-unadmitted", None

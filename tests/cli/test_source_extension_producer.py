@@ -1034,8 +1034,8 @@ def test_source_build_environment_recovers_exact_provisional_record(
     distributions = [{"name": "ninja", "version": "1.13.0"}]
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_environment_distributions",
+        lambda *_args: distributions,
     )
 
     def run(argv, **kwargs):
@@ -1166,45 +1166,31 @@ def test_installed_distributions_use_only_canonical_sysconfig_roots(
     ]
 
 
-def test_distribution_probe_sanitizes_python_import_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed: dict[str, object] = {}
-    monkeypatch.setenv("PYTHONHOME", "poison-home")
-    monkeypatch.setenv("PYTHONPATH", "poison-path")
-
-    def run(argv, **kwargs):
-        observed["argv"] = argv
-        observed["env"] = kwargs["env"]
-        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
-
-    monkeypatch.setattr(
-        build_environment.process_guard,
-        "run_completed_command",
-        run,
-    )
-
-    assert (
-        build_environment._probe_environment_distributions(Path(sys.executable)) == []
-    )
-    assert observed["argv"][:3] == [str(Path(sys.executable)), "-P", "-c"]
-    environment = observed["env"]
-    assert isinstance(environment, dict)
-    assert "PYTHONHOME" not in environment
-    assert "PYTHONPATH" not in environment
-    assert environment["PYTHONNOUSERSITE"] == "1"
-
-
-def test_distribution_probe_excludes_external_pythonpath_metadata(
+def test_environment_distributions_are_read_from_the_tree_without_launching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    root = tmp_path / "environment"
+    site = Path(build_environment._environment_distribution_roots(root, "3.12.13")[0])
+    _write_legacy_distribution_metadata(site, "ninja", "1.13.0")
     poison = tmp_path / "external"
     _write_legacy_distribution_metadata(poison, "ambient-probe-poison", "99")
     monkeypatch.setenv("PYTHONPATH", str(poison))
+    monkeypatch.setattr(
+        build_environment.process_guard,
+        "run_completed_command",
+        lambda *_a, **_k: pytest.fail("attestation must not launch a process"),
+    )
 
-    rows = build_environment._probe_environment_distributions(Path(sys.executable))
+    rows = build_environment._environment_distributions(root, "3.12.13")
 
-    assert not any(row["name"] == "ambient-probe-poison" for row in rows)
+    assert rows == [{"name": "ninja", "version": "1.13.0"}]
+
+
+def test_environment_without_site_packages_cannot_be_attested(tmp_path: Path) -> None:
+    with pytest.raises(
+        build_environment.SourceBuildEnvironmentError, match="no site-packages"
+    ):
+        build_environment._environment_distributions(tmp_path / "missing", "3.12.13")
 
 
 def test_complete_environment_cleans_exact_stale_sibling_record(
@@ -1235,8 +1221,8 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
     monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_environment_distributions",
+        lambda *_args: distributions,
     )
     monkeypatch.setattr(
         build_environment,
@@ -1262,8 +1248,8 @@ def test_concurrent_source_build_provision_runs_one_sync(
     distributions = [{"name": "ninja", "version": "1.13.0"}]
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: distributions,
+        "_environment_distributions",
+        lambda *_args: distributions,
     )
 
     def run(argv, **kwargs):
@@ -1331,8 +1317,8 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
     monkeypatch.setattr(build_environment, "_environment_spec", lambda *_args: spec)
     monkeypatch.setattr(
         build_environment,
-        "_probe_environment_distributions",
-        lambda _python: [{"name": "packaging", "version": "26.2"}],
+        "_environment_distributions",
+        lambda *_args: [{"name": "packaging", "version": "26.2"}],
     )
 
     def run(argv, **kwargs):
