@@ -78,7 +78,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
-source = "config/release_targets.toml + src/molt/target_python.py + src/molt/file_publication.py"
+source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_release_matrix.py --check"
 idempotent = true
