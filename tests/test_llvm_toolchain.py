@@ -532,9 +532,12 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     manifest = llvm_toolchain.load_llvm_releases(ROOT)
     installer = manifest.debian_installer
 
-    assert installer.url == "https://apt.llvm.org/llvm.sh"
+    assert installer.url == (
+        "https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/"
+        "6dc0d1ad7de83d0782731687fd555a7859b4da58/llvm.sh"
+    )
     assert installer.sha256 == (
-        "9474ecd78b52aba6e923976b1e9773f5613027cc7e237b9956986cb536e02a36"
+        "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"
     )
     github_output = tmp_path / "github-output"
     assert (
@@ -637,6 +640,24 @@ def test_wasm_ci_profile_rejects_incomplete_or_mismatched_sysroot(
 
     with pytest.raises(LlvmToolchainConfigError, match="LLVM identity"):
         llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+
+
+def test_mutable_debian_installer_url_is_rejected(tmp_path: Path) -> None:
+    """A digest pin over a mutable download path is not an identity; refuse it."""
+    source = (ROOT / "config" / "llvm_toolchain_releases.toml").read_text(
+        encoding="utf-8"
+    )
+    immutable = (
+        "https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/"
+        "6dc0d1ad7de83d0782731687fd555a7859b4da58/llvm.sh"
+    )
+    assert immutable in source
+    _write(
+        tmp_path / "config" / "llvm_toolchain_releases.toml",
+        source.replace(immutable, "https://apt.llvm.org/llvm.sh"),
+    )
+    with pytest.raises(LlvmToolchainConfigError, match="commit-addressed"):
+        llvm_toolchain.load_llvm_releases(tmp_path)
 
 
 def test_cli_projects_verified_sdk_identity_to_github_environment(
