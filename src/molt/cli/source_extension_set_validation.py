@@ -204,9 +204,12 @@ def validate_source_extension_set_publish_root(
         )
     )
     if (
-        set(backend) != {"distribution", "version", "path", "sha256"}
+        set(backend)
+        != {"distribution", "version", "reported_version", "path", "sha256"}
         or canonicalize_name(str(backend.get("distribution"))) != "ninja"
         or not backend_matches_custody
+        or not isinstance(backend.get("reported_version"), str)
+        or not backend.get("reported_version")
         or not isinstance(backend.get("path"), str)
         or not backend.get("path")
         or any(separator in backend["path"] for separator in ("/", "\\"))
