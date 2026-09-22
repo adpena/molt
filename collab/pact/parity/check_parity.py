@@ -173,9 +173,13 @@ def validate_gates(gates: object) -> None:
                 )
         if gate == "order_robust_atol":
             key_cols = spec.get("key_cols")
-            if not isinstance(key_cols, list) or not key_cols or not all(
-                isinstance(c, int) and not isinstance(c, bool) and c >= 0
-                for c in key_cols
+            if (
+                not isinstance(key_cols, list)
+                or not key_cols
+                or not all(
+                    isinstance(c, int) and not isinstance(c, bool) and c >= 0
+                    for c in key_cols
+                )
             ):
                 raise GateSpecError(
                     f"{where}.key_cols must be a non-empty list of column indices "
@@ -233,9 +237,7 @@ def _shape_conforms(actual: tuple[int, ...], spec: list) -> bool:
     return all(dim is None or dim == actual[i] for i, dim in enumerate(spec))
 
 
-def _shape_matches(
-    actual: tuple[int, ...], spec: list, ref: tuple[int, ...]
-) -> bool:
+def _shape_matches(actual: tuple[int, ...], spec: list, ref: tuple[int, ...]) -> bool:
     """Candidate shape: fixed dims match the manifest, None dims match the reference."""
     if len(actual) != len(spec):
         return False
@@ -322,7 +324,10 @@ def _evaluate_array(
         return
     if not _shape_matches(cand.shape, shape_spec, ref.shape):
         verdict.add(
-            name, gate, False, f"shape {cand.shape} != expected (spec {shape_spec}, ref {ref.shape})"
+            name,
+            gate,
+            False,
+            f"shape {cand.shape} != expected (spec {shape_spec}, ref {ref.shape})",
         )
         return
 

@@ -530,9 +530,7 @@ def discover_ecosystem_build_crutches(root: Path) -> list[DiscoveredSite]:
     return found
 
 
-def _package_specific_overlay_signature(
-    rel: str, text: str
-) -> tuple[str, int] | None:
+def _package_specific_overlay_signature(rel: str, text: str) -> tuple[str, int] | None:
     """Return the first line that authors a protected-package build overlay.
 
     Package-specific tooling names alone are not poison: adapters, probes, and
@@ -1499,13 +1497,18 @@ def run_gate(
 
     return violations
 
+
 def advisory_triage(violations: list[Violation]) -> list[dict[str, str]]:
     """Tag deterministic hits without clearing or downgrading any hit."""
     try:
         from tools.advisory_classifier import poison_triage
     except Exception:
         return []
-    return [{"violation": str(item), "advisory": verdict} for item in violations if (verdict := poison_triage(str(item))) is not None]
+    return [
+        {"violation": str(item), "advisory": verdict}
+        for item in violations
+        if (verdict := poison_triage(str(item))) is not None
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

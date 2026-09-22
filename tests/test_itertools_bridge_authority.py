@@ -19,9 +19,9 @@ def test_itertools_class_construction_has_one_runtime_authority() -> None:
     direct_class = direct.split("pub fn alloc_itertools_class(", maxsplit=1)[1].split(
         "pub fn class_set_iter_next(", maxsplit=1
     )[0]
-    ffi_class = ffi.split(
-        'pub extern "C" fn molt_itertools_alloc_class(', maxsplit=1
-    )[1].split("#[unsafe(no_mangle)]", maxsplit=1)[0]
+    ffi_class = ffi.split('pub extern "C" fn molt_itertools_alloc_class(', maxsplit=1)[
+        1
+    ].split("#[unsafe(no_mangle)]", maxsplit=1)[0]
 
     assert canonical.count("pub(crate) fn alloc_itertools_class(") == 1
     assert "class_set_instance_shape_id(class_ptr, shape)" in canonical_class

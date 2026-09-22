@@ -27,7 +27,9 @@
 ## 1. Public API (minimum)
 ### 1.1 Low-level client
 ```python
-client = MoltClient(worker_cmd=["./molt_worker", "--stdio", "--exports", "molt_exports.json"])
+client = MoltClient(
+    worker_cmd=["./molt_worker", "--stdio", "--exports", "molt_exports.json"]
+)
 result = client.call("list_items", payload_obj, timeout_ms=250)
 ```
 For higher concurrency, use `MoltClientPool` to round-robin across multiple worker processes.
@@ -35,8 +37,7 @@ For higher concurrency, use `MoltClientPool` to round-robin across multiple work
 Planned Phase 1 extension:
 ```python
 @molt_offload(entry="list_items", execution_mode="in_process")
-def items_view(request):
-    ...
+def items_view(request): ...
 ```
 `execution_mode="in_process"` is planned-only until ABI + loader + parity gates land.
 
@@ -44,9 +45,9 @@ def items_view(request):
 ```python
 from molt_accel import molt_offload
 
+
 @molt_offload(entry="list_items", codec="msgpack", timeout_ms=250)
-def items_view(request):
-    ...
+def items_view(request): ...
 ```
 
 See `docs/demo/django_offload_example.py` for a minimal example.

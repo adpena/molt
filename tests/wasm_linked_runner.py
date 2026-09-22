@@ -260,9 +260,7 @@ def wasm_test_build_env(
     if generated_session_id(base):
         inherited_session_id = ""
     resolved_session_id = (
-        session_id
-        or inherited_session_id
-        or f"{session_prefix}-{_wasm_test_lane()}"
+        session_id or inherited_session_id or f"{session_prefix}-{_wasm_test_lane()}"
     )
     env = development_artifact_env(
         root,

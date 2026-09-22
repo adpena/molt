@@ -34,7 +34,9 @@ def test_pact_witness_acceptance_attests_pinned_worktree(
 
     output = capsys.readouterr().out
     assert f"root={acceptance.ROOT.resolve()}" in output
-    assert f"wasm_link={(acceptance.ROOT / 'tools' / 'wasm_link.py').resolve()}" in output
+    assert (
+        f"wasm_link={(acceptance.ROOT / 'tools' / 'wasm_link.py').resolve()}" in output
+    )
 
 
 def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
@@ -49,7 +51,9 @@ def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
     exactly ONE acceptance authority, never two disagreeing implementations."""
     captured: dict[str, object] = {}
 
-    def fake_run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    ) -> None:
         captured["args"] = args
         captured["cwd"] = cwd
 
@@ -80,7 +84,9 @@ def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
     assert str(acceptance.KERNEL_ROOT / "check_parity.py") not in args
 
 
-def test_pact_witness_acceptance_check_parity_requires_reference(tmp_path: Path) -> None:
+def test_pact_witness_acceptance_check_parity_requires_reference(
+    tmp_path: Path,
+) -> None:
     candidate = tmp_path / "candidate_outputs.npz"
     candidate.write_bytes(b"candidate")
     missing_reference = tmp_path / "reference_outputs.npz"
@@ -153,8 +159,7 @@ def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
     kernel_root = tmp_path / "kernel"
     kernel_root.mkdir()
     (kernel_root / "make_fixture.py").write_text(
-        "from pathlib import Path\n"
-        "Path('lstar_sample.npz').write_bytes(b'fixture')\n",
+        "from pathlib import Path\nPath('lstar_sample.npz').write_bytes(b'fixture')\n",
         encoding="utf-8",
     )
     (kernel_root / "field_solve.py").write_text(

@@ -20,7 +20,12 @@ def test_warm_pair_accepts_high_frontend_lowering_cache_reuse() -> None:
     cold = _diagnostics(hits=0, misses=145, relowered_s=199.8)
     warm = _diagnostics(hits=145, misses=0, relowered_s=0.0)
 
-    assert gate.check_warm_pair(cold, warm, {"frontend_lowering_cache_warm_hit_floor": 0.9}) == []
+    assert (
+        gate.check_warm_pair(
+            cold, warm, {"frontend_lowering_cache_warm_hit_floor": 0.9}
+        )
+        == []
+    )
 
 
 def test_warm_pair_fails_hard_on_configured_but_ineffective_cache() -> None:

@@ -117,7 +117,10 @@ def main() -> None:
         log=None,
         limits=limits,
     ):
-        print("Relocatable runtime build failed; linked profile is required.", file=sys.stderr)
+        print(
+            "Relocatable runtime build failed; linked profile is required.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     wasm_binary = bench_wasm.prepare_wasm_binary(

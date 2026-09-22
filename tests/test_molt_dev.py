@@ -1158,8 +1158,8 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
 
 def test_detached_runner_never_forks_the_live_python_process(drv):
     """Detachment stays safe under memory-guard and free-threaded callers."""
-    source = Path(drv.__file__).with_name("molt_dev_detached.py").read_text(
-        encoding="utf-8"
+    source = (
+        Path(drv.__file__).with_name("molt_dev_detached.py").read_text(encoding="utf-8")
     )
     assert "os.fork(" not in source
     assert "start_new_session" in source

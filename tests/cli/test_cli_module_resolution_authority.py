@@ -106,8 +106,6 @@ def test_case_exact_file_recovers_from_stale_dir_entry_cache(
             return frozenset()
         return real_entries(dir_text)
 
-    monkeypatch.setattr(
-        module_resolution, "_case_exact_dir_entries", _stale_entries
-    )
+    monkeypatch.setattr(module_resolution, "_case_exact_dir_entries", _stale_entries)
 
     assert module_resolution._case_exact_file(module_path)

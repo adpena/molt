@@ -63,9 +63,7 @@ def _write_proof_receipt(
     payload = {
         "schema": "molt.reproducibility-proof.v2",
         "status": (
-            "success"
-            if executed > 0 and failed == 0 and errors == 0
-            else "failure"
+            "success" if executed > 0 and failed == 0 and errors == 0 else "failure"
         ),
         "mode": mode,
         "selected": selected,
@@ -584,9 +582,7 @@ def main() -> int:
             print(f"\nREPRODUCIBLE: All {args.runs} builds are bit-identical.")
             return 0
         else:
-            print(
-                f"\nFAILED: Artifacts differ across {args.runs} independent builds."
-            )
+            print(f"\nFAILED: Artifacts differ across {args.runs} independent builds.")
             return 1
 
     # Mode: compare two pre-built JSON files

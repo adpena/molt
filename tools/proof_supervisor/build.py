@@ -26,7 +26,13 @@ def main() -> int:
     parser.add_argument("--target")
     args = parser.parse_args()
 
-    command = ["cargo", "build", "--locked", "--manifest-path", str(ROOT / "Cargo.toml")]
+    command = [
+        "cargo",
+        "build",
+        "--locked",
+        "--manifest-path",
+        str(ROOT / "Cargo.toml"),
+    ]
     profile = "debug"
     if args.release:
         command.append("--release")

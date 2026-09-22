@@ -28,7 +28,9 @@ def write_wasm_execution_manifest(
     for label, module in selected.items():
         data = module.read_bytes()
         modules[label] = {
-            "path": os.path.relpath(module.resolve(), root.resolve()).replace(os.sep, "/"),
+            "path": os.path.relpath(module.resolve(), root.resolve()).replace(
+                os.sep, "/"
+            ),
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }

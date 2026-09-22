@@ -1605,13 +1605,15 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
         for path in _iter_source_files(root, (".rs",)):
             rel = path.relative_to(root).as_posix()
             if (
-                rel == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
+                rel
+                == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
                 or rel.startswith(surface_prefix)
             ):
                 targets.append(path)
     else:
         targets = [
-            root / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+            root
+            / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
         ]
         base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
         if base.is_dir():
@@ -2367,9 +2369,7 @@ def main(argv: list[str] | None = None) -> int:
                     "findings_count": len(findings),
                     "improved_metrics": improved,
                     "metrics": metrics,
-                    "regressed_metrics": [
-                        key for key, _base, _cur in regressions
-                    ],
+                    "regressed_metrics": [key for key, _base, _cur in regressions],
                 },
                 input_paths=[baseline_path],
                 repo_root=root,

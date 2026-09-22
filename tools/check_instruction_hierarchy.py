@@ -28,9 +28,15 @@ _REPO_POINTER_RE = re.compile(
 _MACHINE_STATE_PATTERNS = (
     ("absolute Windows path", re.compile(r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/]")),
     ("UNC or extended Windows path", re.compile(r"\\\\(?:\?|\.|[^\\\s]+)\\")),
-    ("absolute user or temporary path", re.compile(r"(?i)(?<!\w)/(?:users|home|tmp|var/tmp)/")),
+    (
+        "absolute user or temporary path",
+        re.compile(r"(?i)(?<!\w)/(?:users|home|tmp|var/tmp)/"),
+    ),
     ("OneDrive workstation path", re.compile(r"(?i)\bonedrive\b")),
-    ("concrete process id", re.compile(r"(?i)\b(?:pid|process[ -]?id)\s*(?:=|:|is)\s*\d+\b")),
+    (
+        "concrete process id",
+        re.compile(r"(?i)\b(?:pid|process[ -]?id)\s*(?:=|:|is)\s*\d+\b"),
+    ),
 )
 
 
@@ -91,7 +97,9 @@ def audit(root: Path = ROOT) -> AuditResult:
             failures.append("AGENTS.md: contains no repository instruction pointers")
         for pointer in pointers:
             if not (root / pointer).is_file():
-                failures.append(f"AGENTS.md: referenced pointer does not exist: {pointer}")
+                failures.append(
+                    f"AGENTS.md: referenced pointer does not exist: {pointer}"
+                )
 
     claude_text = _read(root / "CLAUDE.md", failures)
     if claude_text and claude_text != CLAUDE_IMPORT:
@@ -101,16 +109,16 @@ def audit(root: Path = ROOT) -> AuditResult:
         archive_path = root / relative
         archive_text = _read(archive_path, failures)
         if archive_text and not archive_text.startswith(ARCHIVE_MARKER + "\n"):
-            failures.append(
-                f"{relative}: must start with {ARCHIVE_MARKER!r}"
-            )
+            failures.append(f"{relative}: must start with {ARCHIVE_MARKER!r}")
 
     return AuditResult(tuple(failures))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="emit machine-readable output")
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable output"
+    )
     args = parser.parse_args(argv)
     result = audit()
     if args.json:

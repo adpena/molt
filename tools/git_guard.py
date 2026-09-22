@@ -32,6 +32,7 @@ Safe alternatives the guard points you to:
     (the plumbing-landing pattern: read-tree origin/main -> update-index ->
     write-tree -> commit-tree -> push).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,6 +40,7 @@ import os
 import subprocess
 import sys
 import time
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -46,9 +48,12 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+
 # git <subcommand> -> predicate(rest_args) -> True if this invocation discards
 # working-tree / index / ref state that is not otherwise recoverable.
-def _has_flag(a: list[str], short_chars: str = "", long_flags: tuple[str, ...] = ()) -> bool:
+def _has_flag(
+    a: list[str], short_chars: str = "", long_flags: tuple[str, ...] = ()
+) -> bool:
     """Detect a flag whether written standalone (`-f`), CLUSTERED (`-fd`,
     `-fdx`), or long (`--force`). Cluster handling is essential: `git clean -fd`
     is the common destructive form and must not slip through an exact match."""
@@ -181,7 +186,9 @@ def cmd_run(git_args: list[str], override: bool) -> int:
     danger = classify(git_args)
     if danger and is_shared_checkout():
         snap = snapshot(label=f"pre-{danger}")
-        snaptxt = f"recovery snapshot: {snap[0]}" if snap else "(working tree already clean)"
+        snaptxt = (
+            f"recovery snapshot: {snap[0]}" if snap else "(working tree already clean)"
+        )
         if not override:
             sys.stderr.write(
                 f"\n[git-guard] BLOCKED: `git {' '.join(git_args)}` is a DESTRUCTIVE\n"
@@ -219,13 +226,22 @@ def cmd_snapshot(label: str) -> int:
 
 
 def cmd_list() -> int:
-    r = _git(["for-each-ref", "--sort=-refname", "--format=%(refname) %(objectname:short)", "refs/wip-guard/"])
+    r = _git(
+        [
+            "for-each-ref",
+            "--sort=-refname",
+            "--format=%(refname) %(objectname:short)",
+            "refs/wip-guard/",
+        ]
+    )
     sys.stdout.write(r.stdout or "(no recovery snapshots)\n")
     return 0
 
 
 def cmd_watch(interval: int) -> int:
-    sys.stderr.write(f"[git-guard] recovery watch every {interval}s -> refs/wip-guard/*\n")
+    sys.stderr.write(
+        f"[git-guard] recovery watch every {interval}s -> refs/wip-guard/*\n"
+    )
     last = None
     while True:
         try:
@@ -257,7 +273,10 @@ def main(argv: list[str]) -> int:
         return xs[1:] if xs and xs[0] == "--" else xs
 
     if args.cmd == "run":
-        return cmd_run(_strip_dashdash(args.git_args), override=os.environ.get("MOLT_GIT_GUARD_OVERRIDE") == "1")
+        return cmd_run(
+            _strip_dashdash(args.git_args),
+            override=os.environ.get("MOLT_GIT_GUARD_OVERRIDE") == "1",
+        )
     if args.cmd == "check":
         return cmd_check(_strip_dashdash(args.git_args))
     if args.cmd == "snapshot":

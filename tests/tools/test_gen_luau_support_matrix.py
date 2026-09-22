@@ -226,7 +226,7 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
 
 def test_execution_frames_are_implemented_but_introspection_is_not_admitted() -> None:
     mod = _load_module()
-    source = r'''
+    source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
             "trace_enter_slot" => { self.emit_line("molt_frame_enter(code)"); }
@@ -238,7 +238,7 @@ def test_execution_frames_are_implemented_but_introspection_is_not_admitted() ->
             }
         }
     }
-    '''
+    """
 
     rows = {row.op: row for row in mod.collect_rows_from_text(source)}
 

@@ -78,6 +78,7 @@ If you have used Flask Blueprints or Django apps, you already know the pattern. 
 from edgebox.plugin import EdgeboxPlugin
 from edgebox.types import PluginConfig
 
+
 class GithubPluginConfig(PluginConfig):
     name = "github"
     verbose_name = "GitHub Integration"
@@ -87,6 +88,7 @@ class GithubPluginConfig(PluginConfig):
         "stale_days": 7,
     }
 
+
 plugin = EdgeboxPlugin("github", __name__, config_class=GithubPluginConfig)
 ```
 
@@ -95,6 +97,7 @@ plugin = EdgeboxPlugin("github", __name__, config_class=GithubPluginConfig)
 ```python
 # edgebox/plugins/github/tools.py
 from edgebox.plugins.github import plugin
+
 
 @plugin.tool("get_timeline", description="Get PR event timeline")
 def get_timeline(box, pr_id=0, limit=50):
@@ -109,18 +112,21 @@ def get_timeline(box, pr_id=0, limit=50):
 ```python
 from edgebox.box import Box
 
+
 class MyBox(Box):
     def __init__(self):
-        super().__init__(manifest={
-            "plugins": [
-                "edgebox.plugins.github",
-                "edgebox.plugins.slack",
-            ],
-            "config": {
-                "github": {"stale_days": 14},
-                "slack": {"channel": "#pr-reviews"},
-            },
-        })
+        super().__init__(
+            manifest={
+                "plugins": [
+                    "edgebox.plugins.github",
+                    "edgebox.plugins.slack",
+                ],
+                "config": {
+                    "github": {"stale_days": 14},
+                    "slack": {"channel": "#pr-reviews"},
+                },
+            }
+        )
 ```
 
 ## Available Plugins
@@ -188,6 +194,7 @@ The simplest approach -- define everything on the Box subclass:
 from edgebox.box import Box, tool, alarm
 from edgebox.db import BoxDB
 
+
 class MyBox(Box):
     def __init__(self):
         super().__init__()
@@ -201,6 +208,7 @@ class MyBox(Box):
     def cleanup(self):
         self.db.execute("DELETE FROM logs WHERE ts < datetime('now', '-30 days')")
         return {"cleaned": True}
+
 
 if __name__ == "__main__":
     box = MyBox()
@@ -216,13 +224,17 @@ For larger projects, split functionality into plugins:
 from edgebox.box import Box
 from edgebox.db import BoxDB
 
+
 class MyBox(Box):
     def __init__(self):
-        super().__init__(manifest={
-            "plugins": ["edgebox.plugins.github"],
-            "config": {"github": {"stale_days": 14}},
-        })
+        super().__init__(
+            manifest={
+                "plugins": ["edgebox.plugins.github"],
+                "config": {"github": {"stale_days": 14}},
+            }
+        )
         self.db = BoxDB("my_data.db")
+
 
 if __name__ == "__main__":
     box = MyBox()

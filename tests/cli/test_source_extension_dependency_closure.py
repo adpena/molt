@@ -14,7 +14,7 @@ def test_depfile_parser_preserves_escaped_paths_and_continuations(
 ) -> None:
     source = tmp_path / "source file.c"
     header = tmp_path / "include" / "header value.h"
-    source.write_text("#include \"header value.h\"\n", encoding="utf-8")
+    source.write_text('#include "header value.h"\n', encoding="utf-8")
     header.parent.mkdir()
     header.write_text("#define VALUE 1\n", encoding="utf-8")
     depfile = tmp_path / "object.d"
@@ -60,7 +60,9 @@ def test_object_closure_identity_includes_checksummed_headers(
     assert error is None
     assert fact is not None
     assert fact.dependencies[0].path == header.resolve()
-    assert fact.dependencies[0].sha256 == hashlib.sha256(header.read_bytes()).hexdigest()
+    assert (
+        fact.dependencies[0].sha256 == hashlib.sha256(header.read_bytes()).hexdigest()
+    )
     closure, errors = source_extensions._compute_source_extension_object_closure(
         init_symbol="PyInit_module",
         object_facts=(fact,),

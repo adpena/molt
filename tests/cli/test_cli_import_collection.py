@@ -20501,7 +20501,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     expected_worker_env = [
         f"{name}={value}"
         for name, value in sorted(
-            {**resolved_policy.to_env_vars(), "MOLT_EXECUTION_TARGET": "cloudflare"}.items()
+            {
+                **resolved_policy.to_env_vars(),
+                "MOLT_EXECUTION_TARGET": "cloudflare",
+            }.items()
         )
     ]
     assert json.dumps(expected_worker_env, ensure_ascii=True) in worker_source

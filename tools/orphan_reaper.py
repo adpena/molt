@@ -44,6 +44,7 @@ Modes:
   orphan_reaper.py sweep [--dry-run]          one-shot; --dry-run only reports
   orphan_reaper.py watch [--interval 90]      periodic sweep (default 90s)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -215,9 +216,7 @@ def _report(reaped: dict[str, int], dry_run: bool) -> None:
     detail = ", ".join(
         f"{n}={c}" for n, c in sorted(reaped.items(), key=lambda kv: -kv[1])
     )
-    print(
-        f"orphan_reaper: {verb} {total} orphaned Molt build processes [{detail}]"
-    )
+    print(f"orphan_reaper: {verb} {total} orphaned Molt build processes [{detail}]")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

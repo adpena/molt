@@ -13,7 +13,9 @@ GATE = REPO_ROOT / "tools" / "check_stdlib_intrinsic_surface.py"
 
 
 def _load_gate():
-    spec = importlib.util.spec_from_file_location("check_stdlib_intrinsic_surface", GATE)
+    spec = importlib.util.spec_from_file_location(
+        "check_stdlib_intrinsic_surface", GATE
+    )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -24,7 +26,10 @@ def test_green_on_real_tree_with_check_exits_0() -> None:
     # The gate must be GREEN on the shipped tree (decompositions preserve
     # registration) — else it can't be a tier-1 gate.
     res = run_guarded_test_process(
-        [sys.executable, str(GATE), "--check"], cwd=REPO_ROOT, capture_output=True, text=True
+        [sys.executable, str(GATE), "--check"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     assert res.returncode == 0, res.stdout + res.stderr
 
@@ -35,7 +40,9 @@ def test_detects_required_but_unregistered(tmp_path, monkeypatch) -> None:
     stdlib.mkdir()
     (stdlib / "mod.py").write_text('x = _require_intrinsic("molt_needed_symbol")\n')
     gen = tmp_path / "generated.rs"
-    gen.write_text('IntrinsicSpec { name: "molt_other", ... }\n')  # molt_needed_symbol absent
+    gen.write_text(
+        'IntrinsicSpec { name: "molt_other", ... }\n'
+    )  # molt_needed_symbol absent
     monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(gate, "STDLIB_ROOT", stdlib)
     monkeypatch.setattr(gate, "GENERATED_RS", gen)

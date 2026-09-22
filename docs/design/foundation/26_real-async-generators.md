@@ -348,6 +348,7 @@ def walk(top, topdown=True, onerror=None, followlinks=False):
     sys.audit("os.walk", top, topdown, onerror, followlinks)
     return _walk(fspath(top), topdown, onerror, followlinks)
 
+
 def _walk(top, topdown, onerror, followlinks):
     dirs = []
     nondirs = []

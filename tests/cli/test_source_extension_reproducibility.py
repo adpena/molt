@@ -139,9 +139,7 @@ def test_meson_metadata_identity_ignores_roots_and_transient_dependency_ids(
     ]
 
     first_canonical = _canonicalize_meson_metadata(first, ((first_root, "@build"),))
-    second_canonical = _canonicalize_meson_metadata(
-        second, ((second_root, "@build"),)
-    )
+    second_canonical = _canonicalize_meson_metadata(second, ((second_root, "@build"),))
     assert first_canonical == second_canonical
     assert first_canonical[0]["name"] == "dep123"
 

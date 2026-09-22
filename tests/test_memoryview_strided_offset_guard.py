@@ -17,7 +17,9 @@ RUNTIME_MEMORYVIEW_PATH = ROOT / "runtime/molt-runtime/src/object/memoryview.rs"
 RUNTIME_BUILDERS_PATH = ROOT / "runtime/molt-runtime/src/object/builders.rs"
 C_API_MOLT_API_PATH = ROOT / "runtime/molt-runtime/src/c_api/molt_api.rs"
 C_API_MOD_PATH = ROOT / "runtime/molt-runtime/src/c_api/mod.rs"
-C_API_SURFACE_PATH = ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
+C_API_SURFACE_PATH = (
+    ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
+)
 CPYTHON_ABI_HOOKS_PATH = ROOT / "runtime/molt-cpython-abi/src/hooks.rs"
 CPYTHON_ABI_TYPES_PATH = ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
 CPYTHON_ABI_BUFFER_PATH = ROOT / "runtime/molt-cpython-abi/src/api/buffer.rs"
@@ -96,7 +98,9 @@ def _c_molt_buffer_fields(source: str) -> list[str]:
 
 
 def _rust_molt_buffer_fields(source: str) -> list[str]:
-    match = re.search(r"pub\s+struct\s+MoltBufferView\s*\{(?P<body>.*?)\n\}", source, re.S)
+    match = re.search(
+        r"pub\s+struct\s+MoltBufferView\s*\{(?P<body>.*?)\n\}", source, re.S
+    )
     assert match is not None, "Rust MoltBufferView struct is missing"
     fields: list[str] = []
     for raw_line in match.group("body").splitlines():
@@ -129,7 +133,9 @@ def _rust_const_value(source: str, name: str) -> int:
 def test_memoryview_offsets_use_checked_stride_primitives() -> None:
     offenders: list[str] = []
     for path in MEMORYVIEW_OFFSET_FILES:
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if any(pattern.search(line) for pattern in FORBIDDEN_RAW_STRIDE_PATTERNS):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()}")
 
@@ -141,9 +147,9 @@ def test_memoryview_offsets_use_checked_stride_primitives() -> None:
 
 
 def test_memoryview_contains_uses_strided_search_without_materializing_view() -> None:
-    subscript_source = (ROOT / "runtime/molt-runtime/src/object/ops/subscript.rs").read_text(
-        encoding="utf-8"
-    )
+    subscript_source = (
+        ROOT / "runtime/molt-runtime/src/object/ops/subscript.rs"
+    ).read_text(encoding="utf-8")
     contains_body = _rust_function_body(subscript_source, "molt_contains")
 
     assert "unsafe fn memoryview_strided_contains_byte" in subscript_source
@@ -164,21 +170,47 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     assert _c_molt_buffer_fields(header_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(runtime_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(cpython_abi_source) == MOLT_BUFFER_VIEW_FIELDS
-    assert _canonical_buffer_fields(
-        _rust_molt_buffer_fields(http_bridge_source.replace("BufferExport", "MoltBufferView"))
-    ) == MOLT_BUFFER_VIEW_FIELDS
+    assert (
+        _canonical_buffer_fields(
+            _rust_molt_buffer_fields(
+                http_bridge_source.replace("BufferExport", "MoltBufferView")
+            )
+        )
+        == MOLT_BUFFER_VIEW_FIELDS
+    )
     assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 4
     assert _rust_const_value(c_api_source, "MOLT_C_API_VERSION") == 4
-    assert "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);" in header_source
-    assert '#define molt_buffer_export ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_export"))' in header_source
+    assert (
+        "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);"
+        in header_source
+    )
+    assert (
+        '#define molt_buffer_export ((int32_t (*)(MoltHandle, MoltBufferView *))_molt_host_abi_symbol("molt_buffer_export"))'
+        in header_source
+    )
     assert "int32_t molt_c_heap_register(uintptr_t ptr);" in header_source
     assert "int32_t molt_c_heap_unregister(uintptr_t ptr);" in header_source
     assert "int32_t molt_c_heap_contains(uintptr_t ptr);" in header_source
-    assert "uintptr_t molt_c_heap_type_canonicalize(uint32_t kind, uintptr_t ptr);" in header_source
-    assert "pub extern \"C\" fn molt_c_heap_register(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_unregister(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_contains(ptr: usize) -> i32" in c_api_symbols_source
-    assert "pub extern \"C\" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize" in c_api_symbols_source
+    assert (
+        "uintptr_t molt_c_heap_type_canonicalize(uint32_t kind, uintptr_t ptr);"
+        in header_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_register(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_unregister(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_contains(ptr: usize) -> i32'
+        in c_api_symbols_source
+    )
+    assert (
+        'pub extern "C" fn molt_c_heap_type_canonicalize(kind: u32, ptr: usize) -> usize'
+        in c_api_symbols_source
+    )
 
 
 def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
@@ -250,7 +282,10 @@ def test_molt_buffer_view_readonly_contract_is_canonical() -> None:
     runtime_source = RUNTIME_MEMORYVIEW_PATH.read_text(encoding="utf-8")
     surface_source = C_API_SURFACE_PATH.read_text(encoding="utf-8")
 
-    assert "Canonical bool: 0 writable, 1 read-only; other values are rejected." in header_source
+    assert (
+        "Canonical bool: 0 writable, 1 read-only; other values are rejected."
+        in header_source
+    )
     assert (
         "Canonical bool exported as 0/1; importers reject every other value."
         in runtime_source
@@ -263,7 +298,9 @@ def test_molt_buffer_view_readonly_contract_is_canonical() -> None:
     )
 
 
-def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> None:
+def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_only() -> (
+    None
+):
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     body = _function_body(header_source, "PyMemoryView_FromBuffer")
 
@@ -275,9 +312,15 @@ def test_public_python_h_rebuilds_public_pybuffer_and_trusts_runtime_capacity_on
     assert "trusted_molt_view = info->internal == &info->_molt_view" in body
     assert "ndim = info->ndim" in body
     assert "info->ndim > 0 ? info->ndim : 1" not in body
-    assert "view.backing_capacity = trusted_molt_view ? info->_molt_view.backing_capacity : view.len" in body
+    assert (
+        "view.backing_capacity = trusted_molt_view ? info->_molt_view.backing_capacity : view.len"
+        in body
+    )
     assert "view.offset = trusted_molt_view ? info->_molt_view.offset : 0" in body
-    assert "PyBuffer_FillContiguousStrides((int)ndim, view.shape, view.strides, (int)view.itemsize, 'C')" in body
+    assert (
+        "PyBuffer_FillContiguousStrides((int)ndim, view.shape, view.strides, (int)view.itemsize, 'C')"
+        in body
+    )
     assert "strided foreign buffer requires runtime backing capacity" in body
     assert "? info->_molt_view.base" in body
     assert ": (info->obj != NULL ? _molt_py_handle(info->obj) : 0)" in body
@@ -331,9 +374,9 @@ def test_compiled_abi_rejects_indirect_pybuffer_topology() -> None:
     assert "is_registered_buffer_internal(info.internal)" in descriptor_body
     assert "(*info.internal.cast::<BufferInternal>()).descriptor" in descriptor_body
     assert "descriptor.backing_capacity = info.len as u64" in descriptor_body
-    assert descriptor_body.find("(*info.internal.cast::<BufferInternal>()).descriptor") < descriptor_body.find(
-        "descriptor.backing_capacity = info.len as u64"
-    )
+    assert descriptor_body.find(
+        "(*info.internal.cast::<BufferInternal>()).descriptor"
+    ) < descriptor_body.find("descriptor.backing_capacity = info.len as u64")
     assert "let ndim = info.ndim as usize" in descriptor_body
     assert "info.ndim == 0" not in descriptor_body
     assert "!pybuffer_is_c_contiguous" in descriptor_body
@@ -361,8 +404,14 @@ def test_buffer_support_probe_does_not_require_simple_contiguity() -> None:
     assert "PyObject_GetBuffer" not in public_body
 
     assert "let mut descriptor = MoltBufferView::default()" in compiled_body
-    assert "(hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView)" in compiled_body
-    assert "(hooks.buffer_release)(&mut descriptor as *mut MoltBufferView)" in compiled_body
+    assert (
+        "(hooks.buffer_acquire)(bits, &mut descriptor as *mut MoltBufferView)"
+        in compiled_body
+    )
+    assert (
+        "(hooks.buffer_release)(&mut descriptor as *mut MoltBufferView)"
+        in compiled_body
+    )
     assert "PyBUF_SIMPLE" not in compiled_body
     assert "PyObject_GetBuffer" not in compiled_body
 
@@ -398,26 +447,41 @@ def test_public_pybuffer_routes_c_heap_objects_through_lease_authority() -> None
         in public_release_body
     )
     assert "molt_buffer_release(view)" in public_release_exported_body
-    assert "molt_c_heap_release_buffer((uintptr_t)obj, view)" in public_release_exported_body
+    assert (
+        "molt_c_heap_release_buffer((uintptr_t)obj, view)"
+        in public_release_exported_body
+    )
 
 
 def test_noncontiguous_buffers_require_stride_metadata() -> None:
     header_source = PYTHON_HEADER_PATH.read_text(encoding="utf-8")
     abi_buffer_source = CPYTHON_ABI_BUFFER_PATH.read_text(encoding="utf-8")
 
-    public_descriptor_body = _function_body(header_source, "_molt_pybuffer_descriptor_satisfies_flags")
+    public_descriptor_body = _function_body(
+        header_source, "_molt_pybuffer_descriptor_satisfies_flags"
+    )
     public_getbuffer_body = _function_body(header_source, "PyObject_GetBuffer")
-    compiled_descriptor_body = _rust_function_body(abi_buffer_source, "descriptor_satisfies_flags")
-    compiled_install_body = _rust_function_body(abi_buffer_source, "install_buffer_internal")
+    compiled_descriptor_body = _rust_function_body(
+        abi_buffer_source, "descriptor_satisfies_flags"
+    )
+    compiled_install_body = _rust_function_body(
+        abi_buffer_source, "install_buffer_internal"
+    )
 
     assert "(flags & PyBUF_STRIDES) == 0" in public_descriptor_body
     assert "!_molt_buffer_view_is_c_contiguous(view)" in public_descriptor_body
-    assert "_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)" in public_getbuffer_body
+    assert (
+        "_molt_pybuffer_descriptor_satisfies_flags(&view->_molt_view, flags)"
+        in public_getbuffer_body
+    )
     assert "non-contiguous buffers require PyBUF_STRIDES" in public_getbuffer_body
 
     assert "(flags & PyBUF_STRIDES) == 0" in compiled_descriptor_body
     assert "!descriptor_is_c_contiguous(descriptor)" in compiled_descriptor_body
-    assert "descriptor_satisfies_flags(&internal.descriptor, flags)" in compiled_install_body
+    assert (
+        "descriptor_satisfies_flags(&internal.descriptor, flags)"
+        in compiled_install_body
+    )
     assert "non-contiguous buffers require PyBUF_STRIDES" in compiled_install_body
 
 
@@ -426,7 +490,9 @@ def test_buffer_format_metadata_fails_closed_instead_of_truncating() -> None:
     abi_buffer_source = CPYTHON_ABI_BUFFER_PATH.read_text(encoding="utf-8")
 
     public_memoryview_body = _function_body(header_source, "PyMemoryView_FromBuffer")
-    compiled_descriptor_body = _rust_function_body(abi_buffer_source, "descriptor_from_pybuffer")
+    compiled_descriptor_body = _rust_function_body(
+        abi_buffer_source, "descriptor_from_pybuffer"
+    )
 
     assert "size_t cap = MOLT_BUFFER_FORMAT_CAP - 1u" in public_memoryview_body
     assert "n > cap" in public_memoryview_body
@@ -446,12 +512,18 @@ def test_public_python_h_memoryview_get_buffer_has_per_object_cache() -> None:
     assert "_molt_memoryview_export_slot(" not in header_source
     assert "typedef struct _molt_memoryview_export_slot" in header_source
     assert "#define _MOLT_MEMORYVIEW_EXPORT_SLOT_COUNT 64u" in header_source
-    assert "static inline _MoltMemoryViewExportSlot *_molt_memoryview_export_slots" in header_source
+    assert (
+        "static inline _MoltMemoryViewExportSlot *_molt_memoryview_export_slots"
+        in header_source
+    )
     assert "static inline size_t *_molt_memoryview_export_next_slot" in header_source
     assert "slots[i].mview == mview" in cache_body
     assert "PyMem_Calloc" not in cache_body
     assert "PyObject_GetBuffer" not in cache_body
-    assert "molt_buffer_export(_molt_py_handle(slot->mview), &slot->view._molt_view)" in refresh_body
+    assert (
+        "molt_buffer_export(_molt_py_handle(slot->mview), &slot->view._molt_view)"
+        in refresh_body
+    )
     assert "slot->view.internal = &slot->view._molt_view" in refresh_body
     assert "slot->view.obj = NULL" in refresh_body
     assert "PyBuffer_Release" not in get_buffer_body

@@ -110,7 +110,11 @@ def static_test_truthiness(
                 if value_truth is None:
                     saw_unknown = True
             return None if saw_unknown else False
-    if isinstance(expr, ast.Compare) and len(expr.ops) == 1 and len(expr.comparators) == 1:
+    if (
+        isinstance(expr, ast.Compare)
+        and len(expr.ops) == 1
+        and len(expr.comparators) == 1
+    ):
         target_platform_truth = _static_sys_platform_compare_truth(
             expr.left,
             expr.ops[0],

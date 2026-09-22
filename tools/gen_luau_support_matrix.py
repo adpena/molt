@@ -90,9 +90,7 @@ for _table in ("simpleir_control_kind", "frontend_effect_kind"):
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_LITERAL_LIMITED)
 _REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
-_REGISTERED_SIMPLEIR_KINDS.update(
-    _kind_set("simpleir_runtime_neutral_semantics_kinds")
-)
+_REGISTERED_SIMPLEIR_KINDS.update(_kind_set("simpleir_runtime_neutral_semantics_kinds"))
 
 
 @dataclass(frozen=True)

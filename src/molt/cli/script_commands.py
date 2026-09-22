@@ -136,7 +136,9 @@ def _apply_run_capability_policy(
                 envelope,
                 io=replace(envelope.io, mode=cast(IoMode, io_mode)),
             )
-        tier = env.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER).strip().casefold()
+        tier = (
+            env.get("MOLT_CAPABILITY_TIER", DEFAULT_CAPABILITY_TIER).strip().casefold()
+        )
         env.update(envelope.to_env_vars(policy, tier=tier))
     except Exception as exc:
         return f"Invalid capability policy: {exc}"

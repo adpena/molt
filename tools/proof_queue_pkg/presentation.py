@@ -32,7 +32,6 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
     return 0
 
 
-
 def _cmd_template(args: argparse.Namespace) -> int:
     del args
     print(
@@ -51,7 +50,6 @@ def _cmd_template(args: argparse.Namespace) -> int:
         'command = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "pytest", "tests/path.py", "-q"]\n'
     )
     return 0
-
 
 
 def _cmd_cargo_template(args: argparse.Namespace) -> int:

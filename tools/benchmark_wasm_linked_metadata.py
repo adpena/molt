@@ -8,6 +8,7 @@ import hashlib
 import json
 import statistics
 from pathlib import Path
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -41,7 +42,14 @@ process.stdout.write(JSON.stringify({
 
 def sample(artifact: Path, mode: str) -> dict[str, int | float]:
     completed = _COMMANDS.run(
-        ["node", "-e", NODE_PROBE, str(ROOT / "wasm" / "loader_bridge.js"), str(artifact), mode],
+        [
+            "node",
+            "-e",
+            NODE_PROBE,
+            str(ROOT / "wasm" / "loader_bridge.js"),
+            str(artifact),
+            mode,
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -108,7 +116,11 @@ def main() -> int:
         },
         "memory_ceiling": {
             "pass": True,
-            "max_rss_bytes": max(int(run["rss_bytes"]) for mode_runs in runs.values() for run in mode_runs),
+            "max_rss_bytes": max(
+                int(run["rss_bytes"])
+                for mode_runs in runs.values()
+                for run in mode_runs
+            ),
         },
         "contract": {
             "artifact_bytes": reference["artifact_bytes"],

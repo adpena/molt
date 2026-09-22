@@ -84,7 +84,9 @@ def test_windows_auto_disables_sccache(monkeypatch, capsys):
     monkeypatch.setattr(dx.os, "name", "nt")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     tried = {"n": 0}
-    monkeypatch.setattr(dx, "_provision_sccache", lambda: tried.__setitem__("n", tried["n"] + 1))
+    monkeypatch.setattr(
+        dx, "_provision_sccache", lambda: tried.__setitem__("n", tried["n"] + 1)
+    )
     env: dict[str, str] = {}  # mode defaults to "auto"
     dx._ensure_sccache_wrapper(env)
     assert "RUSTC_WRAPPER" not in env

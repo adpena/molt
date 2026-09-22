@@ -143,7 +143,9 @@ def stable_uv_project_env_dir(
     source_root: Path,
 ) -> Path:
     source = source_root.expanduser().resolve()
-    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
+    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
+        :12
+    ]
     source_name = uv_project_env_component(source.name)[:24]
     name = (
         f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"

@@ -134,9 +134,9 @@ prevents untrusted code from suppressing resource exhaustion:
 
 ```python
 try:
-    2 ** (1 << 40)   # Resource violation
+    2 ** (1 << 40)  # Resource violation
 except Exception:
-    pass              # Does NOT catch resource errors
+    pass  # Does NOT catch resource errors
 ```
 
 The sole exception is `RecursionError`, which remains catchable to match

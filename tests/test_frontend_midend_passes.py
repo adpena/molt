@@ -40,7 +40,9 @@ gen = (value for value in outer())
         i for i, op in enumerate(module_ops) if op["kind"] == "alloc_task"
     )
     assert iter_index < alloc_index
-    assert module_ops[alloc_index]["args"], "outer iterator cell must enter task payload"
+    assert module_ops[alloc_index]["args"], (
+        "outer iterator cell must enter task payload"
+    )
     assert any(op["kind"] == "closure_load" for op in poll_ops)
     assert not any(
         op["kind"] == "module_get_global" and op.get("s_value") == "outer"
@@ -2030,11 +2032,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
     gen.visit(ast.parse("first = 1\nsecond = 2\n"))
     ir = gen.to_json()
 
-    module_init = next(
-        func
-        for func in ir["functions"]
-        if func["name"] == "molt_main"
-    )
+    module_init = next(func for func in ir["functions"] if func["name"] == "molt_main")
     init_kinds = [op["kind"] for op in module_init["ops"]]
     assert module_init["execution_context"] == "local"
     assert init_kinds.count("trace_enter_slot") == 1
@@ -2045,9 +2043,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
     )
 
     chunks = [
-        func
-        for func in ir["functions"]
-        if "__molt_module_chunk_" in func["name"]
+        func for func in ir["functions"] if "__molt_module_chunk_" in func["name"]
     ]
     assert chunks
     chunk_names = {chunk["name"] for chunk in chunks}
@@ -2058,9 +2054,7 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
         for op in chunk["ops"]
     )
     threaded_calls = [
-        op
-        for op in module_init["ops"]
-        if op.get("s_value") in chunk_names
+        op for op in module_init["ops"] if op.get("s_value") in chunk_names
     ]
     assert {op["s_value"] for op in threaded_calls} == chunk_names
     assert all(op.get("passes_execution_context") is True for op in threaded_calls)

@@ -28,11 +28,25 @@ def test_classify_assigns_states(monkeypatch):
     ]
     monkeypatch.setattr(dh, "_worktrees", lambda: wts)
     monkeypatch.setattr(dh, "_worktree_exists", lambda p: not p.endswith("/gone"))
-    monkeypatch.setattr(dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0)
     monkeypatch.setattr(
-        dh, "_last_commit_epoch", lambda p: (now - 60) if p.endswith("fresh-recent") else 0
+        dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0
     )
-    uniq = {"fd": 1, "fr": 1, "sup": 0, "sig": 5, "l": 2, "x": 0, "cli": 0, "main": 0, "g": 0}
+    monkeypatch.setattr(
+        dh,
+        "_last_commit_epoch",
+        lambda p: (now - 60) if p.endswith("fresh-recent") else 0,
+    )
+    uniq = {
+        "fd": 1,
+        "fr": 1,
+        "sup": 0,
+        "sig": 5,
+        "l": 2,
+        "x": 0,
+        "cli": 0,
+        "main": 0,
+        "g": 0,
+    }
     monkeypatch.setattr(dh, "_unique_commit_count", lambda ref: uniq.get(ref, 0))
 
     state = {r["path"]: r["state"] for r in dh.classify(fresh_hours=24.0, now=now)}
@@ -62,9 +76,13 @@ def test_classify_computes_uniq_lazily(monkeypatch):
     ]
     monkeypatch.setattr(dh, "_worktrees", lambda: wts)
     monkeypatch.setattr(dh, "_worktree_exists", lambda p: True)
-    monkeypatch.setattr(dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0)
     monkeypatch.setattr(
-        dh, "_last_commit_epoch", lambda p: (now - 60) if p.endswith("fresh-recent") else 0
+        dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0
+    )
+    monkeypatch.setattr(
+        dh,
+        "_last_commit_epoch",
+        lambda p: (now - 60) if p.endswith("fresh-recent") else 0,
     )
     called: list[str] = []
 
@@ -87,13 +105,9 @@ def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypat
         {"path": "/sig", "branch": "sig", "uniq": 3, "dirty": 0, "state": "SIGNAL"},
         {"path": "/sup", "branch": "sup", "uniq": 0, "dirty": 0, "state": "SUPERSEDED"},
     ]
-    prunable_default = [
-        r for r in rows if r["state"] == "SUPERSEDED"
-    ]
+    prunable_default = [r for r in rows if r["state"] == "SUPERSEDED"]
     assert [r["path"] for r in prunable_default] == ["/sup"]
-    prunable_with_signal = [
-        r for r in rows if r["state"] in ("SUPERSEDED", "SIGNAL")
-    ]
+    prunable_with_signal = [r for r in rows if r["state"] in ("SUPERSEDED", "SIGNAL")]
     assert sorted(r["path"] for r in prunable_with_signal) == ["/sig", "/sup"]
 
 
@@ -152,9 +166,30 @@ def test_bundle_signal_captures_detached_head_signal(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dh, "_git", fake_git)
     rows = [
-        {"path": "/branch-sig", "branch": "b", "head": "aaa", "uniq": 2, "dirty": 0, "state": "SIGNAL"},
-        {"path": "/detached-sig", "branch": None, "head": "deadbeef", "uniq": 3, "dirty": 0, "state": "SIGNAL"},
-        {"path": "/sup", "branch": None, "head": "ccc", "uniq": 0, "dirty": 0, "state": "SUPERSEDED"},
+        {
+            "path": "/branch-sig",
+            "branch": "b",
+            "head": "aaa",
+            "uniq": 2,
+            "dirty": 0,
+            "state": "SIGNAL",
+        },
+        {
+            "path": "/detached-sig",
+            "branch": None,
+            "head": "deadbeef",
+            "uniq": 3,
+            "dirty": 0,
+            "state": "SIGNAL",
+        },
+        {
+            "path": "/sup",
+            "branch": None,
+            "head": "ccc",
+            "uniq": 0,
+            "dirty": 0,
+            "state": "SUPERSEDED",
+        },
     ]
     captured = dh.bundle_signal(rows, tmp_path / "b.bundle")
     # Both SIGNAL worktrees captured; the zero-unique one is not.
@@ -177,7 +212,13 @@ def test_gate_fails_on_sprawl_and_aged_signal_but_not_fresh():
     # Clean: 2 live worktrees, one FRESH-recent SIGNAL (2h old) — under thresholds.
     clean = [
         {"path": "/a", "branch": "a", "state": "FRESH", "uniq": 0, "last": now - hour},
-        {"path": "/sig", "branch": "s", "state": "SIGNAL", "uniq": 3, "last": now - 2 * hour},
+        {
+            "path": "/sig",
+            "branch": "s",
+            "state": "SIGNAL",
+            "uniq": 3,
+            "last": now - 2 * hour,
+        },
     ]
     assert dh.gate(clean, now, max_worktrees=24, max_signal_age_hours=72.0) == []
 
@@ -192,7 +233,13 @@ def test_gate_fails_on_sprawl_and_aged_signal_but_not_fresh():
     # Aged SIGNAL (100h old) trips STALE-SIGNAL; a STALE registration never counts
     # as a live worktree and never trips the signal check.
     aged = [
-        {"path": "/old", "branch": "old", "state": "SIGNAL", "uniq": 5, "last": now - 100 * hour},
+        {
+            "path": "/old",
+            "branch": "old",
+            "state": "SIGNAL",
+            "uniq": 5,
+            "last": now - 100 * hour,
+        },
         {"path": "/gone", "branch": "g", "state": "STALE", "uniq": 0, "last": 0},
     ]
     v2 = dh.gate(aged, now, max_worktrees=24, max_signal_age_hours=72.0)
@@ -213,7 +260,9 @@ def test_no_fetch_flag_skips_origin_refresh(monkeypatch, capsys):
 
     monkeypatch.setattr(dh, "_git", fake_git)
     monkeypatch.setattr(dh, "_worktrees", lambda: [])
-    monkeypatch.setattr("sys.argv", ["drift_harvest.py", "--gate", "--no-fetch", "--now", "1"])
+    monkeypatch.setattr(
+        "sys.argv", ["drift_harvest.py", "--gate", "--no-fetch", "--now", "1"]
+    )
 
     assert dh.main() == 0
     assert ["fetch", "origin", "--quiet"] not in calls

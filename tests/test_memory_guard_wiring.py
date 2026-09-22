@@ -921,9 +921,7 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
         pytest_memory_guard_bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_dir
     )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid
-    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid)
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(

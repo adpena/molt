@@ -75,9 +75,7 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
     gate = _load_gate_module()
     rows, _ = gate.load_registry()
     registered_files = {r.file for r in rows}
-    unregistered = sorted(
-        {s.file for s in gate.discover_sites()} - registered_files
-    )
+    unregistered = sorted({s.file for s in gate.discover_sites()} - registered_files)
     assert not unregistered, (
         "discovered degrade sites with no registry row: " + ", ".join(unregistered)
     )
@@ -104,9 +102,7 @@ def _write_synthetic_tree(root: Path, *, with_degrade: bool) -> Path:
 
     registry = root / "tools" / "degrade_to_slow_registry.toml"
     registry.parent.mkdir(parents=True, exist_ok=True)
-    registry.write_text(
-        "[meta]\nmetabug_fix_pending_baseline = 0\n", encoding="utf-8"
-    )
+    registry.write_text("[meta]\nmetabug_fix_pending_baseline = 0\n", encoding="utf-8")
     return registry
 
 
@@ -121,8 +117,7 @@ def test_negative_control_unregistered_degrade_site_fails_then_passes(
     # Sanity: the scanner actually sees the synthetic site.
     discovered = gate.discover_sites(tmp_path, gate.SCAN_ROOTS)
     assert any(
-        s.file == "src/molt/cli/synthetic_mod.py"
-        and "foo_fallback_serial" in s.marker
+        s.file == "src/molt/cli/synthetic_mod.py" and "foo_fallback_serial" in s.marker
         for s in discovered
     ), "scanner failed to discover the injected degrade signature"
 
@@ -220,9 +215,7 @@ def test_negative_control_make_loud_without_diagnostic_fails(
     )
     report = gate.run_gate(registry, repo_root=tmp_path)
     assert not report.ok
-    assert any(
-        "reaches NO diagnostic emit" in e for e in report.errors
-    ), report.errors
+    assert any("reaches NO diagnostic emit" in e for e in report.errors), report.errors
 
 
 if __name__ == "__main__":  # pragma: no cover

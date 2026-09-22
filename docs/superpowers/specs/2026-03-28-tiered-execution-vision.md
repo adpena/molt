@@ -232,6 +232,7 @@ The stub format is standard `.pyi` with Molt-specific extensions expressed as `#
 # molt: always_compile=true (JSON parsing is always hot)
 def loads(s: str) -> dict[str, Any]: ...
 
+
 # molt: unbox_return=true (return type is always dict)
 def dumps(obj: Any, *, indent: int | None = None) -> str: ...
 ```

@@ -147,6 +147,8 @@ class CythonRegeneration:
                 else None
             ),
         }
+
+
 def _leading_int(version: str) -> int | None:
     match = re.match(r"(\d+)", version)
     return int(match.group(1)) if match else None
@@ -304,9 +306,7 @@ _CYTHON_BUILTIN_CIMPORT_ROOTS = frozenset(
 # cimport ...`` contributes the ``X`` side. Leading-dot modules are relative and
 # need no external package-root include.
 _BARE_CIMPORT_RE = re.compile(r"^[ \t]*cimport[ \t]+(?P<modules>.+?)\s*$")
-_FROM_CIMPORT_RE = re.compile(
-    r"^[ \t]*from[ \t]+(?P<module>[.\w]+)[ \t]+cimport\b"
-)
+_FROM_CIMPORT_RE = re.compile(r"^[ \t]*from[ \t]+(?P<module>[.\w]+)[ \t]+cimport\b")
 _CIMPORT_AS_RE = re.compile(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*\s*$")
 _TOP_LEVEL_CIMPORT_RE = re.compile(r"^(?P<top>[A-Za-z_][A-Za-z0-9_]*)")
 
@@ -516,7 +516,8 @@ def _cimport_header_dirs_from_pxd_roots(
     def _has_header_child(path: Path) -> bool:
         try:
             return any(
-                child.is_file() and child.suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
+                child.is_file()
+                and child.suffix.lower() in {".h", ".hh", ".hpp", ".hxx"}
                 for child in path.iterdir()
             )
         except OSError:
@@ -745,7 +746,9 @@ def _token_resolves_to_path(
     if token.startswith("-") or "$" in token:
         return False
     try:
-        return _resolve_generator_path(token, build_root=build_root) == expected.resolve()
+        return (
+            _resolve_generator_path(token, build_root=build_root) == expected.resolve()
+        )
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -968,8 +971,7 @@ def _cython_generator_args_from_ninja(
     )
     if directive_error is not None:
         return None, (
-            f"invalid Meson Cython generator metadata for {original}: "
-            f"{directive_error}"
+            f"invalid Meson Cython generator metadata for {original}: {directive_error}"
         )
     return directives, None
 
@@ -1085,8 +1087,7 @@ def regenerate_cython_c_standalone(
     resolved_pyx = pyx_path.resolve()
     if resolved_pyx not in dependency_paths:
         return None, (
-            "Cython dependency closure omitted its primary input: "
-            f"{resolved_pyx}"
+            f"Cython dependency closure omitted its primary input: {resolved_pyx}"
         )
     dependencies = tuple(
         CythonDependency(path=path, sha256=_sha256_file(path))

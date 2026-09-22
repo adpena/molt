@@ -302,6 +302,8 @@ def sum_range(n):
     for i in range(n):
         total += i
     return total
+
+
 assert sum_range(4) == 6
 assert sum_range(0) == 0
 assert sum_range(1) == 0
@@ -318,6 +320,8 @@ def safe_sum(items):
         except IndexError:
             pass
     return total
+
+
 assert safe_sum([1, 2, 3, 4]) == 10
 assert safe_sum([1]) == 1
 ```
@@ -331,6 +335,8 @@ def typed_loop(x, n):
         if isinstance(x, int):
             result += x + i
     return result
+
+
 assert typed_loop(5, 4) == 26
 assert typed_loop("s", 4) == 0
 ```
@@ -345,6 +351,7 @@ def raising_range(n, bad):
             raise ValueError(f"bad {i}")
         total += i
     return total
+
 
 try:
     raising_range(4, 2)
@@ -362,6 +369,8 @@ def sum_large(n):
     for i in range(n):
         total += i
     return total
+
+
 assert sum_large(4) == 6
 # 1<<60 should stay bigint-correct even if IV strength reduction fires
 x = 1 << 60
@@ -376,7 +385,9 @@ def stride_sum(n, stride):
     for i in range(n):
         total += i * stride
     return total
-assert stride_sum(5, 3) == 30   # 0+3+6+9+12
+
+
+assert stride_sum(5, 3) == 30  # 0+3+6+9+12
 assert stride_sum(4, 0) == 0
 assert stride_sum(1, 7) == 0
 ```
@@ -388,6 +399,8 @@ def versioned_add(x, y):
     if isinstance(x, int) and isinstance(y, int):
         return x + y
     return 0
+
+
 assert versioned_add(3, 4) == 7
 assert versioned_add(3, "s") == 0
 assert versioned_add(1 << 60, 1) == (1 << 60) + 1  # BigInt path
@@ -400,6 +413,8 @@ def counted_loop(n):
     for i in range(n):
         s += i
     return s
+
+
 assert counted_loop(100) == 4950
 assert counted_loop(0) == 0
 assert counted_loop(1) == 0

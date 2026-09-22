@@ -27,7 +27,10 @@ def test_formal_correspondence_fails_when_zero_builtin_mappings_parse(
     receipt = check_correspondence.json_report([result])
 
     assert result.ok is False
-    assert result.metrics == {"builtin_mappings_parsed": 0, "builtin_mappings_mapped": 0}
+    assert result.metrics == {
+        "builtin_mappings_parsed": 0,
+        "builtin_mappings_mapped": 0,
+    }
     assert receipt["status"] == "failure"
     assert receipt["zero_work"] is False
     assert receipt["categories"][0]["metrics"]["builtin_mappings_mapped"] == 0

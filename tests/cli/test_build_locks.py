@@ -7,7 +7,8 @@ from molt.cli import build_locks
 
 
 def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """The in-process authority must not depend on OS same-process semantics."""
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: True)
@@ -26,7 +27,8 @@ def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
 
 
 def test_file_lock_releases_registry_reservation_when_platform_is_contended(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: False)
 

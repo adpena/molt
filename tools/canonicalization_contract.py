@@ -38,6 +38,7 @@ Modes (mirrors tools/gen_op_kinds.py / structural_audit.py CI convention):
   canonicalization_contract.py --check         exit 1 if any metric regressed vs baseline
   canonicalization_contract.py --update-baseline  re-pin the baseline
 """
+
 from __future__ import annotations
 
 import argparse
@@ -208,12 +209,11 @@ def layer_of(cid: str) -> str | None:
 
 def _stdlib_domain(cid: str) -> str | None:
     if cid.startswith(STDLIB_PREFIX):
-        return cid[len(STDLIB_PREFIX):]
-    if (
-        cid.startswith(LEGACY_RUNTIME_STDLIB_PREFIX)
-        and "stdlib satellite" in _crate_graph_roles().get(cid, "")
-    ):
-        return cid[len(LEGACY_RUNTIME_STDLIB_PREFIX):]
+        return cid[len(STDLIB_PREFIX) :]
+    if cid.startswith(
+        LEGACY_RUNTIME_STDLIB_PREFIX
+    ) and "stdlib satellite" in _crate_graph_roles().get(cid, ""):
+        return cid[len(LEGACY_RUNTIME_STDLIB_PREFIX) :]
     return None
 
 
@@ -235,7 +235,11 @@ def check_dependency_direction(crates: dict[str, Path]) -> list[Violation]:
             if dL is None:
                 continue
             if dL not in allowed:
-                sev = "high" if (L in ("stdlib", "third_party") and dL == "runtime") else "medium"
+                sev = (
+                    "high"
+                    if (L in ("stdlib", "third_party") and dL == "runtime")
+                    else "medium"
+                )
                 out.append(
                     Violation(
                         kind="layer_dependency",
@@ -283,7 +287,11 @@ def check_duplicate_authority(root: Path, crates: dict[str, Path]) -> list[Viola
         domain = _stdlib_domain(cid)
         if domain is None:
             continue
-        crate_lines = sum(_rs_line_count(p) for p in (cdir / "src").rglob("*.rs")) if (cdir / "src").is_dir() else 0
+        crate_lines = (
+            sum(_rs_line_count(p) for p in (cdir / "src").rglob("*.rs"))
+            if (cdir / "src").is_dir()
+            else 0
+        )
         impl = _builtins_domain_impl(root, domain)
         god_lines = sum(n for _p, n in impl)
         if god_lines >= FACADE_MIN_LINES and god_lines > crate_lines:
@@ -330,7 +338,10 @@ def check_workspace_membership(root: Path, crates: dict[str, Path]) -> list[Viol
     members = {crate_id(d) for d in workspace_members(root)}
     out = []
     for cid in sorted(crates):
-        if layer_of(cid) in ("core", "stdlib", "third_party", "runtime") and cid not in members:
+        if (
+            layer_of(cid) in ("core", "stdlib", "third_party", "runtime")
+            and cid not in members
+        ):
             out.append(
                 Violation(
                     kind="not_workspace_member",
@@ -351,29 +362,41 @@ def run_all(root: Path) -> list[Violation]:
     vs += check_duplicate_authority(root, crates)
     vs += check_misplaced_modules(root)
     vs += check_workspace_membership(root, crates)
-    vs.sort(key=lambda v: (-{"high": 2, "medium": 1}.get(v.severity, 0), -v.metric, v.crate))
+    vs.sort(
+        key=lambda v: (-{"high": 2, "medium": 1}.get(v.severity, 0), -v.metric, v.crate)
+    )
     return vs
 
 
 def ratchet_metrics(vs: list[Violation]) -> dict[str, float]:
     """Scalars that may only decrease; --check fails CI on any increase."""
     return {
-        "layer_dependency_violations": float(sum(1 for v in vs if v.kind == "layer_dependency")),
+        "layer_dependency_violations": float(
+            sum(1 for v in vs if v.kind == "layer_dependency")
+        ),
         "critical_layer_violations": float(
             sum(1 for v in vs if v.kind == "layer_dependency" and v.severity == "high")
         ),
-        "duplicate_authority_domains": float(sum(1 for v in vs if v.kind == "duplicate_authority")),
+        "duplicate_authority_domains": float(
+            sum(1 for v in vs if v.kind == "duplicate_authority")
+        ),
         "duplicate_authority_recoverable_lines": float(
             sum(int(v.metric) for v in vs if v.kind == "duplicate_authority")
         ),
-        "misplaced_module_lines": float(sum(int(v.metric) for v in vs if v.kind == "misplaced_module")),
-        "non_member_layer_crates": float(sum(1 for v in vs if v.kind == "not_workspace_member")),
+        "misplaced_module_lines": float(
+            sum(int(v.metric) for v in vs if v.kind == "misplaced_module")
+        ),
+        "non_member_layer_crates": float(
+            sum(1 for v in vs if v.kind == "not_workspace_member")
+        ),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument("--check", action="store_true")
     p.add_argument("--update-baseline", action="store_true")
@@ -409,7 +432,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: invalid baseline at {base_path}: {exc}", file=sys.stderr)
             return 2
         if not isinstance(raw_baseline, dict):
-            print(f"ERROR: baseline root is not an object: {base_path}", file=sys.stderr)
+            print(
+                f"ERROR: baseline root is not an object: {base_path}", file=sys.stderr
+            )
             return 2
         baseline = raw_baseline
         regressed = [
@@ -452,11 +477,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if args.json:
-        print(json.dumps({"violations": [asdict(v) for v in vs], "metrics": metrics}, indent=2))
+        print(
+            json.dumps(
+                {"violations": [asdict(v) for v in vs], "metrics": metrics}, indent=2
+            )
+        )
         return 1 if receipt_destination is not None and regressed else 0
 
     if args.update_baseline:
-        (root / BASELINE_REL).write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (root / BASELINE_REL).write_text(
+            json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"baseline re-pinned: {BASELINE_REL}")
         return 0
 
@@ -465,9 +496,13 @@ def main(argv: list[str] | None = None) -> int:
             print("CANONICALIZATION CONTRACT REGRESSED -- new layer/organization debt:")
             for k, was, now in regressed:
                 print(f"  {k}: {was} -> {now}")
-            print("\nFix the violation or, if intentional, re-pin with --update-baseline.")
+            print(
+                "\nFix the violation or, if intentional, re-pin with --update-baseline."
+            )
             return 1
-        print(f"canonicalization contract OK ({len(vs)} open violations; improved: {improved or 'none'})")
+        print(
+            f"canonicalization contract OK ({len(vs)} open violations; improved: {improved or 'none'})"
+        )
         if receipt_destination is not None:
             print(
                 "canonicalization contract receipt written: "

@@ -67,9 +67,7 @@ def test_public_api_exposes_doc_71_target_profiles() -> None:
 
 def test_browser_targets_carry_default_and_host_import_selectors() -> None:
     assert TF.target_profile("wasm-browser")["browser_default"] is True
-    assert TF.target_profile("wasm-browser")["browser_host_imports"] == {
-        "webgpu": []
-    }
+    assert TF.target_profile("wasm-browser")["browser_host_imports"] == {"webgpu": []}
     assert TF.target_profile("wasm-browser-webgpu")["browser_default"] is False
     assert TF.target_profile("wasm-browser-webgpu")["browser_host_imports"] == {
         "webgpu": [TF.WEBGPU_DISPATCH_HOST_IMPORT]
@@ -125,9 +123,7 @@ def test_generator_rejects_wasm_browser_requiring_webgpu_host_import() -> None:
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser":
-            target["browser_host_imports"]["webgpu"] = [
-                "molt_gpu_webgpu_dispatch_host"
-            ]
+            target["browser_host_imports"]["webgpu"] = ["molt_gpu_webgpu_dispatch_host"]
             break
     with pytest.raises(gen.TargetFeatureManifestError, match="must not require"):
         gen.build_model(data)
@@ -169,8 +165,9 @@ def test_target_rows_carry_doc_71_feature_envelope_and_diagnostics() -> None:
         assert feature_rows[feature_id]["unsupported_reason"]
 
     assert feature_rows["webgpu.f16"]["support"] == "excluded"
-    assert "use fallback use_wasm-browser-webgpu" in (
-        feature_rows["webgpu.f16"]["unsupported_reason"]
+    assert (
+        "use fallback use_wasm-browser-webgpu"
+        in (feature_rows["webgpu.f16"]["unsupported_reason"])
     )
     assert feature_defs["webgpu.api"]["browser_probe"] == {
         "kind": "webgpu_api",
@@ -190,9 +187,10 @@ def test_target_rows_carry_doc_71_feature_envelope_and_diagnostics() -> None:
         "maxComputeWorkgroupSizeZ",
         "maxComputeWorkgroupStorageSize",
     ]
-    assert feature_defs["webgpu.timestamp_queries"]["browser_probe"][
-        "observability"
-    ] is True
+    assert (
+        feature_defs["webgpu.timestamp_queries"]["browser_probe"]["observability"]
+        is True
+    )
 
 
 def test_webgpu_and_webnn_profiles_are_separate() -> None:

@@ -7,7 +7,7 @@ import copy
 import json
 from typing import Any
 
-_MANIFEST_JSON = r'''{
+_MANIFEST_JSON = r"""{
   "constants": {
     "BROWSER_TARGET_FAMILY": "wasm-browser",
     "TARGET_FEATURE_MANIFEST_ASSET_NAME": "target_feature_manifest.json",
@@ -1389,18 +1389,18 @@ _MANIFEST_JSON = r'''{
     }
   ]
 }
-'''
+"""
 MANIFEST: dict[str, Any] = json.loads(_MANIFEST_JSON)
 TARGET_PROFILE_IDS: tuple[str, ...] = tuple(
-    target['id'] for target in MANIFEST['targets']
+    target["id"] for target in MANIFEST["targets"]
 )
-FEATURE_IDS: tuple[str, ...] = tuple(
-    feature['id'] for feature in MANIFEST['features']
-)
-CONSTANTS: dict[str, str] = dict(MANIFEST['constants'])
-WEBGPU_DISPATCH_HOST_IMPORT: str = CONSTANTS['WEBGPU_DISPATCH_HOST_IMPORT']
-TARGET_FEATURE_MANIFEST_ASSET_NAME: str = CONSTANTS['TARGET_FEATURE_MANIFEST_ASSET_NAME']
-BROWSER_TARGET_FAMILY: str = CONSTANTS['BROWSER_TARGET_FAMILY']
+FEATURE_IDS: tuple[str, ...] = tuple(feature["id"] for feature in MANIFEST["features"])
+CONSTANTS: dict[str, str] = dict(MANIFEST["constants"])
+WEBGPU_DISPATCH_HOST_IMPORT: str = CONSTANTS["WEBGPU_DISPATCH_HOST_IMPORT"]
+TARGET_FEATURE_MANIFEST_ASSET_NAME: str = CONSTANTS[
+    "TARGET_FEATURE_MANIFEST_ASSET_NAME"
+]
+BROWSER_TARGET_FAMILY: str = CONSTANTS["BROWSER_TARGET_FAMILY"]
 
 
 def target_feature_constants() -> dict[str, str]:
@@ -1416,20 +1416,20 @@ def target_profile_ids() -> tuple[str, ...]:
 
 
 def target_profile(profile_id: str) -> dict[str, Any]:
-    for target in MANIFEST['targets']:
-        if target['id'] == profile_id:
+    for target in MANIFEST["targets"]:
+        if target["id"] == profile_id:
             return copy.deepcopy(target)
-    raise KeyError(f'unknown target profile {profile_id!r}')
+    raise KeyError(f"unknown target profile {profile_id!r}")
 
 
 def target_feature_row(profile_id: str, feature_id: str) -> dict[str, str] | None:
     target = target_profile(profile_id)
-    for feature in target['features']:
-        if feature['id'] == feature_id:
+    for feature in target["features"]:
+        if feature["id"] == feature_id:
             return copy.deepcopy(feature)
     return None
 
 
 def target_feature_support(profile_id: str, feature_id: str) -> str | None:
     row = target_feature_row(profile_id, feature_id)
-    return None if row is None else row['support']
+    return None if row is None else row["support"]

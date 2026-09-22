@@ -241,7 +241,9 @@ class TestTracebackCarets:
         assert "ZeroDivisionError" in result.stderr, (
             f"Expected ZeroDivisionError in stderr, got: {result.stderr}"
         )
-        assert "runtime thread exit crossed an attached PyThreadState" not in result.stderr
+        assert (
+            "runtime thread exit crossed an attached PyThreadState" not in result.stderr
+        )
         assert "panicked at" not in result.stderr
 
         pattern = _extract_caret_pattern(result.stderr)

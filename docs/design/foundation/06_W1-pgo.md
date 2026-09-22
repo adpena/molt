@@ -417,10 +417,11 @@ fn pgo_annotate_noop_without_profile_data() {
 def inner(x):
     return x * 2 + 1
 
+
 total = 0
 for i in range(10000):
     total += inner(i)
-print(total)   # 100010000
+print(total)  # 100010000
 ```
 Run: collect profile → build with `--pgo-profile` → verify output matches CPython.
 
@@ -429,9 +430,13 @@ Run: collect profile → build with `--pgo-profile` → verify output matches CP
 # A function called 2 times should not receive hot budget.
 def large_fn(x):
     # 40+ ops body
-    a = x + 1; b = a * 2; c = b - 3; d = c // 2
+    a = x + 1
+    b = a * 2
+    c = b - 3
+    d = c // 2
     # ... etc
     return a + b + c + d
+
 
 print(large_fn(10))
 print(large_fn(20))
@@ -444,6 +449,8 @@ Verify (via `MOLT_INLINE_LIMIT` + `TIR_OPT_STATS=1`) that `large_fn` is NOT inli
 # Build must succeed and produce correct output.
 def foo():
     return 42
+
+
 print(foo())
 ```
 Profile: `{"molt_profile_version":"0.1","call_counts":{"deleted_fn":9999},...}`
@@ -455,6 +462,8 @@ Expected: builds successfully, prints `42`.
 def f():
     x = 1 << 60
     return x + 7
+
+
 print(f())  # must be 1152921504606846983
 ```
 Build with and without a profile that marks `f` as hot. Output must be byte-identical.
@@ -466,6 +475,7 @@ def maybe_raise(x):
     if x < 0:
         raise ValueError(x)
     return x * 2
+
 
 try:
     print(maybe_raise(5))
