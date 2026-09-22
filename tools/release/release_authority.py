@@ -23,6 +23,7 @@ from .release_model import (
     target_by_id,
     write_json,
 )
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -60,7 +61,48 @@ def _write_github_outputs(path: Path, outputs: dict[str, str]) -> None:
             handle.write(f"{name}={value}\n")
 
 
-def plan_release(requested_version: str, source_sha: str) -> dict[str, str]:
+STABLE_MAJOR_FLOOR = 1
+STABLE_PHASE = "H0"
+
+
+def _require_stable_phase_exit(
+    version: str,
+    head: str,
+    *,
+    phase_exit_manifest: Path | None,
+    release_exit_manifest: Path | None,
+) -> None:
+    """A v1+ release is a public stable contract: it needs a green H0 exit for HEAD."""
+    major = int(version.split(".")[0])
+    if major < STABLE_MAJOR_FLOOR:
+        return
+    if phase_exit_manifest is None or release_exit_manifest is None:
+        raise ValueError(
+            f"release {version} is a stable (v{STABLE_MAJOR_FLOOR}+) release and requires "
+            f"a green {STABLE_PHASE} phase-exit manifest for {head}: pass "
+            "--phase-exit-manifest and --release-exit-manifest"
+        )
+    from tools import phase_exit_manifest as pem
+
+    report = pem.verify_phase_manifest(
+        phase_exit_manifest,
+        release_commit=head,
+        bundle_manifest=release_exit_manifest,
+    )
+    if report.phase != STABLE_PHASE or not report.green:
+        raise ValueError(
+            f"release {version} refused: {STABLE_PHASE} phase exit is not green for {head}: "
+            + "; ".join(report.problems or (f"manifest phase is {report.phase!r}",))
+        )
+
+
+def plan_release(
+    requested_version: str,
+    source_sha: str,
+    *,
+    phase_exit_manifest: Path | None = None,
+    release_exit_manifest: Path | None = None,
+) -> dict[str, str]:
     version = normalized_version(requested_version or _project_version())
     project_version = _project_version()
     if version != project_version:
@@ -70,6 +112,12 @@ def plan_release(requested_version: str, source_sha: str) -> dict[str, str]:
     head = _git("rev-parse", "HEAD")
     if source_sha and source_sha != head:
         raise ValueError(f"workflow source {source_sha} does not match checkout {head}")
+    _require_stable_phase_exit(
+        version,
+        head,
+        phase_exit_manifest=phase_exit_manifest,
+        release_exit_manifest=release_exit_manifest,
+    )
     expected_tag = f"v{version}"
     if (
         expected_tag
@@ -384,6 +432,8 @@ def main() -> None:
     plan.add_argument("--requested-version", default="")
     plan.add_argument("--source-sha", default="")
     plan.add_argument("--github-output", type=Path)
+    plan.add_argument("--phase-exit-manifest", type=Path)
+    plan.add_argument("--release-exit-manifest", type=Path)
 
     wheel = subparsers.add_parser("verify-wheel")
     wheel.add_argument("--primary", type=Path, required=True)
@@ -419,7 +469,12 @@ def main() -> None:
     subparsers.add_parser("validate")
     args = parser.parse_args()
     if args.command == "plan":
-        outputs = plan_release(args.requested_version, args.source_sha)
+        outputs = plan_release(
+            args.requested_version,
+            args.source_sha,
+            phase_exit_manifest=args.phase_exit_manifest,
+            release_exit_manifest=args.release_exit_manifest,
+        )
         if args.github_output:
             _write_github_outputs(args.github_output, outputs)
         print(json.dumps(outputs, sort_keys=True))

@@ -1,0 +1,93 @@
+schema = "molt.phase-exit-requirements.v1"
+
+# Machine-checkable phase exits for docs/design/CENTURY_SYSTEMS_PLAN.md §5.
+#
+# One requirement row per obligation the phase predicate must see satisfied by
+# exactly one current passing evidence row. `evidence_role` names the record in
+# the release-exit bundle (tools/release_exit_gate.py) that carries the
+# evidence; `matrix_cells` are the cells that row must cover. Rows whose
+# `evidence_role` starts with `e3_` are expanded from the exact verified-subset
+# matrix (tools/verified_subset.py matrix), one requirement per coordinate.
+#
+# `[[phase.obligation]]` rows are the ledger obligations the phase closes; an
+# obligation stays open until its `closed_by` requirement has a passing row.
+# The validator (tools/phase_exit_manifest.py) never waives, infers, or
+# defaults any of this: a missing field is a false predicate.
+
+[[phase]]
+id = "H0"
+title = "Recover truth and close current P0s"
+matrix_authority = "tools/verified_subset.py matrix"
+
+[[phase.requirement]]
+id = "H0.pact.kernel_a.native"
+authority = "tools/pact_witness_receipt.py"
+evidence_role = "e1_native"
+matrix_cells = ["pact-witness:native:py312:cpython-abi"]
+
+[[phase.requirement]]
+id = "H0.pact.kernel_a.wasm"
+authority = "tools/pact_witness_receipt.py"
+evidence_role = "e1_wasm"
+matrix_cells = ["pact-witness:wasm32-wasip1:py312:cpython-abi"]
+
+[[phase.requirement]]
+id = "H0.perf.cpython_floor_scoreboard"
+authority = "tools/perf_authority.py"
+evidence_role = "e2_scoreboard"
+matrix_cells = ["perf:native:release-fast"]
+
+[[phase.requirement]]
+id = "H0.verified_subset"
+authority = "tools/verified_subset.py"
+evidence_role = "e3_*"
+matrix_cells = ["verified-subset:*"]
+
+[[phase.requirement]]
+id = "H0.structure.canonicalization_contract"
+authority = "tools/canonicalization_contract.py"
+evidence_role = "e4_canonicalization_contract"
+matrix_cells = ["repository"]
+
+[[phase.requirement]]
+id = "H0.structure.degrade_to_slow_gate"
+authority = "tools/degrade_to_slow_gate.py"
+evidence_role = "e4_degrade_to_slow_gate"
+matrix_cells = ["repository"]
+
+[[phase.requirement]]
+id = "H0.structure.fail_closed_gate"
+authority = "tools/fail_closed_gate.py"
+evidence_role = "e4_fail_closed_gate"
+matrix_cells = ["repository"]
+
+[[phase.requirement]]
+id = "H0.structure.structural_audit"
+authority = "tools/structural_audit.py"
+evidence_role = "e4_structural_audit"
+matrix_cells = ["repository"]
+
+[[phase.obligation]]
+id = "KA"
+description = "Kernel A candidate_outputs.npz accepted by the canonical parity engine through the WASM-CPU lane"
+closed_by = "H0.pact.kernel_a.wasm"
+
+[[phase.obligation]]
+id = "KA-NATIVE"
+description = "Kernel A native sister lane accepted by the same oracle"
+closed_by = "H0.pact.kernel_a.native"
+
+[[phase.obligation]]
+id = "E2-CPYTHON-FLOOR"
+description = "No unexplained CPython-red core lane on the canonical scoreboard"
+closed_by = "H0.perf.cpython_floor_scoreboard"
+
+[[phase.obligation]]
+id = "E3-VERIFIED-SUBSET"
+description = "Every exact verified-subset coordinate has a passing source-bound receipt"
+closed_by = "H0.verified_subset"
+
+[[phase.obligation]]
+id = "E4-STRUCTURAL-FLOOR"
+description = "Structural, fail-closed, degrade-to-slow, and canonicalization audits report no regression"
+closed_by = "H0.structure.structural_audit"

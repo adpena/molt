@@ -982,6 +982,18 @@ argv = ["uv", "run", "python3", "-m", "pytest", "tests/model_based", "-x", "-q"]
 toolchains = ["python", "uv"]
 
 [[command]]
+id = "portability.supervisor.prewarm.linux"
+family = "platform_portability"
+cell = "linux-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 900
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/proof_supervisor_cache.py", "prewarm"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
 id = "portability.queue.linux"
 family = "platform_portability"
 cell = "linux-x86_64-py312-queue-portability"
@@ -989,8 +1001,20 @@ tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
+dependencies = ["portability.supervisor.prewarm.linux"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_proof_supervisor_cache.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.supervisor.prewarm.macos"
+family = "platform_portability"
+cell = "macos-arm64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 900
+cache_domain = "none"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/proof_supervisor_cache.py", "prewarm"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1001,8 +1025,20 @@ tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
+dependencies = ["portability.supervisor.prewarm.macos"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_proof_supervisor_cache.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.supervisor.prewarm.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 900
+cache_domain = "none"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/proof_supervisor_cache.py", "prewarm"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1013,8 +1049,8 @@ tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
-dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py"]
+dependencies = ["portability.supervisor.prewarm.windows"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-m", "pytest", "-q", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/tools/test_proof_supervisor_cache.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1506,7 +1542,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.proof-plan.generated", "repository.structural-debt", "repository.canonicalization", "repository.runtime-bridge-stubs", "repository.call-fact-coverage"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_cargo_test_truth.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
@@ -2772,6 +2808,58 @@ gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
   "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
   "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
+]
+
+# --- Static first-party from-import symbol resolution ---------------------
+[[rule]]
+name = "import-symbol-gate"
+description = "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane."
+globs = [
+  "src/molt/**/*.py",
+  "tools/**/*.py",
+  "tests/**/*.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python tools/import_symbol_gate.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_import_symbol_gate.py",
+]
+
+# --- Century-plan phase exits + legacy inventory ---------------------------
+[[rule]]
+name = "phase-exit-manifest"
+description = "Fixed CENTURY_SYSTEMS_PLAN §5 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks."
+globs = [
+  "tools/phase_exit_manifest.py",
+  "tools/legacy_inventory.py",
+  "config/phase_exit_requirements.toml",
+  "config/legacy_inventory.toml",
+  "tests/tools/test_phase_exit_manifest.py",
+  "tests/tools/test_legacy_inventory.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
+  "python3 tools/venv_exec.py python tools/legacy_inventory.py --check",
+]
+
+# --- v1 public stable contract ------------------------------------------------
+[[rule]]
+name = "public-contract"
+description = "Every CLI command carries a declared stability tier and the generated public surface snapshot (CLI tree, target Python range, release targets, verified-subset matrix digest, native callable ABI) has not drifted without an explicit --update."
+globs = [
+  "config/public_contract_v1.toml",
+  "config/public_contract_v1.surface.json",
+  "config/release_targets.toml",
+  "runtime/native_callable_abi.toml",
+  "src/molt/cli/entrypoint_parser.py",
+  "src/molt/cli/__init__.py",
+  "src/molt/release_matrix.py",
+  "src/molt/target_python.py",
+  "tools/public_contract_gate.py",
+  "tests/tools/test_public_contract_gate.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py",
 ]
 
 # =========================================================================

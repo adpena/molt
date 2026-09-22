@@ -13,6 +13,9 @@ import tempfile
 import time
 from typing import Mapping, Sequence
 
+from molt.dx import checkout_custody
+from molt.path_custody import host_path_is_within
+from molt.file_publication import durable_publish_directory_exclusive
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
@@ -26,11 +29,107 @@ def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     )
 
 
-def _provision_proof_supervisor(
-    *, cwd: Path, env: Mapping[str, str]
-) -> tuple[Path, dict[str, object]]:
-    started = time.perf_counter()
-    build = admission._REPO_ROOT / "tools" / "proof_supervisor" / "build.py"
+SUPERVISOR_SOURCE_ROOT = admission._REPO_ROOT / "tools" / "proof_supervisor"
+SUPERVISOR_CACHE_DIRNAME = "proof-supervisor"
+SUPERVISOR_IDENTITY_SCHEMA = "molt.proof-supervisor-identity.v1"
+SUPERVISOR_BINARY_NAME = "molt-proof-supervisor" + (".exe" if os.name == "nt" else "")
+_SUPERVISOR_SOURCE_FILES = ("Cargo.toml", "Cargo.lock")
+
+
+def _supervisor_source_files() -> list[Path]:
+    files = [SUPERVISOR_SOURCE_ROOT / name for name in _SUPERVISOR_SOURCE_FILES]
+    files.extend(sorted((SUPERVISOR_SOURCE_ROOT / "src").rglob("*.rs")))
+    return files
+
+
+def _rustc_identity(env: Mapping[str, str]) -> dict[str, str]:
+    completed = command_identity._run_captured(
+        ("rustc", "-vV"), cwd=SUPERVISOR_SOURCE_ROOT, env=env, timeout=60.0
+    )
+    if completed.returncode != 0:
+        raise ValueError(
+            "native proof supervisor toolchain probe failed: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        )
+    fields = {
+        key.strip(): value.strip()
+        for line in completed.stdout.splitlines()
+        if ":" in line
+        for key, value in (line.split(":", 1),)
+    }
+    return {
+        "host": fields.get("host", ""),
+        "release": fields.get("release", ""),
+        "commit_hash": fields.get("commit-hash", ""),
+    }
+
+
+def supervisor_source_identity(env: Mapping[str, str]) -> dict[str, object]:
+    """Content identity of the supervisor build: exact sources plus toolchain."""
+    digest = hashlib.sha256()
+    sources: list[dict[str, object]] = []
+    for path in _supervisor_source_files():
+        relative = path.relative_to(SUPERVISOR_SOURCE_ROOT).as_posix()
+        data = path.read_bytes()
+        file_digest = hashlib.sha256(data).hexdigest()
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(file_digest.encode())
+        digest.update(b"\0")
+        sources.append(
+            {"path": relative, "sha256": file_digest, "size_bytes": len(data)}
+        )
+    rustc = _rustc_identity(env)
+    for key in sorted(rustc):
+        digest.update(f"{key}={rustc[key]}".encode())
+        digest.update(b"\0")
+    digest.update(b"profile=release\0")
+    return {
+        "schema": SUPERVISOR_IDENTITY_SCHEMA,
+        "identity": digest.hexdigest(),
+        "sources": sources,
+        "rustc": rustc,
+        "profile": "release",
+        "binary_name": SUPERVISOR_BINARY_NAME,
+    }
+
+
+def supervisor_cache_root(cwd: Path, env: Mapping[str, str]) -> Path:
+    """Shared, custody-external root for content-addressed supervisor binaries.
+
+    The durable checkout custody root is the authority; when that root is the
+    source tree itself (explicit scratch projects, hosted fixtures) the cache
+    moves to the host temp root so it never lands under admitted source.
+    """
+    source_root = Path(cwd).resolve()
+    custody_root = checkout_custody(source_root, env, require_exists=False).custody_root
+    if custody_root == source_root or host_path_is_within(custody_root, source_root):
+        custody_root = Path(tempfile.gettempdir()) / "molt-custody"
+    return custody_root / SUPERVISOR_CACHE_DIRNAME
+
+
+def _cached_supervisor(cache_dir: Path) -> Path | None:
+    binary = cache_dir / SUPERVISOR_BINARY_NAME
+    manifest = cache_dir / "identity.json"
+    if not binary.is_file() or not manifest.is_file():
+        return None
+    try:
+        recorded = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(recorded, Mapping):
+        return None
+    if recorded.get("schema") != SUPERVISOR_IDENTITY_SCHEMA:
+        return None
+    if command_identity._file_identity(binary)["sha256"] != recorded.get(
+        "binary_sha256"
+    ):
+        return None
+    return binary
+
+
+def _build_proof_supervisor(*, cwd: Path, env: Mapping[str, str]) -> Path:
+    build = SUPERVISOR_SOURCE_ROOT / "build.py"
     completed = command_identity._run_captured(
         (sys.executable, str(build), "--release"),
         cwd=cwd,
@@ -48,14 +147,94 @@ def _provision_proof_supervisor(
     binary = Path(lines[-1]).resolve(strict=True)
     if not binary.is_file():
         raise ValueError("native proof supervisor binary is unavailable")
-    binary_identity = command_identity._file_identity(binary)
-    return binary, {
-        "schema": "molt.proof-supervisor-provision-telemetry.v1",
+    return binary
+
+
+def _publish_supervisor(
+    binary: Path, identity: Mapping[str, object], cache_dir: Path
+) -> Path:
+    cache_root = cache_dir.parent
+    cache_root.mkdir(parents=True, exist_ok=True)
+    staged = cache_root / f".staging-{cache_dir.name}-{secrets.token_hex(8)}"
+    staged.mkdir()
+    try:
+        staged_binary = staged / SUPERVISOR_BINARY_NAME
+        staged_binary.write_bytes(binary.read_bytes())
+        staged_binary.chmod(0o755)
+        _atomic_json(
+            staged / "identity.json",
+            {
+                **identity,
+                "binary_sha256": command_identity._file_identity(staged_binary)[
+                    "sha256"
+                ],
+            },
+        )
+        try:
+            durable_publish_directory_exclusive(staged, cache_dir)
+        except FileExistsError:
+            # A concurrent provisioner published the same identity first; its
+            # bytes are content-equal by construction, so adopt them.
+            pass
+    finally:
+        if staged.exists():
+            for child in staged.iterdir():
+                child.unlink()
+            staged.rmdir()
+    cached = _cached_supervisor(cache_dir)
+    if cached is None:
+        raise ValueError(f"published proof supervisor failed verification: {cache_dir}")
+    return cached
+
+
+def _provision_proof_supervisor(
+    *, cwd: Path, env: Mapping[str, str]
+) -> tuple[Path, dict[str, object]]:
+    """Return the content-addressed supervisor binary, building only on a miss.
+
+    Building inside every proof's own timed window made any fresh logs root
+    (every test, every scratch queue) pay a cold cargo release build and time
+    out. The binary is keyed by its exact sources plus rustc identity and
+    published once into the shared custody-external cache.
+    """
+    started = time.perf_counter()
+    identity = supervisor_source_identity(env)
+    cache_dir = supervisor_cache_root(cwd, env) / str(identity["identity"])
+    cached = _cached_supervisor(cache_dir)
+    cache_state = "hit"
+    if cached is None:
+        cache_state = "miss"
+        built = _build_proof_supervisor(cwd=cwd, env=env)
+        cached = _publish_supervisor(built, identity, cache_dir)
+    binary_identity = command_identity._file_identity(cached)
+    target_dir = env.get("CARGO_TARGET_DIR")
+    return cached, {
+        "schema": "molt.proof-supervisor-provision-telemetry.v2",
         "build_s": time.perf_counter() - started,
-        "build_target_dir": str(Path(env["CARGO_TARGET_DIR"]).resolve(strict=True)),
+        "cache": cache_state,
+        "cache_dir": str(cache_dir),
+        "source_identity": identity["identity"],
+        "build_target_dir": (
+            str(Path(target_dir).resolve(strict=True))
+            if target_dir and Path(target_dir).exists()
+            else None
+        ),
         "build_output_sha256": binary_identity["sha256"],
         "build_output_size_bytes": binary_identity["size_bytes"],
     }
+
+
+def prewarm_proof_supervisor(
+    *, cwd: Path, env: Mapping[str, str] | None = None
+) -> dict[str, object]:
+    """Populate the shared cache ahead of proof execution (CI and local prepare)."""
+    resolved_env = dict(os.environ if env is None else env)
+    with tempfile.TemporaryDirectory(
+        prefix="molt-proof-supervisor-prewarm-"
+    ) as scratch:
+        resolved_env.setdefault("CARGO_TARGET_DIR", scratch)
+        _, telemetry = _provision_proof_supervisor(cwd=cwd, env=resolved_env)
+    return telemetry
 
 
 def _supervisor_fixed_images(
