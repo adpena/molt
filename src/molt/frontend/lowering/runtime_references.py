@@ -267,8 +267,10 @@ class RuntimeReferenceMixin(_MixinBase):
                 return
         import_alias = None
         body = list(node.body)
-        if body and isinstance(body[0], ast.ImportFrom):
-            import_stmt = body.pop(0)
+        first_stmt = body[0] if body else None
+        if isinstance(first_stmt, ast.ImportFrom):
+            import_stmt = first_stmt
+            body.pop(0)
             if not self._is_intrinsics_module_name(import_stmt.module):
                 return
             if len(import_stmt.names) != 1:
