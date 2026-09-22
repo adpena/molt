@@ -3,7 +3,12 @@ use super::super::*;
 #[test]
 #[should_panic(expected = "compiler arena placement has no proved owner lifetime")]
 fn arena_eligible_alloc_is_rejected_without_owner_lifetime() {
-    let mut func = TirFunction::new("arena_alloc".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "arena_alloc".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

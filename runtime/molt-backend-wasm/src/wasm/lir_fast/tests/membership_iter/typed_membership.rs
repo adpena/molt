@@ -26,6 +26,7 @@ fn typed_membership_selects_specialized_contains_runtime_calls() {
             name.into(),
             vec![container_type, TirType::DynBox],
             TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::Bool);

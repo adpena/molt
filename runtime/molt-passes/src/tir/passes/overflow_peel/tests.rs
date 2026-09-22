@@ -18,6 +18,7 @@ fn live_shape_function() -> TirFunction {
         "peel_fixture".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let header = func.fresh_block();
     let guard = func.fresh_block();

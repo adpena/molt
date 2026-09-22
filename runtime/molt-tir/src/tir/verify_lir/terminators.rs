@@ -85,11 +85,13 @@ pub(super) fn verify_terminators(
             LirTerminator::Return {
                 values: return_values,
             } => {
-                if return_values.len() != func.return_types.len() {
+                // A zero-payload exit is valid for either authored ABI; a
+                // Value ABI materializes None only at final machine emission.
+                if return_values.len() > 1 || return_values.len() > func.return_types.len() {
                     errors.push(LirVerifyError::block(
                         *bid,
                         format!(
-                            "return arity mismatch: expected {}, found {}",
+                            "return arity mismatch: expected at most {}, found {}",
                             func.return_types.len(),
                             return_values.len()
                         ),

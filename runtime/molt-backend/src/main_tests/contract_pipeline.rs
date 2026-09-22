@@ -22,6 +22,7 @@ fn fact_graph_cli_contract_rejects_rust_target() {
 #[test]
 fn luau_tir_module_pipeline_inlines_direct_local_calls() {
     let callee = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "luau_add1".to_string(),
         params: vec!["x".to_string()],
         param_types: Some(vec!["int".to_string()]),
@@ -50,6 +51,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         execution_context: Default::default(),
     };
     let caller = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: Vec::new(),
         param_types: None,
@@ -116,6 +118,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
 fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -147,6 +150,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -160,6 +164,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "dead_stdlib_helper".to_string(),
                 params: vec![],
                 ops: vec![OpIR {

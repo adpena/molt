@@ -450,7 +450,12 @@ mod tests {
 
     /// Linear chain bb0 → bb1 → bb2.
     fn linear() -> TirFunction {
-        let mut func = TirFunction::new("lin".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "lin".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
@@ -483,7 +488,12 @@ mod tests {
 
     /// Diamond bb0 →{bb1,bb2}→ bb3.
     fn diamond() -> TirFunction {
-        let mut func = TirFunction::new("dia".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "dia".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
         let bb3 = func.fresh_block();
@@ -534,7 +544,12 @@ mod tests {
 
     /// Self-loop: bb0 → bb1, bb1 → bb1 (back-edge) / bb1 → bb2.
     fn loopy() -> TirFunction {
-        let mut func = TirFunction::new("loop".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "loop".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.fresh_block();
         let exit = func.fresh_block();
         let cond = func.fresh_value();
@@ -732,7 +747,12 @@ mod tests {
 
     #[test]
     fn def_map_covers_args_results_params() {
-        let mut func = TirFunction::new("d".into(), vec![TirType::I64], TirType::None);
+        let mut func = TirFunction::new(
+            "d".into(),
+            vec![TirType::I64],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let v = func.fresh_value();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();

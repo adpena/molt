@@ -478,6 +478,7 @@ mod tests {
             "pass_delta_fixture".into(),
             vec![TirType::I64],
             TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let entry = func.entry_block;
         let boxed = func.fresh_value();
@@ -501,7 +502,12 @@ mod tests {
     }
 
     fn const_i64_function() -> TirFunction {
-        let mut func = TirFunction::new("repr_const_i64".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "repr_const_i64".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
         let mut attrs = AttrDict::new();
@@ -522,7 +528,12 @@ mod tests {
     }
 
     fn opaque_i64_function() -> TirFunction {
-        let mut func = TirFunction::new("repr_opaque_i64".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "repr_opaque_i64".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
         let block = func.blocks.get_mut(&func.entry_block).unwrap();

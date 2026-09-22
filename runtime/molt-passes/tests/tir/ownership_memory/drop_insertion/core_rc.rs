@@ -6,6 +6,7 @@ fn borrowed_parameter_return_publishes_one_owned_result() {
         "return_borrowed_param".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = func.entry_block;
     let param = func.blocks[&entry].args[0].id;
@@ -35,6 +36,7 @@ fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
         "return_borrowed_alias".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = func.entry_block;
     let param = func.blocks[&entry].args[0].id;
@@ -69,7 +71,12 @@ fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
 
 #[test]
 fn fresh_and_raw_returns_do_not_gain_publication_retains() {
-    let mut fresh_func = TirFunction::new("return_fresh".into(), vec![], TirType::DynBox);
+    let mut fresh_func = TirFunction::new(
+        "return_fresh".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let fresh_entry = fresh_func.entry_block;
     let fresh = fresh_func.fresh_value();
     fresh_func.value_types.insert(fresh, TirType::DynBox);
@@ -91,7 +98,12 @@ fn fresh_and_raw_returns_do_not_gain_publication_retains() {
             .any(|op| op.opcode == OpCode::IncRef && op.operands == vec![fresh])
     );
 
-    let mut raw_func = TirFunction::new("return_raw".into(), vec![], TirType::I64);
+    let mut raw_func = TirFunction::new(
+        "return_raw".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let raw_entry = raw_func.entry_block;
     let raw = raw_func.fresh_value();
     raw_func.value_types.insert(raw, TirType::I64);
@@ -128,6 +140,7 @@ fn borrowed_branch_input_is_owned_at_phi_edge_not_republished_at_return() {
         "return_borrowed_phi".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = func.entry_block;
     let param = func.blocks[&entry].args[0].id;
@@ -207,6 +220,7 @@ fn loop_slot_accumulator_no_double_drop() {
     // Shape from tmp/.../native/final_ir/bigint_accumulator__accumulate.txt:
     // total = 1<<60 ; i=0 ; while i<n: total=total+1; total=total-1; total=total+1; i=i+1 ; return total
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "diag__accumulate".into(),
         params: vec!["n".into()],
         ops: vec![
@@ -356,7 +370,12 @@ fn loop_slot_accumulator_no_double_drop() {
 /// returned (transferred to the caller), so the function inserts ZERO drops.
 #[test]
 fn branch_arg_transfer_not_edge_dropped() {
-    let mut func = TirFunction::new("xfer".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "xfer".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v = func.fresh_value();
     let p = func.fresh_value();
     func.value_types.insert(v, TirType::Str);
@@ -417,6 +436,7 @@ fn iter_next_unboxed_value_not_return_boundary_dropped_on_exhaustion_edge() {
         "iter_next_unboxed_conditional_value_exit".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let iter = func.fresh_value();
     let initial_local = func.fresh_value();
@@ -526,6 +546,7 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
         "mutually_exclusive_loop_iterators".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let choose_left = func.fresh_value();
     func.value_types.insert(choose_left, TirType::Bool);
@@ -713,7 +734,12 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
 /// → not dropped.
 #[test]
 fn straight_line_temp_dropped_once() {
-    let mut func = TirFunction::new("sl".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "sl".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = func.fresh_value();
     let v1 = func.fresh_value();
     let v2 = func.fresh_value();
@@ -753,7 +779,12 @@ fn straight_line_temp_dropped_once() {
 /// the following print).
 #[test]
 fn unused_list_pop_result_is_dropped_at_pop_boundary() {
-    let mut func = TirFunction::new("list_pop_dead_result".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "list_pop_dead_result".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let list = func.fresh_value();
     let idx = func.fresh_value();
     let popped = func.fresh_value();
@@ -813,6 +844,7 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
         "dataclass_new_values_owner_drop".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let name = func.fresh_value();
     let fields = func.fresh_value();
@@ -892,7 +924,12 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
 /// (operand 0) and the call RESULT are still dropped normally.
 #[test]
 fn call_bind_callargs_operand_not_dropped() {
-    let mut func = TirFunction::new("cb".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "cb".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let callee = func.fresh_value(); // the bound method (a fresh owned ref)
     let builder = func.fresh_value(); // the CallArgs builder
     let result = func.fresh_value(); // the call result
@@ -964,7 +1001,12 @@ fn call_bind_callargs_operand_not_dropped() {
 /// `h = get_attr(counts, "_handle"); molt_counter_len(h)`.
 #[test]
 fn loadattr_source_kept_alive_through_borrow_result_use() {
-    let mut func = TirFunction::new("borrow".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "borrow".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value(); // the wrapper (fresh owned)
     let h = func.fresh_value(); // LoadAttr(obj) — borrows into obj's store
     let len_fn = func.fresh_value(); // the `molt_counter_len` builtin
@@ -1011,7 +1053,12 @@ fn loadattr_source_kept_alive_through_borrow_result_use() {
 /// the underlying object (alias root) must still be deferred past the consumer.
 #[test]
 fn loadattr_keepalive_through_copy_aliased_source() {
-    let mut func = TirFunction::new("borrow_alias".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "borrow_alias".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let obj_alias = func.fresh_value(); // Copy(obj) — load_var alias
     let h = func.fresh_value(); // LoadAttr(obj_alias)
@@ -1073,7 +1120,12 @@ fn loadattr_keepalive_through_copy_aliased_source() {
 /// Raw i64 values get ZERO drops (perf contract / design R3).
 #[test]
 fn raw_i64_gets_no_drops() {
-    let mut func = TirFunction::new("raw".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "raw".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
     let s = func.fresh_value();
@@ -1114,7 +1166,12 @@ fn raw_i64_gets_no_drops() {
 /// Unsupported boxed stack input must not manufacture a no-release fact.
 #[test]
 fn unsupported_stack_alloc_keeps_owned_drop_obligation() {
-    let mut func = TirFunction::new("st".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "st".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let s = func.fresh_value();
     let used = func.fresh_value();
     func.value_types.insert(s, TirType::DynBox);
@@ -1146,6 +1203,7 @@ fn class_allocation_keeps_final_drop() {
         "class_allocation".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let instance = func.fresh_value();
     let loaded = func.fresh_value();
@@ -1180,7 +1238,12 @@ fn class_allocation_keeps_final_drop() {
 /// delimiters, so the handler bail alone misses it.
 #[test]
 fn state_machine_function_gets_no_drops() {
-    let mut func = TirFunction::new("poll".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "poll".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let st = func.fresh_value();
     let v = func.fresh_value();
     func.value_types.insert(st, TirType::I64);
@@ -1216,6 +1279,7 @@ fn generator_construction_does_not_disable_later_owned_temporary_drops() {
         "ordinary_generator_constructor".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let object = ValueId(0);
     let task = func.fresh_value();
@@ -1278,7 +1342,12 @@ fn generator_construction_does_not_disable_later_owned_temporary_drops() {
 ///   exit: r = Len(s_phi); return r                    // s_phi consumed, dies
 #[test]
 fn loop_carried_phi_dropped_on_backedge() {
-    let mut func = TirFunction::new("acc".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "acc".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let s0 = func.fresh_value();
     let s_phi = func.fresh_value();
     let s_alias = func.fresh_value();
@@ -1434,7 +1503,12 @@ fn loop_carried_phi_dropped_on_backedge() {
 /// unconditional return-boundary `DecRef(value)` in the exit block.
 #[test]
 fn loop_reassign_phi_dropped_on_backedge() {
-    let mut func = TirFunction::new("reassign".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "reassign".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let item0 = func.fresh_value();
     let d0 = func.fresh_value();
     let d_phi = func.fresh_value();
@@ -1551,7 +1625,12 @@ fn loop_reassign_phi_dropped_on_backedge() {
 
 #[test]
 fn loop_reassign_backedge_decref_survives_refcount_elim_post() {
-    let mut func = TirFunction::new("reassign_elim".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "reassign_elim".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let item0 = func.fresh_value();
     let d0 = func.fresh_value();
     let d_phi = func.fresh_value();
@@ -1666,6 +1745,7 @@ fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
         "iter_next_conditional_local_boundary".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let iter = func.blocks[&func.entry_block].args[0].id;
     let header = func.fresh_block();
@@ -1761,7 +1841,12 @@ fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
 
 #[test]
 fn params_not_dropped() {
-    let mut func = TirFunction::new("p".into(), vec![TirType::Str], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "p".into(),
+        vec![TirType::Str],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = ValueId(0);
     let r = func.fresh_value();
     func.value_types.insert(r, TirType::Str);
@@ -1786,7 +1871,12 @@ fn params_not_dropped() {
 /// after the call is dropped AFTER the call (last-use), never before.
 #[test]
 fn borrow_into_call_dropped_after() {
-    let mut func = TirFunction::new("bc".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "bc".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let x = func.fresh_value();
     let res = func.fresh_value();
     let out = func.fresh_value();
@@ -1820,7 +1910,12 @@ fn borrow_into_call_dropped_after() {
 /// Generator yield: a value live across the yield gets an IncRef before it.
 #[test]
 fn yield_increfs_live_across() {
-    let mut func = TirFunction::new("g".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let header = func.entry_block;
     let resume = func.fresh_block();
     let x = func.fresh_value();
@@ -1869,7 +1964,12 @@ fn yield_increfs_live_across() {
 /// the loop-exit value is dropped (dead after the loop).
 #[test]
 fn loop_accumulator_dropped() {
-    let mut func = TirFunction::new("loop".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "loop".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let header = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -1950,7 +2050,12 @@ fn loop_accumulator_dropped() {
 
 #[test]
 fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
-    let mut func = TirFunction::new("explicit_boundary_loop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "explicit_boundary_loop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let header = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -2060,7 +2165,12 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
 
 #[test]
 fn explicit_del_boundary_splits_shared_return_keep_path_release() {
-    let mut func = TirFunction::new("explicit_boundary_diamond".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "explicit_boundary_diamond".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let del_path = func.fresh_block();
     let keep_path = func.fresh_block();
     let exit = func.fresh_block();
@@ -2174,6 +2284,7 @@ fn explicit_del_boundary_join_before_return_splits_keep_edge() {
         "explicit_boundary_join_before_return".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let del_path = func.fresh_block();
     let keep_path = func.fresh_block();
@@ -2309,7 +2420,12 @@ fn explicit_del_boundary_join_before_return_splits_keep_edge() {
 #[test]
 fn mixed_phi_borrowed_param_retained_on_entry_edge() {
     // param `base` (id 0), preheader binds the accumulator phi to Copy(base).
-    let mut func = TirFunction::new("apply".into(), vec![TirType::Str], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "apply".into(),
+        vec![TirType::Str],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let base = ValueId(0);
     let pre = func.fresh_block(); // preheader
     let header = func.fresh_block();
@@ -2442,7 +2558,12 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
 /// plus the phi's drop is a double-free.
 #[test]
 fn forwarded_owned_value_not_edge_dropped_at_join() {
-    let mut func = TirFunction::new("fwd".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "fwd".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let mid = func.fresh_block();
     let join = func.fresh_block();
     let owned = func.fresh_value(); // fresh owned (ConstStr)
@@ -2525,7 +2646,12 @@ fn forwarded_owned_value_not_edge_dropped_at_join() {
 
 #[test]
 fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
-    let mut func = TirFunction::new("branch_or_phi".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "branch_or_phi".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let then_block = func.fresh_block();
     let else_block = func.fresh_block();
     let join = func.fresh_block();
@@ -2631,7 +2757,12 @@ fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
 #[test]
 fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
     // param `base` (id 0): borrowed heap Str.
-    let mut func = TirFunction::new("split".into(), vec![TirType::Str], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "split".into(),
+        vec![TirType::Str],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let base = ValueId(0);
     let join = func.fresh_block();
     let case0_alias = func.fresh_value(); // Copy(base) — borrowed alias (case 0 arg)
@@ -2787,7 +2918,12 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
 /// of `r`'s group across the whole function.
 #[test]
 fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
-    let mut func = TirFunction::new("diamond".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "diamond".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p1 = func.fresh_block();
     let p2 = func.fresh_block();
     let join = func.fresh_block();
@@ -2886,7 +3022,12 @@ fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
 /// while omitting the `p2` release leaks it on that path.
 #[test]
 fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
-    let mut func = TirFunction::new("asymmetric_phi_transfer".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "asymmetric_phi_transfer".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let p1 = func.fresh_block();
     let p2 = func.fresh_block();
     let keep = func.fresh_block();

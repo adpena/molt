@@ -16,6 +16,7 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
             name.into(),
             vec![container_type, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::DynBox);
@@ -67,6 +68,7 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
             name.into(),
             vec![container_type, TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {

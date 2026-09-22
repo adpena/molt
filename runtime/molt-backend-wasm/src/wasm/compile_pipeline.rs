@@ -7,9 +7,9 @@ use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_es
 /// Run a body-only operation against defined functions while preserving the
 /// original declaration/body ordering in the module IR.
 ///
-/// Extern signature ops are ABI metadata, not executable bodies. Temporarily
-/// moving declarations out makes that boundary structural even for shared
-/// passes whose API accepts an entire `Vec<FunctionIR>`. The operation may
+/// Extern declarations carry function metadata and no executable body.
+/// Temporarily moving declarations out makes that boundary structural even for
+/// shared passes whose API accepts an entire `Vec<FunctionIR>`. The operation may
 /// analyze, mutate, or reorder defined bodies but must preserve their count.
 pub(super) fn with_defined_function_bodies<R>(
     functions: &mut Vec<crate::FunctionIR>,

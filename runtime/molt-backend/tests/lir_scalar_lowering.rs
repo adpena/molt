@@ -27,6 +27,7 @@ fn single_block_func(ops: Vec<TirOp>, return_type: TirType, next_value: u32) -> 
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "test".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -163,6 +164,7 @@ fn lower_mixed_add_to_f64_repr() {
 #[test]
 fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "interpolate_like".into(),
         params: vec!["a".into(), "b".into(), "w".into()],
         param_types: Some(vec!["float".into(), "float".into(), "float".into()]),
@@ -212,6 +214,7 @@ fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
 #[test]
 fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "dynamic_float_mix".into(),
         params: vec!["x".into()],
         param_types: None,
@@ -309,6 +312,7 @@ fn lower_dynbox_add_to_dynbox_repr() {
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     let func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "dynbox_add".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into(), "y".into()],
@@ -417,6 +421,7 @@ fn lower_box_and_unbox_align_with_verifier_contract() {
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     let func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "box_unbox".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into()],
@@ -496,6 +501,7 @@ fn lower_truthy_condition_materializes_bool1_before_branch() {
     );
 
     let func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "truthy_branch".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into()],

@@ -285,19 +285,36 @@ pub enum ExecutionContextPolicy {
     Inherited,
 }
 
+/// Immutable callable result contract, independent of the surviving body and
+/// the refined type of any returned Python value.
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionReturnAbi {
+    #[default]
+    Void,
+    Value,
+}
+
+impl FunctionReturnAbi {
+    pub const fn returns_value(self) -> bool {
+        matches!(self, Self::Value)
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
+    /// Required on the wire; optimization must never re-infer this from ops.
+    pub return_abi: FunctionReturnAbi,
     pub params: Vec<String>,
     pub ops: Vec<OpIR>,
     pub param_types: Option<Vec<String>>,
     /// Source file path for traceback formatting.
     #[serde(default)]
     pub source_file: Option<String>,
-    /// When true, this function's executable body was stripped. `ops` then
-    /// contains only the canonical return-signature metadata validated by
-    /// `extern_signature`; declaration-capable backends resolve the symbol
-    /// from a linked/imported provider instead of emitting a body.
+    /// When true, this function is a declaration with an empty `ops` body.
+    /// Signature metadata remains on the function; declaration-capable backends
+    /// resolve the symbol from a linked/imported provider.
     #[serde(default)]
     pub is_extern: bool,
     /// Target-neutral execution-context ABI policy.
@@ -309,18 +326,13 @@ pub struct FunctionIR {
     pub codegen_partition: bool,
 }
 
-/// Reserved value carrier used by canonical value-returning extern
-/// declarations. Externs have no executable body; these compact signature ops
-/// preserve the target ABI until every backend has registered the declaration.
-pub const EXTERN_SIGNATURE_RETURN_VALUE: &str = "__molt_extern_signature_return";
-
 /// Stream the complete versioned FunctionIR contract into a cache digest or
 /// artifact writer without materializing a duplicate O(IR) buffer.
 pub fn write_function_ir_contract(
     function: &FunctionIR,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v1\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v2\0";
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
     // JSON cannot represent their complete bit patterns. Named struct
@@ -454,43 +466,15 @@ pub struct ExternFunctionSignature {
     pub execution_context: ExecutionContextPolicy,
 }
 
-fn canonical_extern_signature_ops(returns_value: bool) -> &'static [OpIR] {
-    static VOID: std::sync::OnceLock<Vec<OpIR>> = std::sync::OnceLock::new();
-    static VALUE: std::sync::OnceLock<Vec<OpIR>> = std::sync::OnceLock::new();
-    if returns_value {
-        VALUE.get_or_init(|| {
-            vec![
-                OpIR {
-                    kind: "missing".to_string(),
-                    out: Some(EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec![EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
-                    ..OpIR::default()
-                },
-            ]
-        })
-    } else {
-        VOID.get_or_init(|| {
-            vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }]
-        })
-    }
-}
-
 impl FunctionIR {
-    fn signature_with_return(&self, returns_value: bool) -> ExternFunctionSignature {
+    fn signature_metadata(&self) -> ExternFunctionSignature {
         ExternFunctionSignature {
             arity: self.params.len(),
             has_closure: self
                 .params
                 .first()
                 .is_some_and(|param| param == crate::MOLT_CLOSURE_PARAM_NAME),
-            returns_value,
+            returns_value: self.return_abi.returns_value(),
             execution_context: self.execution_context,
         }
     }
@@ -502,7 +486,7 @@ impl FunctionIR {
         if self.is_extern {
             self.extern_signature()
         } else {
-            Ok(self.signature_with_return(self.returns_value()?))
+            Ok(self.signature_metadata())
         }
     }
 
@@ -513,49 +497,36 @@ impl FunctionIR {
                 self.name
             ));
         }
-        let returns_value = if self.ops == canonical_extern_signature_ops(false) {
-            false
-        } else if self.ops == canonical_extern_signature_ops(true) {
-            true
-        } else {
+        if !self.ops.is_empty() {
             return Err(format!(
-                "extern function `{}` must contain only canonical return-signature metadata",
+                "extern function `{}` must have an empty body; return ABI belongs to function metadata",
                 self.name
             ));
-        };
-        Ok(self.signature_with_return(returns_value))
+        }
+        Ok(self.signature_metadata())
     }
 
     pub fn returns_value(&self) -> Result<bool, String> {
         if self.is_extern {
             return Ok(self.extern_signature()?.returns_value);
         }
-        Ok(self.ops.iter().any(|op| {
-            matches!(
-                op.kind.as_str(),
-                "ret"
-                    | "state_switch"
-                    | "state_transition"
-                    | "state_yield"
-                    | "chan_send_yield"
-                    | "chan_recv_yield"
-            )
-        }))
+        Ok(self.return_abi.returns_value())
     }
 
     pub fn externalize_with_signature(&mut self) -> Result<(), String> {
-        let returns_value = self.returns_value()?;
+        self.function_signature()?;
         self.is_extern = true;
-        self.ops = canonical_extern_signature_ops(returns_value).to_vec();
+        self.ops.clear();
         Ok(())
     }
 
     pub fn extern_declaration(&self) -> Result<Self, String> {
-        let returns_value = self.returns_value()?;
+        self.function_signature()?;
         Ok(Self {
             name: self.name.clone(),
+            return_abi: self.return_abi,
             params: self.params.clone(),
-            ops: canonical_extern_signature_ops(returns_value).to_vec(),
+            ops: Vec::new(),
             param_types: self.param_types.clone(),
             source_file: self.source_file.clone(),
             is_extern: true,
@@ -961,6 +932,11 @@ impl FunctionIR {
         }
         Ok(Self {
             name: required_string(obj, "name", ctx)?,
+            return_abi: match required_string(obj, "return_abi", ctx)?.as_str() {
+                "void" => FunctionReturnAbi::Void,
+                "value" => FunctionReturnAbi::Value,
+                value => return Err(format!("{ctx}.return_abi has invalid ABI `{value}`")),
+            },
             params: required_string_list(obj, "params", ctx)?,
             ops,
             param_types: optional_string_list(obj, "param_types", ctx)?,
@@ -1059,13 +1035,22 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             &func.params,
             func.param_types.as_deref(),
         )?;
-        // Externs retain signature and execution-context ABI metadata but do
-        // not own a body. Their compact signature ops must never be mistaken
-        // for lifecycle ownership; callers are still checked below against
-        // the declaration's execution-context policy.
+        // Externs retain signature and execution-context ABI metadata but no
+        // executable body. Callers still obey the declared context policy.
         if func.is_extern {
             func.extern_signature()?;
         } else {
+            if !func.return_abi.returns_value()
+                && func.ops.iter().any(|op| {
+                    crate::tir::op_kinds_generated::simpleir_return_shape(&op.kind)
+                        == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value
+                })
+            {
+                return Err(format!(
+                    "function `{}` returns a value through a void return ABI",
+                    func.name
+                ));
+            }
             let frame_ops = func
                 .ops
                 .iter()
@@ -1266,6 +1251,64 @@ fn simple_ir_op_is_reachable(dominators: &[Option<usize>], op_index: usize) -> b
 mod json_parse_tests {
     use super::{FunctionIR, OpIR, SimpleIR, write_function_ir_contract};
 
+    #[test]
+    fn return_abi_is_required_and_survives_empty_bodies_and_extern_projection() {
+        let missing = serde_json::json!({"name": "missing_abi", "params": [], "ops": []});
+        assert!(serde_json::from_value::<FunctionIR>(missing.clone()).is_err());
+        assert!(FunctionIR::from_json_value(&missing, "function").is_err());
+        let missing_msgpack = rmp_serde::to_vec_named(&missing).unwrap();
+        assert!(rmp_serde::from_slice::<FunctionIR>(&missing_msgpack).is_err());
+
+        for kind in ["ret_void", "unreachable"] {
+            let function = FunctionIR {
+                name: "value_without_payload".into(),
+                return_abi: super::FunctionReturnAbi::Value,
+                ops: vec![OpIR {
+                    kind: kind.into(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            };
+            let signature = function.function_signature().unwrap();
+            assert!(signature.returns_value);
+            for restored in [
+                serde_json::from_slice::<FunctionIR>(&serde_json::to_vec(&function).unwrap())
+                    .unwrap(),
+                rmp_serde::from_slice::<FunctionIR>(&rmp_serde::to_vec_named(&function).unwrap())
+                    .unwrap(),
+            ] {
+                assert_eq!(restored.function_signature().unwrap(), signature);
+                let declaration = restored.extern_declaration().unwrap();
+                assert!(declaration.ops.is_empty());
+                assert_eq!(declaration.extern_signature().unwrap(), signature);
+            }
+            let mut void = function.clone();
+            void.return_abi = super::FunctionReturnAbi::Void;
+            assert_ne!(contract_bytes(&function), contract_bytes(&void));
+        }
+    }
+
+    #[test]
+    fn explicit_void_abi_rejects_value_payloads() {
+        let function = FunctionIR {
+            name: "bad_void".into(),
+            return_abi: super::FunctionReturnAbi::Void,
+            params: vec!["value".into()],
+            ops: vec![OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["value".into()]),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        };
+        let error = super::validate_simple_ir(&SimpleIR {
+            functions: vec![function],
+            profile: None,
+        })
+        .unwrap_err();
+        assert!(error.contains("value through a void return ABI"), "{error}");
+    }
+
     fn contract_bytes(function: &FunctionIR) -> Vec<u8> {
         let mut bytes = Vec::new();
         write_function_ir_contract(function, &mut bytes)
@@ -1276,6 +1319,7 @@ mod json_parse_tests {
     #[test]
     fn function_ir_contract_transport_is_total_bit_exact_and_deterministic() {
         let function_with_float = |value: f64| FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Void,
             name: "float_contract".to_string(),
             params: vec!["x".to_string()],
             ops: vec![OpIR {
@@ -1313,7 +1357,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v1\0")
+                    .strip_prefix(b"molt-function-ir-contract-v2\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -1366,7 +1410,7 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [{"kind": "ret_void"}]
@@ -1451,7 +1495,7 @@ mod json_parse_tests {
             let expected = format!("unknown field `{field}`");
             let direct = serde_json::from_value::<OpIR>(op.clone()).unwrap_err();
             assert!(direct.to_string().contains(&expected));
-            let document = serde_json::json!({"functions": [{
+            let document = serde_json::json!({"functions": [{"return_abi": "void",
                 "name": "wire", "params": [], "ops": [op]
             }]});
             let manual = super::BackendIrDocument::from_json_value(&document).unwrap_err();
@@ -1468,7 +1512,7 @@ mod json_parse_tests {
     #[test]
     fn simple_ir_parses_typed_callable_task_constructor_facts() {
         let ir = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"func_new","s_value":"worker_poll","value":0,"out":"callable","task_kind":"async_generator","task_closure_size":48},{"kind":"ret","args":["callable"]}]},{"name":"worker_poll","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
+            r#"{"functions":[{"return_abi": "value", "name":"f","params":[],"ops":[{"kind":"func_new","s_value":"worker_poll","value":0,"out":"callable","task_kind":"async_generator","task_closure_size":48},{"kind":"ret","args":["callable"]}]},{"return_abi": "void", "name":"worker_poll","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
         )
         .expect("typed callable task metadata must parse");
         let constructor = &ir.functions[0].ops[0];
@@ -1485,7 +1529,7 @@ mod json_parse_tests {
             r#""task_kind":"coroutine","task_closure_size":-1"#,
         ] {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"func_new","s_value":"worker_poll","value":0,{fields}}},{{"kind":"ret_void"}}]}},{{"name":"worker_poll","params":[],"ops":[{{"kind":"ret_void"}}]}}]}}"#
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"func_new","s_value":"worker_poll","value":0,{fields}}},{{"kind":"ret_void"}}]}},{{"return_abi": "void", "name":"worker_poll","params":[],"ops":[{{"kind":"ret_void"}}]}}]}}"#
             );
             let error = SimpleIR::from_json_str(&source)
                 .expect_err("malformed callable task metadata must be rejected");
@@ -1503,7 +1547,7 @@ mod json_parse_tests {
             ("guarded_field_init", "guarded_field_set"),
         ] {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}"}},{{"kind":"ret_void"}}]}}]}}"#
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}"}},{{"kind":"ret_void"}}]}}]}}"#
             );
             let error = SimpleIR::from_json_str(&source)
                 .expect_err("retired field initialization spelling must fail closed");
@@ -1515,7 +1559,7 @@ mod json_parse_tests {
     #[test]
     fn simple_ir_async_work_marker_is_typed_and_observer_scoped() {
         let ir = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"exception_finally_pending_observer","async_work_poll":true,"out":"pending"},{"kind":"ret_void"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"exception_finally_pending_observer","async_work_poll":true,"out":"pending"},{"kind":"ret_void"}]}]}"#,
         )
         .expect("finally observer may carry the async-work marker");
         let observer = &ir.functions[0].ops[0];
@@ -1524,7 +1568,7 @@ mod json_parse_tests {
         assert_eq!(observer.kind, "exception_finally_pending_observer");
 
         let error = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","async_work_poll":true,"out":"value"},{"kind":"ret_void"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","async_work_poll":true,"out":"value"},{"kind":"ret_void"}]}]}"#,
         )
         .expect_err("unrelated operations must reject the async-work marker");
         assert!(error.contains("op `const_none` cannot carry async_work_poll"));
@@ -1535,13 +1579,13 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "module_chunk",
                         "params": [],
                         "execution_context": "inherited",
                         "ops": [{"kind": "ret_void"}]
                     },
-                    {
+                    {"return_abi": "void",
                         "name": "caller",
                         "params": ["module_chunk"],
                         "execution_context": "inherited",
@@ -1563,12 +1607,10 @@ mod json_parse_tests {
     #[test]
     fn extern_execution_context_policy_is_abi_metadata_not_body_ownership() {
         let external_local = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Void,
             name: "molt_init_sys".to_string(),
             params: Vec::new(),
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: Vec::new(),
             param_types: None,
             source_file: Some("sys.py".to_string()),
             is_extern: true,
@@ -1576,12 +1618,10 @@ mod json_parse_tests {
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let inherited_declaration = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Void,
             name: "sys__molt_module_chunk_1".to_string(),
             params: Vec::new(),
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: Vec::new(),
             param_types: Some(Vec::new()),
             source_file: Some("sys.py".to_string()),
             is_extern: true,
@@ -1589,6 +1629,7 @@ mod json_parse_tests {
             execution_context: super::ExecutionContextPolicy::Inherited,
         };
         let local_caller = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Void,
             name: "molt_init_app".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -1639,6 +1680,7 @@ mod json_parse_tests {
         );
 
         let mut value_declaration = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Value,
             name: "value_external".to_string(),
             params: vec!["arg".to_string()],
             ops: vec![
@@ -1667,7 +1709,7 @@ mod json_parse_tests {
         value_declaration
             .externalize_with_signature()
             .expect("externalize value-returning body");
-        assert_eq!(value_declaration.ops.len(), 2);
+        assert!(value_declaration.ops.is_empty());
         assert_eq!(
             value_declaration
                 .extern_signature()
@@ -1711,7 +1753,7 @@ mod json_parse_tests {
         .expect("serialize noncanonical extern declaration");
         let error = serde_json::from_slice::<SimpleIR>(&encoded)
             .expect_err("extern declarations cannot smuggle executable lifecycle bodies");
-        assert!(error.to_string().contains("canonical return-signature"));
+        assert!(error.to_string().contains("must have an empty body"));
 
         let duplicate_extern_error = super::validate_extern_call_abis(&SimpleIR {
             functions: vec![external_local.clone(), external_local.clone()],
@@ -1724,6 +1766,7 @@ mod json_parse_tests {
             functions: vec![
                 external_local.clone(),
                 FunctionIR {
+                    return_abi: crate::FunctionReturnAbi::Void,
                     name: external_local.name.clone(),
                     ops: vec![OpIR {
                         kind: "ret_void".to_string(),
@@ -1755,6 +1798,7 @@ mod json_parse_tests {
             params.insert(0, crate::MOLT_CLOSURE_PARAM_NAME.to_string());
         }
         let declaration = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Value,
             name: "defaulted_function".to_string(),
             params,
             ops: vec![OpIR {
@@ -1773,6 +1817,7 @@ mod json_parse_tests {
         SimpleIR {
             functions: vec![
                 FunctionIR {
+                    return_abi: crate::FunctionReturnAbi::Value,
                     name: "caller".to_string(),
                     params: args.clone(),
                     ops: vec![
@@ -1882,13 +1927,13 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "module_chunk",
                         "params": [],
                         "execution_context": "inherited",
                         "ops": [{"kind": "ret_void"}]
                     },
-                    {
+                    {"return_abi": "void",
                         "name": "frameless_caller",
                         "params": [],
                         "ops": [
@@ -1914,13 +1959,13 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "module_chunk",
                         "params": [],
                         "execution_context": "inherited",
                         "ops": [{"kind": "ret_void"}]
                     },
-                    {
+                    {"return_abi": "void",
                         "name": "caller",
                         "params": [],
                         "ops": [
@@ -1944,13 +1989,13 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "module_chunk",
                         "params": [],
                         "execution_context": "inherited",
                         "ops": [{"kind": "ret_void"}]
                     },
-                    {
+                    {"return_abi": "void",
                         "name": "caller",
                         "params": [],
                         "execution_context": "inherited",
@@ -1974,7 +2019,7 @@ mod json_parse_tests {
     fn execution_context_policy_validates_the_complete_generated_frame_op_family() {
         let parse = |policy: &str, ops: &str| {
             SimpleIR::from_json_str(&format!(
-                r#"{{"functions":[{{"name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
+                r#"{{"functions":[{{"return_abi": "void", "name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
             ))
         };
         let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
@@ -2080,7 +2125,7 @@ mod json_parse_tests {
     fn direct_runtime_frame_symbols_require_owned_or_inherited_execution_context() {
         let parse = |policy: &str, ops: &str| {
             SimpleIR::from_json_str(&format!(
-                r#"{{"functions":[{{"name":"frame_call","params":[],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
+                r#"{{"functions":[{{"return_abi": "void", "name":"frame_call","params":[],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
             ))
         };
         let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
@@ -2128,7 +2173,7 @@ mod json_parse_tests {
     fn threaded_inherited_calls_require_frame_entry_dominance() {
         let parse = |ops: &str| {
             SimpleIR::from_json_str(&format!(
-                r#"{{"functions":[{{"name":"caller","params":[],"execution_context":"local","ops":[{ops}]}},{{"name":"chunk","params":[],"execution_context":"inherited","ops":[{{"kind":"ret_void"}}]}}]}}"#
+                r#"{{"functions":[{{"return_abi": "void", "name":"caller","params":[],"execution_context":"local","ops":[{ops}]}},{{"return_abi": "void", "name":"chunk","params":[],"execution_context":"inherited","ops":[{{"kind":"ret_void"}}]}}]}}"#
             ))
         };
         let call = r#"{"kind":"call_internal","s_value":"chunk","passes_execution_context":true}"#;
@@ -2159,7 +2204,7 @@ mod json_parse_tests {
         };
         let parse = |op: serde_json::Value| {
             SimpleIR::from_json_value(&serde_json::json!({
-                "functions": [{
+                "functions": [{"return_abi": "void",
                     "name": "acquire",
                     "params": ["name"],
                     "execution_context": "none",
@@ -2223,7 +2268,7 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [{"kind": "ret_void"}]
@@ -2246,7 +2291,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["seq", "idx"],
                         "ops": [
@@ -2275,7 +2320,7 @@ mod json_parse_tests {
         let all_bits = SimpleIrRuntimeRequirements::ALL.bits();
         for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{all_bits},"out":"value"}}]}}]}}"#,
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{all_bits},"out":"value"}}]}}]}}"#,
             );
             let accepted = SimpleIR::from_json_str(&source)
                 .unwrap_or_else(|error| panic!("generated carrier {kind} must parse: {error}"));
@@ -2286,7 +2331,7 @@ mod json_parse_tests {
         }
 
         let wrong_op = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","runtime_requirement_bits":1,"out":"value"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","runtime_requirement_bits":1,"out":"value"}]}]}"#,
         )
         .expect_err("requirement bits must not leak onto unrelated op families");
         assert!(wrong_op.contains("cannot carry runtime_requirement_bits"));
@@ -2294,7 +2339,7 @@ mod json_parse_tests {
         for bit in 0..SimpleIrRuntimeRequirementBits::BITS {
             let bits: SimpleIrRuntimeRequirementBits = 1 << bit;
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{bits},"out":"value"}}]}}]}}"#,
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{bits},"out":"value"}}]}}]}}"#,
             );
             let parsed = SimpleIR::from_json_str(&source);
             if all_bits & bits != 0 {
@@ -2314,7 +2359,7 @@ mod json_parse_tests {
             (u64::from(SimpleIrRuntimeRequirementBits::MAX) + 1).to_string(),
         ] {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{invalid},"out":"value"}}]}}]}}"#,
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"module_get_attr","runtime_requirement_bits":{invalid},"out":"value"}}]}}]}}"#,
             );
             let error = SimpleIR::from_json_str(&source)
                 .expect_err("signed or oversized requirement storage must fail at parsing");
@@ -2329,7 +2374,7 @@ mod json_parse_tests {
     fn simple_ir_runtime_symbols_are_typed_and_op_scoped() {
         for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
             let source = format!(
-                r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
+                r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
             );
             let accepted = SimpleIR::from_json_str(&source).unwrap_or_else(|error| {
                 panic!("generated symbol carrier {kind} must parse: {error}")
@@ -2341,7 +2386,7 @@ mod json_parse_tests {
         }
 
         let wrong_op = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"const_none","runtime_symbol":"molt_getframe","out":"value"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","runtime_symbol":"molt_getframe","out":"value"}]}]}"#,
         )
         .expect_err("runtime symbols must not leak onto unrelated op families");
         assert!(wrong_op.contains("cannot carry runtime_symbol"));
@@ -2350,13 +2395,13 @@ mod json_parse_tests {
     #[test]
     fn simple_ir_return_family_accepts_only_canonical_args_carriers() {
         SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret","args":["value"]}]}]}"#,
+            r#"{"functions":[{"return_abi": "value", "name":"f","params":["value"],"ops":[{"kind":"ret","args":["value"]}]}]}"#,
         )
         .expect("ret args carrier must validate");
         for invalid in [
-            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret","var":"value"}]}]}"#,
-            r#"{"functions":[{"name":"f","params":[],"ops":[{"kind":"ret"}]}]}"#,
-            r#"{"functions":[{"name":"f","params":["value"],"ops":[{"kind":"ret_void","args":["value"]}]}]}"#,
+            r#"{"functions":[{"return_abi": "value", "name":"f","params":["value"],"ops":[{"kind":"ret","var":"value"}]}]}"#,
+            r#"{"functions":[{"return_abi": "value", "name":"f","params":[],"ops":[{"kind":"ret"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"f","params":["value"],"ops":[{"kind":"ret_void","args":["value"]}]}]}"#,
         ] {
             let error = SimpleIR::from_json_str(invalid)
                 .expect_err("noncanonical return carrier must fail at the schema boundary");
@@ -2372,7 +2417,7 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [
@@ -2402,7 +2447,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [
@@ -2428,7 +2473,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [
@@ -2455,7 +2500,7 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["arg0"],
                         "ops": [
@@ -2496,7 +2541,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["x"],
                         "ops": [
@@ -2524,7 +2569,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["arg0"],
                         "ops": [
@@ -2553,7 +2598,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["arg0"],
                         "ops": [
@@ -2580,7 +2625,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["arg0"],
                         "ops": [
@@ -2607,7 +2652,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["arg0", "arg1"],
                         "ops": [
@@ -2635,7 +2680,7 @@ mod json_parse_tests {
         let accepted = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["callable", "callargs"],
                         "ops": [
@@ -2660,7 +2705,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["callargs"],
                         "ops": [
@@ -2686,7 +2731,7 @@ mod json_parse_tests {
         let err = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [
@@ -2713,7 +2758,7 @@ mod json_parse_tests {
         let ir = SimpleIR::from_json_str(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": [],
                         "ops": [
@@ -2735,7 +2780,7 @@ mod json_parse_tests {
         let err = serde_json::from_str::<SimpleIR>(
             r#"{
                 "functions": [
-                    {
+                    {"return_abi": "void",
                         "name": "__main__",
                         "params": ["x"],
                         "param_types": ["int", "bool"],
@@ -2753,8 +2798,8 @@ mod json_parse_tests {
     #[test]
     fn ndjson_reader_parses_stream() {
         let input = r#"{"kind":"ir_stream_start","profile":null}
-{"kind":"function","name":"molt_main","params":[],"ops":[{"kind":"ret_void"}]}
-{"kind":"function","name":"helper","params":["a"],"ops":[{"kind":"ret","args":["a"]}]}
+{"return_abi": "void", "kind":"function","name":"molt_main","params":[],"ops":[{"kind":"ret_void"}]}
+{"return_abi": "value", "kind":"function","name":"helper","params":["a"],"ops":[{"kind":"ret","args":["a"]}]}
 {"kind":"ir_stream_end"}
 "#;
         let reader = std::io::BufReader::new(input.as_bytes());
@@ -2768,15 +2813,15 @@ mod json_parse_tests {
     #[test]
     fn extern_identity_is_preserved_across_every_json_transport_boundary() {
         let json = r#"{
-            "functions": [{
+            "functions": [{"return_abi": "void",
                 "name": "external",
                 "params": [],
-                "ops": [{"kind": "ret_void"}],
+                "ops": [],
                 "is_extern": true
             }]
         }"#;
         let ndjson = r#"{"kind":"ir_stream_start","profile":null}
-{"kind":"function","name":"external","params":[],"ops":[{"kind":"ret_void"}],"is_extern":true}
+{"return_abi": "void", "kind":"function","name":"external","params":[],"ops":[],"is_extern":true}
 {"kind":"ir_stream_end"}
 "#;
 
@@ -2811,7 +2856,7 @@ mod json_parse_tests {
     #[test]
     fn ndjson_reader_parses_profile() {
         let input = r#"{"kind":"ir_stream_start","profile":{"version":"v1","hot_functions":["f"]}}
-{"kind":"function","name":"f","params":[],"ops":[{"kind":"ret_void"}]}
+{"return_abi": "void", "kind":"function","name":"f","params":[],"ops":[{"kind":"ret_void"}]}
 {"kind":"ir_stream_end"}
 "#;
         let reader = std::io::BufReader::new(input.as_bytes());
@@ -2827,7 +2872,7 @@ mod json_parse_tests {
         let input = r#"{"kind":"ir_stream_start","profile":null}
 
 {"kind":"unknown_future_thing","data":123}
-{"kind":"function","name":"main","params":[],"ops":[{"kind":"ret_void"}]}
+{"return_abi": "void", "kind":"function","name":"main","params":[],"ops":[{"kind":"ret_void"}]}
 {"kind":"ir_stream_end"}
 "#;
         let reader = std::io::BufReader::new(input.as_bytes());
@@ -2849,7 +2894,7 @@ mod json_parse_tests {
     #[test]
     fn ndjson_reader_rejects_contract_violations() {
         let input = r#"{"kind":"ir_stream_start","profile":null}
-{"kind":"function","name":"__main__","params":["x"],"param_types":["int","bool"],"ops":[{"kind":"ret_void"}]}
+{"return_abi": "void", "kind":"function","name":"__main__","params":["x"],"param_types":["int","bool"],"ops":[{"kind":"ret_void"}]}
 {"kind":"ir_stream_end"}
 "#;
         let reader = std::io::BufReader::new(input.as_bytes());
@@ -2863,6 +2908,7 @@ mod json_parse_tests {
     fn codegen_partition_survives_all_transports_and_changes_contract() {
         for partitioned in [false, true] {
             let function = FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
                 name: "__molt_chunk_v1_ordinary_name".into(),
                 codegen_partition: partitioned,
                 ops: vec![OpIR {
@@ -2909,7 +2955,7 @@ mod json_parse_tests {
             assert_ne!(contract_bytes(&function), contract_bytes(&opposite));
         }
         let defaulted = SimpleIR::from_json_str(
-            r#"{"functions":[{"name":"plain","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
+            r#"{"functions":[{"return_abi": "void", "name":"plain","params":[],"ops":[{"kind":"ret_void"}]}]}"#,
         )
         .unwrap();
         assert!(!defaulted.functions[0].codegen_partition);

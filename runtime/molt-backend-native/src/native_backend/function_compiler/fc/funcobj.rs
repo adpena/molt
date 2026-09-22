@@ -67,7 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     op: &OpIR,
     op_idx: usize,
     owned_frame_entered: Option<Variable>,
-    leading_frame_entry_preemitted: bool,
+    leading_frame_entry_preemitted: Option<usize>,
     has_frame_slot: bool,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
@@ -699,8 +699,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         "trace_enter_slot" => {
             let entered = owned_frame_entered
                 .expect("trace_enter_slot requires local execution-context ownership");
-            if leading_frame_entry_preemitted {
-                debug_assert_eq!(op_idx, 0);
+            if let Some(leading_frame_entry_op_idx) = leading_frame_entry_preemitted {
+                debug_assert_eq!(op_idx, leading_frame_entry_op_idx);
             } else {
                 emit_owned_execution_frame_enter(
                     entered,

@@ -172,6 +172,44 @@ def test_code_slots_split_lexical_module_bootstrap_from_active_globals() -> None
     )
 
 
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_module_annotation_callables_follow_frame_and_import_metadata(
+    target_python: tuple[int, int], chunked: bool
+) -> None:
+    gen = SimpleTIRGenerator(
+        module_name="annotated_module",
+        known_modules={"builtins", "importlib", "importlib.machinery"},
+        target_python=target_python,
+        module_chunking=chunked,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse('"module doc"\nvalue: int = 1\n'))
+    ops = gen.funcs_map["molt_main"]["ops"]
+    strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    enter = next(index for index, op in enumerate(ops) if op.kind == "TRACE_ENTER_SLOT")
+    publication = next(
+        index
+        for index, op in enumerate(ops)
+        if op.metadata and op.metadata.get("source_module_publication_boundary")
+    )
+    metadata_stores = {
+        strings.get(op.args[1].name): index
+        for index, op in enumerate(ops)
+        if op.kind == "MODULE_SET_ATTR"
+    }
+    assert enter < metadata_stores["__spec__"] < publication
+    assert metadata_stores["__doc__"] > publication
+    annotation_functions = [
+        index
+        for index, op in enumerate(ops)
+        if op.kind in {"FUNC_NEW", "FUNC_NEW_CLOSURE"} and "__annotate__" in op.args[0]
+    ]
+    assert bool(annotation_functions) == (target_python >= (3, 14))
+    assert all(index > publication for index in annotation_functions)
+    assert not any(op.kind in {"FUNC_NEW", "FUNC_NEW_CLOSURE"} for op in ops[:enter])
+
+
 def test_function_module_binding_reads_use_active_global_lookup() -> None:
     ir = compile_to_tir(
         "def target():\n    return 1\n\ndef probe():\n    return target\n"

@@ -8,6 +8,7 @@ use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "f".to_string(),
             ops,
             ..FunctionIR::default()
@@ -296,6 +297,7 @@ fn retired_class_frame_operation_is_rejected_on_every_target() {
 fn binary(kind: &str, ty: &str) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "f".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![OpIR {
@@ -387,6 +389,7 @@ fn async_work_marker_uses_precise_pending_call_eval_breaker_capability() {
 #[test]
 fn extern_linkage_capability_is_one_shared_target_admission_gate() {
     let mut declaration = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "external_helper".to_string(),
         params: vec!["arg".to_string()],
         ops: vec![OpIR {
@@ -634,7 +637,7 @@ fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
 fn every_generated_runtime_requirement_carrier_parses_and_reaches_admission() {
     for &kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
         let source = format!(
-            r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{},"out":"value"}}]}}]}}"#,
+            r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{},"out":"value"}}]}}]}}"#,
             SimpleIrRuntimeRequirements::FRAME_INTROSPECTION.bits(),
         );
         let ir = SimpleIR::from_json_str(&source)
@@ -653,7 +656,7 @@ fn every_generated_runtime_requirement_carrier_parses_and_reaches_admission() {
 fn every_generated_runtime_symbol_carrier_parses_and_reaches_admission() {
     for &kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
         let source = format!(
-            r#"{{"functions":[{{"name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
+            r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
         );
         let ir = SimpleIR::from_json_str(&source)
             .unwrap_or_else(|error| panic!("generated symbol carrier {kind} must parse: {error}"));

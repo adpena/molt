@@ -15,7 +15,12 @@ pub(super) use crate::tir::types::TirType;
 pub(super) use crate::tir::values::{TirValue, ValueId};
 
 pub(super) fn add_function() -> TirFunction {
-    let mut func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "add".into(),
+        vec![TirType::I64, TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let result = ValueId(func.next_value);
     func.next_value += 1;

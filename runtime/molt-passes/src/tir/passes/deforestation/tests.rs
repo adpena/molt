@@ -45,7 +45,12 @@ fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
 ///     result = CallBuiltin("sum", elem)
 ///     → Return(result)
 fn build_iter_sum_function() -> TirFunction {
-    let mut func = TirFunction::new("test_sum".into(), vec![TirType::DynBox], TirType::I64);
+    let mut func = TirFunction::new(
+        "test_sum".into(),
+        vec![TirType::DynBox],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     // Values: 0=data(param), 1=iter, 2=elem, 3=elem_valid, 4=result
     let iter_val = func.fresh_value(); // 1
@@ -192,6 +197,7 @@ fn build_fib_swap_function() -> TirFunction {
         "fib_swap".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     // params: ValueId(0)=b, ValueId(1)=a_plus_b
@@ -259,6 +265,7 @@ fn tuple_scalarize_escaping_tuple_not_eliminated() {
         "escape".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let tuple_val = func.fresh_value(); // 2
@@ -306,6 +313,7 @@ fn tuple_scalarize_count_mismatch_not_eliminated() {
         "mismatch".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let tuple_val = func.fresh_value(); // 2
@@ -344,7 +352,12 @@ fn tuple_scalarize_count_mismatch_not_eliminated() {
 // -----------------------------------------------------------------------
 #[test]
 fn tuple_scalarize_no_tuples_no_changes() {
-    let mut func = TirFunction::new("noop".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "noop".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -367,6 +380,7 @@ fn tuple_scalarize_three_elements() {
         "triple".into(),
         vec![TirType::I64, TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let tuple_val = func.fresh_value(); // 3
@@ -420,6 +434,7 @@ fn tuple_scalarize_multiple_in_same_block() {
         "multi".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     // First tuple: swap a,b
@@ -478,6 +493,7 @@ fn tuple_scalarize_interleaved_pairs_are_reconstructed_from_original_indices() {
         "interleaved".into(),
         vec![TirType::I64, TirType::I64, TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let tuple1 = func.fresh_value();
@@ -537,7 +553,12 @@ fn tuple_scalarize_interleaved_pairs_are_reconstructed_from_original_indices() {
 
 #[test]
 fn tuple_scalarize_empty_pair_reconstructs_without_capacity_underflow() {
-    let mut func = TirFunction::new("empty_unpack".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "empty_unpack".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let tuple = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry
@@ -563,6 +584,7 @@ fn tuple_scalarize_tuple_in_terminator_not_eliminated() {
         "term_use".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let tuple_val = func.fresh_value(); // 2
@@ -593,7 +615,12 @@ fn tuple_scalarize_tuple_in_terminator_not_eliminated() {
 // -----------------------------------------------------------------------
 #[test]
 fn tuple_scalarize_single_element() {
-    let mut func = TirFunction::new("single".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "single".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let tuple_val = func.fresh_value(); // 1
     let out_a = func.fresh_value(); // 2

@@ -33,7 +33,12 @@ fn make_type_guard(operand: ValueId, result: ValueId) -> TirOp {
 
 #[test]
 fn typeguard_loop_invariant_hoisted() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let x = func.fresh_value();
     let ok = func.fresh_value();
@@ -101,7 +106,12 @@ fn typeguard_loop_invariant_hoisted() {
 
 #[test]
 fn typeguard_hoists_when_latch_id_precedes_header() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let x = func.fresh_value();
     let ok = func.fresh_value();
@@ -163,7 +173,12 @@ fn typeguard_hoists_when_latch_id_precedes_header() {
 
 #[test]
 fn typeguard_loop_local_not_hoisted() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let y = func.fresh_value();
     let ok = func.fresh_value();
@@ -223,7 +238,12 @@ fn typeguard_loop_local_not_hoisted() {
 
 #[test]
 fn no_typeguard_no_changes() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -237,7 +257,12 @@ fn no_typeguard_no_changes() {
 
 #[test]
 fn typeguard_outside_loop_unchanged() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let x = func.fresh_value();
     let ok = func.fresh_value();
 

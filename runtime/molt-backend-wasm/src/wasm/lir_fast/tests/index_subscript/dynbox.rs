@@ -6,6 +6,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
         "index_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let index_result = index_func.fresh_value();
     index_func.value_types.insert(index_result, TirType::DynBox);
@@ -37,6 +38,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
         "store_index_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = store_func.blocks.get_mut(&store_func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -66,6 +68,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
         "del_index_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = del_func.blocks.get_mut(&del_func.entry_block).unwrap();
     entry.ops.push(TirOp {

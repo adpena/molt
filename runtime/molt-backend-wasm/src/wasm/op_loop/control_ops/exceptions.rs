@@ -108,6 +108,7 @@ mod tests {
             crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending;
         let import_ids = TrackedImportIds::new(BTreeMap::from([(poll_import, 0)]));
         let func_ir = crate::FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "plain_poll".into(),
             ..Default::default()
         };

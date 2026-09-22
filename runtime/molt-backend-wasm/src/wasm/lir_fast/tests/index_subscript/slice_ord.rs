@@ -6,6 +6,7 @@ fn build_slice_stays_lir_fast_and_pads_missing_bounds_with_none() {
         "build_slice_missing_step".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);
@@ -48,6 +49,7 @@ fn ord_at_stays_lir_fast_with_boxed_result_carrier() {
         "ord_at_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);

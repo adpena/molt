@@ -65,7 +65,7 @@ fn require_function_linkage_abi<'a>(
         // Direct lowering unit tests intentionally bypass the production
         // compile driver. Keep their local-only fixture authority out of
         // shipped code while production fails closed on every absent row.
-        let returns_value = !matches!(func.return_type, TirType::None);
+        let returns_value = func.return_abi.returns_value();
         std::borrow::Cow::Owned(crate::NativeFunctionLinkageAbi {
             source_signature: crate::ir::ExternFunctionSignature {
                 arity: func.param_types.len(),
@@ -955,7 +955,12 @@ mod operation_shape_tests {
             let context = inkwell::context::Context::create();
             let backend = LlvmBackend::new(&context, "retired_origin_admission");
             let before = backend.module.print_to_string().to_string();
-            let mut func = TirFunction::new("retired_store".into(), vec![], TirType::None);
+            let mut func = TirFunction::new(
+                "retired_store".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()
@@ -985,7 +990,12 @@ mod operation_shape_tests {
         for (operands, value) in [(1, Some(0)), (3, Some(0)), (2, None), (2, Some(-1))] {
             let context = inkwell::context::Context::create();
             let backend = LlvmBackend::new(&context, "shape_admission");
-            let mut func = TirFunction::new("bad_code_slot".into(), vec![], TirType::None);
+            let mut func = TirFunction::new(
+                "bad_code_slot".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
             let mut attrs = AttrDict::from([(
                 "_original_kind".into(),
                 AttrValue::Str("code_slot_set".into()),

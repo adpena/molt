@@ -6,6 +6,7 @@ fn dynbox_add_falls_back_to_call() {
         "add_dyn".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -41,6 +42,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
         "add_float_dyn".into(),
         vec![TirType::F64, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -132,6 +134,7 @@ fn dynbox_identity_comparisons_stay_lir_fast_runtime_calls() {
             name.into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

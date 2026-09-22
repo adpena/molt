@@ -34,7 +34,12 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
 
 #[test]
 fn decref_alloc_same_type_produces_candidate() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_x = func.fresh_value();
     let load_result = func.fresh_value();
     let alloc_y = func.fresh_value();
@@ -72,7 +77,12 @@ fn decref_alloc_same_type_produces_candidate() {
 
 #[test]
 fn barrier_between_decref_and_alloc_prevents_reuse() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_x = func.fresh_value();
     let call_result = func.fresh_value();
     let alloc_y = func.fresh_value();
@@ -107,7 +117,12 @@ fn barrier_between_decref_and_alloc_prevents_reuse() {
 
 #[test]
 fn stack_alloc_not_eligible_for_reuse() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let stack_val = func.fresh_value();
     let alloc_y = func.fresh_value();
     let const_none = func.fresh_value();
@@ -138,7 +153,12 @@ fn stack_alloc_not_eligible_for_reuse() {
 
 #[test]
 fn annotate_tags_ops_with_reuse_token_ids() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_x = func.fresh_value();
     let alloc_y = func.fresh_value();
     let const_none = func.fresh_value();
@@ -180,7 +200,12 @@ fn annotate_tags_ops_with_reuse_token_ids() {
 
 #[test]
 fn multiple_pairs_in_same_block() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_a = func.fresh_value();
     let alloc_b = func.fresh_value();
     let alloc_c = func.fresh_value();
@@ -223,7 +248,12 @@ fn multiple_pairs_in_same_block() {
 
 #[test]
 fn decref_on_parameter_not_eligible() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let param = ValueId(0);
     let alloc_y = func.fresh_value();
     let const_none = func.fresh_value();
@@ -249,7 +279,12 @@ fn decref_on_parameter_not_eligible() {
 
 #[test]
 fn non_aliasing_ops_skipped() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_x = func.fresh_value();
     let const_val = func.fresh_value();
     let add_result = func.fresh_value();

@@ -25,6 +25,7 @@ fn add_callee() -> TirFunction {
         "addfn".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let p0 = ValueId(0);
     let p1 = ValueId(1);
@@ -57,6 +58,7 @@ fn closure_callee(name: &str) -> TirFunction {
         name.into(),
         vec![TirType::DynBox, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     // The production lift sets param_names from the frontend params; mirror
     // that here (TirFunction::new defaults to "p0"/"p1", test-only). The
@@ -109,7 +111,12 @@ fn closure_callee(name: &str) -> TirFunction {
 
 /// A const-returning leaf `fn k() -> 42`.
 fn const_callee() -> TirFunction {
-    let mut f = TirFunction::new("constfn".into(), vec![], TirType::I64);
+    let mut f = TirFunction::new(
+        "constfn".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v = f.fresh_value();
     let entry = f.entry_block;
     let mut attrs = AttrDict::new();
@@ -131,7 +138,12 @@ fn const_callee() -> TirFunction {
 /// A caller `fn g() { x = const(); y = x + 1; return y }` that calls the
 /// const callee. The const arg list is empty; the result is `x`.
 fn caller_calling_const(callee_name: &str) -> TirFunction {
-    let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let call_res = g.fresh_value();
     let one = g.fresh_value();
     let y = g.fresh_value();
@@ -170,7 +182,12 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
 }
 
 fn over_base_budget_float_callee_with_return_type(name: &str, return_type: TirType) -> TirFunction {
-    let mut f = TirFunction::new(name.into(), vec![], return_type);
+    let mut f = TirFunction::new(
+        name.into(),
+        vec![],
+        return_type,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = f.entry_block;
     let mut last = ValueId(0);
     for i in 0..31 {
@@ -197,7 +214,12 @@ fn over_base_budget_float_callee(name: &str) -> TirFunction {
 }
 
 fn loop_numeric_caller(callee_name: &str) -> TirFunction {
-    let mut g = TirFunction::new("numeric_loop_caller".into(), vec![], TirType::F64);
+    let mut g = TirFunction::new(
+        "numeric_loop_caller".into(),
+        vec![],
+        TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let call_res = g.fresh_value();
     let scale = g.fresh_value();
     let product = g.fresh_value();
@@ -262,7 +284,12 @@ fn analysis(m: &TirModule) -> (CallGraph, ModuleSummaries) {
 /// is set (the `CheckException` would set it during lift) but there is NO
 /// handler region.
 fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirFunction {
-    let mut f = TirFunction::new(name.into(), vec![ty.clone()], ty.clone());
+    let mut f = TirFunction::new(
+        name.into(),
+        vec![ty.clone()],
+        ty.clone(),
+        molt_ir::FunctionReturnAbi::Value,
+    );
     f.has_exception_handling = true;
     let a = ValueId(0);
     let normal = f.fresh_block();
@@ -331,7 +358,12 @@ fn caller_calling_obs_with_label_and_type(
     caller_label: i64,
     ty: TirType,
 ) -> TirFunction {
-    let mut c = TirFunction::new(name.into(), vec![], ty.clone());
+    let mut c = TirFunction::new(
+        name.into(),
+        vec![],
+        ty.clone(),
+        molt_ir::FunctionReturnAbi::Value,
+    );
     c.has_exception_handling = true;
     let arg = c.fresh_value();
     let call_res = c.fresh_value();

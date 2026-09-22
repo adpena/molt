@@ -2,7 +2,12 @@ use super::*;
 
 #[test]
 fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
-    let mut func = TirFunction::new("exception_pending".into(), vec![], TirType::Bool);
+    let mut func = TirFunction::new(
+        "exception_pending".into(),
+        vec![],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::Bool);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

@@ -8,7 +8,12 @@ fn dynbox_iterator_helpers_stay_lir_fast_runtime_calls() {
     ];
 
     for (name, opcode, runtime_call) in cases {
-        let mut func = TirFunction::new(name.into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::DynBox);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

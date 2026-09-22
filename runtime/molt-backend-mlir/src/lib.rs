@@ -77,8 +77,12 @@ mod tests {
     };
 
     fn make_add_func() -> TirFunction {
-        let mut func =
-            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let v2 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -94,7 +98,12 @@ mod tests {
     }
 
     fn make_const_func() -> TirFunction {
-        let mut func = TirFunction::new("const42".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "const42".into(),
+            vec![],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let v0 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let mut attrs = AttrDict::new();
@@ -112,7 +121,12 @@ mod tests {
     }
 
     fn make_state_dispatch_func() -> TirFunction {
-        let mut func = TirFunction::new("generator_poll".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "generator_poll".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         func.param_names = vec!["self".into()];
         let initial = func.fresh_block();
         let resumed = func.fresh_block();
@@ -151,7 +165,12 @@ mod tests {
     }
 
     fn make_dynamic_not_func() -> TirFunction {
-        let mut func = TirFunction::new("dynamic_not".into(), vec![TirType::DynBox], TirType::Bool);
+        let mut func = TirFunction::new(
+            "dynamic_not".into(),
+            vec![TirType::DynBox],
+            TirType::Bool,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         func.value_types.insert(result, TirType::Bool);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -170,7 +189,12 @@ mod tests {
     }
 
     fn make_original_kind_func() -> TirFunction {
-        let mut func = TirFunction::new("original_kind".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "original_kind".into(),
+            vec![],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         func.value_types.insert(result, TirType::DynBox);
         let mut attrs = AttrDict::new();
@@ -195,7 +219,12 @@ mod tests {
     }
 
     fn make_typed_edge_func() -> TirFunction {
-        let mut func = TirFunction::new("typed_edge".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "typed_edge".into(),
+            vec![],
+            TirType::DynBox,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let truth = func.fresh_value();
         let target_arg = func.fresh_value();
         let target = func.fresh_block();
@@ -233,7 +262,12 @@ mod tests {
 
     #[test]
     fn test_rejects_async_work_poll_without_runtime_boundary() {
-        let mut func = TirFunction::new("async_work_poll".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "async_work_poll".into(),
+            vec![],
+            TirType::None,
+            molt_backend::ir::FunctionReturnAbi::Void,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let mut poll = TirOp {
             dialect: Dialect::Molt,
@@ -308,6 +342,7 @@ mod tests {
             "cond".into(),
             vec![TirType::I64, TirType::I64],
             TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
         );
         let cmp_val = f.fresh_value();
         let tb = f.fresh_block();
@@ -387,6 +422,7 @@ mod tests {
             "arith_chain".into(),
             vec![TirType::I64, TirType::I64],
             TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
         );
         let sum = func.fresh_value();
         let diff = func.fresh_value();
@@ -425,6 +461,7 @@ mod tests {
             "pow_i64".into(),
             vec![TirType::I64, TirType::I64],
             TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
         );
         let out = func.fresh_value();
         func.value_types.insert(out, TirType::I64);
@@ -446,6 +483,7 @@ mod tests {
             "malformed_pow_i64".into(),
             vec![TirType::I64, TirType::I64],
             TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -467,6 +505,7 @@ mod tests {
             "floordiv_f64".into(),
             vec![TirType::F64, TirType::F64],
             TirType::F64,
+            molt_backend::ir::FunctionReturnAbi::Value,
         );
         let out = func.fresh_value();
         func.value_types.insert(out, TirType::F64);
@@ -484,7 +523,12 @@ mod tests {
     }
 
     fn make_unreachable_func() -> TirFunction {
-        let mut func = TirFunction::new("unreachable_i64".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "unreachable_i64".into(),
+            vec![],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Unreachable;
         func

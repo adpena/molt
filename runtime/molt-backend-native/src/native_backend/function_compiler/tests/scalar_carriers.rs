@@ -968,6 +968,7 @@ fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
     };
 
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "hinted_generic".to_string(),
         params: vec!["callable".to_string(), "args".to_string()],
         ops: vec![hinted_generic_op],

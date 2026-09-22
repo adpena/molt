@@ -4,7 +4,7 @@ use cranelift_codegen::ir::{ExternalName, InstructionData};
 #[test]
 fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
     use super::super::fc::const_literals::{
-        LiteralFailureExit, handle_const_literal_op, hoist_heap_literals,
+        LiteralFailureExit, handle_const_literal_op, prepare_heap_literals,
     };
 
     // Unproven scalar facts require the boxed lane, including full-i64 consts.
@@ -34,6 +34,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         }
     }
     let input = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "literal_owners".into(),
         params: vec![],
         ops,
@@ -82,15 +83,25 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             &[types::I64],
             &[],
         );
-        let hoists = hoist_heap_literals(
-            &input,
+        let (hoists, materialization) = prepare_heap_literals(&input, &mut builder, &plan);
+        for runtime_func in [
+            "molt_string_from_bytes",
+            "molt_bytes_from_bytes",
+            "molt_bigint_from_str",
+        ] {
+            assert!(
+                !backend.import_ids.contains_key(runtime_func),
+                "literal preparation must not import or emit constructors"
+            );
+        }
+        materialization.materialize(
+            &hoists,
             &mut backend.module,
             &mut backend.import_ids,
             &mut backend.data_pool,
             &mut backend.next_data_id,
             &mut builder,
             &vars,
-            &plan,
             LiteralFailureExit {
                 block: exit,
                 returns_value: true,
@@ -212,6 +223,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
     for kind in ["const", "const_int", "load_const"] {
         for value in [i64::MIN, 0, i64::MAX] {
             let input = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "integer_literal_contract".into(),
                 params: vec![],
                 param_types: None,

@@ -29,7 +29,12 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn fixture() -> TirFunction {
-        let mut func = TirFunction::new("retention_closure".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "retention_closure".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         for id in 0..=7 {
             func.blocks.insert(
                 BlockId(id),

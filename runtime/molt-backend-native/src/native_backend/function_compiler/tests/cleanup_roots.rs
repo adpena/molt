@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn token_test_ir() -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "tokens".into(),
         params: vec!["borrowed".into()],
         ops: vec![

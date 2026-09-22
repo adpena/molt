@@ -80,6 +80,7 @@ fn compile_trace_probe_object(
     let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", emit_traces_env);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
             ops: if execution_context == crate::ir::ExecutionContextPolicy::Local {
@@ -87,6 +88,24 @@ fn compile_trace_probe_object(
                     OpIR {
                         kind: "trace_enter_slot".to_string(),
                         value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".to_string(),
+                        value: Some(1),
                         ..OpIR::default()
                     },
                     OpIR {

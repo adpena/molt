@@ -44,6 +44,7 @@ fn value_body(extra_ops: usize) -> FunctionIR {
         ..OpIR::default()
     });
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "value_body".to_string(),
         params: vec!["value".to_string()],
         ops,
@@ -69,10 +70,6 @@ fn declaration_allocation_count(function: &FunctionIR) -> usize {
 fn extern_declaration_projection_has_body_independent_allocations_and_zero_cost_validation() {
     let small = value_body(0);
     let large = value_body(10_000);
-
-    // Initialize the shared canonical signature template outside the measured
-    // region so the measurement represents steady-state batch planning.
-    black_box(small.extern_declaration().expect("warm signature template"));
 
     let small_allocations = declaration_allocation_count(&small);
     let large_allocations = declaration_allocation_count(&large);

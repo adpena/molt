@@ -969,7 +969,12 @@ def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
         for index, op in enumerate(function["ops"])
         if op["kind"] in {"ret", "ret_void"}
     ]
-    assert len(return_indices) == 2
+    entry_failure_label = gen.funcs_map[function["name"]]["frame_entry_failure_label"]
+    assert function["ops"][1] == {
+        "kind": "check_exception",
+        "value": entry_failure_label,
+    }
+    assert len(return_indices) == 3  # normal, body failure and entry failure
     assert all(
         index > 0 and function["ops"][index - 1]["kind"] == "trace_exit"
         for index in return_indices
@@ -3066,6 +3071,88 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
     assert all(op.get("passes_execution_context") is True for op in chunk_calls)
 
 
+@pytest.mark.parametrize("chunked", [False, True])
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "sys",
+        "builtins",
+        "importlib",
+        "importlib.machinery",
+        "app",
+        "__main__",
+        "package",
+        "namespace",
+    ],
+)
+def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
+    module_name: str, chunked: bool
+) -> None:
+    gen = SimpleTIRGenerator(
+        module_name=module_name,
+        source_path=(
+            None
+            if module_name == "namespace"
+            else "/modules/package/__init__.py"
+            if module_name == "package"
+            else f"/modules/{module_name}.py"
+        ),
+        module_is_namespace=module_name == "namespace",
+        module_execution_kind="script" if module_name == "__main__" else "imported",
+        known_modules={"sys", "builtins", "importlib", "importlib.machinery", "app"},
+        module_chunking=chunked,
+        module_chunk_max_ops=1,
+    )
+    gen.visit(ast.parse("value = 1\n"))
+    # Inspect the emitted control-flow obligations before optimization can
+    # coalesce exception checks or remove unrelated source stores.
+    ops = gen.funcs_map["molt_main"]["ops"]
+    kinds = [op.kind for op in ops]
+    strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    enter = kinds.index("TRACE_ENTER_SLOT")
+    locals_set = kinds.index("FRAME_LOCALS_SET")
+    assert kinds.index("MODULE_CACHE_SET") < kinds.index("CODE_SLOT_SET") < enter
+    assert not any(op.kind == "MODULE_IMPORT" for op in ops[:enter])
+    spec_stores = [
+        index
+        for index, op in enumerate(ops)
+        if op.kind == "MODULE_SET_ATTR" and strings.get(op.args[1].name) == "__spec__"
+    ]
+    assert len(spec_stores) == 1
+    assert enter < spec_stores[0] < locals_set
+    assert ops[locals_set].metadata == {"source_module_publication_boundary": True}
+
+    pre_frame_label = gen.module_pre_frame_exception_label
+    attempt_label = gen.function_exception_label
+    assert pre_frame_label is not None and attempt_label != pre_frame_label
+    assert ops[enter + 1].kind == "CHECK_EXCEPTION"
+    assert ops[enter + 1].args == [attempt_label]
+    assert all(
+        op.args == [pre_frame_label]
+        for op in ops[:enter]
+        if op.kind == "CHECK_EXCEPTION"
+    )
+    assert all(
+        op.args == [attempt_label]
+        for op in ops[enter + 1 : locals_set + 1]
+        if op.kind == "CHECK_EXCEPTION"
+    )
+    for label, expected_exits in [(pre_frame_label, 0), (attempt_label, 1)]:
+        start = next(
+            index
+            for index, op in enumerate(ops)
+            if op.kind == "LABEL" and op.args == [label]
+        )
+        end = next(
+            index
+            for index in range(start + 1, len(ops))
+            if ops[index].kind in {"RET", "RET_VOID", "ret", "ret_void"}
+        )
+        handler = kinds[start:end]
+        assert handler.count("MODULE_CACHE_DEL") == 1
+        assert handler.count("TRACE_EXIT") == expected_exits
+
+
 def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> None:
     gen = SimpleTIRGenerator(
         module_name="importlib.machinery",
@@ -3102,6 +3189,100 @@ def test_importlib_machinery_owns_a_local_frame_and_threads_it_to_chunks() -> No
     ]
     assert {op["s_value"] for op in threaded_calls} == chunk_names
     assert all(op.get("passes_execution_context") is True for op in threaded_calls)
+
+
+def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic() -> (
+    None
+):
+    gen = SimpleTIRGenerator(module_name="frame_entry", target_python=(3, 14))
+    gen.visit(
+        ast.parse(
+            "value: int = 1\n"
+            "def leaf():\n    return 1\n"
+            "def guarded():\n"
+            "    try:\n        return leaf()\n"
+            "    except ValueError:\n        return 2\n"
+            "def managed():\n    with manager():\n        return 3\n"
+            "callback = lambda: 4\n"
+            "class Sample:\n    def method(self):\n        return 5\n"
+            "def generator():\n    yield 6\n"
+            "async def coroutine():\n    return 7\n"
+            "async def async_generator():\n    yield 8\n"
+            "comprehension = (item for item in (1, 2))\n"
+        )
+    )
+    local_functions = {
+        name: data
+        for name, data in gen.funcs_map.items()
+        if "frame_entry_failure_label" in data
+    }
+    assert len(local_functions) >= 10
+    assert any("__annotate__" in name for name in local_functions)
+    assert any("__lambda" in name for name in local_functions)
+    for name, data in local_functions.items():
+        assert data["return_abi"] == "value", name
+        ops = data["ops"]
+        failure_label = data["frame_entry_failure_label"]
+        assert ops[0].kind == "TRACE_ENTER_SLOT", name
+        assert ops[0].args == [gen.func_code_ids[name]]
+        assert ops[1].kind == "CHECK_EXCEPTION", name
+        assert ops[1].args == [failure_label]
+        cleanup = next(
+            index
+            for index, op in enumerate(ops)
+            if op.kind == "LABEL" and op.args == [failure_label]
+        )
+        assert [op.kind for op in ops[cleanup:]] == [
+            "LABEL",
+            "TRACE_EXIT",
+            "ret_void",
+        ], name
+
+    for stage in ("pre-midend", "post-midend"):
+        first = gen.to_json(midend_stage=stage)
+        second = gen.to_json(midend_stage=stage)
+        assert first["functions"] == second["functions"]
+        for function in first["functions"]:
+            assert (
+                function["return_abi"] == gen.funcs_map[function["name"]]["return_abi"]
+            )
+            if function["name"] not in local_functions:
+                continue
+            ops = function["ops"]
+            assert ops[0]["kind"] == "trace_enter_slot"
+            assert ops[1]["kind"] == "check_exception"
+            entry_cleanup = next(
+                index
+                for index, op in enumerate(ops)
+                if op["kind"] == "label" and op["value"] == ops[1]["value"]
+            )
+            assert [op["kind"] for op in ops[entry_cleanup:]] == [
+                "label",
+                "trace_exit",
+                "ret_void",
+            ]
+
+
+def test_return_abi_survives_removal_of_all_value_returns() -> None:
+    gen = SimpleTIRGenerator(module_name="return_abi")
+    gen.visit(ast.parse("def leaf():\n    return 1\n"))
+    name = next(name for name in gen.funcs_map if name.endswith("leaf"))
+    function = gen.funcs_map[name]
+    assert function["return_abi"] == "value"
+    function["ops"][:] = [
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none"))
+        if op.kind == "ret"
+        else op
+        for op in function["ops"]
+    ]
+    for stage in ("pre-midend", "post-midend"):
+        wire = next(
+            item
+            for item in gen.to_json(midend_stage=stage)["functions"]
+            if item["name"] == name
+        )
+        assert wire["return_abi"] == "value"
+        assert not any(op["kind"] == "ret" for op in wire["ops"])
 
 
 def test_function_lifecycle_is_the_only_trace_exit_authority() -> None:
@@ -3145,7 +3326,7 @@ def exceptional():
                 assert kinds[index - 1] == "trace_exit"
 
     exceptional_kinds = [op["kind"] for op in functions["exceptional"]]
-    assert exceptional_kinds.count("trace_exit") == 1
+    assert exceptional_kinds.count("trace_exit") == 2  # body and entry failure
 
 
 @pytest.mark.parametrize(

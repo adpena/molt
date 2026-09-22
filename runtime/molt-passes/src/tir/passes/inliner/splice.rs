@@ -316,7 +316,7 @@ fn callee_return_value_type(callee: &TirFunction) -> Option<TirType> {
             return Some(ty.clone());
         }
     }
-    if callee.return_type != TirType::None {
+    if callee.return_abi.returns_value() {
         return Some(callee.return_type.clone());
     }
     None

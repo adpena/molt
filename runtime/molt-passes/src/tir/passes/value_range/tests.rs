@@ -113,7 +113,12 @@ fn mark_bool_values(func: &mut TirFunction, values: impl IntoIterator<Item = Val
 /// canonical post-range_devirt shape and run through the real
 /// compute_scev + compute_value_range pipeline.
 fn range_loop_vr(list_len: i64, stop: i64) -> (TirFunction, BlockId, ValueId, ValueId) {
-    let mut func = TirFunction::new("rl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "rl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let one = func.fresh_value();
     let elem = func.fresh_value();
     let list1 = func.fresh_value();
@@ -495,7 +500,12 @@ fn e2e_floordiv_divisor_spanning_zero_not_proven() {
 #[test]
 fn shl_count_outside_0_63_is_not_raw_i64_safe() {
     use crate::representation_facts::raw_i64_safe_values_for;
-    let mut func = TirFunction::new("shl_count_gate".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "shl_count_gate".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let zero = func.fresh_value();
     let big_count = func.fresh_value();
     let bad_res = func.fresh_value(); // 0 << 70  (result fits inline, count > 63)
@@ -542,7 +552,12 @@ fn e2e_unbounded_accumulator_stays_unranged() {
     // The mandatory bigint_accumulator soundness gate: an accumulator phi
     // `total = total + i` whose SCEV is NOT a proven AddRec must keep its
     // FULL (absent) range — the forward sweep must NEVER prove it inline.
-    let mut func = TirFunction::new("acc".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "acc".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let start_i = func.fresh_value();
     let start_t = func.fresh_value();
     let stop_v = func.fresh_value();
@@ -658,7 +673,12 @@ fn masked_shift_loop(
     mask: Option<i64>,
     trip: i64,
 ) -> (TirFunction, ValueId, ValueId, ValueId) {
-    let mut func = TirFunction::new("msl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "msl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     // Counter machinery (drives a constant trip count so the header is a
     // recognized loop with a constant guard) + the accumulator.
     let start_i = func.fresh_value();
@@ -906,7 +926,12 @@ fn masked_back_edge_narrows_with_derived_mask_and_vestigial_loopend() {
     //
     // This is the adversarial mirror of the unit `masked_shift_loop`: same
     // licensing structure, but built in the shape the compiler actually emits.
-    let mut func = TirFunction::new("dm".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "dm".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     // Mask materials: one=1, k=32, then mask = (one << k) - 1 (DERIVED).
     let one_c = func.fresh_value();
     let k_c = func.fresh_value();

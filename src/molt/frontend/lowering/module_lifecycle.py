@@ -175,7 +175,6 @@ class ModuleLifecycleMixin(_MixinBase):
                 if entry_spawn_override_enabled:
                     self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.module_obj = module_val
-        self._emit_module_metadata()
 
     def _emit_module_metadata(self) -> None:
         if self.module_obj is None:
@@ -265,9 +264,10 @@ class ModuleLifecycleMixin(_MixinBase):
             if code_id is None:
                 code_id = self._register_code_symbol(current_func)
             self.module_frame_code_id = code_id
-        # Module/code metadata is created before TRACE_ENTER_SLOT establishes
-        # an active frame, so this one bootstrap path must use the lexical
-        # module dictionary rather than the execution-context globals lookup.
+        # The module/code objects precede frame entry. Import metadata does not:
+        # entering first captures the canonical builtins namespace before a
+        # ModuleSpec import can recursively initialize importlib.machinery.
+        # This bootstrap path therefore needs the lexical module dictionary.
         globals_dict = self._emit_module_globals_dict()
         if not self.module_frame_emitted:
             self.module_frame_emitted = True
@@ -329,20 +329,14 @@ class ModuleLifecycleMixin(_MixinBase):
                     metadata={"code_id": code_id},
                 )
             )
-        self.emit(
-            MoltOp(
-                kind="TRACE_ENTER_SLOT",
-                args=[code_id],
-                result=MoltValue("none"),
-            )
-        )
-        # Module initialization has a real pre-frame prologue: module/code
-        # objects must exist before the execution frame can be entered. Split
-        # exception custody at the enter boundary so a pre-frame failure never
-        # executes TRACE_EXIT, while every post-enter failure does so exactly
-        # once. A single shared handler cannot distinguish those lifetimes.
+        # TRACE_ENTER_SLOT owns an attempted-entry marker even when builtins
+        # capture fails and no Python frame is pushed. Its failure must consume
+        # that marker with TRACE_EXIT; earlier allocation/publication failures
+        # have no marker and must leave the caller's frame untouched.
         self.module_pre_frame_exception_label = self.function_exception_label
         self.function_exception_label = self.next_label()
+        self._emit_checked_frame_entry(code_id, self.function_exception_label)
+        self._emit_module_metadata()
         # Module-scope locals() must behave like globals(); pin the module dict on
         # the frame entry so builtins.locals/globals work even via getattr aliases.
         assert self.function_exception_label is not None
@@ -406,6 +400,7 @@ class ModuleLifecycleMixin(_MixinBase):
         self.funcs_map[symbol] = FuncInfo(
             params=[_MOLT_MODULE_CHUNK_PARAM],
             param_types=[],
+            return_abi="void",
             return_hint=None,
             ops=self._new_tracked_ops(count_function=True),
         )

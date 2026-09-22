@@ -877,7 +877,12 @@ mod tests {
 
     #[test]
     fn graph_records_producers_consumers_and_repr_floor() {
-        let mut func = TirFunction::new("add".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let entry = func.entry_block;
         let c = func.fresh_value();
         let sum = func.fresh_value();
@@ -949,7 +954,12 @@ mod tests {
 
     #[test]
     fn graph_records_call_facts_from_authoritative_table() {
-        let mut func = TirFunction::new("caller".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "caller".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let call_result = func.fresh_value();
         func.value_types.insert(call_result, TirType::I64);
         let mut attrs = AttrDict::new();
@@ -989,7 +999,12 @@ mod tests {
 
     #[test]
     fn graph_records_sourced_allocation_and_ownership_events() {
-        let mut func = TirFunction::new("own".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "own".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         func.attrs.insert(
             SOURCE_FILE_ATTR.into(),
             AttrValue::Str("app.py".to_string()),
@@ -1065,7 +1080,12 @@ mod tests {
 
     #[test]
     fn graph_json_roundtrips_with_stable_schema_header() {
-        let mut func = TirFunction::new("branch".into(), vec![TirType::Bool], TirType::None);
+        let mut func = TirFunction::new(
+            "branch".into(),
+            vec![TirType::Bool],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let target = BlockId(1);
         func.blocks.insert(
             target,
@@ -1096,7 +1116,12 @@ mod tests {
     }
     #[test]
     fn graph_projects_capture_obligations_through_cfg_without_heap_release_claims() {
-        let mut func = TirFunction::new("capture_graph".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "capture_graph".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let root = func.fresh_value();
         let parameter = func.fresh_value();
         let target = func.fresh_block();

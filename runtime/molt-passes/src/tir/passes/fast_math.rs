@@ -153,7 +153,12 @@ mod tests {
     /// Run the pass on a function whose entry block contains `ops`.
     /// The function-level fast_math attr is set iff `mark_func` is true.
     fn run_pass(ops: Vec<TirOp>, mark_func: bool) -> Vec<TirOp> {
-        let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "test".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         if mark_func {
             func.attrs.insert("fast_math".into(), AttrValue::Bool(true));
         }

@@ -2,7 +2,12 @@ use super::super::*;
 
 #[test]
 fn heap_alloc_stays_lir_fast_through_immediate_runtime_call() {
-    let mut func = TirFunction::new("heap_alloc".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "heap_alloc".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -49,7 +54,12 @@ fn heap_alloc_stays_lir_fast_through_immediate_runtime_call() {
 
 #[test]
 fn released_heap_alloc_publishes_before_releasing_its_owner() {
-    let mut func = TirFunction::new("released_heap_alloc".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "released_heap_alloc".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let result = func.fresh_value();
     func.value_types.insert(result, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

@@ -53,7 +53,12 @@ fn tir_cint(result: ValueId, value: i64) -> TirOp {
 /// the shape SCEV recognises as an `AddRec` and value-range turns into a
 /// proven `[start, last]` range.
 fn range_loop_tir(start_v: i64, stop: i64) -> (TirFunction, ValueId, ValueId) {
-    let mut func = TirFunction::new("rl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "rl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let startc = func.fresh_value();
     let stopc = func.fresh_value();
     let stepc = func.fresh_value();
@@ -338,6 +343,7 @@ fn bool_select_range_proof_does_not_promote_to_raw_i64() {
         "bool_select".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -388,7 +394,12 @@ fn bool_select_range_proof_does_not_promote_to_raw_i64() {
 #[test]
 fn annotated_parameters_and_refined_call_results_do_not_mint_scalar_carriers() {
     for ty in [TirType::Bool, TirType::F64, TirType::I64] {
-        let mut func = TirFunction::new("annotation_floor".into(), vec![ty.clone()], ty.clone());
+        let mut func = TirFunction::new(
+            "annotation_floor".into(),
+            vec![ty.clone()],
+            ty.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let parameter = func.blocks[&func.entry_block].args[0].id;
         let copied = func.fresh_value();
         let called = func.fresh_value();
@@ -445,6 +456,7 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
                 "scalar_phi".into(),
                 vec![TirType::Bool, ty.clone()],
                 ty.clone(),
+                molt_ir::FunctionReturnAbi::Value,
             );
             let condition = func.blocks[&func.entry_block].args[0].id;
             let opaque = func.blocks[&func.entry_block].args[1].id;
@@ -563,7 +575,12 @@ fn exact_scalar_phi_carriers_require_every_executable_incoming() {
 #[test]
 fn indexed_checked_status_and_exact_boolean_copies_keep_distinct_carriers() {
     for opcode in [TirOpCode::CheckedAdd, TirOpCode::CheckedMul] {
-        let mut func = TirFunction::new("checked_status".into(), vec![], TirType::Bool);
+        let mut func = TirFunction::new(
+            "checked_status".into(),
+            vec![],
+            TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let left = func.fresh_value();
         let right = func.fresh_value();
         let arithmetic = func.fresh_value();
@@ -619,7 +636,12 @@ fn indexed_checked_status_and_exact_boolean_copies_keep_distinct_carriers() {
 fn unbounded_accumulator_stays_maybe_bigint() {
     // for i in range(10): total = total + i  — `total` is a 2nd phi whose
     // step is the IV itself (not a constant), so it has no proven range.
-    let mut func = TirFunction::new("acc".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "acc".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let startc = func.fresh_value();
     let stopc = func.fresh_value();
     let stepc = func.fresh_value();
@@ -726,7 +748,12 @@ fn unbounded_accumulator_stays_maybe_bigint() {
 /// kernel's index arithmetic would regress to the boxed runtime path.
 #[test]
 fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
-    let mut func = TirFunction::new("k".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "k".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let tid = func.fresh_value();
     func.value_types.insert(tid, TirType::I64);
     let mut call = tir_op(TirOpCode::Call, vec![], vec![tid]);
@@ -754,7 +781,12 @@ fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
 
     // A non-GPU runtime call result is NOT pre-seeded — only the bounded
     // GPU index intrinsics are.
-    let mut func2 = TirFunction::new("k2".into(), vec![], TirType::None);
+    let mut func2 = TirFunction::new(
+        "k2".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let r = func2.fresh_value();
     func2.value_types.insert(r, TirType::I64);
     let mut other = tir_op(TirOpCode::Call, vec![], vec![r]);
@@ -782,7 +814,12 @@ fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
 /// SSA lift keeps as loop metadata. `reachable_vestige` controls whether
 /// that block is wired into the executable CFG or left detached.
 fn checked_loop_with_none_vestige(reachable_vestige: bool) -> (TirFunction, ValueId, ValueId) {
-    let mut func = TirFunction::new("cl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "cl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let init = func.fresh_value();
     let acc = func.fresh_value();
     let cond = func.fresh_value();
@@ -929,7 +966,12 @@ fn reachable_none_edge_still_poisons_checked_loop_phi() {
 /// boxed lane, even when the ordinary entry and back-edge values are raw.
 #[test]
 fn reachable_heap_incoming_poisons_raw_loop_phi() {
-    let mut func = TirFunction::new("mixed_phi".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "mixed_phi".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let init = func.fresh_value();
     let acc = func.fresh_value();
     let cond = func.fresh_value();

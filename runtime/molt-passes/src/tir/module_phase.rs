@@ -609,7 +609,12 @@ mod tests {
     use crate::tir::types::TirType;
 
     fn func_calling(name: &str, callees: &[&str]) -> TirFunction {
-        let mut func = TirFunction::new(name.into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         let block = func.blocks.get_mut(&entry).unwrap();
         for callee in callees {
@@ -687,7 +692,12 @@ mod tests {
         // post-inline analysis no longer records the a→b edge.
         let a = func_calling("a", &["b"]);
         // `b` is a trivial leaf: a single ConstNone op + Return. Inlinable.
-        let mut b = TirFunction::new("b".into(), vec![], TirType::None);
+        let mut b = TirFunction::new(
+            "b".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let bentry = b.entry_block;
         let v = b.fresh_value();
         b.blocks.get_mut(&bentry).unwrap().ops.push(TirOp {

@@ -265,6 +265,25 @@ class FunctionLifecycleMixin(_MixinBase):
                 return True
         return False
 
+    def _emit_checked_frame_entry(self, code_id: int, failure_label: int) -> None:
+        # Entry can initialize builtins and fail before pushing a Python frame.
+        # Its attempted-entry marker still needs TRACE_EXIT, and no body or
+        # frame-local mutation may run while that failure is pending.
+        self.emit(
+            MoltOp(
+                kind="TRACE_ENTER_SLOT",
+                args=[code_id],
+                result=MoltValue("none"),
+            )
+        )
+        self.emit(
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                args=[failure_label],
+                result=MoltValue("none"),
+            )
+        )
+
     def start_function(
         self,
         name: str,
@@ -281,12 +300,14 @@ class FunctionLifecycleMixin(_MixinBase):
             self.funcs_map[name] = FuncInfo(
                 params=params or [],
                 param_types=param_types or [],
+                return_abi="value",
                 return_hint=None,
                 ops=self._new_tracked_ops(count_function=True),
             )
         else:
             self.funcs_map[name]["params"] = params or []
             self.funcs_map[name]["param_types"] = param_types or []
+            self.funcs_map[name]["return_abi"] = "value"
             self.funcs_map[name].setdefault("return_hint", None)
             self.funcs_map[name]["ops"].clear()
         if stateful_frame_plan is None:
@@ -335,6 +356,14 @@ class FunctionLifecycleMixin(_MixinBase):
         #    only) — the same cost CPython pays — while preserving full
         #    correctness for handler-bearing functions.
         self.function_exception_label = self.next_label()
+        if self._function_needs_frame_trace():
+            entry_failure_label = self.next_label()
+            self.funcs_map[name]["frame_entry_failure_label"] = entry_failure_label
+            self._emit_checked_frame_entry(
+                self._register_code_symbol(name), entry_failure_label
+            )
+        else:
+            self.funcs_map[name].pop("frame_entry_failure_label", None)
         if has_exception_handlers:
             self.exception_stack_prev_baseline = MoltValue(
                 self.next_var(), type_hint="int"
@@ -512,6 +541,11 @@ class FunctionLifecycleMixin(_MixinBase):
         self._emit_return_terminator("ret_void", [])
 
     def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None:
+        if (
+            kind == "ret"
+            and self.funcs_map[self.current_func_name]["return_abi"] != "value"
+        ):
+            raise ValueError("a void function ABI cannot return a value")
         if self._function_needs_frame_trace() and (
             not self.current_ops or self.current_ops[-1].kind != "TRACE_EXIT"
         ):
@@ -575,17 +609,19 @@ class FunctionLifecycleMixin(_MixinBase):
             if module_failure_cleanup and not inherited_execution_context
             else None
         )
-        owns_module_frame = bool(
+        owns_module_frame_attempt = bool(
             module_failure_cleanup
             and self.module_frame_entered
             and not inherited_execution_context
         )
-        handler_labels = [(active_label, owns_module_frame)]
+        # An entered module owns the trace attempt, including a failed capture
+        # whose marker records that no Python frame was actually pushed.
+        handler_labels = [(active_label, owns_module_frame_attempt)]
         if pre_frame_label is not None and pre_frame_label != active_label:
             handler_labels = [(active_label, True), (pre_frame_label, False)]
         prev_label = active_label
         self.function_exception_label = None
-        for label, owns_active_frame in handler_labels:
+        for label, owns_entry_attempt in handler_labels:
             with self._suppress_check_exception(emit_on_exit=False):
                 self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
                 if module_failure_cleanup:
@@ -626,9 +662,25 @@ class FunctionLifecycleMixin(_MixinBase):
                         )
             self._emit_restore_exception_stack_depth()
             self._emit_raise_if_pending()
-            if owns_active_frame and module_failure_cleanup:
+            if owns_entry_attempt and module_failure_cleanup:
                 self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
             self._emit_void_return_terminator()
+        entry_failure_label = self.funcs_map[self.current_func_name].get(
+            "frame_entry_failure_label"
+        )
+        if entry_failure_label is not None:
+            # Entry precedes exception-stack baselines, return slots and local
+            # initialization. Its cleanup owns only the attempted frame entry;
+            # the ordinary body handler would read uninitialized cleanup SSA.
+            with self._suppress_check_exception(emit_on_exit=False):
+                self.emit(
+                    MoltOp(
+                        kind="LABEL",
+                        args=[entry_failure_label],
+                        result=MoltValue("none"),
+                    )
+                )
+                self._emit_void_return_terminator()
         self.function_exception_label = prev_label
 
     def _ends_with_return_jump(self) -> bool:

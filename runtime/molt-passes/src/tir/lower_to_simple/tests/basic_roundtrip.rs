@@ -2,7 +2,12 @@ use super::*;
 
 #[test]
 fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
-    let mut func = TirFunction::new("full_width_projection".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "full_width_projection".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let raw = func.fresh_value();
     let boxed = func.fresh_value();
     let unboxed = func.fresh_value();
@@ -79,7 +84,12 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
 
 #[test]
 fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
-    let mut func = TirFunction::new("discarded_boxing".into(), vec![TirType::I64], TirType::None);
+    let mut func = TirFunction::new(
+        "discarded_boxing".into(),
+        vec![TirType::I64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
         dialect: Dialect::Molt,
@@ -118,6 +128,7 @@ fn linearize_emits_return() {
 #[test]
 fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".into(),
         params: vec![],
         ops: vec![
@@ -192,6 +203,7 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
         ..OpIR::default()
     });
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "runtime_requirement_carriers".into(),
         params,
         ops,
@@ -227,6 +239,7 @@ fn every_runtime_symbol_carrier_survives_tir_roundtrip() {
         ..OpIR::default()
     });
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "runtime_symbol_carriers".into(),
         params: vec!["module".into(), "name".into()],
         ops,
@@ -249,7 +262,12 @@ fn every_runtime_symbol_carrier_survives_tir_roundtrip() {
 
 #[test]
 fn lower_to_simple_emits_separate_drop_fact_markers() {
-    let mut func = TirFunction::new("drop_fact_markers".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "drop_fact_markers".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.attrs.insert(
         crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
         AttrValue::Bool(true),
@@ -282,6 +300,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
         "state_yield_resume_continuation_is_linearized_immediately_after_suspend".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = func.entry_block;
     let yield_block = func.fresh_block();
@@ -373,7 +392,12 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
 
 #[test]
 fn result_carrying_store_var_lowers_to_defined_alias_value() {
-    let mut func = TirFunction::new("store_var_result_alias".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "store_var_result_alias".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let source = func.fresh_value();
     let stored = func.fresh_value();
     let entry = func.entry_block;
@@ -431,6 +455,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
     );
 
     let relifted = lower_to_tir(&FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "store_var_result_alias".into(),
         ops,
         params: vec![],
@@ -474,7 +499,12 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
 
 #[test]
 fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
-    let mut func = TirFunction::new("copy_var_source_local_name".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "copy_var_source_local_name".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let source = func.fresh_value();
     let copied = func.fresh_value();
     let entry = func.entry_block;
@@ -617,6 +647,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
         "shift_names".into(),
         vec![TirType::I64, TirType::I64],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let shl = ValueId(func.next_value);
     func.next_value += 1;
@@ -650,7 +681,12 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
 
 #[test]
 fn lower_import_with_operand_roundtrips_as_module_import() {
-    let mut func = TirFunction::new("import_roundtrip".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "import_roundtrip".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let name = ValueId(func.next_value);
     func.next_value += 1;
     let imported = ValueId(func.next_value);
@@ -693,6 +729,7 @@ fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: &str, arity: u
         format!("{simple_kind}_roundtrip"),
         std::iter::repeat_n(TirType::DynBox, arity).collect(),
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -749,40 +786,42 @@ fn lower_module_del_global_if_present_roundtrips() {
 }
 
 #[test]
-fn empty_tir_return_preserves_original_ret_signature() {
-    let mut func = TirFunction::new("void_return".into(), vec![], TirType::DynBox);
-    func.attrs
-        .insert("_original_has_ret".into(), AttrValue::Bool(true));
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.terminator = Terminator::Return { values: vec![] };
-
-    let ops = lower_to_simple_ir(&func);
-
-    assert!(
-        !ops.iter().any(|op| op.kind == "ret_void"),
-        "roundtrip must not downgrade original `ret` to `ret_void`: {ops:?}"
-    );
-    let ret_op = ops
-        .iter()
-        .find(|op| op.kind == "ret")
-        .expect("roundtrip must synthesize `ret None`");
-    let none_op = ops
-        .iter()
-        .find(|op| op.kind == "const_none")
-        .expect("roundtrip must synthesize a const_none return value");
-    let none_name = none_op
-        .out
-        .as_deref()
-        .expect("const_none must define an output var");
-    assert_eq!(
-        ret_op
-            .args
-            .as_ref()
-            .and_then(|args| args.first())
-            .map(String::as_str),
-        Some(none_name),
-        "ret args must also reference the synthesized None value"
-    );
+fn value_return_abi_survives_empty_and_unreachable_returns_without_payload_synthesis() {
+    for terminator in [
+        Terminator::Return { values: vec![] },
+        Terminator::Unreachable,
+    ] {
+        // Python None is a value type, not the native void calling convention.
+        let mut func = TirFunction::new(
+            "value_return".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = terminator;
+        let ops = lower_to_simple_ir(&func);
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "const_none" || op.kind == "ret")
+        );
+        let source = FunctionIR {
+            name: func.name.clone(),
+            return_abi: func.return_abi,
+            ops,
+            ..FunctionIR::default()
+        };
+        assert!(source.function_signature().unwrap().returns_value);
+        assert!(
+            source
+                .extern_declaration()
+                .unwrap()
+                .extern_signature()
+                .unwrap()
+                .returns_value
+        );
+        let restored = lower_to_tir(&source);
+        assert_eq!(restored.return_abi, molt_ir::FunctionReturnAbi::Value);
+    }
 }
 
 #[test]
@@ -809,6 +848,7 @@ fn tir_round_trip_preserves_ret_args() {
     use crate::tir::type_refine;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "add".into(),
         params: vec!["a".into(), "b".into()],
         ops: vec![
@@ -862,6 +902,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
     // var = wrapping sum (results[0]), out = overflow flag (results[1]).
     // Both results stay live: the flag feeds a br_if, the sum a ret.
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "checked_add_roundtrip".into(),
         params: vec!["a".into(), "b".into()],
         ops: vec![
@@ -947,6 +988,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
     use crate::tir::type_refine;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "checked_mul_roundtrip".into(),
         params: vec!["a".into(), "b".into()],
         ops: vec![
@@ -1031,7 +1073,12 @@ fn linearize_emits_add_op() {
 #[test]
 fn linearize_multi_block_emits_labels() {
     // Build: func @branch(bool) -> i64 with two successor blocks.
-    let mut func = TirFunction::new("branch".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "branch".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let bb1 = func.fresh_block();
     let bb2 = func.fresh_block();

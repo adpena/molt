@@ -5,28 +5,16 @@ use super::*;
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "stdlib_void_helper".to_string(),
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: Vec::new(),
             is_extern: true,
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "stdlib_value_helper".to_string(),
-            ops: vec![
-                OpIR {
-                    kind: "missing".to_string(),
-                    out: Some(crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec![crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
-                    ..OpIR::default()
-                },
-            ],
+            ops: Vec::new(),
             is_extern: true,
             ..FunctionIR::default()
         },
@@ -143,6 +131,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -151,6 +140,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "a-b".to_string(),
                 params: adversarial_params
                     .iter()
@@ -161,6 +151,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "a_b".to_string(),
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -191,6 +182,7 @@ fn direct_caller_observes_returned_tuple_as_one_object() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
@@ -220,6 +212,7 @@ fn direct_caller_observes_returned_tuple_as_one_object() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "make_pair".to_string(),
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
@@ -263,6 +256,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
 
     let invalid = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec!["user_arg".to_string()],
             param_types: None,
@@ -283,6 +277,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
     let valid = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
@@ -296,6 +291,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "__main____molt_main".to_string(),
                 params: vec![],
                 param_types: None,
@@ -324,6 +320,7 @@ fn noncanonical_string_labels_cannot_bypass_logical_label_validation() {
     for label in ["a-b", "a.b", "label_1"] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "string_label".into(),
                 ops: vec![
                     OpIR {
@@ -383,6 +380,7 @@ fn test_empty_ir() {
 fn deferred_annotation_functions_are_emitted_with_their_real_body() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "module__C____annotate__".to_string(),
             params: vec!["format".to_string()],
             param_types: None,
@@ -417,6 +415,7 @@ fn deferred_annotation_functions_are_emitted_with_their_real_body() {
 fn unpack_sequence_uses_exact_arity_runtime_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "unpack_exact".to_string(),
             params: vec!["seq".to_string()],
             param_types: None,
@@ -465,6 +464,7 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
 fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unpack_none".to_string(),
             params: vec![],
             param_types: None,
@@ -520,6 +520,7 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
 fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unpack_mapping_n".to_string(),
             params: vec![],
             param_types: None,
@@ -664,6 +665,7 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
     ];
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "ordered_dict_surface".to_string(),
             params: vec![
                 "key".to_string(),
@@ -722,6 +724,7 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
 fn dict_runtime_dependency_slices_do_not_ship_unreferenced_call_or_repr_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dict_only".to_string(),
             params: vec![],
             ops: vec![
@@ -755,6 +758,7 @@ fn dict_runtime_dependency_slices_do_not_ship_unreferenced_call_or_repr_authorit
 fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "invoke".to_string(),
             params: vec![
                 "func".to_string(),
@@ -862,6 +866,7 @@ fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
 fn function_value_runtime_helper_selects_its_complete_helper_group() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             ops: vec![
                 OpIR {
@@ -915,6 +920,7 @@ fn callable_and_frame_runtime_fragments_pass_shared_source_validation() {
 fn compile_checked_rejects_kwstar_without_canonical_ordered_mapping_provenance() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "unknown_mapping".to_string(),
             params: vec!["func".to_string(), "mapping".to_string()],
             ops: vec![
@@ -976,6 +982,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -984,6 +991,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "mixed_call".to_string(),
                 params: vec![
                     "func".to_string(),
@@ -1045,6 +1053,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "duplicate_keyword_call".to_string(),
                 params: vec![
                     "func".to_string(),
@@ -1088,6 +1097,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "unsigned_builtin_direct".to_string(),
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
@@ -1112,6 +1122,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "unsigned_builtin_indirect".to_string(),
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
@@ -1138,6 +1149,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "unsigned_builtin_keyword".to_string(),
                 params: vec!["key".to_string(), "value".to_string()],
                 ops: vec![
@@ -1163,6 +1175,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "direct_call".to_string(),
                 params: vec!["func".to_string()],
                 ops: vec![
@@ -1177,6 +1190,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "builder_call".to_string(),
                 params: vec!["func".to_string()],
                 ops: vec![
@@ -1187,6 +1201,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "set_function_defaults".to_string(),
                 params: vec!["func".to_string(), "defaults".to_string()],
                 ops: vec![
@@ -1204,6 +1219,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "set_function_kwdefaults".to_string(),
                 params: vec!["func".to_string(), "kwdefaults".to_string()],
                 ops: vec![
@@ -1455,11 +1471,13 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_main".to_string(),
                 ops,
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "target".to_string(),
                 params: vec!["a".to_string(), "b".to_string()],
                 ops: vec![OpIR {
@@ -1500,6 +1518,7 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
 fn canonical_set_codegen_has_one_deterministic_side_metadata_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "set_surface".to_string(),
             params: vec!["left".to_string(), "right".to_string()],
             ops: vec![
@@ -1566,6 +1585,7 @@ fn canonical_set_codegen_has_one_deterministic_side_metadata_authority() {
 fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             ops: vec![
                 OpIR {
@@ -2063,6 +2083,7 @@ fn compile_checked_rejects_alloc_task_without_scheduler_authority() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sample__genexpr_1".to_string(),
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -2071,6 +2092,7 @@ fn compile_checked_rejects_alloc_task_without_scheduler_authority() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
@@ -2101,6 +2123,7 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sample__molt_module_chunk_1".to_string(),
                 params: vec!["module".to_string()],
                 execution_context: ExecutionContextPolicy::Inherited,
@@ -2118,6 +2141,7 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
@@ -2594,6 +2618,7 @@ run_authority_oracle()
 fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "scalar_equal".to_string(),
             params: vec![],
             param_types: None,
@@ -2639,6 +2664,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
 fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "scalar_identity".to_string(),
             params: vec![
                 "integer".to_string(),
@@ -2710,6 +2736,7 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
 fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "dynamic_identity".to_string(),
             params: vec!["left".to_string(), "right".to_string()],
             param_types: None,
@@ -2767,6 +2794,7 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
         };
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: format!("{scalar_kind}_identity"),
                 params: vec![],
                 param_types: None,
@@ -2810,6 +2838,7 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
 fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "exact_identity_classes".to_string(),
             params: vec!["unknown".to_string()],
             param_types: None,
@@ -2943,6 +2972,7 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
 fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "shadow_helpers".to_string(),
             params: vec![
                 "rawequal".to_string(),
@@ -2999,6 +3029,7 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
 fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "temporary_collision".to_string(),
             params: vec![
                 "__ok_1".to_string(),
@@ -3169,6 +3200,7 @@ fn identity_provenance_matrix_matches_the_formal_admission_table() {
 fn value_scalar_plus_unknown_identity_is_rejected() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "float_unknown_identity".to_string(),
             params: vec!["unknown".to_string()],
             param_types: None,
@@ -3207,6 +3239,7 @@ fn value_scalar_plus_unknown_identity_is_rejected() {
 fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "same_float_alias".to_string(),
             params: vec![],
             param_types: None,
@@ -3248,6 +3281,7 @@ fn representation_conversions_preserve_only_declared_results() {
             for output in [None, Some("none"), Some("converted")] {
                 let ir = SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "representation_conversion".to_string(),
                         ops: vec![
                             OpIR {
@@ -3338,6 +3372,7 @@ fn raw_integer_representation_conversions_require_arbitrary_precision_authority(
             let error = backend
                 .compile_checked(&SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "representation_conversion".to_string(),
                         ops: vec![
                             OpIR {
@@ -3513,6 +3548,7 @@ fn structured_hoisting_ignores_local_copy_metadata() {
     for kind in ["load_var", "copy_var"] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: format!("{kind}_metadata_scope"),
                 params: vec!["condition".to_string(), "actual".to_string()],
                 ops: vec![
@@ -3570,6 +3606,7 @@ fn structured_hoisting_ignores_local_copy_metadata() {
 fn structured_hoisting_tracks_canonical_secondary_results() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "secondary_result_scope".to_string(),
             params: vec![
                 "condition".to_string(),
@@ -3640,6 +3677,7 @@ fn structured_hoisting_tracks_canonical_secondary_results() {
 fn structured_hoisting_ignores_out_metadata_collisions() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "out_metadata_scope".to_string(),
             params: ["condition", "container", "key", "value"]
                 .map(str::to_string)
@@ -3699,6 +3737,7 @@ fn structured_hoisting_ignores_out_metadata_collisions() {
 fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "call_function_alias_test".to_string(),
             params: vec!["arg".to_string()],
             param_types: None,
@@ -3738,6 +3777,7 @@ fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "target".to_string(),
                 params: vec!["value".to_string()],
                 ops: vec![OpIR {
@@ -3748,6 +3788,7 @@ fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "dispatch".to_string(),
                 params: vec!["selected".to_string(), "value".to_string()],
                 ops: vec![
@@ -3780,6 +3821,7 @@ fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
 fn test_simple_function() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -3814,6 +3856,7 @@ fn test_simple_function() {
 fn test_int_from_str_of_obj_preserves_base_operand() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![
                 "value".to_string(),
@@ -3855,6 +3898,7 @@ fn test_int_from_str_of_obj_preserves_base_operand() {
 fn test_real_ir_ops() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "test_func".to_string(),
             params: vec!["p0".to_string()],
             param_types: None,
@@ -3917,6 +3961,7 @@ fn test_real_ir_ops() {
 fn test_control_flow() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "flow_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4020,6 +4065,7 @@ fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "iterator_cleanup".into(),
             params: vec![
                 "v_src".into(),
@@ -4053,6 +4099,7 @@ fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
 fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -4135,6 +4182,7 @@ fn compile_checked_rejects_module_import_before_source_emission() {
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "import_probe".to_string(),
                 params: ["module_name", "module", "member", "namespace"]
                     .map(str::to_string)
@@ -4179,6 +4227,7 @@ fn compile_checked_rejects_module_import_before_source_emission() {
 fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_overflow() {
     let exact_ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -4219,6 +4268,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
     for payload in ["9007199254740993", "-9007199254740993"] {
         let overflow_ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
@@ -4246,6 +4296,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
 fn test_compile_checked_rejects_undefined_label_targets() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "flow_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4286,6 +4337,7 @@ fn test_compile_checked_rejects_undefined_label_targets() {
 fn test_compile_checked_lowers_store_var_and_load_var() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "slot_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4392,21 +4444,25 @@ fn store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![op("ret_void", &[], None)],
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "structured_store_results".to_string(),
                 ops: body(false),
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "labelled_store_results".to_string(),
                 ops: body(true),
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "tuple_snapshot_after_rebind".to_string(),
                 ops: vec![
                     OpIR {
@@ -4486,6 +4542,7 @@ fn store_var_rejects_reserved_destinations_without_admitting_store_fast() {
 fn test_compile_checked_lowers_missing_singleton() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "missing_singleton_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4532,6 +4589,7 @@ fn test_compile_checked_lowers_missing_singleton() {
 fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "frame_introspection_test".to_string(),
             params: vec!["depth".to_string()],
             param_types: None,
@@ -4567,6 +4625,7 @@ fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 param_types: None,
@@ -4597,6 +4656,7 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "local_frame".to_string(),
                 params: vec!["locals".to_string()],
                 execution_context: ExecutionContextPolicy::Local,
@@ -4626,6 +4686,7 @@ fn execution_frame_siblings_have_real_luau_lowering() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "inherited_frame".to_string(),
                 params: vec!["locals".to_string()],
                 execution_context: ExecutionContextPolicy::Inherited,
@@ -4665,11 +4726,18 @@ fn execution_frame_siblings_have_real_luau_lowering() {
 
 #[test]
 fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
-    let mut ops = vec![OpIR {
-        kind: "trace_enter_slot".to_string(),
-        value: Some(3),
-        ..OpIR::default()
-    }];
+    let mut ops = vec![
+        OpIR {
+            kind: "trace_enter_slot".to_string(),
+            value: Some(3),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "check_exception".to_string(),
+            value: Some(0),
+            ..OpIR::default()
+        },
+    ];
     for line in 1..=6 {
         ops.push(OpIR {
             kind: "line".to_string(),
@@ -4691,8 +4759,22 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
             kind: "ret_void".to_string(),
             ..OpIR::default()
         },
+        OpIR {
+            kind: "label".to_string(),
+            value: Some(0),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
     ]);
     let original = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "luau_framed_large".to_string(),
         execution_context: ExecutionContextPolicy::Local,
         ops,
@@ -4733,6 +4815,7 @@ fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
 fn test_compile_checked_lowers_loop_exception_break_as_pending_observer() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_exception_break_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4796,6 +4879,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_pending_observer() {
 fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "code_frame_metadata_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4872,6 +4956,7 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
 fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "drop_artifact_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4903,6 +4988,7 @@ fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts(
 fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifacts() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "drop_operation_test".to_string(),
             params: vec![],
             param_types: None,
@@ -4957,6 +5043,7 @@ fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifact
 fn test_compile_checked_lowers_shared_guard_tag_fact() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "guard_tag_test".to_string(),
             params: vec![],
             param_types: None,
@@ -5003,6 +5090,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
 fn test_compile_checked_lowers_exception_stack_depth_to_value() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "exception_depth_test".to_string(),
             params: vec![],
             param_types: None,
@@ -5053,6 +5141,7 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
 fn test_compile_checked_lowers_iter_next_unboxed() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "iter_unboxed_test".to_string(),
             params: vec!["xs".to_string()],
             param_types: Some(vec!["list[int]".to_string()]),
@@ -5097,6 +5186,7 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
         let compile = |var: Option<&str>, out: Option<&str>| {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "iter_unboxed_discarded_result_test".to_string(),
                     params: vec!["xs".to_string()],
                     param_types: Some(vec!["list[int]".to_string()]),
@@ -5144,7 +5234,7 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
 #[test]
 fn test_luau_tir_roundtrip_raise_catch_fails_closed_before_source() {
     let func: FunctionIR = serde_json::from_str(
-            r#"{"name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","value":1},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
+            r#"{"return_abi": "value", "name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","value":1},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
         )
         .expect("raise_catch frontend fixture should deserialize");
     let func = luau_tir_roundtrip_function(func);

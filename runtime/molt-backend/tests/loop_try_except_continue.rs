@@ -43,6 +43,7 @@ fn loop_start_after_unreachable_code() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_dead_loop".to_string(),
             params: Vec::new(),
             ops,
@@ -83,6 +84,7 @@ fn loop_index_start_after_unreachable_code() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_dead_index_loop".to_string(),
             params: Vec::new(),
             ops,
@@ -132,6 +134,7 @@ fn loop_start_in_reachable_code_still_works() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_live_loop".to_string(),
             params: Vec::new(),
             ops,

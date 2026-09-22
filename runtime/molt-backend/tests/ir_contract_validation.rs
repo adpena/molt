@@ -9,6 +9,7 @@ fn op(kind: &str) -> OpIR {
 
 fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: Vec::new(),
         ops,
@@ -507,6 +508,7 @@ fn validate_simple_ir_accepts_fast_int_flags_on_division_transport_ops() {
 fn validate_simple_ir_rejects_param_type_arity_mismatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_param_types".to_string(),
             params: vec!["x".to_string()],
             ops: vec![op("ret_void")],
@@ -532,6 +534,7 @@ fn validate_simple_ir_rejects_conflicting_fast_scalar_flags() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_conflicting_scalar_flags".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![scalar],
@@ -625,6 +628,7 @@ fn validate_simple_ir_rejects_unknown_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_container_type".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
             ops: vec![idx],
@@ -649,6 +653,7 @@ fn validate_simple_ir_rejects_legacy_list_int_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_legacy_list_int_container_type".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
             ops: vec![idx],
@@ -673,6 +678,7 @@ fn validate_simple_ir_accepts_bce_safe_without_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_bce_container".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
             ops: vec![idx],
@@ -702,6 +708,7 @@ fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
             allocation.arena_eligible = Some(requested);
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "molt_test_validate_arena_owner".to_string(),
                     params: vec!["lhs".to_string(), "rhs".to_string()],
                     ops: vec![allocation],

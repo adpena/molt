@@ -13,7 +13,12 @@ use std::collections::BTreeSet;
 use wasm_encoder::Instruction;
 
 fn const_i64_return_func(value: i64) -> TirFunction {
-    let mut func = TirFunction::new("const_i64_return".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "const_i64_return".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result = func.fresh_value();
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
@@ -38,7 +43,12 @@ fn literal_const_return_func(
     return_type: TirType,
     attrs: AttrDict,
 ) -> TirFunction {
-    let mut func = TirFunction::new(name.into(), vec![], return_type);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        return_type,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -60,6 +70,7 @@ fn add_two_i64_params_func() -> TirFunction {
         "add_two_i64_params".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -78,7 +89,12 @@ fn add_two_i64_params_func() -> TirFunction {
 }
 
 fn checked_mul_i64_consts_func() -> TirFunction {
-    let mut func = TirFunction::new("checked_mul_i64_consts".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "checked_mul_i64_consts".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let lhs = func.fresh_value();
     let rhs = func.fresh_value();
     let product = func.fresh_value();
@@ -263,6 +279,7 @@ fn wasm_lir_fast_plan_records_escaped_callable_reason() {
     let name = "pkg____molt_globals_builtin__escaped".to_string();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: name.clone(),
             params: vec![],
             ops: vec![],

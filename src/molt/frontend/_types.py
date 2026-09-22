@@ -1515,8 +1515,10 @@ class ClassInfo(TypedDict, total=False):
 class FuncInfo(TypedDict):
     params: list[str]
     param_types: list[str]  # type hints from annotations ("int", "float", "Any", ...)
+    return_abi: Literal["void", "value"]
     return_hint: str | None
     ops: list[MoltOp]
+    frame_entry_failure_label: NotRequired[int]
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
     source_module_publication: NotRequired[SourceModulePublication]
 

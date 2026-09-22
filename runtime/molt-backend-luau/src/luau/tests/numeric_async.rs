@@ -4,6 +4,7 @@ use super::*;
 fn test_compile_checked_lowers_checked_add_helper() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "checked_add_test".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -41,6 +42,7 @@ fn test_compile_checked_lowers_checked_add_helper() {
 fn test_compile_checked_lowers_checked_mul_helper() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "checked_mul_test".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -86,6 +88,7 @@ fn test_checked_numeric_results_preserve_discarded_field_positions() {
             let compile = |var: Option<&str>, out: Option<&str>| {
                 let ir = SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: format!("{kind}_discarded_result_test"),
                         params: vec!["a".to_string(), "b".to_string()],
                         param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -127,6 +130,7 @@ fn test_checked_numeric_results_preserve_discarded_field_positions() {
 fn test_compile_checked_lowers_zero_division_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "zero_division_guard_test".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -180,6 +184,7 @@ fn test_compile_checked_lowers_zero_division_guards() {
 fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "pow_mod_test".to_string(),
             params: vec!["base".to_string(), "exp".to_string(), "modulus".to_string()],
             param_types: Some(vec![
@@ -226,6 +231,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "vector_sum_kernel_test".to_string(),
                 params: vec!["values".to_string()],
                 param_types: Some(vec!["list".to_string()]),
@@ -248,6 +254,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
                 ],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "vector_min_kernel_test".to_string(),
                 params: vec!["values".to_string()],
                 param_types: Some(vec!["list".to_string()]),
@@ -291,6 +298,7 @@ fn test_compile_checked_lowers_vector_reduction_kernels() {
 fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "intarray_from_seq_test".to_string(),
             params: vec![],
             param_types: None,
@@ -351,6 +359,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "split_ws_dict_inc_test".to_string(),
                 params: vec!["line".to_string(), "dict".to_string(), "delta".to_string()],
                 param_types: Some(vec![
@@ -381,6 +390,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
                 ],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "split_sep_dict_inc_test".to_string(),
                 params: vec![
                     "line".to_string(),
@@ -418,6 +428,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
                 ],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "taq_ingest_line_test".to_string(),
                 params: vec![
                     "dict".to_string(),
@@ -480,6 +491,7 @@ fn test_compile_checked_lowers_fused_dict_kernels() {
 #[test]
 fn test_compile_checked_lowers_labeled_branch_ops() {
     let branch_function = |name: &str, kind: &str, label: i64, flag_value: i64| FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: Vec::new(),
         param_types: None,
@@ -552,6 +564,7 @@ fn test_compile_checked_lowers_labeled_branch_ops() {
 fn test_compile_via_ir_rejects_unsupported_output() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unsupported_test".to_string(),
             params: vec![],
             param_types: None,
@@ -585,6 +598,7 @@ fn test_compile_via_ir_rejects_unsupported_output() {
 fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -618,6 +632,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
 fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -670,6 +685,7 @@ fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
 fn test_compile_checked_lowers_matmul_dunder_dispatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "matmul_test".to_string(),
             params: vec![],
             param_types: None,
@@ -705,6 +721,7 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
 fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "matmul_not_implemented_test".to_string(),
             params: vec![],
             param_types: None,
@@ -746,6 +763,7 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
 fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "inplace_matmul_test".to_string(),
             params: vec![],
             param_types: None,
@@ -781,6 +799,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
 fn test_compile_checked_rejects_spawn_scheduler_semantics() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "async_test".to_string(),
             params: vec![],
             param_types: None,
@@ -812,6 +831,7 @@ fn test_compile_checked_rejects_spawn_scheduler_semantics() {
 fn test_compile_checked_rejects_call_async_scheduler_semantics() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "call_async_test".to_string(),
             params: vec![],
             param_types: None,
@@ -852,6 +872,7 @@ fn test_compile_checked_rejects_call_async_scheduler_semantics() {
 fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "native_awaitable_test".to_string(),
             params: vec![],
             param_types: None,
@@ -885,6 +906,7 @@ fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
 fn test_compile_checked_rejects_file_marker() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "file_test".to_string(),
             params: vec![],
             param_types: None,
@@ -916,6 +938,7 @@ fn test_compile_checked_rejects_file_marker() {
 fn test_compile_checked_rejects_context_marker() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "context_test".to_string(),
             params: vec![],
             param_types: None,

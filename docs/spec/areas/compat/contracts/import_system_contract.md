@@ -69,6 +69,24 @@ Modules may be:
 - standard library shims,
 - bridge modules (policy-gated).
 
+Source initialization has one ordering across entry paths and targets: publish
+the module object, establish its lexical frame and captured builtin namespace,
+then construct loader metadata before publishing native providers or executing
+the source body. In particular, constructing `__spec__` through the canonical
+`importlib.machinery.ModuleSpec` must not trigger the first builtin-frame capture:
+that would recursively request metadata from an unfinished machinery module.
+Explicit and inherited builtin namespaces remain authoritative; initialization
+does not re-import `builtins` unconditionally or refill a mutated namespace.
+Generated annotation callables and module chunks run after this bootstrap.
+
+Module/code publication failures occur before any frame-entry attempt and must
+not exit the caller's frame. From the frame-entry attempt onward, failure cleanup
+balances that attempt exactly once, including a failed builtin capture that did
+not push a Python frame, and rolls back the failed module publication. Entry
+failure must be checked before modifying locals, creating metadata or running
+body operations; otherwise the caller's still-active frame could be mutated.
+Metadata construction and native-provider publication use that same cleanup path.
+
 ---
 
 ## 3. Import Resolution
@@ -387,5 +405,3 @@ Import errors must include:
   compile-time graph discovery separate.
 - Remaining namespace-package edge-case policy.
 - Editable installs and dev-mode behaviors.
-
-`__spec__` is populated for compiled modules using `importlib.machinery.ModuleSpec` with Molt loader metadata.

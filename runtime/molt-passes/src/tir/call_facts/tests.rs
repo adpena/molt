@@ -14,7 +14,7 @@ fn func_calling(
     callees: &[&str],
     extra_ops: usize,
 ) -> (TirFunction, Option<ValueId>) {
-    let mut func = TirFunction::new(name.into(), vec![], ret);
+    let mut func = TirFunction::new(name.into(), vec![], ret, molt_ir::FunctionReturnAbi::Value);
     let entry = func.entry_block;
     // Allocate result ids for each call + filler up front (mutable borrow of
     // `func` must not overlap the block borrow).
@@ -51,7 +51,7 @@ fn func_calling(
 /// A trivial inlinable leaf: a single `ConstNone` op + `Return`. No calls, no
 /// handlers, small.
 fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
-    let mut f = TirFunction::new(name.into(), vec![], ret);
+    let mut f = TirFunction::new(name.into(), vec![], ret, molt_ir::FunctionReturnAbi::Value);
     let entry = f.entry_block;
     let v = f.fresh_value();
     let block = f.blocks.get_mut(&entry).unwrap();
@@ -69,7 +69,12 @@ fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
 
 /// A callee with a real exception handler region (`TryStart`/`TryEnd`).
 fn callee_with_handlers(name: &str) -> TirFunction {
-    let mut f = TirFunction::new(name.into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        name.into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = f.entry_block;
     let block = f.blocks.get_mut(&entry).unwrap();
     for oc in [OpCode::TryStart, OpCode::TryEnd] {
@@ -347,7 +352,12 @@ fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
 fn builtin_names_do_not_prove_argument_admission_or_effects() {
     for name in ["id", "type", "is", "isinstance_fast", "len"] {
         for arity in [0, 1, 3] {
-            let mut caller = TirFunction::new("caller".into(), vec![], TirType::DynBox);
+            let mut caller = TirFunction::new(
+                "caller".into(),
+                vec![],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
             let operands: Vec<_> = (0..arity).map(|_| caller.fresh_value()).collect();
             let result = caller.fresh_value();
             let block = caller.blocks.get_mut(&caller.entry_block).unwrap();

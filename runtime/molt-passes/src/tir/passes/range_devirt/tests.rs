@@ -40,7 +40,12 @@ fn make_const(result: ValueId, value: i64) -> TirOp {
 }
 
 fn build_range_for_loop(range_args: &[i64]) -> TirFunction {
-    let mut func = TirFunction::new("test_range".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test_range".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let mut range_arg_vals = Vec::new();
     let mut entry_ops = Vec::new();
@@ -317,7 +322,12 @@ fn devirt_range_three_args_negative_step() {
 
 #[test]
 fn no_devirt_non_range_loop() {
-    let mut func = TirFunction::new("test".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let param = ValueId(0);
     let iter_val = func.fresh_value();

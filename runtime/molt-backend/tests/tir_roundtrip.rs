@@ -107,6 +107,7 @@ fn make_comprehension_ir() -> FunctionIR {
     ];
 
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "test_comp".to_string(),
         ops,
         params: vec![],
@@ -151,6 +152,7 @@ fn make_legacy_scalar_hint_ir() -> FunctionIR {
     ];
 
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "legacy_scalar_hints".to_string(),
         ops,
         params: vec!["obj".into(), "idx".into()],
@@ -241,6 +243,7 @@ fn roundtrip_does_not_reseed_legacy_transport_hints() {
 #[test]
 fn roundtrip_preserves_structural_source_site() {
     let ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "source_site".to_string(),
         ops: vec![
             OpIR {

@@ -75,7 +75,12 @@ fn build_test_loop(start: i64, stop: i64, step: i64, body_op_count: usize) -> Te
         "tests rely on at least one user body op"
     );
 
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let header = func.fresh_block();
     let body = func.fresh_block();
@@ -335,7 +340,12 @@ fn does_not_unroll_when_trip_count_exceeds_limit() {
 fn does_not_unroll_when_step_is_zero_step_means_no_loop() {
     // We can't construct a step=0 loop via build_test_loop's assert,
     // so simulate it directly: cmp Lt with step=0 in increment.
-    let mut func = TirFunction::new("zero_step".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "zero_step".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let header = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -667,7 +677,12 @@ struct MultiArgLoop {
 
 fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop {
     assert!(step != 0);
-    let mut func = TirFunction::new("multi".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "multi".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let header = func.fresh_block();
     let cond = func.fresh_block();
@@ -1009,7 +1024,12 @@ fn refuses_non_constant_stop() {
 /// without panicking or hanging.
 #[test]
 fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
-    let mut func = TirFunction::new("repro".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "repro".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let guard = func.fresh_block(); // entry's CondBranch (empty-range guard)
     let preheader = func.fresh_block();

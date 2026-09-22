@@ -65,6 +65,7 @@ fn preanalyze_for_test(func_ir: &FunctionIR) -> FunctionPreanalysis {
 
 fn representation_plan_for_ops(ops: &[OpIR]) -> ScalarRepresentationPlan {
     native_representation_plan_for_test(&FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "storage_test".to_string(),
         params: vec![],
         ops: ops.to_vec(),
@@ -82,6 +83,7 @@ fn representation_plan_for_typed_ops(
     ops: &[OpIR],
 ) -> ScalarRepresentationPlan {
     native_representation_plan_for_test(&FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "container_dispatch_test".to_string(),
         params: params.iter().map(|param| param.to_string()).collect(),
         ops: ops.to_vec(),

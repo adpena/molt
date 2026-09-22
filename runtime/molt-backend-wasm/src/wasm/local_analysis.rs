@@ -171,6 +171,7 @@ mod tests {
     #[test]
     fn coalescing_keeps_late_binding_writes_out_of_a_reused_live_slot() {
         let function = crate::FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             params: vec!["source".into(), "replacement".into()],
             ops: vec![
                 op("store_var", Some(vec!["source"]), Some("__tmp_slot"), None),

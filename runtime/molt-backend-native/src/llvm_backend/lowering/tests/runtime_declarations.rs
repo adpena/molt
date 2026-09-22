@@ -8,6 +8,7 @@ fn boxed_or_retains_selected_operand_result() {
         "boxed_or_selected_owner".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -102,7 +103,12 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         backend.runtime_callable_symbols.insert(expected.into());
-        let mut func = TirFunction::new(format!("iterator_{call_name}"), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            format!("iterator_{call_name}"),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let operand = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -139,7 +145,12 @@ fn llvm_symbol_signature_mismatch_rejects_tir_forward_declaration() {
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
     );
-    let func = TirFunction::new("same_name".into(), vec![], TirType::I64);
+    let func = TirFunction::new(
+        "same_name".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let _ = declare_tir_function(&func, &backend);
 }
@@ -148,9 +159,19 @@ fn llvm_symbol_signature_mismatch_rejects_tir_forward_declaration() {
 fn user_definitions_and_extern_declarations_never_claim_termination() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    let local = TirFunction::new("may_loop_forever".into(), vec![], TirType::I64);
+    let local = TirFunction::new(
+        "may_loop_forever".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let local_fn = declare_tir_function(&local, &backend);
-    let external = TirFunction::new("external_may_loop_forever".into(), vec![], TirType::I64);
+    let external = TirFunction::new(
+        "external_may_loop_forever".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     backend
         .function_linkage_abis
         .insert(external.name.clone(), test_native_linkage_abi(vec![], None));
@@ -169,6 +190,7 @@ fn user_definitions_and_extern_declarations_never_claim_termination() {
 fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
     for exact_return in [false, true] {
         let mut typed_provider = crate::ir::FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_provider".to_string(),
             params: vec![
                 "value".to_string(),
@@ -206,6 +228,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             ];
         }
         let void_provider = crate::ir::FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "void_provider".to_string(),
             params: vec![],
             ops: vec![crate::ir::OpIR {
@@ -298,7 +321,12 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
         ctx.void_type().fn_type(&[], false),
         Some(inkwell::module::Linkage::External),
     );
-    let dummy = TirFunction::new("dummy_runtime_symbol".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy_runtime_symbol".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy_runtime_symbol",
         ctx.i64_type().fn_type(&[], false),
@@ -319,7 +347,12 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
         Some(inkwell::module::Linkage::External),
     );
-    let dummy = TirFunction::new("dummy_runtime_void_symbol".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy_runtime_void_symbol".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy_runtime_void_symbol",
         ctx.i64_type().fn_type(&[], false),
@@ -334,7 +367,12 @@ fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
 fn on_demand_runtime_declaration_uses_conservative_attributes() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "test");
-    let dummy = TirFunction::new("dummy_runtime_attrs".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy_runtime_attrs".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy_runtime_attrs",
         ctx.i64_type().fn_type(&[], false),
@@ -358,7 +396,12 @@ fn on_demand_runtime_declaration_uses_conservative_attributes() {
 fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "test");
-    let dummy = TirFunction::new("dummy_runtime_reject".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy_runtime_reject".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy_runtime_reject",
         ctx.i64_type().fn_type(&[], false),
@@ -397,7 +440,12 @@ fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
         "gen_fn".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::DynBox)),
     );
-    let dummy = TirFunction::new("dummy_function_symbol".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy_function_symbol".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy_function_symbol",
         ctx.i64_type().fn_type(&[], false),

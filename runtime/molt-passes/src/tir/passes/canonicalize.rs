@@ -505,7 +505,12 @@ mod tests {
 
     #[test]
     fn add_zero_eliminated() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let input = func.fresh_value();
         let zero = func.fresh_value();
         let result = func.fresh_value();
@@ -529,7 +534,12 @@ mod tests {
 
     #[test]
     fn mul_zero_folded() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let input = func.fresh_value();
         let zero = func.fresh_value();
         let result = func.fresh_value();
@@ -551,7 +561,12 @@ mod tests {
 
     #[test]
     fn arithmetic_identity_does_not_trust_positive_parameter_annotation() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let annotated = ValueId(0);
         let zero = func.fresh_value();
         let result = func.fresh_value();
@@ -572,7 +587,12 @@ mod tests {
 
     #[test]
     fn arithmetic_identities_preserve_dynbox_dispatch() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let param = ValueId(0);
         let zero = func.fresh_value();
         let one = func.fresh_value();
@@ -610,7 +630,12 @@ mod tests {
 
     #[test]
     fn arithmetic_identities_preserve_float_signed_zero() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::F64], TirType::F64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::F64],
+            TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let param = ValueId(0);
         let zero = func.fresh_value();
         let result = func.fresh_value();
@@ -632,7 +657,12 @@ mod tests {
 
     #[test]
     fn sub_self_is_zero() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let input = func.fresh_value();
         let result = func.fresh_value();
 
@@ -654,7 +684,12 @@ mod tests {
 
     #[test]
     fn commutative_ordering() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let one = func.fresh_value();
         let source = func.fresh_value();
         let input = func.fresh_value();
@@ -680,7 +715,12 @@ mod tests {
 
     #[test]
     fn double_negation_requires_exact_builtin_provenance() {
-        let mut exact = TirFunction::new("exact".into(), vec![], TirType::I64);
+        let mut exact = TirFunction::new(
+            "exact".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let input = exact.fresh_value();
         let inner = exact.fresh_value();
         let result = exact.fresh_value();
@@ -694,7 +734,12 @@ mod tests {
         assert!(run(&mut exact).values_changed > 0);
         assert_eq!(exact.blocks[&exact.entry_block].ops[2].opcode, OpCode::Copy);
 
-        let mut annotated = TirFunction::new("annotated".into(), vec![TirType::I64], TirType::I64);
+        let mut annotated = TirFunction::new(
+            "annotated".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let input = ValueId(0);
         let inner = annotated.fresh_value();
         let result = annotated.fresh_value();

@@ -5,6 +5,25 @@ use crate::runtime_import_abi::{
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
 
+fn cfg_reaches(
+    cfg: &ControlFlowGraph,
+    source: cranelift_codegen::ir::Block,
+    target: cranelift_codegen::ir::Block,
+) -> bool {
+    let mut pending = vec![target];
+    let mut seen = BTreeSet::new();
+    while let Some(block) = pending.pop() {
+        if !seen.insert(block) {
+            continue;
+        }
+        if block == source {
+            return true;
+        }
+        pending.extend(cfg.pred_iter(block).map(|predecessor| predecessor.block));
+    }
+    false
+}
+
 #[test]
 fn iterator_lowering_preserves_materialized_values_and_unpack_consumers() {
     for unboxed in [false, true] {
@@ -65,6 +84,7 @@ fn iterator_lowering_preserves_materialized_values_and_unpack_consumers() {
         ]);
         let compiled = compile_function_to_clif_with_imports(
             vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "observable_iterator_value".into(),
                 params: vec!["iterator".into()],
                 ops,
@@ -239,6 +259,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             }
             let native_abi = (kind == "invoke_ffi").then_some(target).flatten();
             let mut external_owned = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "external_owned_target".into(),
                 params: vec!["arg".into()],
                 ops: vec![OpIR {
@@ -250,6 +271,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             };
             external_owned.externalize_with_signature().unwrap();
             let mut external_void = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "external_void_target".into(),
                 ops: vec![OpIR {
                     kind: "ret_void".into(),
@@ -261,6 +283,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             let compiled = compile_function_to_clif_with_imports(
                 vec![
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "call_ownership_probe".into(),
                         params: vec!["value".into()],
                         ops: vec![
@@ -284,6 +307,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                         ..FunctionIR::default()
                     },
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "owned_call_target".into(),
                         params: vec!["arg".into()],
                         ops: vec![OpIR {
@@ -378,6 +402,7 @@ fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
         let outcome = std::panic::catch_unwind(|| {
             compile_function_to_clif_with_imports(
                 vec![FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: "invalid_call_probe".into(),
                     params: vec!["arg".into()],
                     ops: vec![
@@ -434,6 +459,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
             let compiled = compile_function_to_clif_with_imports(
                 vec![
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "callable_result_probe".into(),
                         params: vec!["value".into()],
                         ops: vec![
@@ -447,6 +473,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                         ..FunctionIR::default()
                     },
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "callable_result_target".into(),
                         params: if kind == "func_new_closure" {
                             vec!["closure".into()]
@@ -506,6 +533,7 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
     for bound in [false, true] {
         let compiled = compile_function_to_clif_with_imports(
             vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "closure_result_ownership".into(),
                 params: vec!["callee".into()],
                 ops: vec![
@@ -565,6 +593,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         let compiled = compile_function_to_clif_with_imports(
             vec![
                 FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: "task_allocation_probe".into(),
                     params: vec!["arg".into()],
                     ops: vec![
@@ -586,6 +615,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                     ..FunctionIR::default()
                 },
                 FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: "task_allocation_poll".into(),
                     params: vec!["task".into()],
                     ops: vec![OpIR {
@@ -632,6 +662,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
         let compiled = compile_function_to_clif_with_imports(
             vec![
                 FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: "task_guard_cleanup_probe".into(),
                     ops: vec![
                         OpIR {
@@ -671,6 +702,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
                     ..FunctionIR::default()
                 },
                 FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: "task_guard_cleanup_poll".into(),
                     params: vec!["task".into()],
                     ops: vec![OpIR {
@@ -735,6 +767,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
     let compiled = compile_function_to_clif_with_imports(
         vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "dynamic_br_if_cleanup_probe".into(),
                 params: vec!["condition".into()],
                 ops: vec![
@@ -791,6 +824,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "dynamic_br_if_cleanup_poll".into(),
                 params: vec!["task".into()],
                 ops: vec![OpIR {
@@ -844,6 +878,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
 #[test]
 fn native_compiles_canonical_bare_get_attr() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "bare_get_attr_repr".to_string(),
         params: vec!["self".to_string()],
         ops: vec![
@@ -876,6 +911,285 @@ fn native_compiles_canonical_bare_get_attr() {
 }
 
 #[test]
+fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
+    let marker_prefixes: [&[&str]; 4] = [
+        &[],
+        &[crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR],
+        &[crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR],
+        &[
+            crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR,
+            crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+        ],
+    ];
+
+    for (case, marker_prefix) in marker_prefixes.into_iter().enumerate() {
+        let name = format!("leading_frame_literal_guard_{case}");
+        let mut ops = marker_prefix
+            .iter()
+            .map(|kind| OpIR {
+                kind: (*kind).to_string(),
+                ..OpIR::default()
+            })
+            .collect::<Vec<_>>();
+        ops.extend([
+            OpIR {
+                kind: "trace_enter_slot".into(),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".into(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".into(),
+                out: Some("text".into()),
+                s_value: Some("guarded text".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_bytes".into(),
+                out: Some("bytes".into()),
+                bytes: Some(vec![0, 255, 128]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_bigint".into(),
+                out: Some("bigint".into()),
+                s_value: Some(i64::MAX.to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ]);
+        let compiled = compile_function_to_clif_with_imports(
+            vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: name.clone(),
+                ops,
+                execution_context: crate::ir::ExecutionContextPolicy::Local,
+                ..FunctionIR::default()
+            }],
+            &name,
+        );
+        let function = &compiled.function;
+        let cfg = ControlFlowGraph::with_function(function);
+        let dominators =
+            cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+
+        let enter_calls =
+            call_sites_for_import(function, compiled.import_ids["molt_trace_enter_slot"]);
+        assert_eq!(enter_calls.len(), 1, "{}", function.display());
+        let (enter_block, enter_call) = enter_calls[0];
+        let guard = function
+            .layout
+            .last_inst(enter_block)
+            .expect("leading frame entry exception guard");
+        let InstructionData::Brif { blocks, .. } = &function.dfg.insts[guard] else {
+            panic!(
+                "leading frame entry must consume the adjacent exception edge before literals:\n{}",
+                function.display()
+            );
+        };
+        let failure = blocks[0].block(&function.dfg.value_lists);
+        let success = blocks[1].block(&function.dfg.value_lists);
+
+        let initialized_anchors = function
+            .layout
+            .block_insts(enter_block)
+            .take_while(|&inst| inst != enter_call)
+            .filter(|&inst| {
+                matches!(function.dfg.insts[inst], InstructionData::StackStore { .. })
+                    && function.dfg.inst_args(inst).first().is_some_and(|&value| {
+                        constant(function, value) == Some(molt_codegen_abi::box_none_bits())
+                    })
+            })
+            .count();
+        assert_eq!(
+            initialized_anchors,
+            3,
+            "every anchor must be initialized before frame entry:\n{}",
+            function.display()
+        );
+
+        for constructor in [
+            "molt_string_from_bytes",
+            "molt_bytes_from_bytes",
+            "molt_bigint_from_str",
+        ] {
+            let calls = call_sites_for_import(function, compiled.import_ids[constructor]);
+            assert_eq!(calls.len(), 1, "{constructor}: {}", function.display());
+            assert!(
+                dominators.dominates(success, calls[0].0, &function.layout),
+                "{constructor} must be confined to the entry-check success continuation:\n{}",
+                function.display()
+            );
+            assert!(
+                !cfg_reaches(&cfg, failure, calls[0].0),
+                "entry failure must not reach {constructor}:\n{}",
+                function.display()
+            );
+        }
+
+        let exit_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_exit"]);
+        assert_eq!(exit_calls.len(), 1, "{}", function.display());
+        let exit_predecessors = cfg
+            .pred_iter(exit_calls[0].0)
+            .map(|predecessor| predecessor.block)
+            .collect::<Vec<_>>();
+        assert_eq!(exit_predecessors.len(), 1, "{}", function.display());
+        let master_return = exit_predecessors[0];
+        assert!(cfg_reaches(&cfg, success, master_return));
+        assert!(cfg_reaches(&cfg, failure, master_return));
+        let anchor_releases = call_sites_for_import(
+            function,
+            compiled.import_ids[crate::runtime_import_abi::MOLT_DEC_REF_OBJ.name],
+        )
+        .into_iter()
+        .filter(|(block, _)| *block == master_return)
+        .count();
+        assert_eq!(
+            anchor_releases,
+            3,
+            "the shared return must release every initialized anchor exactly once:\n{}",
+            function.display()
+        );
+    }
+}
+
+#[test]
+fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollback() {
+    let name = "nonleading_module_literal_guard";
+    let compiled = compile_function_to_clif_with_imports(
+        vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: name.into(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("setup".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_enter_slot".into(),
+                    value: Some(9),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(3),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    out: Some("body_text".into()),
+                    s_value: Some("body".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_exit".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(3),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    out: Some("module_name".into()),
+                    s_value: Some("guarded_module".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "module_cache_del".into(),
+                    args: Some(vec!["module_name".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_exit".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            execution_context: crate::ir::ExecutionContextPolicy::Local,
+            ..FunctionIR::default()
+        }],
+        name,
+    );
+    let function = &compiled.function;
+    let cfg = ControlFlowGraph::with_function(function);
+    let dominators =
+        cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+    let enter_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_enter_slot"]);
+    assert_eq!(enter_calls.len(), 1, "{}", function.display());
+    let (enter_block, enter_call) = enter_calls[0];
+    let guard = function
+        .layout
+        .last_inst(enter_block)
+        .expect("module frame entry exception guard");
+    let InstructionData::Brif { blocks, .. } = &function.dfg.insts[guard] else {
+        panic!(
+            "module entry must retain its IR exception edge:\n{}",
+            function.display()
+        );
+    };
+    let failure = blocks[0].block(&function.dfg.value_lists);
+    let success = blocks[1].block(&function.dfg.value_lists);
+
+    let constructors =
+        call_sites_for_import(function, compiled.import_ids["molt_string_from_bytes"]);
+    assert_eq!(constructors.len(), 2, "{}", function.display());
+    for (_, constructor) in constructors {
+        assert!(
+            dominators.dominates(constructor, enter_call, &function.layout),
+            "non-leading module literals must materialize before frame entry:\n{}",
+            function.display()
+        );
+    }
+
+    let rollback = call_sites_for_import(function, compiled.import_ids["molt_module_cache_del"]);
+    assert_eq!(rollback.len(), 1, "{}", function.display());
+    assert!(
+        cfg_reaches(&cfg, failure, rollback[0].0),
+        "module entry failure must reach cache rollback:\n{}",
+        function.display()
+    );
+    assert!(
+        !cfg_reaches(&cfg, success, rollback[0].0),
+        "module success must not enter cache rollback:\n{}",
+        function.display()
+    );
+}
+
+#[test]
 fn native_backend_preserves_semantic_frames_without_optional_tracing() {
     for setting in [None, Some("0"), Some("1")] {
         let bytes = compile_trace_probe_object(setting, crate::ir::ExecutionContextPolicy::Local);
@@ -894,12 +1208,18 @@ fn static_calls_preserve_void_abi_and_callee_owned_frames() {
     for setting in [None, Some("0"), Some("1")] {
         let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", setting);
         let target = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "void_target".into(),
             execution_context: crate::ir::ExecutionContextPolicy::Local,
             ops: vec![
                 OpIR {
                     kind: "trace_enter_slot".into(),
                     value: Some(7),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(1),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -915,10 +1235,24 @@ fn static_calls_preserve_void_abi_and_callee_owned_frames() {
                     kind: "ret_void".into(),
                     ..OpIR::default()
                 },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "trace_exit".into(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
             ],
             ..FunctionIR::default()
         };
         let caller = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".into(),
             ops: vec![
                 OpIR {
@@ -967,6 +1301,7 @@ fn static_calls_reject_argument_abi_mismatch_before_dispatch() {
             compile_function_to_clif(
                 vec![
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "caller".into(),
                         ops: vec![
                             OpIR {
@@ -982,6 +1317,7 @@ fn static_calls_reject_argument_abi_mismatch_before_dispatch() {
                         ..FunctionIR::default()
                     },
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "callee".into(),
                         params: vec!["argument".into()],
                         ops: vec![OpIR {
@@ -1014,6 +1350,7 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
             let compiled = compile_function_to_clif_with_imports(
                 vec![
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "closure_caller".into(),
                         params: vec!["capture".into(), "argument".into()],
                         ops: vec![
@@ -1040,6 +1377,7 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
                         ..FunctionIR::default()
                     },
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Value,
                         name: "closure_target".into(),
                         params: vec!["environment".into(), "value".into()],
                         ops: vec![OpIR {
@@ -1120,6 +1458,7 @@ fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "marked_finally_observer".to_string(),
             params: vec![],
             ops: vec![
@@ -1179,6 +1518,7 @@ fn native_runtime_helper_import_descriptors_are_unique() {
 fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -1215,6 +1555,7 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
     let _guard = acquire_backend_env_lock();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1269,6 +1610,7 @@ fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
 fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: name.to_string(),
             params: Vec::new(),
             ops: vec![
@@ -1317,6 +1659,7 @@ fn check_exception_orphan_target_fails_closed_at_codegen() {
 fn native_backend_compiles_exception_label_guard_if_without_else() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hello_regress____molt_globals_builtin__".to_string(),
             params: vec![],
             ops: vec![
@@ -1462,6 +1805,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
 #[test]
 fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_else() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "hello_regress____molt_globals_builtin__".to_string(),
         params: vec![],
         ops: vec![
@@ -1613,6 +1957,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
 #[test]
 fn native_backend_compiles_tir_roundtripped_nested_loops() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "nested_loops".to_string(),
         params: vec![],
         ops: vec![

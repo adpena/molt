@@ -4,6 +4,7 @@ use super::super::*;
 fn test_dict_view_ops_emit_luau_helpers() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dict_view_ops".to_string(),
             params: vec!["k".to_string(), "v".to_string()],
             param_types: None,

@@ -81,7 +81,12 @@ fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> Ti
 
 #[test]
 fn redundant_add_eliminated() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = func.fresh_value();
     let p1 = func.fresh_value();
     let sum1 = func.fresh_value();
@@ -105,7 +110,12 @@ fn redundant_add_eliminated() {
 
 #[test]
 fn bytes_addition_keeps_operand_order() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::Bytes);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::Bytes,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let left = func.fresh_value();
     let right = func.fresh_value();
     let forward = func.fresh_value();
@@ -131,7 +141,12 @@ fn bytes_addition_keeps_operand_order() {
 
 #[test]
 fn duplicate_constants_not_folded_by_gvn() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c1 = func.fresh_value();
     let c2 = func.fresh_value(); // same constant as c1
 
@@ -152,7 +167,12 @@ fn duplicate_constants_not_folded_by_gvn() {
 
 #[test]
 fn different_constants_not_folded() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c1 = func.fresh_value();
     let c2 = func.fresh_value();
 
@@ -170,7 +190,12 @@ fn different_constants_not_folded() {
 
 #[test]
 fn different_const_bytes_not_folded() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::Bytes);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::Bytes,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c1 = func.fresh_value();
     let c2 = func.fresh_value();
 
@@ -191,7 +216,12 @@ fn different_const_bytes_not_folded() {
 
 #[test]
 fn side_effecting_ops_preserved() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = ValueId(0);
     let r1 = func.fresh_value();
     let r2 = func.fresh_value();
@@ -226,7 +256,12 @@ fn side_effecting_ops_preserved() {
 
 #[test]
 fn zero_result_unpack_remains_ordering_visible() {
-    let mut func = TirFunction::new("unpack_effect".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "unpack_effect".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(0));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -248,7 +283,12 @@ fn zero_result_unpack_remains_ordering_visible() {
 
 #[test]
 fn duplicate_type_guards_with_same_attr_are_deduped() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::Bool);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = ValueId(0);
     let g1 = func.fresh_value();
     let g2 = func.fresh_value();
@@ -268,7 +308,12 @@ fn duplicate_type_guards_with_same_attr_are_deduped() {
 
 #[test]
 fn type_guard_value_key_includes_expected_type_attr() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::Bool);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = ValueId(0);
     let is_int = func.fresh_value();
     let is_str = func.fresh_value();
@@ -300,7 +345,12 @@ fn type_guard_value_key_includes_expected_type_attr() {
 ///   with Copy(c1), even though entry strictly dominates body.
 #[test]
 fn cross_block_redundant_constant_not_folded() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let body = func.fresh_block();
     let c1 = func.fresh_value();
     let c2 = func.fresh_value();
@@ -339,7 +389,12 @@ fn cross_block_redundant_constant_not_folded() {
 /// → s2 should become Copy(s1).
 #[test]
 fn cross_block_redundant_arithmetic() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = func.fresh_value();
     let p1 = func.fresh_value();
     let body = func.fresh_block();
@@ -389,6 +444,7 @@ fn non_dominating_no_dedup() {
         "f".into(),
         vec![TirType::I64, TirType::I64, TirType::Bool],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let p0 = ValueId(0);
     let p1 = ValueId(1);
@@ -476,7 +532,12 @@ fn non_dominating_no_dedup() {
 /// `p0 + p1`.  Both must dedup against `e` (entry dominates both).
 #[test]
 fn dominator_value_propagates_to_both_branches() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = func.fresh_value();
     let p1 = func.fresh_value();
     let cond = func.fresh_value();
@@ -561,7 +622,12 @@ fn dominator_value_propagates_to_both_branches() {
 /// values as constants from the preheader.
 #[test]
 fn loop_header_back_edge_not_deduped() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = ValueId(0);
     let header = func.fresh_block();
     let body = func.fresh_block();
@@ -662,7 +728,12 @@ fn loop_header_back_edge_not_deduped() {
 /// folding across blocks.
 #[test]
 fn redundant_add_in_loop_body_dedups() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p0 = func.fresh_value();
     let header = func.fresh_block();
     let body = func.fresh_block();
@@ -765,7 +836,12 @@ fn redundant_add_in_loop_body_dedups() {
 /// second sibling enters with a clean (parent-scope) leader table.
 #[test]
 fn scope_pops_after_sibling() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let cond = ValueId(0);
     let then_b = func.fresh_block();
     let else_b = func.fresh_block();
@@ -839,7 +915,12 @@ fn scope_pops_after_sibling() {
 /// by the constant opcode and attributes, not by a cross-block Copy.
 #[test]
 fn cross_block_const_bool_not_folded() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::Bool);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let body = func.fresh_block();
     let b1 = func.fresh_value();
     let b2 = func.fresh_value();

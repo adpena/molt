@@ -25,7 +25,12 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
 /// All fixture operands are real parameters or explicit producers. In
 /// particular, unknown parameters never stand in for immediate constants.
 fn fixture() -> TirFunction {
-    let mut func = TirFunction::new("dse".into(), vec![TirType::DynBox; 4], TirType::None);
+    let mut func = TirFunction::new(
+        "dse".into(),
+        vec![TirType::DynBox; 4],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.blocks.get_mut(&func.entry_block).unwrap().terminator =
         Terminator::Return { values: vec![] };
     func

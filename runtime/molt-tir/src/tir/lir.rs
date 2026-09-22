@@ -172,6 +172,8 @@ pub struct LirFunction {
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<TirType>,
+    /// Frozen projection of the authored TIR return ABI: no slots for Void,
+    /// one semantic type for Value. Never reconstructed from surviving exits.
     pub return_types: Vec<TirType>,
     pub blocks: HashMap<BlockId, LirBlock>,
     pub entry_block: BlockId,

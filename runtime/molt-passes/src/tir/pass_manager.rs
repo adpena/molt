@@ -759,6 +759,7 @@ mod tests {
             "mutable_class_candidate".into(),
             vec![TirType::DynBox],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -823,6 +824,7 @@ mod tests {
             "poll_phase_boundary".into(),
             vec![TirType::DynBox],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let entry = func.entry_block;
         let handler = func.fresh_block();
@@ -899,7 +901,12 @@ mod tests {
 
     #[test]
     fn luau_pipeline_does_not_inject_native_pending_call_polls() {
-        let mut func = TirFunction::new("luau_call".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "luau_call".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str("external_call".into()));
@@ -1006,7 +1013,12 @@ mod tests {
     fn full_pipeline_on_loop_function_with_verify_guard() {
         // while-style loop: entry → header; header cond → body / exit;
         // body → header (back-edge).
-        let mut func = TirFunction::new("loopfn".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "loopfn".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.fresh_block();
         let body = func.fresh_block();
         let exit = func.fresh_block();
@@ -1086,7 +1098,12 @@ mod tests {
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {
-        let mut func = TirFunction::new("bad_exception_region".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "bad_exception_region".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let handler = func.fresh_block();
         let exc = func.fresh_value();
         func.label_id_map.insert(handler.0, 9);
@@ -1131,7 +1148,12 @@ mod tests {
     }
 
     fn ambiguous_exception_match_ref_depth_function() -> TirFunction {
-        let mut func = TirFunction::new("ambiguous_exception_region".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "ambiguous_exception_region".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let before_try = func.fresh_block();
         let handler = func.fresh_block();
         let cond = func.fresh_value();

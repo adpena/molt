@@ -250,6 +250,7 @@ mod tests {
     #[test]
     fn simple_ir_allocator_reserves_definitions_references_and_resume_ids() {
         let function = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Value,
             ops: vec![
                 crate::ir::OpIR {
                     kind: "label".into(),

@@ -55,6 +55,7 @@ fn emitted_format_float_block() -> String {
     // Any IR that references a float via str/print pulls in `format_float`.
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {

@@ -53,7 +53,12 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
 // -----------------------------------------------------------------------
 #[test]
 fn simple_type_guard_elimination() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let x = func.fresh_value(); // %0
     let ok = func.fresh_value(); // %1
@@ -131,7 +136,12 @@ fn operand_dependent_producers_do_not_specialize_type_guard() {
         (OpCode::Shl, "INT"),
         (OpCode::And, "BOOL"),
     ] {
-        let mut func = TirFunction::new(format!("f_{opcode:?}"), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            format!("f_{opcode:?}"),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
 
         let lhs = func.fresh_value();
         let rhs = func.fresh_value();
@@ -199,7 +209,12 @@ fn operand_dependent_producers_do_not_specialize_type_guard() {
 // -----------------------------------------------------------------------
 #[test]
 fn multiple_predecessors_different_contexts() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Bool], TirType::Bool);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Bool],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let cond = ValueId(0); // entry param
 
@@ -309,7 +324,12 @@ fn multiple_predecessors_different_contexts() {
 // -----------------------------------------------------------------------
 #[test]
 fn version_limit_enforced() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let bb1 = func.fresh_block(); // BlockId(1)
     let bb2 = func.fresh_block(); // BlockId(2)
@@ -414,7 +434,12 @@ fn version_limit_enforced() {
 // -----------------------------------------------------------------------
 #[test]
 fn loop_header_not_versioned() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let x = func.fresh_value(); // %0
     let ok = func.fresh_value(); // %1
@@ -492,7 +517,12 @@ fn loop_header_not_versioned() {
 // -----------------------------------------------------------------------
 #[test]
 fn no_type_guards_no_changes() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(make_const_int(v, 0));
@@ -509,7 +539,12 @@ fn no_type_guards_no_changes() {
 // -----------------------------------------------------------------------
 #[test]
 fn unparseable_guard_type_skipped() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let x = func.fresh_value();
     let ok = func.fresh_value();

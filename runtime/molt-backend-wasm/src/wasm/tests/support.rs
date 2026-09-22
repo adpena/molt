@@ -41,6 +41,7 @@ pub(super) fn wasm_test_function(
     ops: Vec<OpIR>,
 ) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.into_iter().map(str::to_string).collect(),
         ops,
@@ -117,6 +118,7 @@ pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR 
     ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: args,
             ops: vec![call, ret],

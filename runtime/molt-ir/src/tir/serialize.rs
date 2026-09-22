@@ -9,13 +9,14 @@ use super::function::TirFunction;
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
-use crate::ExecutionContextPolicy;
+use crate::{ExecutionContextPolicy, FunctionReturnAbi};
 
-const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v2\0";
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v3\0";
 
 #[derive(Serialize, Deserialize)]
 struct TirFunctionArtifact {
     name: String,
+    return_abi: FunctionReturnAbi,
     execution_context: ExecutionContextPolicy,
     param_names: Vec<String>,
     param_types: Vec<TirType>,
@@ -55,6 +56,7 @@ struct TirOpArtifact {
 #[derive(Serialize)]
 struct TirFunctionArtifactRef<'a> {
     name: &'a str,
+    return_abi: FunctionReturnAbi,
     execution_context: ExecutionContextPolicy,
     param_names: &'a [String],
     param_types: &'a [TirType],
@@ -151,6 +153,7 @@ impl<'a> From<&'a TirFunction> for TirFunctionArtifactRef<'a> {
         blocks.sort_unstable_by_key(|(id, _)| *id);
         Self {
             name: &function.name,
+            return_abi: function.return_abi,
             execution_context: function.execution_context,
             param_names: &function.param_names,
             param_types: &function.param_types,
@@ -199,6 +202,7 @@ impl From<TirFunctionArtifact> for TirFunction {
     fn from(function: TirFunctionArtifact) -> Self {
         Self {
             name: function.name,
+            return_abi: function.return_abi,
             execution_context: function.execution_context,
             param_names: function.param_names,
             param_types: function.param_types,
@@ -256,8 +260,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn value_abi_survives_semantic_none_and_no_surviving_payload_returns() {
+        for terminator in [
+            Terminator::Return { values: vec![] },
+            Terminator::Unreachable,
+        ] {
+            let mut function = TirFunction::new(
+                "none_value".into(),
+                vec![],
+                TirType::None,
+                FunctionReturnAbi::Value,
+            );
+            function
+                .blocks
+                .get_mut(&function.entry_block)
+                .unwrap()
+                .terminator = terminator;
+            let bytes = serialize_tir_function(&function).unwrap();
+            let restored = deserialize_tir_function(&bytes).unwrap();
+            assert_eq!(restored.return_abi, FunctionReturnAbi::Value);
+            assert_eq!(restored.return_type, TirType::None);
+            let mut void = function.clone();
+            void.return_abi = FunctionReturnAbi::Void;
+            assert_ne!(bytes, serialize_tir_function(&void).unwrap());
+        }
+        assert!(deserialize_tir_function(b"MOLT:TIRFUNC:v2\0").is_none());
+    }
+
+    #[test]
     fn tir_function_artifact_preserves_execution_context() {
-        let mut func = TirFunction::new("cached".into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "cached".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            crate::FunctionReturnAbi::Value,
+        );
         func.execution_context = ExecutionContextPolicy::Inherited;
         let arg = func.blocks[&func.entry_block].args[0].id;
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
@@ -285,6 +322,7 @@ mod tests {
             "deterministic".into(),
             vec![TirType::I64, TirType::F64],
             TirType::None,
+            crate::FunctionReturnAbi::Void,
         );
         let nan = f64::from_bits(0x7ff8_0000_0000_0042);
         let mut op_attrs = AttrDict::new();

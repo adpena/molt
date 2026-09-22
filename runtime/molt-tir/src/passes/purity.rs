@@ -166,8 +166,7 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 
     if matches!(
         kind,
-        "trace_enter_slot"
-            | "trace_exit"
+        "trace_exit"
             | "exception_clear"
             | "exception_last"
             | "exception_last_pending"

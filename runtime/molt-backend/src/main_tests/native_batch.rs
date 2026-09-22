@@ -43,6 +43,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
             ir: SimpleIR {
                 functions: vec![
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_main".to_string(),
                         params: vec![],
                         ops: vec![
@@ -64,6 +65,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         execution_context: Default::default(),
                     },
                     FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "helper".to_string(),
                         params: vec![],
                         ops: vec![OpIR {
@@ -248,24 +250,24 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "function_cache_key": "",
             "ir": {
                 "functions": [
-                    {"name": "molt_main", "params": [], "ops": [
+                    {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
                         {"kind": "call", "s_value": "molt_init_demo", "value": 0},
                         {"kind": "ret_void"}
                     ]},
-                    {"name": "molt_host_init", "params": [], "ops": [
+                    {"return_abi": "void", "name": "molt_host_init", "params": [], "ops": [
                         {"kind": "call", "s_value": "molt_init_demo", "value": 0},
                         {"kind": "ret_void"}
                     ]},
-                    {"name": "molt_init_demo", "params": [], "ops": [
+                    {"return_abi": "void", "name": "molt_init_demo", "params": [], "ops": [
                         {"kind": "call", "s_value": "demo__molt_module_chunk_1", "value": 0},
                         {"kind": "ret_void"}
                     ]},
-                    {"name": "demo__molt_module_chunk_1", "params": [], "ops": [
+                    {"return_abi": "void", "name": "demo__molt_module_chunk_1", "params": [], "ops": [
                         {"kind": "ret_void"}
                     ]},
-                    {"name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
-                    {"name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
-                    {"name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
             }

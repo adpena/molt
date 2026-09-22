@@ -115,6 +115,13 @@ pub(in crate::native_backend::function_compiler) struct HeapLiteralHoists {
 }
 
 #[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) struct HeapLiteralMaterialization {
+    unique_strs: Vec<(Vec<u8>, String)>,
+    unique_bytes: Vec<(Vec<u8>, String)>,
+    unique_bigints: Vec<(Vec<u8>, String)>,
+}
+
+#[cfg(feature = "native-backend")]
 impl HeapLiteralHoists {
     pub(in crate::native_backend::function_compiler) fn str_output_slots(
         &self,
@@ -264,18 +271,11 @@ fn hoist_bigint_literal(
 }
 
 #[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
+pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
     func_ir: &FunctionIR,
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
-    next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    failure_exit: LiteralFailureExit,
-) -> HeapLiteralHoists {
+) -> (HeapLiteralHoists, HeapLiteralMaterialization) {
     let mut const_str_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
     let mut const_bytes_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
         BTreeMap::new();
@@ -357,53 +357,6 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
         }
     }
 
-    for (bytes, ref_name) in &unique_strs {
-        hoist_outparam_literal(
-            module,
-            import_ids,
-            data_pool,
-            next_data_id,
-            builder,
-            vars,
-            ref_name,
-            bytes,
-            "molt_string_from_bytes",
-            const_str_slots[bytes],
-            failure_exit,
-        );
-    }
-
-    for (bytes, ref_name) in &unique_bytes {
-        hoist_outparam_literal(
-            module,
-            import_ids,
-            data_pool,
-            next_data_id,
-            builder,
-            vars,
-            ref_name,
-            bytes,
-            "molt_bytes_from_bytes",
-            const_bytes_slots[bytes],
-            failure_exit,
-        );
-    }
-
-    for (bytes, ref_name) in &unique_bigints {
-        hoist_bigint_literal(
-            module,
-            import_ids,
-            data_pool,
-            next_data_id,
-            builder,
-            vars,
-            ref_name,
-            bytes,
-            const_bigint_slots[bytes],
-            failure_exit,
-        );
-    }
-
     let mut str_output_slots = BTreeMap::new();
     for op in &func_ir.ops {
         if op.kind == "const_str" {
@@ -416,11 +369,81 @@ pub(in crate::native_backend::function_compiler) fn hoist_heap_literals(
         }
     }
 
-    HeapLiteralHoists {
-        const_str_slots,
-        const_bytes_slots,
-        const_bigint_slots,
-        str_output_slots,
+    (
+        HeapLiteralHoists {
+            const_str_slots,
+            const_bytes_slots,
+            const_bigint_slots,
+            str_output_slots,
+        },
+        HeapLiteralMaterialization {
+            unique_strs,
+            unique_bytes,
+            unique_bigints,
+        },
+    )
+}
+
+#[cfg(feature = "native-backend")]
+impl HeapLiteralMaterialization {
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::native_backend::function_compiler) fn materialize(
+        self,
+        hoists: &HeapLiteralHoists,
+        module: &mut ObjectModule,
+        import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+        data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
+        next_data_id: &mut u64,
+        builder: &mut FunctionBuilder<'_>,
+        vars: &BTreeMap<String, Variable>,
+        failure_exit: LiteralFailureExit,
+    ) {
+        for (bytes, ref_name) in &self.unique_strs {
+            hoist_outparam_literal(
+                module,
+                import_ids,
+                data_pool,
+                next_data_id,
+                builder,
+                vars,
+                ref_name,
+                bytes,
+                "molt_string_from_bytes",
+                hoists.const_str_slots[bytes],
+                failure_exit,
+            );
+        }
+
+        for (bytes, ref_name) in &self.unique_bytes {
+            hoist_outparam_literal(
+                module,
+                import_ids,
+                data_pool,
+                next_data_id,
+                builder,
+                vars,
+                ref_name,
+                bytes,
+                "molt_bytes_from_bytes",
+                hoists.const_bytes_slots[bytes],
+                failure_exit,
+            );
+        }
+
+        for (bytes, ref_name) in &self.unique_bigints {
+            hoist_bigint_literal(
+                module,
+                import_ids,
+                data_pool,
+                next_data_id,
+                builder,
+                vars,
+                ref_name,
+                bytes,
+                hoists.const_bigint_slots[bytes],
+                failure_exit,
+            );
+        }
     }
 }
 

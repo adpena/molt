@@ -20,6 +20,7 @@ fn compile_single_function(ir_op: OpIR, params: &[&str]) -> Vec<u8> {
 fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
     compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_wasm_fastcall_lowering".to_string(),
             params: params.iter().map(|p| (*p).to_string()).collect(),
             ops,
@@ -220,6 +221,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_guarded_target".to_string(),
                 params: vec!["t0".to_string(), "t1".to_string()],
                 ops: vec![target_ret],
@@ -230,6 +232,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_wasm_fastcall_guarded_matched".to_string(),
                 params: vec!["p0".to_string(), "p1".to_string(), "p2".to_string()],
                 ops: vec![guarded, guarded_ret],

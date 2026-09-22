@@ -30,9 +30,16 @@ def _function_diagnostics(
     body = list(ops)
     if not body or body[-1].get("kind") not in {"ret", "ret_void"}:
         body.append({"kind": "ret_void"})
-    functions = [{"name": name, "params": params, "ops": body}]
+    functions = [{"name": name, "params": params, "return_abi": "value", "ops": body}]
     for sibling in sorted((function_names or set()) - {name}):
-        functions.append({"name": sibling, "params": [], "ops": [{"kind": "ret_void"}]})
+        functions.append(
+            {
+                "name": sibling,
+                "params": [],
+                "return_abi": "void",
+                "ops": [{"kind": "ret_void"}],
+            }
+        )
     verification = verify_tir({"functions": functions})
     assert all(
         diagnostic.kind != "invalid-format" for diagnostic in verification.errors
@@ -64,6 +71,7 @@ def _frontend_publication_ir() -> dict[str, Any]:
             {
                 "name": "molt_init_unit",
                 "params": [],
+                "return_abi": "void",
                 "source_module_publication": {
                     "module_name": "unit",
                     "module_value": "module",
@@ -150,6 +158,7 @@ def test_frontend_serialization_preserves_invalid_publication_marker(
     function = {
         "name": "molt_init_unit",
         "params": [],
+        "return_abi": "void",
         "source_module_publication": {
             "module_name": "unit",
             "module_value": "module",
@@ -181,7 +190,7 @@ def test_frontend_serialization_rejects_orphan_publication_marker() -> None:
 
     with pytest.raises(ValueError, match="has an unowned publication boundary"):
         inspect_source_module_publication(
-            {"name": "molt_init_unit", "params": [], "ops": ops}
+            {"name": "molt_init_unit", "params": [], "return_abi": "void", "ops": ops}
         )
 
 
@@ -463,14 +472,28 @@ def test_structured_labels_and_internal_calls_fail_closed() -> None:
 def test_rust_verifier_reuses_one_ordered_process() -> None:
     close_process_local_verifier()
     first = verify_tir(
-        {"functions": [{"name": "first", "params": [], "ops": [{"kind": "ret_void"}]}]},
+        {
+            "functions": [
+                {
+                    "name": "first",
+                    "params": [],
+                    "return_abi": "void",
+                    "ops": [{"kind": "ret_void"}],
+                }
+            ]
+        },
         request_id=41,
     )
     first_pid = process_local_verifier_pid()
     second = verify_tir(
         {
             "functions": [
-                {"name": "second", "params": [], "ops": [{"kind": "ret_void"}]}
+                {
+                    "name": "second",
+                    "params": [],
+                    "return_abi": "void",
+                    "ops": [{"kind": "ret_void"}],
+                }
             ]
         },
         request_id=42,

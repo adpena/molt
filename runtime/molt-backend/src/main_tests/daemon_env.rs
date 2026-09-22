@@ -46,11 +46,11 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "function_cache_key": "",
             "ir": {
                 "functions": [
-                    {"name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
-                    {"name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
-                    {"name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
-                    {"name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
-                    {"name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
+                    {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
             }
@@ -79,6 +79,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     let mut partition_ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -94,6 +95,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
                 ops: vec![
@@ -114,6 +116,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_bootstrap".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -127,6 +130,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
                 ops: vec![OpIR {
@@ -140,6 +144,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
                 ops: vec![OpIR {

@@ -2,7 +2,12 @@ use super::*;
 
 #[test]
 fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
-    let mut func = TirFunction::new("drop_ref".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "drop_ref".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let owned = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -33,7 +38,12 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
 
 #[test]
 fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
-    let mut func = TirFunction::new("del_boundary_release".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "del_boundary_release".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let owned = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {

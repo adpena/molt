@@ -12,6 +12,7 @@ fn simple_value_names_use_entry_param_names() {
         "params".into(),
         vec![TirType::I64, TirType::Bool],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     func.param_names = vec!["lhs".into(), "flag".into()];
 
@@ -24,7 +25,12 @@ fn simple_value_names_use_entry_param_names() {
 
 #[test]
 fn simple_value_names_record_block_arg_slots_without_shadowing_values() {
-    let mut func = TirFunction::new("join".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "join".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let join = func.fresh_block();
     let arg_id = func.fresh_value();
     func.blocks.insert(
@@ -53,7 +59,12 @@ fn simple_value_names_record_block_arg_slots_without_shadowing_values() {
 
 #[test]
 fn block_argument_roundtrip_uses_valid_local_slot_transport() {
-    let mut func = TirFunction::new("join".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "join".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let incoming = func.fresh_value();
     let join = func.fresh_block();
     let joined = func.fresh_value();
@@ -96,6 +107,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
     );
     let ir = crate::SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: func.name,
             params: vec![],
             ops,
@@ -124,7 +136,12 @@ fn canonical_name_collision_with_override_is_resolved() {
     // Value A = ValueId(2), no override -> wants canonical "_v2".
     // Value B = ValueId(5), op carries `_simple_out: "_v2"` (a stale stream
     // name from before the re-lift renumbered ids). B keeps "_v2".
-    let mut func = TirFunction::new("collide".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "collide".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = ValueId(2);
     let b = ValueId(5);
 
@@ -178,6 +195,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
         "identity_names".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     func.param_names = vec!["value".into()];
     let parameter = func.blocks[&func.entry_block].args[0].id;
@@ -277,6 +295,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
 #[test]
 fn fused_item_shadowing_preserves_the_opaque_parameter_at_lowering_consumer() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "guarded_iter_item_shadow".into(),
         params: vec!["iter".into(), "value".into()],
         ops: vec![
@@ -385,6 +404,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
         "local_storage_identity".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     func.param_names = vec!["value".into(), "replacement".into()];
     let old = func.blocks[&func.entry_block].args[0].id;
@@ -452,6 +472,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
 #[test]
 fn result_carrying_local_store_lifts_and_lowers_one_stable_snapshot() {
     let source = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "store_snapshot_identity".into(),
         params: vec!["value".into(), "replacement".into()],
         ops: vec![
@@ -534,6 +555,7 @@ fn result_carrying_local_store_lifts_and_lowers_one_stable_snapshot() {
 #[test]
 fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
     let source = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "var_read_identity".into(),
         params: vec!["value".into(), "arg".into()],
         ops: vec![
@@ -621,6 +643,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
             Some(vec!["arg".to_string(), "none".to_string()]),
         ] {
             let source = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "var_metadata_identity".into(),
                 params: vec!["arg".into()],
                 ops: vec![
@@ -730,6 +753,7 @@ fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
         }
         for (args, var) in cases {
             let source = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "reserved_binding_source".into(),
                 params: vec!["transport_collision".into()],
                 ops: vec![
@@ -789,11 +813,12 @@ fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
 }
 
 #[test]
-fn synthesized_return_values_share_the_collision_free_transport_namespace() {
+fn empty_returns_do_not_allocate_transport_values() {
     let mut func = TirFunction::new(
         "empty_return_transport".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     func.param_names = vec!["_ret_value_0".into()];
     let mut names = SimpleValueNames::for_function(&func);
@@ -804,11 +829,12 @@ fn synthesized_return_values_share_the_collision_free_transport_namespace() {
     );
     crate::tir::simple_value_names::set_value_names(names);
     let mut out = Vec::new();
-    super::super::structured::emit_return_ops(&[], true, &mut out);
+    super::super::structured::emit_return_ops(&[], &mut out);
     crate::tir::simple_value_names::reset_value_names();
-    let produced = out[0].out.as_ref().unwrap();
-    assert_ne!(produced, "_ret_value_0");
-    assert_eq!(out[1].args.as_ref().unwrap(), &vec![produced.clone()]);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].kind, "ret_void");
+    assert!(out[0].out.is_none());
+    assert!(out[0].args.is_none());
 }
 
 /// Verify that typed TIR does not re-emit integer transport hints.
@@ -821,7 +847,12 @@ fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
     //   %1 = const_int 20
     //   %2 = add %0, %1
     //   return %2
-    let mut func = TirFunction::new("add_ints".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "add_ints".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -892,7 +923,12 @@ fn type_propagation_does_not_emit_fast_int_on_arithmetic() {
 fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
     use crate::tir::type_refine::refine_types;
 
-    let mut func = TirFunction::new("add_floats".into(), vec![], TirType::F64);
+    let mut func = TirFunction::new(
+        "add_floats".into(),
+        vec![],
+        TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -952,7 +988,12 @@ fn type_propagation_does_not_emit_fast_float_on_float_arithmetic() {
 fn type_propagation_does_not_emit_type_hint_for_bool() {
     use crate::tir::type_refine::refine_types;
 
-    let mut func = TirFunction::new("cmp".into(), vec![], TirType::Bool);
+    let mut func = TirFunction::new(
+        "cmp".into(),
+        vec![],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -1017,7 +1058,12 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
 
 #[test]
 fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
-    let mut func = TirFunction::new("call_result".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "call_result".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let result = ValueId(func.next_value);
     func.next_value += 1;
@@ -1051,6 +1097,7 @@ fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
 #[test]
 fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "method_ic_roundtrip".into(),
         params: vec![
             "recv".into(),
@@ -1174,6 +1221,7 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_store".into(),
         params: vec![
             "obj".into(),
@@ -1217,6 +1265,7 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_load".into(),
         params: vec!["obj".into(), "class_bits".into(), "expected".into()],
         ops: vec![OpIR {
@@ -1255,6 +1304,7 @@ fn tir_round_trip_preserves_call_async_metadata() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "async_call".into(),
         params: vec!["delay".into(), "result".into()],
         ops: vec![OpIR {
@@ -1295,6 +1345,7 @@ fn tir_round_trip_preserves_typed_field_class_identity() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "field_class".into(),
         params: vec![
             "obj".into(),
@@ -1380,6 +1431,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "iter_next_names".into(),
         params: vec!["items".into()],
         ops: vec![
@@ -1460,6 +1512,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
     assert_eq!(fused.out.as_deref(), Some("done_flag"));
 
     let relowered = lower_to_tir(&FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "roundtrip_iter_next_relower".into(),
         params: func_ir.params,
         ops: round_tripped,
@@ -1486,6 +1539,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
     use crate::tir::type_refine::refine_types;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "method_trace__C_f".into(),
         params: vec!["self".into()],
         ops: vec![

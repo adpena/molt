@@ -9,7 +9,12 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         let mut params = vec![TirType::DynBox; if read { 3 } else { 4 }];
         // An unchecked annotation may supply this hint for an actual scalar.
         params[0] = TirType::UserClass("C".into());
-        let mut func = TirFunction::new(kind.into(), params, TirType::DynBox);
+        let mut func = TirFunction::new(
+            kind.into(),
+            params,
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -61,6 +66,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             format!("field_{kind}"),
             vec![TirType::DynBox; if is_load { 1 } else { 2 }],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -216,6 +222,7 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
         "dynamic_get_attr_name".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -252,6 +259,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
         "generic_get_attr_owned".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let mut load = TirOp {
@@ -292,6 +300,7 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
         "dynamic_set_attr_name".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -328,6 +337,7 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
         "dynamic_del_attr_name".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -360,7 +370,12 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
 fn lower_preserved_has_attr_name_calls_runtime() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("has_attr_name_preserved".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "has_attr_name_preserved".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj_bits = func.fresh_value();
     let name_bits = func.fresh_value();
     let result = func.fresh_value();
@@ -396,7 +411,12 @@ fn lower_preserved_has_attr_name_calls_runtime() {
 fn lower_call_method_uses_call_bind_ic_abi() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("call_method_abi".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "call_method_abi".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let callable = func.fresh_value();
     let arg0 = func.fresh_value();
     let result = func.fresh_value();
@@ -426,7 +446,12 @@ fn lower_call_method_uses_call_bind_ic_abi() {
 fn lower_call_bind_preserves_callargs_builder_abi() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("call_bind_abi".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "call_bind_abi".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let callable = func.fresh_value();
     let builder = func.fresh_value();
     let result = func.fresh_value();

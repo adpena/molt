@@ -39,7 +39,12 @@ fn original_kind_copy(kind: &str, operands: Vec<ValueId>, results: Vec<ValueId>)
 }
 
 fn func() -> TirFunction {
-    TirFunction::new("f".into(), vec![], TirType::None)
+    TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    )
 }
 
 fn lattice(func: &TirFunction) -> OwnershipLattice {
@@ -247,7 +252,12 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
 
 #[test]
 fn parameter_and_stack_roots_are_lattice_drop_eligibility_facts() {
-    let mut f = TirFunction::new("param_stack".into(), vec![TirType::Str], TirType::None);
+    let mut f = TirFunction::new(
+        "param_stack".into(),
+        vec![TirType::Str],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let param = f.blocks[&f.entry_block].args[0].id;
     let stack = f.fresh_value();
     let heap = f.fresh_value();
@@ -280,7 +290,12 @@ fn parameter_and_stack_roots_are_lattice_drop_eligibility_facts() {
 
 #[test]
 fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
-    let mut f = TirFunction::new("drop_eligibility".into(), vec![TirType::Str], TirType::None);
+    let mut f = TirFunction::new(
+        "drop_eligibility".into(),
+        vec![TirType::Str],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let param = f.blocks[&f.entry_block].args[0].id;
     let stack = f.fresh_value();
     let heap = f.fresh_value();

@@ -29,7 +29,12 @@ pub(super) fn validated_topology(func: &LirFunction) -> TirFunction {
             }
         }
     }
-    let mut graph = TirFunction::new(func.name.clone(), vec![], TirType::None);
+    let mut graph = TirFunction::new(
+        func.name.clone(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     graph.blocks.clear();
     graph.entry_block = func.entry_block;
     for (&id, block) in &func.blocks {

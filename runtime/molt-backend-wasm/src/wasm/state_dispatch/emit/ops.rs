@@ -129,7 +129,7 @@ pub(super) fn emit_dispatch_op(
                 op_emitter.import_ids
                     [crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPending],
             );
-            func.instruction(&Instruction::I64Const(0));
+            op_emitter.const_cache().emit_none(func);
             func.instruction(&Instruction::I64Ne);
             emit_conditional_state_branch(
                 func,

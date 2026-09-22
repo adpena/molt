@@ -1,29 +1,15 @@
 use super::support::*;
 
 fn extern_function(name: &str, arity: usize, returns_value: bool) -> FunctionIR {
-    let ops = if returns_value {
-        vec![
-            OpIR {
-                kind: "missing".to_string(),
-                out: Some(molt_ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec![molt_ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
-                ..OpIR::default()
-            },
-        ]
-    } else {
-        vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        }]
-    };
     FunctionIR {
+        return_abi: if returns_value {
+            molt_ir::FunctionReturnAbi::Value
+        } else {
+            molt_ir::FunctionReturnAbi::Void
+        },
         name: name.to_string(),
         params: (0..arity).map(|index| format!("arg{index}")).collect(),
-        ops,
+        ops: Vec::new(),
         param_types: None,
         source_file: None,
         is_extern: true,
@@ -304,7 +290,7 @@ fn malformed_extern_declaration_is_rejected_by_shared_validation() {
     .expect_err("extern executable bodies must fail at the shared IR boundary");
 
     assert!(
-        error.contains("must contain only canonical return-signature metadata"),
+        error.contains("must have an empty body"),
         "unexpected validation error: {error}"
     );
 }

@@ -5,6 +5,7 @@ fn make_boxed_checked_binary_func(name: &str, opcode: OpCode) -> TirFunction {
         name.into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let overflow_id = func.fresh_value();

@@ -527,6 +527,12 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 }
             }
             Terminator::Return { values } => {
+                if !func.return_abi.returns_value() && !values.is_empty() {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        "value return through a void function ABI",
+                    ));
+                }
                 if values.len() > 1 {
                     errors.push(VerifyError::block(
                         *bid,
@@ -915,7 +921,12 @@ mod tests {
         use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
         use super::super::types::TirType;
         for shape in SIMPLEIR_OP_SHAPES {
-            let mut func = TirFunction::new("preserved_shape".into(), vec![], TirType::None);
+            let mut func = TirFunction::new(
+                "preserved_shape".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
             let mut attrs =
                 AttrDict::from([("_original_kind".into(), AttrValue::Str(shape.kind.into()))]);
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
@@ -967,7 +978,12 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             for &opcode in super::super::op_kinds_generated::ALL_OPCODES {
-                let mut func = TirFunction::new("retired_operation".into(), vec![], TirType::None);
+                let mut func = TirFunction::new(
+                    "retired_operation".into(),
+                    vec![],
+                    TirType::None,
+                    crate::FunctionReturnAbi::Void,
+                );
                 func.blocks
                     .get_mut(&func.entry_block)
                     .unwrap()
@@ -997,8 +1013,12 @@ mod tests {
 
     /// Build a minimal valid function: add(i64, i64) -> i64.
     fn valid_add_function() -> TirFunction {
-        let mut func =
-            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
         let result = ValueId(func.next_value);
         func.next_value += 1;
 
@@ -1047,7 +1067,12 @@ mod tests {
 
     #[test]
     fn direct_symbol_native_callable_without_operands_verifies() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::DynBox,
+            crate::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         let mut attrs = AttrDict::new();
         attrs.insert(
@@ -1094,6 +1119,7 @@ mod tests {
             "f".into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
         let mut attrs = AttrDict::new();
@@ -1137,6 +1163,7 @@ mod tests {
             "f".into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
         let mut attrs = AttrDict::new();
@@ -1181,7 +1208,12 @@ mod tests {
 
     #[test]
     fn module_attr_native_callable_without_operand_still_fails() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::DynBox,
+            crate::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         let mut attrs = AttrDict::new();
         attrs.insert(
@@ -1221,6 +1253,7 @@ mod tests {
             "unpack".into(),
             vec![TirType::DynBox; operand_count],
             TirType::None,
+            crate::FunctionReturnAbi::Void,
         );
         let results: Vec<ValueId> = (0..result_count).map(|_| func.fresh_value()).collect();
         let mut attrs = AttrDict::new();
@@ -1261,7 +1294,12 @@ mod tests {
 
     #[test]
     fn missing_entry_block_fails() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         // Set entry_block to a non-existent block id.
         func.entry_block = BlockId(99);
         let result = verify_function(&func);
@@ -1276,7 +1314,12 @@ mod tests {
 
     #[test]
     fn branch_to_nonexistent_block_fails() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         // Point the entry block terminator to a block that doesn't exist.
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Branch {
@@ -1296,7 +1339,12 @@ mod tests {
     #[test]
     fn wrong_branch_arg_count_fails() {
         // Entry branches to bb1 but passes 1 arg; bb1 expects 0.
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
 
         // Add a const so we have ValueId(0) defined.
         let v0 = func.fresh_value();
@@ -1342,8 +1390,12 @@ mod tests {
         for opcode in [OpCode::CheckException, OpCode::TryStart] {
             for labels in [vec![], vec![(99, 77)], vec![(0, 77), (99, 77)]] {
                 for reverse in [false, true] {
-                    let mut func =
-                        TirFunction::new("invalid_handler".into(), vec![], TirType::None);
+                    let mut func = TirFunction::new(
+                        "invalid_handler".into(),
+                        vec![],
+                        TirType::None,
+                        crate::FunctionReturnAbi::Void,
+                    );
                     let mut labels = labels.clone();
                     if reverse {
                         labels.reverse();
@@ -1388,6 +1440,7 @@ mod tests {
                 "exception_edge".into(),
                 vec![TirType::DynBox],
                 TirType::None,
+                crate::FunctionReturnAbi::Void,
             );
             let handler = func.fresh_block();
             let handler_arg = func.fresh_value();
@@ -1441,7 +1494,12 @@ mod tests {
 
     #[test]
     fn duplicate_value_definition_fails() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let v0 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         // Define v0 twice.
@@ -1475,7 +1533,12 @@ mod tests {
 
     #[test]
     fn multiple_python_return_values_fail_before_target_lowering() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0), ValueId(1)],
@@ -1491,7 +1554,12 @@ mod tests {
 
     #[test]
     fn use_of_undefined_value_fails() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let undefined = ValueId(999);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -1525,7 +1593,12 @@ mod tests {
         //   ^bb2:
         //     %3 = const_int {value: 0}
         //     return %3
-        let mut func = TirFunction::new("branch".into(), vec![TirType::Bool], TirType::I64);
+        let mut func = TirFunction::new(
+            "branch".into(),
+            vec![TirType::Bool],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
 
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
@@ -1596,6 +1669,7 @@ mod tests {
             "dom_meta".into(),
             vec![TirType::Bool, TirType::I64],
             TirType::I64,
+            crate::FunctionReturnAbi::Value,
         );
         let bb_then = func.fresh_block();
         let bb_else = func.fresh_block();
@@ -1669,7 +1743,12 @@ mod tests {
 
     #[test]
     fn dominator_metadata_matches_idom_chain_reference() {
-        let mut func = TirFunction::new("dom_ref".into(), vec![TirType::Bool], TirType::None);
+        let mut func = TirFunction::new(
+            "dom_ref".into(),
+            vec![TirType::Bool],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
 
         let mut blocks = Vec::new();

@@ -10,7 +10,7 @@ pub(super) fn emit_return_control_op(
     match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => emit_ret(context, func, op),
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
-            func.instruction(&Instruction::I64Const(0));
+            context.const_cache.emit_none(func);
             context.frame.emit_const_anchor_releases(
                 func,
                 context.import_ids,

@@ -155,6 +155,7 @@ mod tests {
 
     fn fixture() -> FunctionIR {
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "source".into(),
             ops: vec![task_constructor("coroutine", 3)],
             ..FunctionIR::default()
@@ -166,6 +167,7 @@ mod tests {
         let source = fixture();
         let mut retained = CallableMetadata::from_functions(std::slice::from_ref(&source));
         let physical = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "physical_suffix".into(),
             ops: vec![OpIR {
                 kind: "ret_void".into(),
@@ -191,6 +193,7 @@ mod tests {
             ("async_generator", TrampolineKind::AsyncGen),
         ] {
             let function = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 ops: vec![task_constructor(token, 8)],
                 ..FunctionIR::default()
             };
@@ -203,6 +206,7 @@ mod tests {
     #[test]
     fn direct_constructor_authors_no_task_facts() {
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             ops: vec![OpIR {
                 kind: "func_new".into(),
                 s_value: Some("ordinary_callable".into()),

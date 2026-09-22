@@ -323,6 +323,9 @@ class StatementScopeVisitorMixin(_MixinBase):
         self.module_global_mutations = set()
         self.module_globals_dict_escaped = self._module_globals_dict_escapes(node)
         self.module_chunk_globals = set()
+        # Establish the module frame and import metadata before materializing
+        # generated annotation callables or executing any source statement.
+        self._emit_module_frame_enter(node)
         if not self.future_annotations and not self.eager_annotations:
             items, id_map = self._collect_module_annotation_items(node)
             if items:
@@ -355,7 +358,6 @@ class StatementScopeVisitorMixin(_MixinBase):
         if defer:
             self.defer_module_attrs = True
             self.deferred_module_attrs = set()
-        self._emit_module_frame_enter(node)
         # Pre-scan for compile-time warnings (~bool, etc.) and emit
         # WARN_STDERR ops at module startup, before any print output.
         # This matches CPython which emits compile-time warnings before

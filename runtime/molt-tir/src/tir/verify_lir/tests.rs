@@ -30,6 +30,7 @@ fn discarded_representation_bindings_share_tir_and_lir_shape_admission() {
             "discarded_representation".into(),
             vec![TirType::DynBox],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let block = function.blocks.get_mut(&function.entry_block).unwrap();
         block.ops.push(TirOp {
@@ -54,6 +55,7 @@ fn semantic_unbox_preserves_the_shared_boxed_carrier_plan() {
         "boxed_unbox".into(),
         vec![TirType::Box(Box::new(TirType::I64))],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = function.fresh_value();
     function.value_types.insert(result, TirType::I64);
