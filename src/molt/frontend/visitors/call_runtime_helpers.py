@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import ast
 import sys
-from typing import (
-    TYPE_CHECKING,
-)
 
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
@@ -16,17 +13,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallRuntimeHelperMixin(_MixinBase):
+class CallRuntimeHelperMixin(GeneratorMixinBase):
     def _emit_nullcontext(self, payload: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="context_manager")
         self.emit(MoltOp(kind="CONTEXT_NULL", args=[payload], result=res))

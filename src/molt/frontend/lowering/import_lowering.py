@@ -10,7 +10,7 @@ visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
@@ -23,19 +23,12 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL,
 )
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 _NON_MODULE_PROVENANCE = "<non-module>"
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class ImportLoweringMixin(_MixinBase):
+class ImportLoweringMixin(GeneratorMixinBase):
     @staticmethod
     def _normalize_allowlist_module(module_name: str | None) -> str | None:
         if not module_name or module_name == "molt.stdlib":

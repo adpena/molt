@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from molt.compiler_analysis.static_truth import static_if_live_branch
 from molt.frontend._types import (
@@ -21,14 +21,7 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 def _with_module_provenance_loop_flow(
@@ -45,7 +38,7 @@ def _with_module_provenance_loop_flow(
     return wrapped
 
 
-class ControlFlowStatementVisitorMixin(_MixinBase):
+class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
     def visit_If(self, node: ast.If) -> None:
         static_branch = static_if_live_branch(
             node, **self._sys_platform_static_truth_kwargs()

@@ -9,20 +9,13 @@ exit emission shared by function, async, module, and control-flow visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class FunctionLifecycleMixin(_MixinBase):
+class FunctionLifecycleMixin(GeneratorMixinBase):
     def _task_closure_size(
         self, payload_slots: int, *, include_gen_control: bool
     ) -> int:

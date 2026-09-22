@@ -10,7 +10,6 @@ visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
@@ -23,17 +22,10 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_ATTRS,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AttributeAccessMixin(_MixinBase):
+class AttributeAccessMixin(GeneratorMixinBase):
     def _module_can_defer_attrs(self, node: ast.Module) -> bool:
         for current in ast.walk(node):
             if isinstance(

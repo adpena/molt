@@ -9,24 +9,16 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 from molt.frontend.sema import (
     SemaResult,
     analyze_module,
     class_facts_with_super_fold_sound_methods,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class SemaStateMixin(_MixinBase):
+class SemaStateMixin(GeneratorMixinBase):
     def _module_stable_funcs(self, node: ast.Module) -> set[str]:
         counts, funcs, dynamic = self._collect_module_assignments(node)
         if dynamic:

@@ -8,20 +8,12 @@ module, import, annotation, expression, and assignment lowering.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import _MOLT_GLOBALS_BUILTIN, MoltOp, MoltValue
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ModuleGlobalsMixin(_MixinBase):
+class ModuleGlobalsMixin(GeneratorMixinBase):
     def _get_or_emit_module_cache(
         self, module_name: str, *, effect_proof: str | None = None
     ) -> MoltValue:
@@ -162,10 +154,7 @@ class ModuleGlobalsMixin(_MixinBase):
         return func_val
 
     def _ensure_globals_builtin(self) -> None:
-        if (
-            self.globals_builtin_emitted
-            or self.current_func_name != "molt_main"
-        ):
+        if self.globals_builtin_emitted or self.current_func_name != "molt_main":
             return
         self._emit_globals_builtin_obj()
         self.globals_builtin_emitted = True

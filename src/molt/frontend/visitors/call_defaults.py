@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -15,17 +14,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallDefaultsMixin(_MixinBase):
+class CallDefaultsMixin(GeneratorMixinBase):
     def _emit_function_defaults_version(self, func_obj: MoltValue) -> MoltValue:
         """Read the function object's __defaults__/__kwdefaults__ mutation
         version stamp (0 == never mutated since creation)."""

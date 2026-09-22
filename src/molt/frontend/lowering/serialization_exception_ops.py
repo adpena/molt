@@ -3,24 +3,17 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import (
     MoltOp,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
 from molt.frontend.lowering.try_regions import try_region_id
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class SerializationExceptionOpsMixin(_MixinBase):
+class SerializationExceptionOpsMixin(GeneratorMixinBase):
     def _serialize_exception_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
         if op.kind == "EXCEPTION_PUSH":
             ctx.json_ops.append({"kind": "exception_push", "out": op.result.name})
