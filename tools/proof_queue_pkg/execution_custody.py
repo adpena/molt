@@ -13,16 +13,16 @@ import ctypes
 import hashlib
 import json
 import os
-import select
 import secrets
+import select
 import shlex
 import socket
 import struct
 import sys
 import threading
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 from tools.proof_queue_pkg import process_image_capture
 
@@ -48,6 +48,31 @@ class WatchSpec:
             return True
         prefix = normalized.rstrip(os.sep) + os.sep
         return any(path.startswith(prefix) for path in self.paths)
+
+
+# Filesystem events that the proof apparatus itself causes inside a watched
+# root. They carry no information about the proof's inputs and are recorded
+# under their own class instead of as input mutations.
+APPARATUS_GIT_INDEX_REFRESH = "git-index-refresh"
+
+
+def classify_apparatus_event(root: Path, path: Path) -> str | None:
+    """Name the apparatus class of an event beneath ``root``, or None.
+
+    `git status` (run by custody's own source snapshots and by tools that
+    validate the tree) refreshes the index through `.git/index.lock` and
+    touches the `.git` directory entry. Neither changes any source input, so
+    those events are `git-index-refresh`. Every other `.git` write (HEAD, refs,
+    objects, a rewritten index) stays an input mutation.
+    """
+    try:
+        relative = Path(_norm(path)).relative_to(Path(_norm(root)))
+    except ValueError:
+        return None
+    parts = relative.parts
+    if parts == (".git",) or parts == (".git", "index.lock"):
+        return APPARATUS_GIT_INDEX_REFRESH
+    return None
 
 
 def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
@@ -84,6 +109,7 @@ class LiveCustodyMonitor:
     def __init__(self, specs: Sequence[WatchSpec]) -> None:
         self.specs = _compact_specs(specs)
         self._events: list[dict[str, str]] = []
+        self._apparatus_events: list[dict[str, str]] = []
         self._errors: list[str] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -163,6 +189,7 @@ class LiveCustodyMonitor:
     def receipt(self) -> dict[str, object]:
         with self._lock:
             events = list(self._events)
+            apparatus_events = list(self._apparatus_events)
             errors = list(self._errors)
             state = self._state
             lifecycle = list(self._lifecycle)
@@ -170,6 +197,7 @@ class LiveCustodyMonitor:
             errors.append(f"proof live custody receipt requested in state {state}")
         material = {
             "events": events,
+            "apparatus_events": apparatus_events,
             "errors": errors,
             "state": state,
             "lifecycle": lifecycle,
@@ -178,6 +206,7 @@ class LiveCustodyMonitor:
             "schema": "molt.proof-live-custody.v1",
             "watch_roots": len(self.specs),
             "events": events,
+            "apparatus_events": apparatus_events,
             "errors": errors,
             "state": state,
             "lifecycle": lifecycle,
@@ -196,7 +225,13 @@ class LiveCustodyMonitor:
         if not spec.owns(path):
             return
         event = {"action": action, "path": str(path)}
+        apparatus = classify_apparatus_event(spec.root, path)
         with self._lock:
+            if apparatus is not None:
+                classified = {**event, "apparatus": apparatus}
+                if classified not in self._apparatus_events:
+                    self._apparatus_events.append(classified)
+                return
             if event not in self._events:
                 self._events.append(event)
 
