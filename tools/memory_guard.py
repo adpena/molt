@@ -163,7 +163,10 @@ from tools.memory_guard_core import process_custody as _process_custody  # noqa:
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
-from tools.memory_guard_core.paths import active_guard_marker_dir  # noqa: E402
+from tools.memory_guard_core.paths import (  # noqa: E402
+    active_guard_marker_dir,
+    pytest_outer_guard_summary_dir,
+)
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     ChildExitResourceUsage as ChildExitResourceUsage,
     GuardOrphanCleanupResult as GuardOrphanCleanupResult,
@@ -232,7 +235,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     watched_pids as watched_pids,
 )
 
-PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
+PYTEST_OUTER_GUARD_SUMMARY_DIR = pytest_outer_guard_summary_dir(ROOT)
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -707,9 +710,13 @@ def run_guarded(
         raise ValueError("capture_tail_bytes must be positive")
     if capture_tail_bytes is not None and stdout_capture_path is None:
         raise ValueError("capture_tail_bytes requires external capture paths")
-    if stdout_capture_path is not None and Path(stdout_capture_path).resolve() == Path(
-        stderr_capture_path  # type: ignore[arg-type]
-    ).resolve():
+    if (
+        stdout_capture_path is not None
+        and Path(stdout_capture_path).resolve()
+        == Path(
+            stderr_capture_path  # type: ignore[arg-type]
+        ).resolve()
+    ):
         raise ValueError("stdout/stderr capture paths must be distinct")
     if keepalive_interval is not None and keepalive_interval <= 0:
         keepalive_interval = None
@@ -1323,7 +1330,9 @@ def run_guarded(
                 nonlocal max_sampling_wall_time_s, max_sampling_cpu_time_s
                 nonlocal sampling_process_rows, max_sampling_process_rows
                 wall_cost = (time.perf_counter_ns() - sample_started_ns) / 1_000_000_000
-                cpu_cost = (time.process_time_ns() - sample_cpu_started_ns) / 1_000_000_000
+                cpu_cost = (
+                    time.process_time_ns() - sample_cpu_started_ns
+                ) / 1_000_000_000
                 last_sample_cost_s = wall_cost
                 sampling_wall_time_s += wall_cost
                 sampling_cpu_time_s += cpu_cost
@@ -1698,9 +1707,13 @@ def run_guarded(
                 if capture_tail_bytes is not None and stdout_capture_path is not None:
                     with Path(stdout_capture_path).open("rb") as tail_handle:
                         tail_handle.seek(0, os.SEEK_END)
-                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_handle.seek(
+                            max(0, tail_handle.tell() - capture_tail_bytes)
+                        )
                         tail_data = tail_handle.read()
-                    stdout = tail_data.decode(encoding, errors=errors) if text else tail_data
+                    stdout = (
+                        tail_data.decode(encoding, errors=errors) if text else tail_data
+                    )
                 else:
                     stdout_capture.seek(0)
                     stdout = stdout_capture.read()
@@ -1709,9 +1722,13 @@ def run_guarded(
                 if capture_tail_bytes is not None and stderr_capture_path is not None:
                     with Path(stderr_capture_path).open("rb") as tail_handle:
                         tail_handle.seek(0, os.SEEK_END)
-                        tail_handle.seek(max(0, tail_handle.tell() - capture_tail_bytes))
+                        tail_handle.seek(
+                            max(0, tail_handle.tell() - capture_tail_bytes)
+                        )
                         tail_data = tail_handle.read()
-                    stderr = tail_data.decode(encoding, errors=errors) if text else tail_data
+                    stderr = (
+                        tail_data.decode(encoding, errors=errors) if text else tail_data
+                    )
                 else:
                     stderr_capture.seek(0)
                     stderr = stderr_capture.read()
