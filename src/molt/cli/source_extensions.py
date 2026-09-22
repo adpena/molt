@@ -15,6 +15,9 @@ from typing import Any
 from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import source_extension_cython as _source_extension_cython
 from molt.cli.extension_scan_surface import _extract_c_api_tokens
+from molt.cli.source_extension_object_closure import (
+    source_extension_object_closure_digest,
+)
 from molt.cli.extension_scan_surface import _extract_file_local_c_api_symbols
 from molt.cli.extension_scan_surface import _extract_preprocessor_definitions
 from molt.cli.extension_scan_surface import _extract_project_generated_c_api_prefixes
@@ -135,7 +138,6 @@ class _SourceExtensionObjectClosure:
     init_symbol_owner: _SourceExtensionObjectFact
     objects: tuple[_SourceExtensionObjectFact, ...]
     undefined_symbols: tuple[str, ...]
-    closure_sha256: str
 
     def manifest_payload(
         self,
@@ -156,11 +158,10 @@ class _SourceExtensionObjectClosure:
                 for capsule in capsules_by_source.get(fact.source_path.resolve(), ())
             }
         )
-        return {
+        payload: dict[str, Any] = {
             "schema_version": 1,
             "root_symbol": self.init_symbol,
             "init_symbol_owner": self.init_symbol_owner.object_path.name,
-            "closure_sha256": self.closure_sha256,
             "defined_symbols": sorted(
                 {symbol for fact in self.objects for symbol in fact.defined_symbols}
             ),
@@ -187,6 +188,11 @@ class _SourceExtensionObjectClosure:
                 for fact in self.objects
             ],
         }
+        # The digest is the consumers' authority applied to the very payload
+        # they will read (including the runtime symbols recorded here), never a
+        # second computation over build-side state that can drift from it.
+        payload["closure_sha256"] = source_extension_object_closure_digest(payload)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -2852,37 +2858,6 @@ def _source_extension_required_c_api_by_source(
     )
 
 
-def _source_extension_closure_digest(
-    *,
-    init_symbol: str,
-    objects: Sequence[_SourceExtensionObjectFact],
-    runtime_symbols: Sequence[str],
-) -> str:
-    payload = {
-        "schema_version": 1,
-        "root_symbol": init_symbol,
-        "objects": [
-            {
-                "source": str(fact.source_path),
-                "object": fact.object_path.name,
-                "source_sha256": fact.source_sha256,
-                "object_sha256": fact.object_sha256,
-                "defined_symbols": list(fact.defined_symbols),
-                "undefined_symbols": list(fact.undefined_symbols),
-                "compile_command": list(fact.compile_command),
-                "symbol_command": list(fact.symbol_command),
-                "dependencies": [
-                    dependency.manifest_payload() for dependency in fact.dependencies
-                ],
-            }
-            for fact in objects
-        ],
-        "runtime_symbols": list(runtime_symbols),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _compute_source_extension_object_closure(
     *,
     init_symbol: str,
@@ -2938,18 +2913,12 @@ def _compute_source_extension_object_closure(
         fact for fact in object_facts if fact.object_path in included
     )
     undefined_symbols_sorted = tuple(sorted(undefined_symbols))
-    closure_sha256 = _source_extension_closure_digest(
-        init_symbol=init_symbol,
-        objects=closure_objects,
-        runtime_symbols=undefined_symbols_sorted,
-    )
     return (
         _SourceExtensionObjectClosure(
             init_symbol=init_symbol,
             init_symbol_owner=init_owners[0],
             objects=closure_objects,
             undefined_symbols=undefined_symbols_sorted,
-            closure_sha256=closure_sha256,
         ),
         [],
     )
