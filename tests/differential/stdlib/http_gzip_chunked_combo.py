@@ -10,9 +10,7 @@ port_holder: list[int] = []
 
 
 def chunk(data: bytes) -> bytes:
-    return f"{len(data):x}".encode("ascii") + b"
-" + data + b"
-"
+    return f"{len(data):x}".encode("ascii") + b"\r\n" + data + b"\r\n"
 
 
 def server() -> None:
@@ -26,17 +24,9 @@ def server() -> None:
     conn.recv(1024)
     body = gzip.compress(b"hello")
     resp = (
-        b"HTTP/1.1 200 OK
-"
-        b"Content-Encoding: gzip
-"
-        b"Transfer-Encoding: chunked
-
-"
-        + chunk(body)
-        + b"0
-
-"
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Encoding: gzip\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n" + chunk(body) + b"0\r\n\r\n"
     )
     conn.sendall(resp)
     conn.close()
@@ -48,20 +38,18 @@ t.start()
 ready.wait(timeout=1.0)
 
 sock = socket.create_connection(("127.0.0.1", port_holder[0]))
-request = b"GET / HTTP/1.1
-Host: localhost
-
-"
+request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
 sock.sendall(request)
 response = sock.recv(4096)
 sock.close()
 
 t.join(timeout=1.0)
 
-_header, body = response.split(b"
-
-", 1)
-chunked = body.split(b"
-")
-raw = b"".join(chunked[1:-2])
+_header, body = response.split(b"\r\n\r\n", 1)
+# One data chunk followed by the terminating zero-length chunk: decode it by
+# its declared size, since the compressed payload may itself contain CRLF.
+size_line, rest = body.split(b"\r\n", 1)
+size = int(size_line, 16)
+raw = rest[:size]
+assert rest[size:] == b"\r\n0\r\n\r\n"
 print(gzip.decompress(raw))
