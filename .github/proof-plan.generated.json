@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "bb7f1208055f26133e22fb146c02e1d2dd43ab102eefdbf30cc69c8c2e913791",
+  "authority_sha256": "89a8e7585ff5f67aaa81ee7c49be41d20a3c7d7e621dbf85a956532f1c4f85d8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -5341,6 +5341,54 @@
       "version_pattern": "^cargo-audit 0\\.22\\.2\\b"
     },
     {
+      "executable": "llvm-ar",
+      "name": "llvm-ar",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-ranlib",
+      "name": "llvm-ranlib",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-nm",
+      "name": "llvm-nm",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-strip",
+      "name": "llvm-strip",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
       "executable": "wasm-ld",
       "name": "wasm-ld",
       "setup_evidence": [
@@ -5356,13 +5404,14 @@
       "executable": "wasm-tools",
       "name": "wasm-tools",
       "setup_evidence": [
-        ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"
+        "config/tool_releases.toml::version = \"1.259.0\"",
+        ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"
       ],
-      "setup_value": "1.253.0",
+      "setup_value": "1.259.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.253\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.259\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }

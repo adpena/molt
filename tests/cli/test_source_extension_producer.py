@@ -320,7 +320,7 @@ def _build_environment_manifest() -> dict[str, object]:
         "sha256": "d" * 64,
     }
     custody_address = {
-        "schema_version": 2,
+        "schema_version": build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": "source-build-scipy",
         "dependency_group_requirements": requirements,
         "uv_lock_sha256": "e" * 64,
@@ -901,7 +901,7 @@ def _locked_environment_spec(
     root = tmp_path / "custody/environment"
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     custody: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "environment_id": "a" * 64,
         "dependency_group": "source-build-numpy",
         "dependency_group_requirements": ["ninja==1.13.0"],
@@ -975,7 +975,9 @@ def test_source_build_environment_address_is_worktree_neutral(
     assert first_spec[:4] == second_spec[:4]
     assert "worktrees" not in str(first_spec[0])
     custody = first_spec[3]
-    assert custody["schema_version"] == 2
+    assert custody["schema_version"] == (
+        build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION
+    )
     address_payload = {key: custody[key] for key in custody if key != "environment_id"}
     assert (
         custody["environment_id"]
@@ -984,7 +986,9 @@ def test_source_build_environment_address_is_worktree_neutral(
         ).hexdigest()
     )
     old_address_payload = dict(address_payload)
-    old_address_payload["schema_version"] = 1
+    old_address_payload["schema_version"] = (
+        build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION - 1
+    )
     assert (
         custody["environment_id"]
         != hashlib.sha256(
@@ -1063,6 +1067,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
     assert json.loads(spec[2].read_text(encoding="utf-8")) == {
         **spec[3],
         "installed_distributions": distributions,
+        "executable_images": build_environment.environment_executable_images(spec[0]),
     }
     assert not build_environment._provisioning_record_path(spec[0]).exists()
 
@@ -1210,7 +1215,15 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
     spec[1].parent.mkdir(parents=True)
     spec[1].write_bytes(b"python")
     spec[2].write_text(
-        json.dumps({**spec[3], "installed_distributions": distributions}),
+        json.dumps(
+            {
+                **spec[3],
+                "installed_distributions": distributions,
+                "executable_images": build_environment.environment_executable_images(
+                    spec[0]
+                ),
+            }
+        ),
         encoding="utf-8",
     )
     provisioning_path = build_environment._provisioning_record_path(spec[0])
@@ -1304,6 +1317,7 @@ def test_concurrent_source_build_provision_runs_one_sync(
     assert json.loads(spec[2].read_text(encoding="utf-8")) == {
         **spec[3],
         "installed_distributions": distributions,
+        "executable_images": build_environment.environment_executable_images(spec[0]),
     }
     launcher = spec[1].parent / ("cython.exe" if os.name == "nt" else "cython")
     assert launcher.read_text(encoding="utf-8") == f"#!{spec[1]}\n"

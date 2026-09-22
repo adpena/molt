@@ -35,7 +35,7 @@ def cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     (source_root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
     monkeypatch.setattr(sc, "SUPERVISOR_SOURCE_ROOT", source_root)
     cache_root = tmp_path / "custody" / "proof-supervisor"
-    monkeypatch.setattr(sc, "supervisor_cache_root", lambda cwd, env: cache_root)
+    monkeypatch.setattr(sc, "supervisor_cache_root", lambda env, **_k: cache_root)
     built = tmp_path / "target" / "release" / sc.SUPERVISOR_BINARY_NAME
     built.parent.mkdir(parents=True)
     built.write_bytes(b"supervisor-bytes-v1")
@@ -137,9 +137,27 @@ def test_scratch_source_roots_never_cache_under_source(
         custody_root = source
 
     monkeypatch.setattr(sc, "checkout_custody", lambda *_a, **_k: Custody())
-    root = sc.supervisor_cache_root(source, {})
+    root = sc.supervisor_cache_root({}, source_root=source)
     assert not root.is_relative_to(source)
     assert root.name == sc.SUPERVISOR_CACHE_DIRNAME
+
+
+def test_cache_root_follows_the_queue_checkout_not_the_proof_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Custody:
+        custody_root = tmp_path / "Molt"
+
+    seen: list[Path] = []
+
+    def custody(source_root, *_a, **_k):
+        seen.append(Path(source_root))
+        return Custody()
+
+    monkeypatch.setattr(sc, "checkout_custody", custody)
+    root = sc.supervisor_cache_root({})
+    assert seen == [sc.admission._REPO_ROOT.resolve()]
+    assert root == tmp_path / "Molt" / sc.SUPERVISOR_CACHE_DIRNAME
 
 
 def test_durable_custody_root_hosts_the_cache(
@@ -153,6 +171,6 @@ def test_durable_custody_root_hosts_the_cache(
 
     monkeypatch.setattr(sc, "checkout_custody", lambda *_a, **_k: Custody())
     assert (
-        sc.supervisor_cache_root(source, {})
+        sc.supervisor_cache_root({}, source_root=source)
         == tmp_path / "Molt" / sc.SUPERVISOR_CACHE_DIRNAME
     )

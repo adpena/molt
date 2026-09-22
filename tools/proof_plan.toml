@@ -365,6 +365,38 @@ setup_value = "0.22.2"
 setup_evidence = [".github/workflows/security_hardening.yml::cargo-audit --version 0.22.2 --locked"]
 
 [[toolchain_policy]]
+name = "llvm-ar"
+executable = "llvm-ar"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-ranlib"
+executable = "llvm-ranlib"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-nm"
+executable = "llvm-nm"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-strip"
+executable = "llvm-strip"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
 name = "wasm-ld"
 executable = "wasm-ld"
 version_args = ["--version"]
@@ -376,9 +408,9 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 name = "wasm-tools"
 executable = "wasm-tools"
 version_args = ["--version"]
-version_pattern = '^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
-setup_value = "1.253.0"
-setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"]
+version_pattern = '^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
+setup_value = "1.259.0"
+setup_evidence = ["config/tool_releases.toml::version = \"1.259.0\"", ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"]
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
@@ -2897,21 +2929,23 @@ scratch_roots = []
 id = "pact.seal.numpy.produce"
 description = "Produce the canonical NumPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
 argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "numpy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/numpy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "llvm-ar", "llvm-ranlib", "llvm-nm", "llvm-strip"]
 resource_family = "wasm-source-extension"
 contention_key = "wasm:numpy-seal"
 timeout_seconds = 7200
 scratch_roots = ["tmp/pact_seal_build/numpy"]
+derived_environments = ["uv-source-build-environment"]
 
 [[named_lane]]
 id = "pact.seal.scipy.produce"
 description = "Produce the canonical SciPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
 argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "scipy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/scipy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "llvm-ar", "llvm-ranlib", "llvm-nm", "llvm-strip"]
 resource_family = "wasm-source-extension"
 contention_key = "wasm:scipy-seal"
 timeout_seconds = 7200
 scratch_roots = ["tmp/pact_seal_build/scipy"]
+derived_environments = ["uv-source-build-environment"]
 
 # =========================================================================
 # GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)

@@ -214,6 +214,28 @@ at launch, requiring the guarded typed command family—even a version command
 may be a shim that starts the resolved tool. This is one shared rule for every
 launcher family, not a per-command allowlist.
 
+A named lane may additionally declare `derived_environments` (today only
+`uv-source-build-environment`): content-addressed environments the lane
+provisions under the checkout custody root with its admitted `uv` from the
+admitted `uv.lock`, and then launches children from (the seal producer's
+re-launch, meson, ninja, cython, pkg-config). Their images are not declared
+toolchains; the broker admits one only through the environment's attestation:
+the manifest must validate and name its own directory, link its base
+interpreter and provisioner to admitted toolchain images and its lock digest to
+the run's `uv.lock`, and list that exact path and byte identity among the
+executables the provisioner installed. The native supervisor sees the
+environments' home as a shared `attested-environment` derived root whose
+launch-time listing is receipted; every refusal records its precise reason.
+
+Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
+`config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.
+A toolchain policy that cites that manifest as setup evidence makes the queue
+provision the host asset under `<toolchain root>/toolchains/<name>-<version>`
+(digest-verified, attested, idempotent) and place its `bin` first on the lane's
+PATH before toolchains are located, so the version policy always meets the
+pinned release rather than an ambient install; the CI workflow pin is gated
+against the same manifest.
+
 Toolchains whose selected launcher starts a distinct executable declare bounded
 `process_image_probes` in `tools/proof_plan.toml`. Before source custody arms,
 the native supervisor runs each exact probe in non-evidence inventory mode and

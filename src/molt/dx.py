@@ -75,6 +75,10 @@ DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
 # Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the durable
 # Molt custody root, never from a capacity-selected scratch/output volume.
 DEFAULT_TARGET_ROOT_DIRNAME = "target-root"
+# Provisioned toolchains (LLVM SDK, WASI sysroot, pinned tool releases) live
+# under this directory of the toolchain root; every provisioner and discoverer
+# derives the path from here.
+TOOLCHAINS_DIRNAME = "toolchains"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
@@ -1410,94 +1414,42 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
     return (_backend_daemon_socket_root(env) / f"molt-backend-{root_hash}").resolve()
 
 
-# Pinned for reproducible custody (R73.3). A missing compilation-cache binary is a
-# missing PRIMITIVE that gets COMPLETED here, never a silent fallback to cold builds.
-_SCCACHE_VERSION = "v0.16.0"
+# The sccache release is pinned in config/tool_releases.toml (R73.3). A missing
+# compilation-cache binary is a missing PRIMITIVE that gets COMPLETED here from
+# that digest-bound authority, never a silent fallback to cold builds.
 _sccache_degrade_warned = False
 # Provisioning is attempted at most ONCE per process: a failed network download
 # must never re-run on every _install_dx_defaults call (that would hang every
 # build's env setup by the download timeout on an offline host).
 _sccache_download_failed = False
+_sccache_provision_error = ""
 
 
-def _sccache_asset_url() -> str | None:
-    machine = platform.machine().lower()
-    if machine in {"amd64", "x86_64", "x64"}:
-        arch = "x86_64"
-    elif machine in {"arm64", "aarch64"}:
-        arch = "aarch64"
-    else:
-        return None
-    system = platform.system().lower()
-    if system == "windows" or os.name == "nt":
-        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-pc-windows-msvc", "zip"
-    elif system == "darwin":
-        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-apple-darwin", "tar.gz"
-    else:
-        stem, ext = f"sccache-{_SCCACHE_VERSION}-{arch}-unknown-linux-musl", "tar.gz"
-    return (
-        "https://github.com/mozilla/sccache/releases/download/"
-        f"{_SCCACHE_VERSION}/{stem}.{ext}"
-    )
+def _provision_sccache(toolchain_root: Path | None) -> str | None:
+    """Provision the pinned sccache release under the custody toolchain root.
 
-
-def _provision_sccache() -> str | None:
-    """Provision the pinned sccache binary into ``~/.cargo/bin`` (already on PATH for
-    any cargo/rust host). Idempotent, bounded (network timeout), and NEVER raises:
-    returns the resolved path or ``None``. The R73.3 custody primitive that keeps
-    Rust compilation content-address-cached and shared across worktrees."""
-    found = shutil.which("sccache")
-    if found:
-        return found
-    exe = "sccache.exe" if os.name == "nt" else "sccache"
-    dest = Path.home() / ".cargo" / "bin" / exe
-    if dest.exists():
-        return str(dest)
-    global _sccache_download_failed
+    Idempotent and memoized: one failed attempt per process (offline host,
+    digest mismatch, no toolchain root) is recorded once and never re-run on
+    every env setup. Returns the attested executable path, or ``None`` with
+    the reason kept for the loud degradation message.
+    """
+    global _sccache_download_failed, _sccache_provision_error
     if _sccache_download_failed:
-        return None  # already tried and failed this process; do not re-hang
-    url = _sccache_asset_url()
-    if url is None:
-        _sccache_download_failed = True
         return None
-    import stat as _stat
-    import tarfile
-    import urllib.request
-    import zipfile
+    from molt import tool_releases
 
-    ok = False
     try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory() as td:
-            archive = Path(td) / url.rsplit("/", 1)[-1]
-            with (
-                urllib.request.urlopen(url, timeout=90) as resp,
-                open(archive, "wb") as out,
-            ):
-                shutil.copyfileobj(resp, out)
-            if archive.suffix == ".zip":
-                with zipfile.ZipFile(archive) as zf:
-                    member = next(n for n in zf.namelist() if n.endswith(exe))
-                    with zf.open(member) as src, open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out)
-            else:
-                with tarfile.open(archive) as tf:
-                    member = next(m for m in tf.getmembers() if m.name.endswith(exe))
-                    src = tf.extractfile(member)
-                    if src is not None:
-                        with src, open(dest, "wb") as out:
-                            shutil.copyfileobj(src, out)
-        if os.name != "nt" and dest.exists():
-            dest.chmod(
-                dest.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH
+        if toolchain_root is None:
+            raise tool_releases.ToolReleaseError(
+                "no toolchain root is known for this environment (MOLT_TARGET_ROOT)"
             )
-        ok = dest.exists()
-    except Exception:
-        ok = False
-    if not ok:
+        release = tool_releases.tool_release("sccache")
+        discovery = tool_releases.provision_tool(release, toolchain_root)
+    except (tool_releases.ToolReleaseError, OSError) as exc:
         _sccache_download_failed = True
+        _sccache_provision_error = f"{type(exc).__name__}: {exc}"
         return None
-    return str(dest)
+    return str(discovery.executable)
 
 
 def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
@@ -1526,16 +1478,21 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
                 flush=True,
             )
         return
-    sccache = _provision_sccache()
+    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
+    sccache = _provision_sccache(
+        Path(raw_target_root).expanduser() if raw_target_root else None
+    )
     if sccache is None:
         if not _sccache_degrade_warned:
             _sccache_degrade_warned = True
             print(
-                "molt: WARNING sccache unavailable and could not be provisioned — "
-                "Rust compilation cache is OFF; builds will be COLD and "
-                "memory-heavy (every worktree recompiles the full crate graph, "
-                "which saturates memory under parallel lanes). Install it "
-                "(`cargo install sccache`) or set MOLT_USE_SCCACHE=0 to silence.",
+                "molt: WARNING sccache unavailable and could not be provisioned "
+                f"({_sccache_provision_error or 'unknown reason'}) — Rust "
+                "compilation cache is OFF; builds will be COLD and memory-heavy "
+                "(every worktree recompiles the full crate graph, which saturates "
+                "memory under parallel lanes). Provision the pinned release with "
+                "`python -m molt.tool_releases provision sccache` or set "
+                "MOLT_USE_SCCACHE=0 to silence.",
                 file=sys.stderr,
                 flush=True,
             )

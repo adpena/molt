@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import re
 import signal
-import shutil
 import subprocess
 import sys
 import time
@@ -306,6 +305,19 @@ def _sccache_server_responsive(sccache: str) -> bool:
         return False
 
 
+def _pinned_sccache(env: Mapping[str, str]) -> str | None:
+    """The attested pinned sccache under this environment's toolchain root."""
+    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
+    if not raw_target_root:
+        return None
+    from molt import tool_releases
+
+    discovery = tool_releases.discover_tool(
+        tool_releases.tool_release("sccache"), Path(raw_target_root).expanduser()
+    )
+    return None if discovery is None else str(discovery.executable)
+
+
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if cargo_compiler_wrappers(env):
         normalized, _applied = normalize_cargo_environment(env)
@@ -315,11 +327,13 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if mode in {"0", "false", "no", "off"}:
         return
     forced = mode in {"1", "true", "yes", "on"}
-    sccache = shutil.which("sccache")
+    sccache = _pinned_sccache(env)
     if sccache is None:
         if forced:
             _sccache_diag(
-                "MOLT_USE_SCCACHE set but sccache is not on PATH; using direct rustc."
+                "MOLT_USE_SCCACHE set but the pinned sccache release is not "
+                "provisioned under MOLT_TARGET_ROOT (config/tool_releases.toml); "
+                "using direct rustc."
             )
         return
     # sccache delivers 0 cache hits on this Windows host and crashes builds

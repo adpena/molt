@@ -32,7 +32,7 @@ class SourceBuildEnvironmentError(ValueError):
     pass
 
 
-SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 2
+SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION = 3
 SOURCE_BUILD_ENVIRONMENT_MANIFEST = "molt-source-build-environment.json"
 
 # Project-owned stable schema. Recording only the standard build-marker inputs
@@ -72,6 +72,60 @@ class LockedSourceBuildEnvironment:
     manifest_path: Path
     custody: Mapping[str, object]
     active: bool
+
+
+_CUSTODY_FIELDS = (
+    "schema_version",
+    "environment_id",
+    "dependency_group",
+    "dependency_group_requirements",
+    "uv_lock_sha256",
+    "python",
+    "uv",
+)
+LOCKED_ENVIRONMENT_MANIFEST_FIELDS = frozenset(
+    {*_CUSTODY_FIELDS, "installed_distributions", "executable_images"}
+)
+
+
+def source_build_environments_root(
+    repo_root: Path, environ: Mapping[str, str] | None = None
+) -> Path:
+    """The one custody-root home of locked source-build environments.
+
+    Every environment lives at ``<root>/<environment_id>``. The proof queue
+    admits their launchers as attested derived environments through this
+    same authority, so the producer and custody can never disagree on it.
+    """
+    custody = checkout_custody(
+        repo_root.resolve(), os.environ if environ is None else environ
+    )
+    return custody.custody_root / "build-environments" / "source-extension"
+
+
+def launcher_path(environment_root: Path) -> Path:
+    """The interpreter launcher of a locked environment."""
+    return environment_root / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+
+
+def environment_executable_images(environment_root: Path) -> dict[str, str]:
+    """Attest every executable image in the environment's scripts directory.
+
+    Keys are POSIX-style paths relative to the environment root (the launcher
+    and every console script uv installed from the lock); the proof queue
+    admits a child under the environment only when its path and bytes are in
+    this map, so a tool that was not provisioned there can never run as one.
+    """
+    scripts = launcher_path(environment_root).parent
+    images: dict[str, str] = {}
+    if not scripts.is_dir():
+        return images
+    for entry in sorted(scripts.iterdir()):
+        if entry.is_file() and not entry.is_symlink():
+            images[entry.relative_to(environment_root).as_posix()] = _sha256_file(entry)
+    return images
 
 
 def canonical_source_marker_environment(
@@ -235,15 +289,8 @@ def _environment_spec(
         "environment_id": environment_id,
         **address_payload,
     }
-    custody_root = (
-        checkout_custody(repo_root, os.environ).custody_root
-        / "build-environments"
-        / "source-extension"
-    )
-    root = custody_root / environment_id
-    python_executable = root / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    root = source_build_environments_root(repo_root) / environment_id
+    python_executable = launcher_path(root)
     return (
         root,
         python_executable,
@@ -415,7 +462,11 @@ def _validated_active_attestation(
             f"active interpreter is not the locked source-build environment {root}"
         )
     manifest = _read_attestation(manifest_path)
-    expected = {**custody, "installed_distributions": _installed_distributions()}
+    expected = {
+        **custody,
+        "installed_distributions": _installed_distributions(),
+        "executable_images": environment_executable_images(root),
+    }
     if manifest != expected:
         raise SourceBuildEnvironmentError(
             f"locked source-build environment attestation is stale or invalid: {manifest_path}"
@@ -483,15 +534,16 @@ def provision_source_build_environment(
             raise SourceBuildEnvironmentError(
                 f"malformed source-build provisioning record: {provisioning_path}"
             )
-        complete_fields = {*custody, "installed_distributions"}
         if (
             python_executable.is_file()
             and isinstance(existing, Mapping)
-            and set(existing) == complete_fields
+            and set(existing) == LOCKED_ENVIRONMENT_MANIFEST_FIELDS
         ):
             expected_core = dict(custody)
             actual_core = {key: existing.get(key) for key in expected_core}
-            if actual_core == expected_core:
+            if actual_core == expected_core and existing.get(
+                "executable_images"
+            ) == environment_executable_images(root):
                 installed = _probe_environment_distributions(python_executable)
                 if existing.get("installed_distributions") == installed:
                     if provisioning is not None:
@@ -565,7 +617,11 @@ def provision_source_build_environment(
         _validate_declared_group_resolutions(
             custody["dependency_group_requirements"], installed
         )
-        manifest = {**custody, "installed_distributions": installed}
+        manifest = {
+            **custody,
+            "installed_distributions": installed,
+            "executable_images": environment_executable_images(root),
+        }
         _atomic_write_json(
             manifest_path,
             manifest,
@@ -581,6 +637,159 @@ def provision_source_build_environment(
         )
     finally:
         _release_file_lock(handle)
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _custody_problems(custody: object, *, subject: str) -> list[str]:
+    """Problems with a build-environment custody record, named for ``subject``."""
+    if not isinstance(custody, Mapping) or set(custody) != set(_CUSTODY_FIELDS):
+        return [f"{subject} build-environment custody is invalid"]
+    custody = cast(Mapping[str, object], custody)
+    problems: list[str] = []
+    digest_fields = ("environment_id", "uv_lock_sha256")
+    if custody.get("schema_version") != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION or any(
+        not _valid_sha256(custody.get(field)) for field in digest_fields
+    ):
+        problems.append(f"{subject} build-environment custody is invalid")
+    if not isinstance(custody.get("dependency_group"), str) or not custody.get(
+        "dependency_group"
+    ):
+        problems.append(f"{subject} build-environment custody is invalid")
+    group_requirements = custody.get("dependency_group_requirements")
+    candidate_group_requirements = (
+        [item for item in group_requirements if isinstance(item, str) and item]
+        if isinstance(group_requirements, list)
+        else []
+    )
+    group_requirements_are_valid = not (
+        not isinstance(group_requirements, list)
+        or not group_requirements
+        or len(candidate_group_requirements) != len(group_requirements)
+    )
+    normalized_group_requirements = (
+        candidate_group_requirements if group_requirements_are_valid else None
+    )
+    if normalized_group_requirements is None:
+        problems.append(f"{subject} build dependency group is invalid")
+    else:
+        try:
+            parsed_group = [Requirement(item) for item in normalized_group_requirements]
+        except InvalidRequirement:
+            problems.append(f"{subject} build dependency group is invalid")
+        else:
+            if any(item.url is not None for item in parsed_group):
+                problems.append(f"{subject} build dependency group is invalid")
+    custody_python = custody.get("python")
+    custody_uv = custody.get("uv")
+    if not isinstance(custody_python, Mapping) or set(custody_python) != {
+        "implementation",
+        "version",
+        "platform",
+        "base_executable",
+        "base_executable_sha256",
+    }:
+        problems.append(f"{subject} build Python custody is invalid")
+    elif (
+        not all(
+            isinstance(custody_python.get(field), str) and custody_python.get(field)
+            for field in ("implementation", "version", "platform", "base_executable")
+        )
+        or any(
+            separator in str(custody_python.get("base_executable"))
+            for separator in ("/", "\\")
+        )
+        or not _valid_sha256(custody_python.get("base_executable_sha256"))
+    ):
+        problems.append(f"{subject} build Python custody is invalid")
+    if not isinstance(custody_uv, Mapping) or set(custody_uv) != {
+        "executable",
+        "version",
+        "sha256",
+    }:
+        problems.append(f"{subject} uv custody is invalid")
+    elif (
+        not all(
+            isinstance(custody_uv.get(field), str) and custody_uv.get(field)
+            for field in ("executable", "version")
+        )
+        or any(
+            separator in str(custody_uv.get("executable")) for separator in ("/", "\\")
+        )
+        or not _valid_sha256(custody_uv.get("sha256"))
+    ):
+        problems.append(f"{subject} uv custody is invalid")
+    if (
+        isinstance(custody.get("dependency_group"), str)
+        and _valid_sha256(custody.get("uv_lock_sha256"))
+        and isinstance(custody_python, Mapping)
+        and normalized_group_requirements is not None
+        and isinstance(custody_uv, Mapping)
+    ):
+        address_payload = {
+            "schema_version": custody["schema_version"],
+            "dependency_group": custody["dependency_group"],
+            "dependency_group_requirements": normalized_group_requirements,
+            "uv_lock_sha256": custody["uv_lock_sha256"],
+            "python": dict(custody_python),
+            "uv": dict(custody_uv),
+        }
+        expected_environment_id = hashlib.sha256(
+            json.dumps(address_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if custody.get("environment_id") != expected_environment_id:
+            problems.append(f"{subject} build-environment address digest is invalid")
+    return problems
+
+
+def locked_environment_manifest_problems(
+    payload: object, *, environment_id: str
+) -> list[str]:
+    """Problems with a provisioned environment's attestation as custody reads it.
+
+    The proof queue admits ``<root>/<environment_id>``'s launcher only when this
+    returns no problems and the record links to admitted toolchain images.
+    """
+    subject = "locked source-build environment"
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != LOCKED_ENVIRONMENT_MANIFEST_FIELDS
+    ):
+        return [f"{subject} attestation shape is invalid"]
+    payload = cast(Mapping[str, object], payload)
+    problems = _custody_problems(
+        {field: payload[field] for field in _CUSTODY_FIELDS}, subject=subject
+    )
+    if payload.get("environment_id") != environment_id:
+        problems.append(f"{subject} attestation names another environment")
+    installed = payload.get("installed_distributions")
+    if not isinstance(installed, list) or not all(
+        isinstance(row, Mapping)
+        and set(row) == {"name", "version"}
+        and all(isinstance(value, str) and value for value in row.values())
+        for row in installed
+    ):
+        problems.append(f"{subject} installed distributions are invalid")
+    images = payload.get("executable_images")
+    scripts_prefix = launcher_path(Path()).parent.as_posix() + "/"
+    if not isinstance(images, Mapping) or not all(
+        isinstance(key, str)
+        and key.startswith(scripts_prefix)
+        and len(key) > len(scripts_prefix)
+        and "/" not in key[len(scripts_prefix) :]
+        and _valid_sha256(value)
+        for key, value in images.items()
+    ):
+        problems.append(f"{subject} executable images are invalid")
+    elif launcher_path(Path()).as_posix() not in images:
+        problems.append(f"{subject} executable images do not attest the launcher")
+    return problems
 
 
 def source_build_environment_problems(payload: object) -> list[str]:
@@ -603,142 +812,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
     recorded_active = payload.get("active_requirements")
     resolved = payload.get("resolved")
     custody = payload.get("custody")
-    if not isinstance(custody, Mapping) or set(custody) != {
-        "schema_version",
-        "environment_id",
-        "dependency_group",
-        "dependency_group_requirements",
-        "uv_lock_sha256",
-        "python",
-        "uv",
-    }:
-        problems.append("extension-set manifest build-environment custody is invalid")
-    else:
-        custody = cast(Mapping[str, object], custody)
-
-        def valid_sha256(value: object) -> bool:
-            return (
-                isinstance(value, str)
-                and len(value) == 64
-                and all(character in "0123456789abcdef" for character in value)
-            )
-
-        digest_fields = ("environment_id", "uv_lock_sha256")
-        if custody.get(
-            "schema_version"
-        ) != SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION or any(
-            not valid_sha256(custody.get(field)) for field in digest_fields
-        ):
-            problems.append(
-                "extension-set manifest build-environment custody is invalid"
-            )
-        if not isinstance(custody.get("dependency_group"), str) or not custody.get(
-            "dependency_group"
-        ):
-            problems.append(
-                "extension-set manifest build-environment custody is invalid"
-            )
-        group_requirements = custody.get("dependency_group_requirements")
-        candidate_group_requirements = (
-            [item for item in group_requirements if isinstance(item, str) and item]
-            if isinstance(group_requirements, list)
-            else []
-        )
-        group_requirements_are_valid = not (
-            not isinstance(group_requirements, list)
-            or not group_requirements
-            or len(candidate_group_requirements) != len(group_requirements)
-        )
-        normalized_group_requirements = (
-            candidate_group_requirements if group_requirements_are_valid else None
-        )
-        if normalized_group_requirements is None:
-            problems.append("extension-set manifest build dependency group is invalid")
-        else:
-            try:
-                parsed_group = [
-                    Requirement(item) for item in normalized_group_requirements
-                ]
-            except InvalidRequirement:
-                problems.append(
-                    "extension-set manifest build dependency group is invalid"
-                )
-            else:
-                if any(item.url is not None for item in parsed_group):
-                    problems.append(
-                        "extension-set manifest build dependency group is invalid"
-                    )
-        custody_python = custody.get("python")
-        custody_uv = custody.get("uv")
-        if not isinstance(custody_python, Mapping) or set(custody_python) != {
-            "implementation",
-            "version",
-            "platform",
-            "base_executable",
-            "base_executable_sha256",
-        }:
-            problems.append("extension-set manifest build Python custody is invalid")
-        elif (
-            not all(
-                isinstance(custody_python.get(field), str) and custody_python.get(field)
-                for field in (
-                    "implementation",
-                    "version",
-                    "platform",
-                    "base_executable",
-                )
-            )
-            or any(
-                separator in str(custody_python.get("base_executable"))
-                for separator in ("/", "\\")
-            )
-            or not valid_sha256(custody_python.get("base_executable_sha256"))
-        ):
-            problems.append("extension-set manifest build Python custody is invalid")
-        if not isinstance(custody_uv, Mapping) or set(custody_uv) != {
-            "executable",
-            "version",
-            "sha256",
-        }:
-            problems.append("extension-set manifest uv custody is invalid")
-        elif (
-            not all(
-                isinstance(custody_uv.get(field), str) and custody_uv.get(field)
-                for field in ("executable", "version")
-            )
-            or any(
-                separator in str(custody_uv.get("executable"))
-                for separator in ("/", "\\")
-            )
-            or not valid_sha256(custody_uv.get("sha256"))
-        ):
-            problems.append("extension-set manifest uv custody is invalid")
-        if (
-            isinstance(custody.get("dependency_group"), str)
-            and valid_sha256(custody.get("uv_lock_sha256"))
-            and isinstance(custody_python, Mapping)
-            and normalized_group_requirements is not None
-            and isinstance(custody_uv, Mapping)
-        ):
-            address_payload = {
-                "schema_version": custody["schema_version"],
-                "dependency_group": custody["dependency_group"],
-                "dependency_group_requirements": normalized_group_requirements,
-                "uv_lock_sha256": custody["uv_lock_sha256"],
-                "python": dict(custody_python),
-                "uv": dict(custody_uv)
-                if isinstance(custody_uv, Mapping)
-                else custody_uv,
-            }
-            expected_environment_id = hashlib.sha256(
-                json.dumps(
-                    address_payload, sort_keys=True, separators=(",", ":")
-                ).encode()
-            ).hexdigest()
-            if custody.get("environment_id") != expected_environment_id:
-                problems.append(
-                    "extension-set manifest build-environment address digest is invalid"
-                )
+    problems.extend(_custody_problems(custody, subject="extension-set manifest"))
 
     if (
         not isinstance(python, Mapping)

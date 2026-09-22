@@ -95,6 +95,7 @@ class WindowsJobCleanup:
     system_before: WindowsSystemResources
     system_after: WindowsSystemResources
     terminated_remaining_processes: bool
+    remaining_processes: tuple[tuple[int, str | None], ...]
     elapsed_s: float
 
     @property
@@ -680,6 +681,40 @@ def wait_until_empty(
         time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
+def remaining_process_images(job: int | None) -> tuple[tuple[int, str | None], ...]:
+    """Name every process still alive in the Job: the evidence behind a cleanup.
+
+    A member that outlives the direct child is a defect in whatever spawned
+    it; recording its image with the cleanup is what makes that defect
+    attributable instead of a bare "terminated remaining processes" flag.
+    """
+    if not _WINDOWS or not job:
+        return ()
+    k32 = _k32()
+    images: list[tuple[int, str | None]] = []
+    for pid in process_ids(job):
+        image_name: str | None = None
+        process = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if process:
+            try:
+                image_size = wintypes.DWORD(32768)
+                image_buffer = ctypes.create_unicode_buffer(image_size.value)
+                if k32.QueryFullProcessImageNameW(
+                    process, 0, image_buffer, ctypes.byref(image_size)
+                ):
+                    image_name = image_buffer.value
+            finally:
+                _close_handle(process, operation="CloseHandle(process)")
+        images.append((int(pid), image_name))
+    return tuple(images)
+
+
+# A console host (conhost.exe) is created by the OS for a console client and
+# leaves the Job on its own a few milliseconds after that client exits. Members
+# still present after this release window are genuine leftovers.
+CONSOLE_RELEASE_GRACE_S = 2.0
+
+
 def complete_job_custody(
     job: int | None,
     *,
@@ -702,9 +737,15 @@ def complete_job_custody(
     started = time.monotonic()
     system_before = system_resources()
     before = job_accounting(job)
-    terminated_remaining = before.active_processes > 0
-    if terminated_remaining:
-        terminate_job(job)
+    terminated_remaining = False
+    remaining: tuple[tuple[int, str | None], ...] = ()
+    if before.active_processes > 0:
+        try:
+            wait_until_empty(job, timeout=min(timeout, CONSOLE_RELEASE_GRACE_S))
+        except TimeoutError:
+            remaining = remaining_process_images(job)
+            terminated_remaining = True
+            terminate_job(job)
     wait_until_empty(job, timeout=timeout)
     after = job_accounting(job)
     if after.active_processes != 0:
@@ -718,6 +759,7 @@ def complete_job_custody(
         system_before=system_before,
         system_after=system_resources(),
         terminated_remaining_processes=terminated_remaining,
+        remaining_processes=remaining,
         elapsed_s=max(0.0, time.monotonic() - started),
     )
 
