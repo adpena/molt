@@ -30,6 +30,14 @@ from molt.llvm_linker_roles import (
 from molt.wasi_sysroot import normalize_wasi_sysroot, wasi_sysroot_llvm_version
 
 
+# A digest pin is only as stable as the bytes behind its URL. Mutable download
+# paths (apt.llvm.org/llvm.sh) silently change content, so the installer must
+# be addressed by an immutable upstream commit.
+_IMMUTABLE_INSTALLER_URL_RE = re.compile(
+    r"https://raw\.githubusercontent\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{40}/[^\s]+"
+)
+
+
 class LlvmToolchainConfigError(RuntimeError):
     """Raised when Cargo's LLVM feature pin cannot be resolved uniquely."""
 
@@ -256,12 +264,14 @@ def _load_llvm_releases_cached(
     installer_sha256 = debian_installer.get("sha256")
     if (
         not isinstance(installer_url, str)
-        or not installer_url.startswith("https://")
+        or _IMMUTABLE_INSTALLER_URL_RE.fullmatch(installer_url) is None
         or not isinstance(installer_sha256, str)
         or re.fullmatch(r"[0-9a-f]{64}", installer_sha256) is None
     ):
         raise LlvmToolchainConfigError(
-            f"invalid Debian LLVM installer identity in {path}"
+            f"invalid Debian LLVM installer identity in {path}: the installer "
+            "must be pinned at a commit-addressed raw GitHub URL, never a "
+            "mutable download path"
         )
     wasi_required = (
         "version",
