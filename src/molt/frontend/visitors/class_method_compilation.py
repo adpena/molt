@@ -9,7 +9,7 @@ layout, namespace, and dataclass construction authority.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
 from molt.frontend._types import (
     GEN_CLOSED_OFFSET,
@@ -28,17 +28,10 @@ from molt.frontend.sema import (
     stateful_function_frame_plan,
     stateful_function_result_type_hint,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ClassMethodCompilationMixin(_MixinBase):
+class ClassMethodCompilationMixin(GeneratorMixinBase):
     def _function_needs_classcell(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> bool:
@@ -459,7 +452,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                     and deco.attr in {"setter", "deleter"}
                 ):
                     descriptor = "property_update"
-                    property_update = cast(Literal["setter", "deleter"], deco.attr)
+                    property_update = deco.attr
                 else:
                     descriptor = "decorated"
             else:
@@ -755,7 +748,7 @@ class ClassMethodCompilationMixin(_MixinBase):
                     and deco.attr in {"setter", "deleter"}
                 ):
                     descriptor = "property_update"
-                    property_update = cast(Literal["setter", "deleter"], deco.attr)
+                    property_update = deco.attr
                 else:
                     descriptor = "decorated"
             else:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
@@ -26,17 +26,10 @@ from molt.frontend.sema import (
     normalize_function_kind,
     stateful_function_frame_plan,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class FunctionMetadataMixin(_MixinBase):
+class FunctionMetadataMixin(GeneratorMixinBase):
     @staticmethod
     def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
         if isinstance(expr, ast.Constant):

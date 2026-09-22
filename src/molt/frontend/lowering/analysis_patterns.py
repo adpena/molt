@@ -10,22 +10,14 @@ from __future__ import annotations
 import ast
 
 from typing import (
-    TYPE_CHECKING,
     cast,
 )
 
 from molt.frontend._types import MoltValue
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AnalysisPatternMixin(_MixinBase):
+class AnalysisPatternMixin(GeneratorMixinBase):
     @staticmethod
     def _match_optional_intrinsic_loader_expr(expr: ast.AST) -> str | None:
         if not isinstance(expr, ast.Call) or expr.keywords or len(expr.args) != 1:

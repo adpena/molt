@@ -20,18 +20,13 @@ from molt.frontend._types import (
     _MOLT_MODULE_CHUNK_PREFIX,
     _TrackedOpsList,
 )
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
     from molt.frontend import SimpleTIRGenerator
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
-
-class MidendPolicyMixin(_MixinBase):
+class MidendPolicyMixin(GeneratorMixinBase):
     def _init_midend_state(
         self,
         optimization_profile: MidendProfile,
@@ -316,7 +311,7 @@ class MidendPolicyMixin(_MixinBase):
         forced_tier = os.getenv("MOLT_MIDEND_TIER_FORCE", "").strip().upper()
         if forced_tier in {"A", "B", "C"}:
             return MidendTierClassification(
-                tier=cast(MidendTier, forced_tier),
+                tier=forced_tier,
                 source="forced_env",
                 allow_hot_promotion=False,
             )
@@ -433,7 +428,7 @@ class MidendPolicyMixin(_MixinBase):
         profile = self.optimization_profile
         profile_override = os.getenv("MOLT_MIDEND_PROFILE", "").strip().lower()
         if profile_override in {"dev", "release"}:
-            profile = cast(MidendProfile, profile_override)
+            profile = profile_override
 
         resolved_function = function_name or self._active_midend_function_name
         tier_classification = self._classify_midend_tier(resolved_function, ops)

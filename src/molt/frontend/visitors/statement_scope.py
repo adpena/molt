@@ -8,7 +8,6 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
 from molt.compiler_analysis import native_support_slice as _native_support_slice
 from molt.compiler_analysis.python_imports import (
@@ -24,17 +23,10 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import normalize_function_kind
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class StatementScopeVisitorMixin(_MixinBase):
+class StatementScopeVisitorMixin(GeneratorMixinBase):
     @staticmethod
     def _module_static_sys_aliases(node: ast.Module) -> frozenset[str]:
         aliases: set[str] = set()
@@ -299,13 +291,17 @@ class StatementScopeVisitorMixin(_MixinBase):
                 identifiers.add(item.id)
             elif isinstance(item, ast.arg):
                 identifiers.add(item.arg)
-            elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            elif isinstance(
+                item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 identifiers.add(item.name)
             elif isinstance(item, ast.alias):
                 identifiers.add(item.asname or item.name.partition(".")[0])
             elif isinstance(item, ast.ExceptHandler) and item.name is not None:
                 identifiers.add(item.name)
-            elif isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None:
+            elif (
+                isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None
+            ):
                 identifiers.add(item.name)
             elif isinstance(item, ast.MatchMapping) and item.rest is not None:
                 identifiers.add(item.rest)

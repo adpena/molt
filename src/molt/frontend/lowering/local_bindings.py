@@ -9,7 +9,7 @@ updates used by visitor mixins.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -22,17 +22,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class LocalBindingMixin(_MixinBase):
+class LocalBindingMixin(GeneratorMixinBase):
     def _function_transport_params(
         self,
         params: list[str],
@@ -647,9 +640,7 @@ class LocalBindingMixin(_MixinBase):
             name in self.async_locals or name in self.async_internal_bindings
         ):
             offset = self._async_binding_slot(name).offset
-            res = MoltValue(
-                self.next_var(), type_hint=self._async_binding_hint(name)
-            )
+            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)

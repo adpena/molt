@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
@@ -16,17 +16,10 @@ from molt.frontend._types import (
     _INLINE_INT_MIN,
 )
 from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class MidendCanonicalizationMixin(_MixinBase):
+class MidendCanonicalizationMixin(GeneratorMixinBase):
     def _resolve_alias_value(
         self, value: MoltValue, aliases: dict[str, MoltValue]
     ) -> MoltValue:
@@ -810,9 +803,7 @@ class MidendCanonicalizationMixin(_MixinBase):
         )
         if isinstance(runtime_symbol, str) and runtime_symbol:
             normalized_args = [
-                self._normalize_operand_key_for_value_numbering(
-                    arg, const_int_values
-                )
+                self._normalize_operand_key_for_value_numbering(arg, const_int_values)
                 for arg in op.args
             ]
             if all(arg is not None for arg in normalized_args):

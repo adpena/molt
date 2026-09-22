@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import (
     _next_ic_index,
@@ -10,17 +10,10 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class SerializationObjectAttrOpsMixin(_MixinBase):
+class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
     def _serialize_object_attr_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
         if op.kind == "ALLOC":
             ctx.json_ops.append(
@@ -461,7 +454,10 @@ class SerializationObjectAttrOpsMixin(_MixinBase):
             }
             if op.metadata is not None:
                 runtime_requirement_bits = op.metadata.get("runtime_requirement_bits")
-                if isinstance(runtime_requirement_bits, int) and runtime_requirement_bits:
+                if (
+                    isinstance(runtime_requirement_bits, int)
+                    and runtime_requirement_bits
+                ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
         elif op.kind == "HASATTR_NAME":

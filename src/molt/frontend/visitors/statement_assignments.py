@@ -8,7 +8,7 @@ file.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from molt.frontend._types import (
     MoltOp,
@@ -18,17 +18,10 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import AUGASSIGN_OP_KIND
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AssignmentStatementVisitorMixin(_MixinBase):
+class AssignmentStatementVisitorMixin(GeneratorMixinBase):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if not isinstance(node.target, (ast.Name, ast.Attribute)):
             raise FrontendRejection(
@@ -858,9 +851,11 @@ class AssignmentStatementVisitorMixin(_MixinBase):
                     imported_module_provenance
                 )
             elif target.id in self.global_decls:
-                previous_global = {
-                    target.id: self.global_imported_module_provenance[target.id]
-                } if target.id in self.global_imported_module_provenance else {}
+                previous_global = (
+                    {target.id: self.global_imported_module_provenance[target.id]}
+                    if target.id in self.global_imported_module_provenance
+                    else {}
+                )
                 self.global_imported_module_provenance[target.id] = (
                     self._join_imported_module_provenance(
                         previous_global,

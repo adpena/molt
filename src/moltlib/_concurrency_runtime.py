@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from molt import intrinsics as _intrinsics
 
@@ -103,7 +103,7 @@ def _is_pending(value: Any) -> bool:
     return value is _pending_sentinel()
 
 
-class Channel:
+class Channel(Generic[T]):
     def __init__(self, handle: Any, maxsize: int = 0) -> None:
         self._handle = handle
         self._maxsize = maxsize

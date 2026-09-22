@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import Any, Sequence, cast
 
 from molt.frontend._types import (
     CFGGraph,
@@ -19,6 +19,7 @@ from molt.frontend.lowering.op_kinds_generated import (
     FRONTEND_RAISING_NOTHROW_ON_PRIMITIVES_KINDS,
     RAISING_KIND_NAMES,
 )
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 _PRIMITIVE_CONST_KINDS: frozenset[str] = frozenset(
     {"CONST", "CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_INT"}
@@ -70,16 +71,8 @@ _SCCP_PROVEN_NOTHROW_KINDS: frozenset[str] = (
     _SCCP_PROVEN_NOTHROW_CURATED - RAISING_KIND_NAMES
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class MidendDataflowMixin(_MixinBase):
+class MidendDataflowMixin(GeneratorMixinBase):
     def _compute_block_use_def(self, ops: list[MoltOp]) -> tuple[set[str], set[str]]:
         use: set[str] = set()
         defs: set[str] = set()

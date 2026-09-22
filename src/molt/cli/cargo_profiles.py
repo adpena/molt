@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import os
 import re
-from typing import cast
 
 from molt.cli.models import BuildProfile
 from molt.cli.runtime_paths import _cargo_profile_dir
@@ -21,7 +20,7 @@ def _resolve_backend_profile_cached(
     value = raw.strip().lower()
     if value not in {"dev", "release"}:
         return default_profile, f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
-    return cast(BuildProfile, value), None
+    return value, None
 
 
 def _resolve_backend_profile(

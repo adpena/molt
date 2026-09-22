@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import ast
-from typing import (
-    TYPE_CHECKING,
-)
 
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
@@ -17,17 +14,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallMethodDispatchMixin(_MixinBase):
+class CallMethodDispatchMixin(GeneratorMixinBase):
     def _class_resolves_default_object_new(
         self, class_name: str, class_info: ClassInfo
     ) -> bool:
@@ -110,9 +100,7 @@ class CallMethodDispatchMixin(_MixinBase):
             name in self.async_locals or name in self.async_internal_bindings
         ):
             offset = self._async_binding_slot(name).offset
-            res = MoltValue(
-                self.next_var(), type_hint=self._async_binding_hint(name)
-            )
+            res = MoltValue(self.next_var(), type_hint=self._async_binding_hint(name))
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
             return res
         cached = self.locals.get(name)

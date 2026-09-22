@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Sequence,
@@ -28,17 +27,10 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import FunctionKind, stateful_function_frame_plan
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ComprehensionMixin(_MixinBase):
+class ComprehensionMixin(GeneratorMixinBase):
     _list_int_containers: set[str]
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
@@ -202,9 +194,7 @@ class ComprehensionMixin(_MixinBase):
                 free_var_hints[name] = hint or "Any"
             closure_items = self._closure_cells_for(free_vars)
             closure_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val)
-            )
+            self.emit(MoltOp(kind="TUPLE_NEW", args=closure_items, result=closure_val))
             has_closure = True
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.GENERATOR,
