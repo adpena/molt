@@ -2419,6 +2419,14 @@ def test_recover_and_prune_fails_closed_on_legacy_retired_destination(
 
 
 def test_incumbent_that_fails_the_seal_contract_is_a_defect(tmp_path: Path) -> None:
+    from molt.scientific_stack_versions import (
+        resolve_scientific_stack,
+        scientific_witness_variant,
+    )
+
+    stack = resolve_scientific_stack()
+    extension_set = stack.extension_set("numpy", "pact-witness")
+    variant = scientific_witness_variant(stack=stack)
     stale = tmp_path / "pact_numpy_multiarray_sealed_for_witness"
     stale.mkdir()
     (stale / "source-package-seal.json").write_text(
@@ -2427,10 +2435,23 @@ def test_incumbent_that_fails_the_seal_contract_is_a_defect(tmp_path: Path) -> N
     )
     (stale / "files").mkdir()
 
-    defect = producer._incumbent_seal_defect(stale)
+    defect = producer._incumbent_seal_defect(
+        stale,
+        extension_set=extension_set,
+        variant=variant,
+        registry=stack.source_extension_registry,
+    )
 
     assert defect is not None and "SourcePackageSeal" in defect
-    assert producer._incumbent_seal_defect(tmp_path / "absent") is not None
+    assert (
+        producer._incumbent_seal_defect(
+            tmp_path / "absent",
+            extension_set=extension_set,
+            variant=variant,
+            registry=stack.source_extension_registry,
+        )
+        is not None
+    )
 
 
 def test_stale_incumbent_is_retired_beside_the_canonical_location(

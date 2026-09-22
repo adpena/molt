@@ -89,6 +89,7 @@ from molt.cli.source_extension_set_identity import (
     _source_extension_set_identity,
 )
 from molt.cli.source_extension_set_registry import (
+    SourceExtensionRegistry,
     SourceExtensionSet,
     SourceExtensionVariant,
     load_source_extension_registry,
@@ -101,6 +102,7 @@ from molt.cli.source_extension_set_registry import (
 from molt.cli.source_extension_set_validation import (
     _source_extension_tool_role_contract,
     validate_source_extension_set_publish_root,
+    validate_source_extension_set_seal,
 )
 from molt.cli.source_extension_publication import (
     SourceExtensionPublicationCustody,
@@ -2103,21 +2105,24 @@ def _materialize_generated_inputs(
     return tuple(sorted(missing))
 
 
-def _incumbent_seal_defect(destination: Path) -> str | None:
+def _incumbent_seal_defect(
+    destination: Path,
+    *,
+    extension_set: SourceExtensionSet,
+    variant: SourceExtensionVariant,
+    registry: SourceExtensionRegistry | None,
+) -> str | None:
     """Why the directory at the canonical location is not a canonical seal, or None.
 
-    A canonical seal verifies bit-exactly and projects to a source-extension
-    identity under the current contract. Anything else at that location (an
-    earlier seal schema, a partial write, foreign content) is stale debris that
-    compare-and-swap cannot name.
+    A canonical seal passes the complete current contract the consumers apply:
+    bit-exact seal verification, the exact package-set schema (including the
+    build-environment custody schema), and the registered identity. Anything
+    else at that location (an earlier schema, a partial write, foreign content)
+    is stale debris that compare-and-swap cannot name.
     """
     try:
-        seal = verify_source_package_seal(destination)
-        _source_extension_set_identity(
-            seal.payload_root,
-            inventory_sha256={
-                entry.relative_path: entry.sha256 for entry in seal.files
-            },
+        validate_source_extension_set_seal(
+            destination, extension_set, variant=variant, registry=registry
         )
     except (SourcePackageSealError, ValueError, OSError) as exc:
         return f"{type(exc).__name__}: {exc}"
@@ -2355,7 +2360,14 @@ def produce_source_extension_set(
             destination, publication_custody=publication_custody
         )
         incumbent_defect = (
-            _incumbent_seal_defect(destination) if destination.exists() else None
+            _incumbent_seal_defect(
+                destination,
+                extension_set=extension_set,
+                variant=variant,
+                registry=registry,
+            )
+            if destination.exists()
+            else None
         )
         if incumbent_defect is not None:
             if expected_identity_sha256 is not None:
