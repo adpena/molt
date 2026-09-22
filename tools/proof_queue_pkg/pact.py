@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -21,6 +22,7 @@ from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
 )
 from molt.dx import checkout_custody
+from tools import proof_plan
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
@@ -161,6 +163,53 @@ def _temporary_environment(overrides: Mapping[str, str]):
                 os.environ[name] = value
 
 
+def named_lane_argv(lane_id: str) -> list[str]:
+    """The registered argv is the child-admission authority; never rebuild it here."""
+    return list(proof_plan.ProofPlan.load().named_lane(lane_id).argv)
+
+
+def _clear_scratch_roots(repo_root: Path, roots: Sequence[str]) -> None:
+    """Reset a lane's declared repo-relative tmp/ scratch roots before submission."""
+    for raw in roots:
+        target = (repo_root / raw).resolve()
+        tmp_root = (repo_root / "tmp").resolve()
+        if target == tmp_root or tmp_root not in target.parents:
+            raise SystemExit(f"named lane scratch root is outside tmp/: {raw}")
+        if target.is_symlink():
+            raise SystemExit(f"named lane scratch root is a symlink: {raw}")
+        if target.exists():
+            shutil.rmtree(target)
+
+
+def _named_lane_spec(
+    lane_id: str, timeout: float | None = None, repo_root: Path = state.ROOT
+) -> dict[str, object]:
+    lane = proof_plan.ProofPlan.load().named_lane(lane_id)
+    _clear_scratch_roots(repo_root, lane.scratch_roots)
+    return {
+        "logical_id": lane_id.replace(".", "-"),
+        "reason": str(lane.data["description"]),
+        "command": list(lane.argv),
+        "resource_family": str(lane.data["resource_family"]),
+        "contention_key": str(lane.data["contention_key"]),
+        "scopes": ["tools/proof_plan.toml", *lane.scratch_roots],
+        "env_overrides": {},
+        "notes": [
+            f"named lane {lane_id}: argv and toolchain closure come from "
+            "tools/proof_plan.toml; scratch roots were reset at submission."
+        ],
+        "timeout": timeout
+        if timeout is not None
+        else float(lane.data["timeout_seconds"]),
+    }
+
+
+def _cmd_named_lane(args: argparse.Namespace) -> int:
+    return _run_named_spec(
+        args, _named_lane_spec(args.lane_id, args.timeout, state._repo_root(args))
+    )
+
+
 def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = state.ROOT
 ) -> dict[str, object]:
@@ -186,12 +235,7 @@ def _pact_witness_acceptance_spec(
             "Run the Pact Kernel A browser/WASM witness acceptance aperture "
             "through queue custody."
         ),
-        "command": policy._uv_active_python_command(
-            "tools/pact_witness_acceptance.py",
-            "--out-dir",
-            "tmp/pact_witness_acceptance_queue",
-            with_requirements=_PACT_WITNESS_REQUIREMENTS,
-        ),
+        "command": named_lane_argv("pact.witness.acceptance"),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
@@ -225,10 +269,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
             "Regenerate the Pact Kernel A fixture/reference pair and prove the "
             "check_parity.py oracle under queue custody."
         ),
-        "command": policy._uv_active_python_command(
-            "tools/pact_witness_oracle.py",
-            with_requirements=_PACT_WITNESS_REQUIREMENTS,
-        ),
+        "command": named_lane_argv("pact.witness.oracle"),
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
