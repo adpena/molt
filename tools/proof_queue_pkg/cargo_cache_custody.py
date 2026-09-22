@@ -724,6 +724,7 @@ def _sealed_retirement_rejection(
     receipt: Mapping[str, object],
     publication: Mapping[str, object],
     target_present: bool,
+    allow_passed: bool,
 ) -> str | None:
     """One sealed-retirement admission policy for inspection and locked apply."""
     if owner.get("lifecycle") != "terminal-sealed-retained":
@@ -741,11 +742,33 @@ def _sealed_retirement_rejection(
     if receipt.get("process_cleanup_safe") is not True:
         return "terminal-receipt-not-cleanup-safe"
     terminal = receipt.get("queue_terminal")
-    if not isinstance(terminal, Mapping) or terminal.get("status") != "failed":
+    status = terminal.get("status") if isinstance(terminal, Mapping) else None
+    if status not in _sealed_retirement_statuses(allow_passed=allow_passed):
         return "terminal-run-not-failed"
     if not target_present:
         return "target-absent"
     return None
+
+
+def _sealed_retirement_statuses(*, allow_passed: bool) -> tuple[str, ...]:
+    if not isinstance(allow_passed, bool):
+        raise ValueError("Cargo sealed retirement allow_passed policy must be boolean")
+    return ("failed", "passed") if allow_passed else ("failed",)
+
+
+def sealed_retirement_policy(*, allow_passed: bool) -> dict[str, object]:
+    """Project the exact admission policy into receipt and agent-facing evidence."""
+    return {
+        "allow_passed": allow_passed,
+        "eligible_terminal_statuses": list(
+            _sealed_retirement_statuses(allow_passed=allow_passed)
+        ),
+    }
+
+
+def _terminal_status(receipt: Mapping[str, object]) -> object:
+    terminal = receipt.get("queue_terminal")
+    return terminal.get("status") if isinstance(terminal, Mapping) else None
 
 
 def inspect_terminal_sealed_retirement(
@@ -753,8 +776,9 @@ def inspect_terminal_sealed_retirement(
     result_root: Path,
     provenance: Mapping[str, object],
     projection: Mapping[str, object],
+    allow_passed: bool = False,
 ) -> dict[str, object]:
-    """Inspect whether one failed sealed generation has retirement authority."""
+    """Inspect whether one policy-admitted sealed generation may be retired."""
     _identity_root, _generation, target, owner_path = _generation_paths(
         result_root, provenance
     )
@@ -767,12 +791,15 @@ def inspect_terminal_sealed_retirement(
     )
     lifecycle = owner.get("lifecycle")
     target_present = target.exists()
+    policy = sealed_retirement_policy(allow_passed=allow_passed)
+    terminal_status = _terminal_status(immutable_receipt)
     rejection = _sealed_retirement_rejection(
         owner=owner,
         projection=projection,
         receipt=immutable_receipt,
         publication=publication,
         target_present=target_present,
+        allow_passed=allow_passed,
     )
     return {
         "state": lifecycle,
@@ -782,8 +809,15 @@ def inspect_terminal_sealed_retirement(
         "terminal_state": projection.get("state"),
         "publication_state": publication.get("state"),
         "process_cleanup_safe": immutable_receipt.get("process_cleanup_safe"),
+        "retirement_policy": policy,
+        "terminal_status": terminal_status,
         "retirement_eligible": rejection is None,
-        "retirement_reason": rejection or "terminal-sealed-failed-cleanup-safe",
+        "retirement_reason": rejection
+        or (
+            "terminal-sealed-passed-cleanup-safe"
+            if terminal_status == "passed"
+            else "terminal-sealed-failed-cleanup-safe"
+        ),
     }
 
 
@@ -836,6 +870,8 @@ def _preserve_terminal_output_evidence(
     publication: Mapping[str, object],
     terminal_receipt: Mapping[str, object],
     provenance: Mapping[str, object] | None = None,
+    retirement_policy: Mapping[str, object] | None = None,
+    terminal_status: object = None,
 ) -> tuple[dict[str, object], int | None, int]:
     """Capture immutable output evidence before either terminal payload transition."""
     output_before = command_identity._directory_manifest_identity(
@@ -855,15 +891,21 @@ def _preserve_terminal_output_evidence(
     )
     if output_after != output_before:
         raise ValueError("terminal Cargo output changed during evidence capture")
-    evidence = _artifact(
-        cas_root,
-        kind,
-        target=str(target),
-        publication=dict(publication),
-        terminal_receipt=dict(terminal_receipt),
-        output_manifest=output_before,
-        timings=timings,
-    )
+    evidence_payload: dict[str, object] = {
+        "target": str(target),
+        "publication": dict(publication),
+        "terminal_receipt": dict(terminal_receipt),
+        "output_manifest": output_before,
+        "timings": timings,
+    }
+    if provenance is not None:
+        if retirement_policy is None:
+            raise ValueError("sealed Cargo retirement policy is missing")
+        evidence_payload.update(
+            retirement_policy=dict(retirement_policy),
+            terminal_status=terminal_status,
+        )
+    evidence = _artifact(cas_root, kind, **evidence_payload)
     files = output_before.get("files")
     file_rows = files if isinstance(files, list) else []
     return (
@@ -896,7 +938,7 @@ class _TerminalOutputDisposition:
     completed_at_field: str
     blocked_at_field: str
     prior_failure_reason: str
-    require_failed_nonreusable_seal: bool = False
+    require_nonreusable_seal: bool = False
 
 
 _UNSEALED_RECLAIM = _TerminalOutputDisposition(
@@ -914,7 +956,7 @@ _UNSEALED_RECLAIM = _TerminalOutputDisposition(
     "reclaim_blocked_at",
     "prior-reclaim-failure",
 )
-_SEALED_FAILED_RETIREMENT = _TerminalOutputDisposition(
+_SEALED_RETIREMENT = _TerminalOutputDisposition(
     "terminal-sealed-retained",
     "retiring-sealed",
     "retired-sealed",
@@ -939,6 +981,7 @@ def _transition_terminal_output(
     projection: Mapping[str, object],
     disposition: _TerminalOutputDisposition,
     timeout_s: float,
+    allow_passed: bool = False,
 ) -> dict[str, object]:
     """One locked, receipt-preserving target-removal state machine."""
     identity_root, _generation, target, owner_path = _generation_paths(
@@ -961,6 +1004,17 @@ def _transition_terminal_output(
         terminal_receipt = projection.get("terminal_receipt")
         assert isinstance(terminal_receipt, Mapping)
         lifecycle = owner.get("lifecycle")
+        sealed = disposition.require_nonreusable_seal
+        policy_fields: dict[str, object] = {}
+        retirement_policy: dict[str, object] | None = None
+        terminal_status: object = None
+        if sealed:
+            retirement_policy = sealed_retirement_policy(allow_passed=allow_passed)
+            terminal_status = _terminal_status(receipt)
+            policy_fields = {
+                "retirement_policy": retirement_policy,
+                "terminal_status": terminal_status,
+            }
         if lifecycle == disposition.completed_lifecycle:
             _update_pointer_if_current(
                 identity_root / "state.json",
@@ -974,6 +1028,7 @@ def _transition_terminal_output(
                 "target": str(target),
                 "owner": str(owner_path),
                 "idempotent": True,
+                **policy_fields,
             }
         if lifecycle == disposition.blocked_lifecycle:
             return {
@@ -981,6 +1036,7 @@ def _transition_terminal_output(
                 "target": str(target),
                 "owner": str(owner_path),
                 "reason": disposition.prior_failure_reason,
+                **policy_fields,
             }
         if lifecycle == disposition.in_progress_lifecycle:
             if not target.exists():
@@ -1001,6 +1057,7 @@ def _transition_terminal_output(
                     "target": str(target),
                     "owner": str(owner_path),
                     "idempotent": True,
+                    **policy_fields,
                 }
             owner.update(
                 lifecycle=disposition.blocked_lifecycle,
@@ -1015,6 +1072,7 @@ def _transition_terminal_output(
                 "target": str(target),
                 "owner": str(owner_path),
                 "reason": f"prior-{disposition.action}-interrupted",
+                **policy_fields,
             }
         if lifecycle != disposition.eligible_lifecycle:
             return {
@@ -1022,8 +1080,8 @@ def _transition_terminal_output(
                 "lifecycle": lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
+                **policy_fields,
             }
-        sealed = disposition.require_failed_nonreusable_seal
         eligible = (
             projection.get("state") == disposition.projection_state
             and publication.get("state") == disposition.publication_state
@@ -1037,6 +1095,7 @@ def _transition_terminal_output(
                     receipt=receipt,
                     publication=publication,
                     target_present=target.exists(),
+                    allow_passed=allow_passed,
                 )
                 is None
             )
@@ -1046,6 +1105,7 @@ def _transition_terminal_output(
                 "lifecycle": lifecycle,
                 "target": str(target),
                 "owner": str(owner_path),
+                **policy_fields,
             }
         try:
             evidence, file_count, size_bytes = _preserve_terminal_output_evidence(
@@ -1055,6 +1115,8 @@ def _transition_terminal_output(
                 publication=publication,
                 terminal_receipt=terminal_receipt,
                 provenance=provenance if sealed else None,
+                retirement_policy=retirement_policy,
+                terminal_status=terminal_status,
             )
         except (OSError, ValueError) as exc:
             owner.update(
@@ -1071,16 +1133,23 @@ def _transition_terminal_output(
                 "owner": str(owner_path),
                 "reason": "evidence-preservation-failed",
                 "error": owner[f"{disposition.action}_error"],
+                **policy_fields,
             }
+        detail: dict[str, object] = {
+            "evidence": evidence,
+            "file_count": file_count,
+            "size_bytes": size_bytes,
+        }
+        if retirement_policy is not None:
+            detail.update(
+                retirement_policy=retirement_policy,
+                terminal_status=terminal_status,
+            )
         owner.update(
             lifecycle=disposition.in_progress_lifecycle,
             **{
                 disposition.started_at_field: _utc_now(),
-                disposition.detail_field: {
-                    "evidence": evidence,
-                    "file_count": file_count,
-                    "size_bytes": size_bytes,
-                },
+                disposition.detail_field: detail,
             },
         )
         _write_owner(owner_path, owner)
@@ -1107,6 +1176,7 @@ def _transition_terminal_output(
                 "owner": str(owner_path),
                 "reason": "delete-failed",
                 "error": error,
+                **policy_fields,
             }
         owner.update(
             lifecycle=disposition.completed_lifecycle,
@@ -1129,6 +1199,7 @@ def _transition_terminal_output(
             "file_count": detail.get("file_count"),
             "size_bytes": detail.get("size_bytes"),
             "evidence": detail.get("evidence"),
+            **policy_fields,
         }
     finally:
         _release_file_lock(lock)
@@ -1151,20 +1222,22 @@ def reclaim_terminal_unsealed(
     )
 
 
-def retire_terminal_sealed_failed(
+def retire_terminal_sealed(
     *,
     result_root: Path,
     provenance: Mapping[str, object],
     projection: Mapping[str, object],
     timeout_s: float = 30.0,
+    allow_passed: bool = False,
 ) -> dict[str, object]:
-    """Retire one failed non-reusable sealed target through shared custody."""
+    """Retire one policy-admitted non-reusable sealed target through custody."""
     return _transition_terminal_output(
         result_root=result_root,
         provenance=provenance,
         projection=projection,
-        disposition=_SEALED_FAILED_RETIREMENT,
+        disposition=_SEALED_RETIREMENT,
         timeout_s=timeout_s,
+        allow_passed=allow_passed,
     )
 
 

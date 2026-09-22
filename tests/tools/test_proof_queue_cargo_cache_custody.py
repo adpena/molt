@@ -1118,7 +1118,12 @@ def test_failed_sealed_terminal_generation_retires_with_receipt_and_timing_evide
     )
     assert inspection["retirement_eligible"] is True
     assert inspection["retirement_reason"] == "terminal-sealed-failed-cleanup-safe"
-    retired = cache.retire_terminal_sealed_failed(
+    assert inspection["terminal_status"] == "failed"
+    assert inspection["retirement_policy"] == {
+        "allow_passed": False,
+        "eligible_terminal_statuses": ["failed"],
+    }
+    retired = cache.retire_terminal_sealed(
         result_root=inputs["result_root"],
         provenance=lease.provenance,
         projection=projection,
@@ -1129,6 +1134,8 @@ def test_failed_sealed_terminal_generation_retires_with_receipt_and_timing_evide
     owner = cache.loads_exact(lease.owner_path.read_text(encoding="utf-8"))
     assert owner["lifecycle"] == "retired-sealed"
     assert owner["terminal_receipt"] == projection["terminal_receipt"]
+    assert owner["retirement"]["retirement_policy"] == inspection["retirement_policy"]
+    assert owner["retirement"]["terminal_status"] == "failed"
     cache.validate_terminal_receipt(
         result_root=inputs["result_root"],
         projection=projection,
@@ -1140,6 +1147,8 @@ def test_failed_sealed_terminal_generation_retires_with_receipt_and_timing_evide
         retired["evidence"], expected_root=inputs["result_root"] / "custody-cas"
     )
     assert evidence["kind"] == cache._SEALED_RETIREMENT_EVIDENCE_KIND
+    assert evidence["retirement_policy"] == inspection["retirement_policy"]
+    assert evidence["terminal_status"] == "failed"
     timing_payload = custody_cas.read_ref(
         evidence["timings"], expected_root=inputs["result_root"] / "custody-cas"
     )
@@ -1186,13 +1195,173 @@ def test_successful_sealed_terminal_generation_is_not_retirable(tmp_path):
     )
     assert inspection["retirement_eligible"] is False
     assert inspection["retirement_reason"] == "terminal-run-not-failed"
-    outcome = cache.retire_terminal_sealed_failed(
+    assert inspection["terminal_status"] == "passed"
+    assert inspection["retirement_policy"] == {
+        "allow_passed": False,
+        "eligible_terminal_statuses": ["failed"],
+    }
+    outcome = cache.retire_terminal_sealed(
         result_root=inputs["result_root"],
         provenance=lease.provenance,
         projection=projection,
     )
     assert outcome["state"] == "not-retirable"
+    assert outcome["retirement_policy"] == inspection["retirement_policy"]
+    assert outcome["terminal_status"] == "passed"
     assert lease.target.is_dir()
+
+
+def test_explicit_policy_retires_successful_nonreusable_seal_under_lock(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    lease = cache.acquire(**inputs)
+    (lease.target / "artifact.rlib").write_bytes(b"sealed success")
+    timings = lease.target / "cargo-timings"
+    timings.mkdir()
+    (timings / "cargo-timing.html").write_bytes(b"successful timing evidence")
+    publication = lease.publish(_completed(lease))
+    lease.close()
+    receipt = _terminal_receipt(lease, publication)
+    receipt["queue_terminal"] = {
+        "schema": supervisor_custody.QUEUE_TERMINAL_SCHEMA,
+        "status": "passed",
+        "returncode": 0,
+        "command_returncode": 0,
+        "execution_error": None,
+    }
+    receipt["command_returncode"] = 0
+    projection = cache.record_terminal_receipt(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        terminal_receipt=receipt,
+    )
+
+    inspection = cache.inspect_terminal_sealed_retirement(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        allow_passed=True,
+    )
+    policy = {
+        "allow_passed": True,
+        "eligible_terminal_statuses": ["failed", "passed"],
+    }
+    assert inspection["retirement_eligible"] is True
+    assert inspection["retirement_reason"] == "terminal-sealed-passed-cleanup-safe"
+    assert inspection["retirement_policy"] == policy
+    assert inspection["terminal_status"] == "passed"
+
+    lock_held = False
+    original_acquire = cache._acquire_file_lock
+    original_release = cache._release_file_lock
+    original_rejection = cache._sealed_retirement_rejection
+
+    def tracked_acquire(*args, **kwargs):
+        nonlocal lock_held
+        handle = original_acquire(*args, **kwargs)
+        lock_held = True
+        return handle
+
+    def tracked_release(handle):
+        nonlocal lock_held
+        try:
+            original_release(handle)
+        finally:
+            lock_held = False
+
+    def checked_rejection(**kwargs):
+        assert lock_held is True
+        assert kwargs["allow_passed"] is True
+        return original_rejection(**kwargs)
+
+    monkeypatch.setattr(cache, "_acquire_file_lock", tracked_acquire)
+    monkeypatch.setattr(cache, "_release_file_lock", tracked_release)
+    monkeypatch.setattr(cache, "_sealed_retirement_rejection", checked_rejection)
+    retired = cache.retire_terminal_sealed(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        allow_passed=True,
+    )
+
+    assert lock_held is False
+    assert retired["state"] == "retired-sealed"
+    assert retired["retirement_policy"] == policy
+    assert retired["terminal_status"] == "passed"
+    assert not lease.target.exists()
+    owner = cache.loads_exact(lease.owner_path.read_text(encoding="utf-8"))
+    assert owner["lifecycle"] == "retired-sealed"
+    assert owner["terminal_receipt"] == projection["terminal_receipt"]
+    assert owner["retirement"]["retirement_policy"] == policy
+    assert owner["retirement"]["terminal_status"] == "passed"
+    evidence = custody_cas.read_ref(
+        retired["evidence"], expected_root=inputs["result_root"] / "custody-cas"
+    )
+    assert evidence["retirement_policy"] == policy
+    assert evidence["terminal_status"] == "passed"
+    assert evidence["terminal_receipt"] == projection["terminal_receipt"]
+    assert evidence["output_manifest"]["file_count"] == 2
+    timing_payload = custody_cas.read_ref(
+        evidence["timings"], expected_root=inputs["result_root"] / "custody-cas"
+    )
+    custody_cas.verify_file_ref(
+        timing_payload["files"][0]["file"],
+        expected_root=inputs["result_root"] / "custody-cas",
+    )
+    cache.validate_terminal_receipt(
+        result_root=inputs["result_root"],
+        projection=projection,
+        provenance=lease.provenance,
+        run_id="unit-one",
+        execution_nonce_sha256="a" * 64,
+    )
+    pointer = cache.loads_exact(lease.pointer.read_text(encoding="utf-8"))
+    assert pointer["state"] == "retired-sealed"
+
+
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ("reusable", "publication-may-be-reusable"),
+        ("unsafe", "terminal-receipt-not-cleanup-safe"),
+        ("nonterminal", "terminal-run-not-failed"),
+        ("absent", "target-absent"),
+    ],
+)
+def test_allow_passed_does_not_bypass_sealed_retirement_custody(mutation, expected):
+    owner = {"lifecycle": "terminal-sealed-retained"}
+    projection = {"state": "terminal-sealed-retained"}
+    receipt = {
+        "process_cleanup_safe": True,
+        "queue_terminal": {"status": "passed"},
+    }
+    publication = {
+        "state": "sealed",
+        "purpose": "preserved-candidate",
+        "reusable": False,
+        "reuse_rejection_code": "cargo-input-closure-unproven",
+    }
+    target_present = True
+    if mutation == "reusable":
+        publication["reusable"] = True
+    elif mutation == "unsafe":
+        receipt["process_cleanup_safe"] = False
+    elif mutation == "nonterminal":
+        receipt["queue_terminal"]["status"] = "running"
+    else:
+        target_present = False
+    assert (
+        cache._sealed_retirement_rejection(
+            owner=owner,
+            projection=projection,
+            receipt=receipt,
+            publication=publication,
+            target_present=target_present,
+            allow_passed=True,
+        )
+        == expected
+    )
 
 
 def test_failed_sealed_retirement_rejects_output_drift_from_immutable_seal(tmp_path):
@@ -1209,7 +1378,7 @@ def test_failed_sealed_retirement_rejects_output_drift_from_immutable_seal(tmp_p
     )
     artifact.write_bytes(b"mutated after seal")
 
-    outcome = cache.retire_terminal_sealed_failed(
+    outcome = cache.retire_terminal_sealed(
         result_root=inputs["result_root"],
         provenance=lease.provenance,
         projection=projection,
@@ -1240,12 +1409,12 @@ def test_failed_sealed_retirement_failure_is_persistently_blocked_without_retry(
         return False, "simulated open target handle"
 
     monkeypatch.setattr(cache, "delete_path", denied)
-    first = cache.retire_terminal_sealed_failed(
+    first = cache.retire_terminal_sealed(
         result_root=inputs["result_root"],
         provenance=lease.provenance,
         projection=projection,
     )
-    second = cache.retire_terminal_sealed_failed(
+    second = cache.retire_terminal_sealed(
         result_root=inputs["result_root"],
         provenance=lease.provenance,
         projection=projection,

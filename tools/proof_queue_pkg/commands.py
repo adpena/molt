@@ -566,19 +566,36 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
         else cargo_cache_custody.inspect_terminal_generation
     )
     apply = (
-        cargo_cache_custody.retire_terminal_sealed_failed
+        cargo_cache_custody.retire_terminal_sealed
         if retire
         else cargo_cache_custody.reclaim_terminal_unsealed
     )
+    allow_passed = args.allow_passed if retire else False
     payload: dict[str, object] = {
         "schema": f"molt.proof-cargo-generation-{schema}.v1",
         "run_id": args.run_id,
         "apply": args.apply,
         "state": "not-authorized" if args.apply else "inspection-failed",
     }
+    if retire:
+        payload["retirement_policy"] = cargo_cache_custody.sealed_retirement_policy(
+            allow_passed=allow_passed
+        )
     try:
         db, provenance, projection, result_root = _load_terminal_cargo_generation(args)
         if args.apply:
+            if retire:
+                # Bind the intent note to the same validated persisted receipt
+                # used by dry-run inspection. Apply repeats this policy under
+                # the generation identity lock before evidence or deletion.
+                intent = inspect(
+                    result_root=result_root,
+                    provenance=provenance,
+                    projection=projection,
+                    allow_passed=allow_passed,
+                )
+                payload["retirement_policy"] = intent["retirement_policy"]
+                payload["terminal_status"] = intent["terminal_status"]
             # Persist intent before touching artifacts; the owner retains the
             # result even if a later queue-note write is interrupted.
             conn = state._connect(db)
@@ -597,6 +614,7 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
                     result_root=result_root,
                     provenance=provenance,
                     projection=projection,
+                    **({"allow_passed": allow_passed} if retire else {}),
                 )
                 payload.update(outcome)
                 state._insert_note(
@@ -613,6 +631,7 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
                     result_root=result_root,
                     provenance=provenance,
                     projection=projection,
+                    **({"allow_passed": allow_passed} if retire else {}),
                 )
             )
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

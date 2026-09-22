@@ -97,8 +97,9 @@ their run ownership, exclusive lease, terminal receipts, and retained evidence
 belong to `cargo_cache_custody`. Disk failures are reported as
 `build-disk-capacity`, not requests to change compiler semantics. Inspect
 structured rejection evidence before reclaiming; source/WIP, active targets,
-uncertain owners, successful or reusable sealed candidates, and prior
-policy-denied paths stay intact.
+uncertain owners, reusable sealed candidates, and prior policy-denied paths stay
+intact. Successful non-reusable candidates require the explicit terminal-sealed
+retention policy below; generic reclamation cannot adopt them.
 
 Cargo output environment is owned by `cargo_output_environment.CargoOutputEnvironment`.
 The admitted Cargo operation selects the same documenter requirement used by tool
@@ -126,18 +127,25 @@ Unattested failures without a valid terminal queue digest also remain outside
 this command's cleanup authority. `inspection-failed` / `not-authorized` report
 that authority could not be established, not that artifact presence was proved.
 
-A failed sealed candidate is not part of unsealed reclamation. Inspect one with
+A sealed candidate is not part of unsealed reclamation. Inspect one with
 `uv run --python 3.12 python tools/proof_queue.py
 retire-terminal-sealed-generation --run-id RUN_ID`. It becomes eligible only
 when the persisted terminal row, digest, immutable Cargo lifecycle receipt,
 owner binding, process closure, and the existing per-identity lease all agree;
 the publication must be the non-reusable
-`cargo-input-closure-unproven` preserved-candidate form. `--apply` first
+`cargo-input-closure-unproven` preserved-candidate form. The default policy admits
+only failed terminal runs. An explicitly audited older successful run may be
+selected with `--allow-passed`; this does not admit reusable output or weaken any
+custody check. Select exact run IDs, preserve current proof/replay artifacts, and
+inspect the complete cohort before applying it. There is no age/LRU sweep or
+automatic successful-output retirement. `--apply` first
 records append-only intent, then under the same `target.lock` captures the
 output manifest and timings into custody CAS before retiring only the target.
 It preserves the source/toolchain inputs, terminal receipt, publication seal,
-owner tombstone, and outcome note. Successful, reusable, active, linked,
-ambiguous, legacy, indeterminate, and prior-blocked targets are retained. A
+owner tombstone, and outcome note. The selected status policy is recorded with
+the inspection, intent, and retirement evidence and is revalidated under the
+identity lock on apply. Successful targets without the opt-in, reusable, active,
+linked, ambiguous, legacy, indeterminate, and prior-blocked targets are retained. A
 failed deletion or interrupted retirement is `retire-blocked` and is never
 automatically retried. The original immutable lifecycle projection remains
 `terminal-sealed-retained`; `retired-sealed` is a later observed owner/pointer
@@ -152,7 +160,7 @@ identity lock, accepts only terminal-unsealed output with proven process
 closure, and preserves output manifests, timing files, terminal receipts, and
 an owner tombstone. Sealed candidates remain retained, without warm reuse until
 complete Cargo input closure is enforced, except for an explicitly applied
-failed-sealed retirement that revalidates terminal custody and preserves its
+terminal-sealed retirement that revalidates terminal custody and preserves its
 receipt and output inventory first. Interrupted or failed reclamation becomes
 `reclaim-blocked`, and interrupted or failed sealed retirement becomes
 `retire-blocked`; neither is an automatic retry. Inspecting an owner is an
