@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
+
+from tests.process_guard_common import run_guarded_test_process
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ def test_python_interpreter_import_stays_outside_cli_package() -> None:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo_root / "src")
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             sys.executable,
             "-c",

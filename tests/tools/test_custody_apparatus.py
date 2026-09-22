@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.memory_guard_core.paths import pytest_outer_guard_summary_dir  # noqa: E402
+from tools.memory_guard_core.paths import (  # noqa: E402
+    harness_command_profile_log_path,
+    pytest_outer_guard_summary_dir,
+)
 from tools.proof_queue_pkg.execution_custody import (  # noqa: E402
     APPARATUS_GIT_INDEX_REFRESH,
     LiveCustodyMonitor,
@@ -135,3 +138,14 @@ def test_guard_summary_dir_ignores_a_blank_state_root(tmp_path: Path) -> None:
     assert pytest_outer_guard_summary_dir(tmp_path, environ=environ) == (
         tmp_path / "tmp" / "pytest-memory-guard"
     )
+
+
+def test_harness_command_log_follows_the_admitted_state_root(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    assert harness_command_profile_log_path(repo, environ={}) == (
+        repo / "logs" / "harness_memory_guard" / "commands.jsonl"
+    )
+    state_root = tmp_path / "state"
+    assert harness_command_profile_log_path(
+        repo, environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)}
+    ) == (state_root.resolve() / "harness_memory_guard" / "commands.jsonl")

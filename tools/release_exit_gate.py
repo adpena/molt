@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import stat
-import subprocess
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from molt.exact_json import ExactJsonError, loads_exact, write_exact
 from molt.file_publication import durable_publish_directory_exclusive
 from molt.toolchain_identity import stable_file_sha256
 from molt.verified_subset import verified_subset_coordinates
+from tools import harness_memory_guard
 from tools import pact_witness_receipt as pwr
 from tools import perf_authority as pa
 from tools import release_criterion_receipt as rcr
@@ -109,18 +109,20 @@ def _nonnegative_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def _run_git(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    repo_root: Path, *args: str
+) -> harness_memory_guard.GuardedCompletedProcess:
     try:
-        return subprocess.run(
+        return harness_memory_guard.guarded_completed_process(
             ["git", "-C", str(repo_root), *args],
-            check=False,
+            prefix="MOLT_RELEASE",
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, harness_memory_guard.subprocess.TimeoutExpired) as exc:
         raise ValueError(f"release source git query failed: {exc}") from exc
 
 

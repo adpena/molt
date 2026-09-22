@@ -613,7 +613,9 @@ def command_profile_log_path(
     if raw_path:
         path = Path(raw_path).expanduser()
         return path if path.is_absolute() else root / path
-    return root / "logs" / "harness_memory_guard" / "commands.jsonl"
+    from tools.memory_guard_core.paths import harness_command_profile_log_path
+
+    return harness_command_profile_log_path(root, source)
 
 
 def _max_bytes_from_mb(value: float | None) -> int | None:
