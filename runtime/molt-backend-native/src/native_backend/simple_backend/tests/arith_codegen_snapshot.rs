@@ -42,6 +42,7 @@ fn binop(kind: &str, lhs: &str, rhs: &str, out: &str) -> OpIR {
 /// overflow) plus the boxed tag-check merge lanes, over `int` params.
 fn typed_int_function() -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "arith_typed_int".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
         ops: vec![
@@ -70,6 +71,7 @@ fn typed_int_function() -> FunctionIR {
 /// scalar representation.
 fn generic_function() -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "arith_generic".to_string(),
         params: vec!["x".to_string(), "y".to_string()],
         ops: vec![
@@ -97,6 +99,7 @@ fn generic_function() -> FunctionIR {
 /// paths of `add`/`sub`/`mul` and their in-place forms.
 fn typed_float_function() -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "arith_typed_float".to_string(),
         params: vec!["p".to_string(), "q".to_string()],
         ops: vec![

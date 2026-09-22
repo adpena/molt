@@ -105,6 +105,7 @@ mod tests {
     fn fact_graph_emit_writes_precise_compiler_graph() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 param_types: None,
@@ -195,6 +196,7 @@ mod tests {
     fn fact_graph_emit_fails_closed_on_missing_function() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 param_types: None,

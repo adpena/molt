@@ -219,6 +219,7 @@ fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
 #[test]
 fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "join_alias".to_string(),
         params: vec![],
         ops: vec![
@@ -270,6 +271,7 @@ fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
 #[test]
 fn preanalysis_uses_args_based_copy_var_value_source() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "args_copy_alias".to_string(),
         params: vec!["value".to_string(), "metadata_slot".to_string()],
         ops: vec![
@@ -307,6 +309,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
 #[test]
 fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "unused_delete_temp".to_string(),
         params: vec![],
         ops: vec![
@@ -348,6 +351,7 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
 #[test]
 fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "loop_store_slot_only".to_string(),
         params: vec![],
         ops: vec![
@@ -407,6 +411,7 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
 #[test]
 fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "loop_store_slot_preinit".to_string(),
         params: vec![],
         ops: vec![

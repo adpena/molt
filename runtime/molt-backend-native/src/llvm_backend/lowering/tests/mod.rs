@@ -75,7 +75,12 @@ fn lowering_error_for_single_op(
 ) -> (LlvmLoweringError, LlvmBackend<'static>) {
     let ctx = Box::leak(Box::new(Context::create()));
     let backend = make_backend(ctx);
-    let mut func = TirFunction::new(name.into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let operands: Vec<ValueId> = (0..operand_count).map(|_| func.fresh_value()).collect();
     let result = func.fresh_value();
     {
@@ -151,6 +156,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
         "add_i64".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -180,7 +186,12 @@ fn lower_preserved_kind_ir(
     with_result: bool,
     s_value: Option<&str>,
 ) -> Result<String, LlvmLoweringError> {
-    let mut func = TirFunction::new(format!("preserved_{kind}"), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        format!("preserved_{kind}"),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let operands: Vec<ValueId> = (0..n_operands).map(|_| func.fresh_value()).collect();
     let result = with_result.then(|| func.fresh_value());
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

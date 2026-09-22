@@ -934,11 +934,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 .blocks
                 .get(&pattern.else_bid)
                 .expect("else block missing");
-            let original_has_ret = func
-                .attrs
-                .get("_original_has_ret")
-                .map(|v| matches!(v, AttrValue::Bool(true)))
-                .unwrap_or(false);
 
             // Emit: if cond
             out.push(OpIR {
@@ -963,7 +958,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 emit_block_ops(arm, &mut out);
                 match &arm.terminator {
                     Terminator::Return { values } => {
-                        emit_return_ops(values, original_has_ret, &mut out);
+                        emit_return_ops(values, &mut out);
                     }
                     Terminator::Branch { target, args } => {
                         emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
@@ -981,11 +976,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         } else {
             // Non-loop, non-if-pattern block: emit ops and terminator normally.
             emit_block_ops(block, &mut out);
-            let original_has_ret = func
-                .attrs
-                .get("_original_has_ret")
-                .map(|v| matches!(v, AttrValue::Bool(true)))
-                .unwrap_or(false);
             emit_terminator(
                 block,
                 &block_param_vars,
@@ -993,7 +983,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 &trampoline_label_id,
                 &if_inlined_blocks,
                 &mut out,
-                original_has_ret,
                 &func.loop_break_kinds,
             );
         }

@@ -415,7 +415,12 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
     let body = lower_tir_to_wasm_boxed_i64_abi(&make_const_return_func(1i64 << 60)).unwrap();
     fs::write(&path, executable_module(&body)).unwrap();
     modules.insert("return_box".into(), json!(path));
-    let mut identity = TirFunction::new("abi_roundtrip".into(), vec![TirType::I64], TirType::I64);
+    let mut identity = TirFunction::new(
+        "abi_roundtrip".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     identity
         .blocks
         .get_mut(&identity.entry_block)

@@ -26,6 +26,9 @@ impl LirWasmAbi {
         match self {
             #[cfg(any(test, feature = "test-util"))]
             LirWasmAbi::Native => {
+                if func.return_types.len() > 1 {
+                    return None;
+                }
                 let param_types: Vec<ValType> = func
                     .blocks
                     .get(&func.entry_block)
@@ -48,7 +51,9 @@ impl LirWasmAbi {
                     result_types,
                     ctx_local_base: 0,
                     local_decl_start,
-                    return_abi: LirReturnAbi::Native,
+                    return_abi: LirReturnAbi::Native(
+                        func.return_types.first().map(LirRepr::for_type),
+                    ),
                 })
             }
             LirWasmAbi::BoxedI64 => {

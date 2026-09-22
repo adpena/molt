@@ -9,6 +9,7 @@ use crate::tir::types::TirType;
 /// Helper: build a FunctionIR with given name, params, and ops.
 fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|s| s.to_string()).collect(),
         ops,
@@ -377,6 +378,7 @@ fn gpu_thread_id_lowers_to_runtime_backed_call_in_tir() {
 #[test]
 fn transport_hints_do_not_seed_canonical_types() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "hint_only_add".into(),
         params: vec!["a".into(), "b".into(), "fa".into(), "fb".into()],
         ops: vec![
@@ -606,6 +608,7 @@ fn phase_only_functions_preserve_markers_without_phantom_exact_facts() {
 #[test]
 fn param_types_from_annotation() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_add".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
         ops: vec![op_args_out("add", &["a", "b"], "c"), op_args("ret", &["c"])],
@@ -650,6 +653,7 @@ fn param_types_from_annotation() {
 #[test]
 fn compound_param_types_from_annotation() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_container".to_string(),
         params: vec!["items".to_string()],
         ops: vec![op_args("ret", &["items"])],
@@ -679,6 +683,7 @@ fn compound_param_types_from_annotation() {
 #[test]
 fn abi_i64_param_type_is_not_a_semantic_int_fact() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "boxed_carrier".to_string(),
         params: vec!["obj".to_string()],
         ops: vec![op_args("ret", &["obj"])],
@@ -703,6 +708,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
 #[test]
 fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "exception_marker_transport".to_string(),
         params: vec![],
         ops: vec![

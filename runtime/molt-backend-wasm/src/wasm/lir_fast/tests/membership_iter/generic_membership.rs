@@ -12,6 +12,7 @@ fn membership_uses_contains_runtime_call_and_not_in_inverts_bool() {
             name.into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::Bool);

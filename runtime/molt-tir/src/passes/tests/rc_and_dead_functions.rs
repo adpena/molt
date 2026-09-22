@@ -10,6 +10,7 @@ fn constant_integer_facts_require_one_canonical_producer() {
             ..OpIR::default()
         };
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "constant_identity".into(),
             params: vec!["parameter".into()],
             param_types: None,
@@ -60,6 +61,7 @@ fn constant_integer_facts_require_one_canonical_producer() {
 #[test]
 fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".to_string(),
         params: vec!["x".to_string()],
         param_types: None,
@@ -84,6 +86,7 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
 #[test]
 fn rc_coalescing_preserves_pair_across_control_flow() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".to_string(),
         params: vec!["x".to_string()],
         param_types: None,
@@ -108,6 +111,7 @@ fn rc_coalescing_preserves_pair_across_control_flow() {
 #[test]
 fn rc_coalescing_handles_borrow_release_pair() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".to_string(),
         params: vec!["y".to_string()],
         param_types: None,
@@ -131,6 +135,7 @@ fn rc_coalescing_handles_borrow_release_pair() {
 #[test]
 fn rc_coalescing_preserves_pair_with_intervening_use() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".to_string(),
         params: vec!["x".to_string()],
         param_types: None,
@@ -156,6 +161,7 @@ fn rc_coalescing_preserves_pair_with_intervening_use() {
 #[test]
 fn rc_coalescing_eliminates_different_vars_independently() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
         param_types: None,
@@ -200,6 +206,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -210,6 +217,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
                 ops: vec![
@@ -232,6 +240,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_math".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -269,6 +278,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -279,6 +289,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_host_init".to_string(),
                 params: vec![],
                 ops: vec![
@@ -301,6 +312,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "host_init_helper".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -343,6 +355,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -353,6 +366,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -368,6 +382,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sys__helper".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -378,6 +393,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_json".to_string(),
                 params: vec![],
                 ops: vec![make_op("ret_void")],
@@ -407,6 +423,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
 fn task_references_retain_exact_symbols_without_guessed_companions() {
     for kind in ["alloc_task", "call_async"] {
         let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.to_string(),
             params: Vec::new(),
             ops,

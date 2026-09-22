@@ -167,6 +167,7 @@ mod tests {
             },
         );
         TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "pipeline_shape".into(),
             execution_context: Default::default(),
             param_names: Vec::new(),

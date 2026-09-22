@@ -9,6 +9,7 @@ mod generated_object_abi;
 fn llvm_object_retains_exact_generated_object_abi_through_dead_strip() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {

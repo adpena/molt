@@ -2,7 +2,9 @@ mod name_index;
 use name_index::SplitNameIndex;
 
 use super::runtime_roots::is_protected_runtime_entrypoint;
-use crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator;
+use crate::tir::op_kinds_generated::{
+    simpleir_kind_is_return_terminator, simpleir_kind_uses_function_label_id,
+};
 use crate::tir::simple_def_use::{
     simple_ir_return_has_value, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
@@ -201,6 +203,63 @@ fn split_insert_local_frame_exits(ops: Vec<OpIR>) -> Vec<OpIR> {
     with_exits
 }
 
+struct SplitLocalFrameOwner<'a> {
+    entry_ops: &'a [OpIR],
+    body_ops: &'a [OpIR],
+    failure_tail: &'a [OpIR],
+}
+
+fn split_local_frame_owner(
+    ops: &[OpIR],
+    drop_marker_count: usize,
+) -> Option<SplitLocalFrameOwner<'_>> {
+    let entry_end = drop_marker_count.checked_add(2)?;
+    let entry_ops = ops.get(drop_marker_count..entry_end)?;
+    if entry_ops[0].kind != "trace_enter_slot"
+        || entry_ops[1].kind != "check_exception"
+        || ops
+            .iter()
+            .filter(|op| op.kind == "trace_enter_slot")
+            .count()
+            != 1
+    {
+        return None;
+    }
+    let failure_label = entry_ops[1].value?;
+    let tail_start = ops.len().checked_sub(3)?;
+    let failure_tail = &ops[tail_start..];
+    if failure_tail[0].kind != "label"
+        || failure_tail[0].value != Some(failure_label)
+        || failure_tail[1].kind != "trace_exit"
+        || failure_tail[2].kind != "ret_void"
+    {
+        return None;
+    }
+    let body_ops = ops.get(entry_end..tail_start)?;
+    if body_ops
+        .last()
+        .is_none_or(|op| !simpleir_kind_is_return_terminator(&op.kind))
+    {
+        // The entry-only tail must not also own ordinary body fallthrough.
+        return None;
+    }
+    if ops.iter().enumerate().any(|(index, op)| {
+        simpleir_kind_uses_function_label_id(&op.kind)
+            && op.value == Some(failure_label)
+            && index != drop_marker_count + 1
+            && index != tail_start
+    }) {
+        // Include every generated label role, not only the splitter's branch
+        // subset: try, async and state edges must not retain a moved target.
+        return None;
+    }
+    Some(SplitLocalFrameOwner {
+        entry_ops,
+        body_ops,
+        failure_tail,
+    })
+}
+
 pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), String> {
     let mut defined: BTreeSet<String> = func.params.iter().cloned().collect();
     for (idx, op) in func.ops.iter().enumerate() {
@@ -317,17 +376,19 @@ pub fn split_large_function(
         return Err(Box::new(func));
     }
     let execution_context = func.execution_context;
-    let local_trace_enter = if execution_context == ExecutionContextPolicy::Local {
-        let enters = func
-            .ops
-            .iter()
-            .filter(|op| op.kind == "trace_enter_slot")
-            .cloned()
-            .collect::<Vec<_>>();
-        if enters.len() != 1 {
+    let drop_fact_markers: Vec<OpIR> = func
+        .ops
+        .iter()
+        .take_while(|op| is_drop_fact_marker_op(op))
+        .cloned()
+        .collect();
+    let local_frame_owner = if execution_context == ExecutionContextPolicy::Local {
+        let Some(owner) = split_local_frame_owner(&func.ops, drop_fact_markers.len()) else {
+            // A staged module prologue can publish state and fail before frame
+            // entry. Never hoist entry across it or discard its rollback path.
             return Err(Box::new(func));
-        }
-        enters.into_iter().next()
+        };
+        Some(owner)
     } else {
         None
     };
@@ -337,12 +398,12 @@ pub fn split_large_function(
         }
         ExecutionContextPolicy::None => ExecutionContextPolicy::None,
     };
-    let all_ops = &func.ops;
-    let drop_fact_markers: Vec<OpIR> = all_ops
-        .iter()
-        .take_while(|op| is_drop_fact_marker_op(op))
-        .cloned()
-        .collect();
+    // Keep the source immutable through every refusal. Only the body enters
+    // partition/liveness planning; checked entry and its private failure tail
+    // remain one ownership unit in the replacement Local stub.
+    let all_ops = local_frame_owner
+        .as_ref()
+        .map_or(func.ops.as_slice(), |owner| owner.body_ops);
     let name_index = SplitNameIndex::new(all_ops);
     let parameter_names = func
         .params
@@ -381,7 +442,7 @@ pub fn split_large_function(
         std::collections::BTreeMap::new();
     let mut label_refs: std::collections::BTreeMap<i64, (usize, usize)> =
         std::collections::BTreeMap::new();
-    for (idx, op) in func.ops.iter().enumerate() {
+    for (idx, op) in all_ops.iter().enumerate() {
         match op.kind.as_str() {
             "label" | "state_label" => {
                 if let Some(id) = op.value {
@@ -428,7 +489,7 @@ pub fn split_large_function(
     let mut structural_forbidden_ranges: Vec<(usize, usize)> = Vec::new();
     {
         let mut if_stack: Vec<usize> = Vec::new();
-        for (idx, op) in func.ops.iter().enumerate() {
+        for (idx, op) in all_ops.iter().enumerate() {
             match op.kind.as_str() {
                 "if" => if_stack.push(idx),
                 "end_if" => {
@@ -521,7 +582,7 @@ pub fn split_large_function(
     let mut last_split = 0usize;
     let mut depth: i32 = 0;
 
-    for (idx, op) in func.ops.iter().enumerate() {
+    for (idx, op) in all_ops.iter().enumerate() {
         // Split only at top-level statement boundaries. A raw depth==0 op
         // index is not sufficient: large class statements emit thousands of
         // ops (method FuncNew, CLASS_DEF, export, annotation wiring) without
@@ -564,7 +625,7 @@ pub fn split_large_function(
     let mut boundaries: Vec<usize> = Vec::new();
     boundaries.push(0);
     boundaries.extend_from_slice(&selected);
-    boundaries.push(func.ops.len());
+    boundaries.push(all_ops.len());
 
     // Validate: ensure no chunk exceeds max_ops. If any chunk is oversized,
     // the function has a deeply nested region that can't be split cleanly.
@@ -587,9 +648,12 @@ pub fn split_large_function(
         return Err(Box::new(func));
     }
 
-    let func_returns_value = func.ops.iter().any(simple_ir_return_has_value);
-    for (idx, op) in func.ops.iter().enumerate() {
-        if simpleir_kind_is_return_terminator(op.kind.as_str()) && idx + 1 != func.ops.len() {
+    // Payload shape selects the chunk transport algorithm, never the owner ABI.
+    // A value-ABI function may now contain only empty returns; the stub retains
+    // func.return_abi even when its chunks use the no-payload status protocol.
+    let body_has_value_returns = all_ops.iter().any(simple_ir_return_has_value);
+    for (idx, op) in all_ops.iter().enumerate() {
+        if simpleir_kind_is_return_terminator(op.kind.as_str()) && idx + 1 != all_ops.len() {
             return Err(Box::new(func));
         }
     }
@@ -613,7 +677,12 @@ pub fn split_large_function(
         .map(|(idx, name)| (name.clone(), idx))
         .collect();
     let uses_split_frame = !frame_slot_for.is_empty();
-    let mut occupied_labels = label_positions.keys().copied().collect::<BTreeSet<_>>();
+    let mut occupied_labels = func
+        .ops
+        .iter()
+        .filter(|op| simpleir_kind_uses_function_label_id(&op.kind))
+        .filter_map(|op| op.value)
+        .collect::<BTreeSet<_>>();
     let mut next_synthetic_label = 0;
     let Some(exception_return_label) =
         split_label_id(&mut occupied_labels, &mut next_synthetic_label)
@@ -712,12 +781,14 @@ pub fn split_large_function(
         // The replacement stub is the sole Local frame owner. Chunks retain
         // source-line/locals work on the bound inherited context, but may never
         // create or destroy lifecycle state (including cloned cleanup tails).
+        // The checked entry pair and its private failure tail were excluded
+        // from body planning, so no entry guard can survive inside a chunk.
         if execution_context == ExecutionContextPolicy::Local {
-            chunk_ops.retain(|op| !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"));
+            chunk_ops.retain(|op| op.kind != "trace_exit");
         }
 
         let chunk_name = chunk_names[i].clone();
-        let (returns_value, returns_control_status) = if func_returns_value {
+        let (returns_value, returns_control_status) = if body_has_value_returns {
             let terminal = if chunk_ops
                 .last()
                 .is_some_and(|op| simpleir_kind_is_return_terminator(op.kind.as_str()))
@@ -799,6 +870,11 @@ pub fn split_large_function(
         let chunk_param_types =
             split_param_types_for_names(&func.params, func.param_types.as_ref(), &chunk_params);
         chunks.push(FunctionIR {
+            return_abi: if returns_value {
+                molt_ir::FunctionReturnAbi::Value
+            } else {
+                molt_ir::FunctionReturnAbi::Void
+            },
             name: chunk_name.clone(),
             params: chunk_params,
             ops: chunk_ops,
@@ -821,8 +897,8 @@ pub fn split_large_function(
     //    relying on per-function entry defaults.
     // ---------------------------------------------------------------
     let mut stub_ops: Vec<OpIR> = Vec::new();
-    if let Some(trace_enter) = local_trace_enter {
-        stub_ops.push(trace_enter);
+    if let Some(owner) = &local_frame_owner {
+        stub_ops.extend_from_slice(owner.entry_ops);
     }
     if uses_split_frame {
         let mut frame_init_args = Vec::with_capacity(frame_slot_for.len());
@@ -839,6 +915,11 @@ pub fn split_large_function(
             kind: "list_new".to_string(),
             args: Some(frame_init_args),
             out: Some(frame_name.clone()),
+            ..OpIR::default()
+        });
+        stub_ops.push(OpIR {
+            kind: "check_exception".to_string(),
+            value: Some(exception_return_label),
             ..OpIR::default()
         });
     }
@@ -902,7 +983,7 @@ pub fn split_large_function(
             continue;
         }
     }
-    if func_returns_value {
+    if body_has_value_returns {
         let missing_return_name =
             split_frame_name("__molt_split_missing_return", &mut occupied_names);
         stub_ops.push(OpIR {
@@ -926,7 +1007,7 @@ pub fn split_large_function(
         value: Some(exception_return_label),
         ..OpIR::default()
     });
-    if func_returns_value {
+    if body_has_value_returns {
         let exception_return_name =
             split_frame_name("__molt_split_exception_return", &mut occupied_names);
         stub_ops.push(OpIR {
@@ -948,8 +1029,15 @@ pub fn split_large_function(
     if execution_context == ExecutionContextPolicy::Local {
         stub_ops = split_insert_local_frame_exits(stub_ops);
     }
+    if let Some(owner) = &local_frame_owner {
+        // Preserve the original failed-attempt return (including ret_void for
+        // value-returning bodies). Its exit already exists, so append only
+        // after synthesizing exits for the stub's body-return paths.
+        stub_ops.extend_from_slice(owner.failure_tail);
+    }
 
     let stub = FunctionIR {
+        return_abi: func.return_abi,
         name: func.name,
         params: func.params,
         ops: stub_ops,

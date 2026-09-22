@@ -88,6 +88,7 @@ class FunctionIR:
         return {
             "name": self.name,
             "params": self.params,
+            "return_abi": "value",
             "ops": [op.to_dict() for op in self.ops],
         }
 

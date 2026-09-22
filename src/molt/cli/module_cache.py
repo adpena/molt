@@ -742,7 +742,7 @@ def _module_lowering_execution_view(
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 8
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 3
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})

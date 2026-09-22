@@ -4,7 +4,12 @@ use super::*;
 fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("path_local_try".into(), vec![TirType::Bool], TirType::None);
+    let mut func = TirFunction::new(
+        "path_local_try".into(),
+        vec![TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let left = func.fresh_block();
     let right = func.fresh_block();
     let previous_baseline = func.fresh_value();
@@ -101,6 +106,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "task_failure_cleanup".into(),
                 vec![TirType::DynBox, TirType::DynBox],
                 TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
             );
             let result = func.fresh_value();
             let pending = func.fresh_value();
@@ -278,7 +284,12 @@ fn lower_const_and_return() {
     let backend = make_backend(&ctx);
 
     // Build: fn f() -> i64 { return 42 }
-    let mut func = TirFunction::new("const_ret".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "const_ret".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v0 = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -308,7 +319,12 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("exception_drop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "exception_drop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let owned = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(owned));
@@ -354,7 +370,12 @@ fn missing_value_id_is_fatal_lowering_error() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("missing_value".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "missing_value".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.terminator = Terminator::Return {
         values: vec![ValueId(99)],
@@ -372,7 +393,12 @@ fn missing_phi_argument_is_fatal_lowering_error() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("missing_phi_arg".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "missing_phi_arg".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let join_id = func.fresh_block();
     let join_arg = func.fresh_value();
 
@@ -407,7 +433,12 @@ fn unreachable_predecessor_does_not_feed_phi() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("dead_phi_pred".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "dead_phi_pred".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let join_id = func.fresh_block();
     let dead_id = func.fresh_block();
     let live_value = func.fresh_value();
@@ -460,7 +491,12 @@ fn check_exception_edge_feeds_handler_phi() {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
 
-        let mut func = TirFunction::new("check_exception_phi".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "check_exception_phi".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let exit_id = func.fresh_block();
         let handler_id = func.fresh_block();
         let live_value = func.fresh_value();

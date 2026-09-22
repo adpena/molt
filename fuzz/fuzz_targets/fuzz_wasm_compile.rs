@@ -39,6 +39,7 @@ impl<'a> Arbitrary<'a> for FuzzIR {
         // Always generate molt_main as the entry point.
         let main_ops = gen_ops(u, &["__ret"])?;
         functions.push(FunctionIR {
+            return_abi: molt_backend::ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
             ops: main_ops,
@@ -53,6 +54,7 @@ impl<'a> Arbitrary<'a> for FuzzIR {
             all_vars.push("__ret".to_string());
             let ops = gen_ops(u, &all_vars.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
             functions.push(FunctionIR {
+                return_abi: molt_backend::ir::FunctionReturnAbi::Value,
                 name: format!("func_{i}"),
                 params,
                 ops,

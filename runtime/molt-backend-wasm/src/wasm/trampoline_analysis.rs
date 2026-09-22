@@ -87,11 +87,13 @@ mod tests {
         let ir = SimpleIR {
             functions: vec![
                 crate::FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "worker_poll".into(),
                     params: vec![crate::MOLT_CLOSURE_PARAM_NAME.into()],
                     ..crate::FunctionIR::default()
                 },
                 crate::FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "opaque_partition".into(),
                     params: vec!["frame".into()],
                     codegen_partition: true,

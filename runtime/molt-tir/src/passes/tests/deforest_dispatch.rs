@@ -41,6 +41,7 @@ fn split_field_deforestation_preserves_source_site() {
     len.col_offset = Some(4);
     len.end_col_offset = Some(9);
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "f".to_string(),
         params: vec![],
         ops: vec![field, op_with("check_exception", None, None, &[]), len],
@@ -77,6 +78,7 @@ fn fuse_method_dispatch_rewrites_getattr_call_idiom() {
     // get_attr_generic_ptr(recv, "compute") -> callargs -> call_bind
     // must collapse to a single call_method_ic(recv, x) op.
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "f".to_string(),
         params: vec!["recv".to_string(), "x".to_string()],
         ops: vec![
@@ -126,6 +128,7 @@ fn fuse_method_dispatch_skips_multi_use_getattr() {
     // callee (here a second store_var), fusion must NOT fire (the bound
     // method escapes and its identity may be observed).
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "f".to_string(),
         params: vec!["recv".to_string(), "x".to_string()],
         ops: vec![
@@ -157,6 +160,7 @@ fn fuse_method_dispatch_rewrites_super_idiom() {
     // super_new(class, self) -> get_attr_generic_obj -> callargs ->
     // call_indirect must collapse to call_super_method_ic(class, self, x).
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "m".to_string(),
         params: vec!["self".to_string(), "x".to_string()],
         ops: vec![
@@ -194,6 +198,7 @@ fn fuse_method_dispatch_disabled_by_env() {
     // the process-global env here races every concurrently-running test
     // that calls the env-reading wrapper.
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "f".to_string(),
         params: vec!["recv".to_string(), "x".to_string()],
         ops: vec![

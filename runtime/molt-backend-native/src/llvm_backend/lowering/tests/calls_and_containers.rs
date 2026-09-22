@@ -14,7 +14,12 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         backend.runtime_callable_symbols.insert(symbol.into());
-        let mut func = TirFunction::new("runtime_call".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "runtime_call".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -57,7 +62,12 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
             backend.runtime_callable_symbols.insert(symbol.into());
-            let mut func = TirFunction::new("void_runtime_call".into(), vec![], TirType::DynBox);
+            let mut func = TirFunction::new(
+                "void_runtime_call".into(),
+                vec![],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
             let arg = func.fresh_value();
             let result = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -98,8 +108,12 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
                 let mut backend = make_backend(&ctx);
                 let symbol = format!("molt_{kind}");
                 backend.runtime_callable_symbols.remove(&symbol);
-                let mut func =
-                    TirFunction::new("unavailable_runtime".into(), vec![], TirType::DynBox);
+                let mut func = TirFunction::new(
+                    "unavailable_runtime".into(),
+                    vec![],
+                    TirType::DynBox,
+                    molt_ir::FunctionReturnAbi::Value,
+                );
                 let arg = func.fresh_value();
                 let none = func.fresh_value();
                 let result = func.fresh_value();
@@ -153,7 +167,12 @@ fn direct_runtime_calls_reject_unclassified_arity_and_internal_target() {
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let mut func = TirFunction::new("invalid_runtime_call".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "invalid_runtime_call".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let arg = func.fresh_value();
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -187,7 +206,12 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
         backend
             .runtime_callable_symbols
             .insert("molt_cell_new".into());
-        let mut func = TirFunction::new("discard_runtime_result".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "discard_runtime_result".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let arg = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_none_def(arg));
@@ -234,8 +258,12 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     let mut backend = make_backend(&ctx);
                     let symbol = format!("molt_{kind}");
                     backend.runtime_callable_symbols.insert(symbol.clone());
-                    let mut func =
-                        TirFunction::new("boxed_argument_owner".into(), vec![], TirType::DynBox);
+                    let mut func = TirFunction::new(
+                        "boxed_argument_owner".into(),
+                        vec![],
+                        TirType::DynBox,
+                        molt_ir::FunctionReturnAbi::Value,
+                    );
                     let arg = func.fresh_value();
                     let none = func.fresh_value();
                     let result = func.fresh_value();
@@ -331,7 +359,12 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
         for bound in [false, true] {
             let ctx = Context::create();
             let backend = make_backend(&ctx);
-            let mut func = TirFunction::new("call_result_owner".into(), vec![], TirType::DynBox);
+            let mut func = TirFunction::new(
+                "call_result_owner".into(),
+                vec![],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
             let input = func.fresh_value();
             let result = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -394,8 +427,12 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
                     "compiled_result_target".into(),
                     test_native_linkage_abi(vec![], return_type.clone()),
                 );
-                let mut func =
-                    TirFunction::new("compiled_result_owner".into(), vec![], TirType::DynBox);
+                let mut func = TirFunction::new(
+                    "compiled_result_owner".into(),
+                    vec![],
+                    TirType::DynBox,
+                    molt_ir::FunctionReturnAbi::Value,
+                );
                 let input = func.fresh_value();
                 let result = func.fresh_value();
                 let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -474,7 +511,12 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let mut func = TirFunction::new("hash_literal_transaction".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "hash_literal_transaction".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let result = func.fresh_value();
         let mut attrs = AttrDict::new();
@@ -566,7 +608,12 @@ fn handwritten_container_owned_results_release_when_discarded() {
         } {
             backend.runtime_callable_symbols.insert(symbol.into());
         }
-        let mut func = TirFunction::new("discard_container_result".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "discard_container_result".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let fallback = func.fresh_value();
         let operands: Vec<_> = (0..operand_count).map(|_| func.fresh_value()).collect();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -608,6 +655,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
         "discard_unboxed_iter_results".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let fallback = func.fresh_value();
     let iterator = func.fresh_value();
@@ -649,7 +697,12 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         backend.runtime_callable_symbols.insert(symbol.into());
-        let mut func = TirFunction::new("raw_iterator_input".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "raw_iterator_input".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let fallback = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -699,7 +752,12 @@ fn iterator_calls_box_and_retire_raw_inputs() {
 
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("raw_unboxed_iterator_input".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "raw_unboxed_iterator_input".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let raw = func.fresh_value();
     let fallback = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -759,7 +817,12 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
         test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
     );
 
-    let mut func = TirFunction::new("guarded_call_abi".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "guarded_call_abi".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let callable = func.fresh_value();
     let arg0 = func.fresh_value();
     let result = func.fresh_value();
@@ -798,7 +861,12 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
 fn lower_import_uses_var_attr_fallback_for_module_name() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("import_var_fallback".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "import_var_fallback".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let imported = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     let mut attrs = AttrDict::new();
@@ -824,7 +892,12 @@ fn lower_import_uses_var_attr_fallback_for_module_name() {
 fn lower_direct_container_builders_box_raw_i64_elements() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("container_builder_boxing".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "container_builder_boxing".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let raw = func.fresh_value();
     let key = func.fresh_value();
     let list = func.fresh_value();
@@ -907,6 +980,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
         "preserved_container_builder_append_abi".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let raw = func.fresh_value();
     let key = func.fresh_value();
@@ -977,7 +1051,12 @@ fn list_and_tuple_builders_share_owned_failure_cfg_for_typed_and_preserved_ops()
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let mut func = TirFunction::new("sequence_ownership".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "sequence_ownership".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let text = func.fresh_value();
         let result = func.fresh_value();
@@ -1047,6 +1126,7 @@ fn lower_call_method_ic_rejects_over_ic4_arity() {
         "call_method_ic_too_many_args".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let mut operands = Vec::new();
     for _ in 0..6 {
@@ -1083,7 +1163,12 @@ fn lower_call_method_ic_rejects_over_ic4_arity() {
 fn lower_call_method_ic_preserves_central_no_willreturn_declaration() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("call_method_ic_attr_reuse".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "call_method_ic_attr_reuse".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let recv = func.fresh_value();
     let arg = func.fresh_value();
     let result = func.fresh_value();
@@ -1129,6 +1214,7 @@ fn lower_call_super_method_ic_rejects_over_ic4_arity() {
         "call_super_method_ic_too_many_args".into(),
         vec![],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let mut operands = Vec::new();
     for _ in 0..7 {
@@ -1165,7 +1251,12 @@ fn lower_call_super_method_ic_rejects_over_ic4_arity() {
 fn lower_class_def_boxes_raw_i64_attribute_values() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new("class_def_boxed_attrs".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "class_def_boxed_attrs".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let name = func.fresh_value();
     let base = func.fresh_value();
     let attr_key = func.fresh_value();

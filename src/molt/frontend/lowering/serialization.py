@@ -533,7 +533,7 @@ class SerializationMixin(
             func_stats["fused_dict_guard_prunes"] += fused_dict_guard_prunes
         json_ops: list[dict[str, Any]] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
-        emit_function_frame = self._function_needs_frame_trace(function_name)
+        function_owns_frame = self._function_needs_frame_trace(function_name)
 
         # Track json_ops start index for each MoltOp so we can inject
         # expression-level col_offset after the main serialization loop.
@@ -571,14 +571,8 @@ class SerializationMixin(
                     "source_module_publication_boundary"
                 ]
 
-        if ops and ops[-1].kind not in {"ret", "ret_void"} and not emit_function_frame:
+        if ops and ops[-1].kind not in {"ret", "ret_void"} and not function_owns_frame:
             json_ops.append({"kind": "ret_void"})
-
-        if emit_function_frame:
-            code_id = self.func_code_ids.get(function_name or "")
-            if code_id is None:
-                code_id = self._register_code_symbol(function_name or "")
-            json_ops.insert(0, {"kind": "trace_enter_slot", "value": int(code_id)})
 
         # Post-pass: inject expression-level col_offset/end_col_offset into
         # JSON dicts emitted by raising ops.  This is done after serialization
@@ -663,6 +657,7 @@ class SerializationMixin(
             func_entry: dict[str, Any] = {
                 "name": name,
                 "params": data["params"],
+                "return_abi": data["return_abi"],
                 "ops": json_ops,
             }
             if "source_module_publication" in data:

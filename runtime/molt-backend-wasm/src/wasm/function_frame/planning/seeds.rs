@@ -161,6 +161,7 @@ mod tests {
 
     fn function(ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "literal_anchors".to_string(),
             ops,
             ..FunctionIR::default()

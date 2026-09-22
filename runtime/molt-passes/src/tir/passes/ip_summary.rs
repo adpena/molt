@@ -118,7 +118,8 @@ mod tests {
     use crate::tir::types::TirType;
 
     fn func_calling(name: &str, ret: TirType, callees: &[&str], extra_ops: usize) -> TirFunction {
-        let mut func = TirFunction::new(name.into(), vec![], ret);
+        let mut func =
+            TirFunction::new(name.into(), vec![], ret, molt_ir::FunctionReturnAbi::Value);
         let entry = func.entry_block;
         // Allocate value ids for the extra ConstNone ops up front (mutable
         // borrow of `func` for fresh_value must not overlap the block borrow).

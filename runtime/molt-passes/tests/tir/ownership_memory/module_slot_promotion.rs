@@ -36,7 +36,12 @@ fn const_int(func: &mut TirFunction, v: i64) -> (TirOp, ValueId) {
 /// a jump-shaped while loop reads/writes them per iteration with a
 /// CheckException (handler label 7 → block 4), exit reads total.
 fn module_loop_func() -> TirFunction {
-    let mut f = TirFunction::new("chunk".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut f = TirFunction::new(
+        "chunk".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let m = ValueId(0);
     let header = f.fresh_block();
     let body = f.fresh_block();
@@ -330,7 +335,12 @@ fn threading_import_disables_promotion_module_wide() {
     let f = module_loop_func();
     // A second function importing `threading` â€” a concurrent observer of
     // module globals may then exist.
-    let mut g = TirFunction::new("spawner".into(), vec![], TirType::None);
+    let mut g = TirFunction::new(
+        "spawner".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let imp_res = g.fresh_value();
     let mut imp = op(OpCode::Import, vec![], vec![imp_res]);
     imp.attrs
@@ -361,7 +371,12 @@ fn thread_intrinsic_name_string_alone_does_not_refuse() {
     // molt_thread_* CALL does. (The over-broad string heuristic refused
     // every program: the needs_inlining trap, round two.)
     let f = module_loop_func();
-    let mut g = TirFunction::new("wrapper".into(), vec![], TirType::None);
+    let mut g = TirFunction::new(
+        "wrapper".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let (marker, _) = const_str(&mut g, "molt_thread_spawn");
     {
         let e = g.entry_block;

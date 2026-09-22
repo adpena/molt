@@ -214,6 +214,7 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
             });
 
             functions.push(FunctionIR {
+                return_abi: molt_backend::ir::FunctionReturnAbi::Value,
                 name,
                 params,
                 ops,

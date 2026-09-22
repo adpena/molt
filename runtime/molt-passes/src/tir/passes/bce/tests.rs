@@ -82,7 +82,12 @@ fn run_bce(func: &mut TirFunction) -> PassStats {
 // ------------------------------------------------------------------
 #[test]
 fn constant_zero_index_into_nonempty_marked_safe() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let (mut ops, container) = build_list_of_len(&mut func, 1);
     let idx = func.fresh_value();
     let result = func.fresh_value();
@@ -114,7 +119,12 @@ fn constant_zero_index_into_nonempty_marked_safe() {
 // ------------------------------------------------------------------
 #[test]
 fn positive_constant_index_in_bounds_marked_safe() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     // length 50 list, index 42 -> in bounds.
     let (mut ops, container) = build_list_of_len(&mut func, 50);
     let idx = func.fresh_value();
@@ -145,7 +155,12 @@ fn positive_constant_index_in_bounds_marked_safe() {
 // ------------------------------------------------------------------
 #[test]
 fn constant_index_out_of_bounds_not_marked() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     // length 3 list, index 5 -> OUT of bounds.
     let (mut ops, container) = build_list_of_len(&mut func, 3);
     let idx = func.fresh_value();
@@ -180,7 +195,12 @@ fn constant_index_out_of_bounds_not_marked() {
 // ------------------------------------------------------------------
 #[test]
 fn negative_constant_index_not_marked() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let (mut ops, container) = build_list_of_len(&mut func, 5);
     let idx = func.fresh_value();
     let result = func.fresh_value();
@@ -211,7 +231,12 @@ fn negative_constant_index_not_marked() {
 // ------------------------------------------------------------------
 #[test]
 fn non_constant_index_not_marked() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let (mut ops, container) = build_list_of_len(&mut func, 5);
     let result = func.fresh_value();
     let param_idx = ValueId(0); // function parameter
@@ -242,7 +267,12 @@ fn non_constant_index_not_marked() {
 // ------------------------------------------------------------------
 #[test]
 fn no_index_ops_no_changes() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.terminator = Terminator::Return { values: vec![] };
     let stats = run_bce(&mut func);
@@ -254,7 +284,12 @@ fn no_index_ops_no_changes() {
 // ------------------------------------------------------------------
 #[test]
 fn mixed_indices_only_safe_ones_marked() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let (mut ops, container) = build_list_of_len(&mut func, 10); // len 10
     let const_idx = func.fresh_value(); // ConstInt(5) -> in bounds
     let neg_idx = func.fresh_value(); // ConstInt(-2) -> unsafe
@@ -308,7 +343,12 @@ fn build_range_loop_func(
     range_bound: i64,
     use_negative_index: bool,
 ) -> (TirFunction, BlockId, BlockId, BlockId) {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     // Entry: build the list, set up start/stop/step constants, br header(start).
     let (mut entry_ops, container) = build_list_of_len(&mut func, list_len);
@@ -446,7 +486,12 @@ fn range_loop_negative_index_preserved() {
 // ------------------------------------------------------------------
 #[test]
 fn non_range_loop_index_preserved() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let param_iter = ValueId(0);
     let elem_val = func.fresh_value();
     let done_val = func.fresh_value();
@@ -586,7 +631,12 @@ fn build_while_guard_func(
     store: bool,
     make_container: impl FnOnce(&mut TirFunction, ValueId) -> (Vec<TirOp>, ValueId),
 ) -> (TirFunction, BlockId, BlockId) {
-    let mut func = TirFunction::new("w".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "w".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let n = func.fresh_value();
     let const_1 = func.fresh_value();
     let i_start = func.fresh_value();
@@ -790,7 +840,12 @@ fn while_lt_len_container_index_marked_safe() {
     // After iter_devirt: len_val = len(lst); header(i): cond = Lt(i, len_val);
     // body: x = Index(lst, i). The container length is NON-constant (it is
     // the SSA len(lst)), so this exercises the symbolic `i < len(c)` proof.
-    let mut func = TirFunction::new("post_devirt".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "post_devirt".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let true_val = func.fresh_value();
     let list_1 = func.fresh_value();
@@ -888,7 +943,12 @@ fn while_lt_len_container_index_marked_safe() {
 
 #[test]
 fn full_deopt_symbolic_len_index_not_marked_safe() {
-    let mut func = TirFunction::new("full_deopt_index".into(), vec![TirType::I64], TirType::None);
+    let mut func = TirFunction::new(
+        "full_deopt_index".into(),
+        vec![TirType::I64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let n = ValueId(0);
     let true_val = func.fresh_value();

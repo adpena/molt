@@ -5678,7 +5678,7 @@ reason = "structural: source-line debug marker"
 
 [[frontend_check_exception_skip]]
 kind = "TRACE_ENTER_SLOT"
-reason = "structural: tracing enter-slot marker"
+reason = "control-flow: checked frame-entry lifecycle primitive owns the immediate propagation check and attempted-entry cleanup"
 
 [[frontend_check_exception_skip]]
 kind = "TRACE_EXIT"

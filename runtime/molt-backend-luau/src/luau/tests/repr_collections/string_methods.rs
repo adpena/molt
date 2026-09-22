@@ -4,6 +4,7 @@ use super::super::*;
 fn test_string_startswith_endswith_honor_start_end_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_prefix_suffix_bounds".to_string(),
             params: vec![
                 "s".to_string(),
@@ -68,6 +69,7 @@ fn test_string_startswith_endswith_honor_start_end_bounds() {
 fn test_string_find_honors_start_end_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_find_bounds".to_string(),
             params: vec![
                 "s".to_string(),
@@ -120,6 +122,7 @@ fn test_string_find_honors_start_end_bounds() {
 fn test_string_startswith_endswith_tuple_prefixes_lower() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_tuple_affixes".to_string(),
             params: vec!["s".to_string()],
             param_types: Some(vec!["str".to_string()]),
@@ -181,6 +184,7 @@ fn test_string_startswith_endswith_tuple_prefixes_lower() {
 fn test_string_rfind_honors_start_end_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_rfind_bounds".to_string(),
             params: vec![
                 "s".to_string(),
@@ -232,6 +236,7 @@ fn test_string_rfind_honors_start_end_bounds() {
 fn test_string_index_rindex_raise_value_error_when_missing() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_index_rindex_errors".to_string(),
             params: vec![
                 "s".to_string(),
@@ -295,6 +300,7 @@ fn test_string_index_rindex_raise_value_error_when_missing() {
 fn test_string_partition_and_rpartition_lower_to_tuple_tables() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_partition_ops".to_string(),
             params: vec!["s".to_string(), "sep".to_string()],
             param_types: Some(vec!["str".to_string(), "str".to_string()]),
@@ -339,6 +345,7 @@ fn test_string_partition_and_rpartition_lower_to_tuple_tables() {
 fn test_string_removeprefix_suffix_get_attr_indirect_path() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_remove_affix".to_string(),
             params: vec![],
             param_types: None,
@@ -435,6 +442,7 @@ fn test_string_removeprefix_suffix_get_attr_indirect_path() {
 fn test_luau_repr_authority_typed_string_get_attr_dispatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "typed_string_remove_prefix_attr".to_string(),
             params: vec!["s".to_string()],
             param_types: Some(vec!["str".to_string()]),
@@ -473,6 +481,7 @@ fn test_luau_repr_authority_typed_string_get_attr_dispatch() {
 fn test_string_ascii_predicate_get_attr_indirect_path() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_predicate_attrs".to_string(),
             params: vec![],
             param_types: None,
@@ -566,6 +575,7 @@ fn test_string_ascii_predicate_get_attr_indirect_path() {
 fn test_string_splitlines_lowers_with_keepends_flag() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_splitlines_op".to_string(),
             params: vec!["s".to_string(), "keep".to_string()],
             param_types: Some(vec!["str".to_string(), "bool".to_string()]),
@@ -604,6 +614,7 @@ fn test_string_splitlines_lowers_with_keepends_flag() {
 fn test_string_empty_needle_edge_cases_are_explicit() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_empty_needle_edges".to_string(),
             params: vec![
                 "s".to_string(),
@@ -677,6 +688,7 @@ fn test_string_empty_needle_edge_cases_are_explicit() {
 fn test_string_split_rejects_empty_separator() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_split_empty_sep".to_string(),
             params: vec!["s".to_string(), "sep".to_string()],
             param_types: Some(vec!["str".to_string(), "str".to_string()]),
@@ -711,6 +723,7 @@ fn test_string_split_rejects_empty_separator() {
 fn test_string_replace_honors_count_argument() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_replace_count".to_string(),
             params: vec![
                 "s".to_string(),
@@ -762,6 +775,7 @@ fn test_string_replace_honors_count_argument() {
 fn test_string_count_and_count_slice_lower_to_nonoverlap_loop() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_count_ops".to_string(),
             params: vec![
                 "s".to_string(),

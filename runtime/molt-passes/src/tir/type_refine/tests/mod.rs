@@ -18,6 +18,7 @@ fn single_block_func(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "test".into(),
         execution_context: Default::default(),
         param_names: vec![],

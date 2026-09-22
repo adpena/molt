@@ -26,9 +26,9 @@ pub mod stdlib_module_symbols;
 pub mod tir;
 
 pub use crate::ir::{
-    BackendIrDocument, EXTERN_SIGNATURE_RETURN_VALUE, ExecutionContextPolicy,
-    ExternFunctionSignature, FunctionIR, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR,
-    validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
+    BackendIrDocument, ExecutionContextPolicy, ExternFunctionSignature, FunctionIR,
+    FunctionReturnAbi, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR, validate_extern_call_abis,
+    validate_simple_ir, write_function_ir_contract,
 };
 pub use crate::repr::Repr;
 pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, verify_simple_ir};

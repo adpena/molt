@@ -4,6 +4,7 @@ use super::*;
 fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -32,6 +33,7 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
 fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -77,6 +79,7 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 fn effective_metadata_unions_module_context_with_local_scan() {
     // A module context that knows ONLY a stdlib closure / task / leaf.
     let mut stdlib_funcs = vec![FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "contextlib___inner".to_string(),
         params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
         ops: vec![OpIR {
@@ -133,6 +136,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
 fn native_backend_module_context_preserves_cross_batch_function_metadata() {
     let mut functions = vec![
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper".to_string(),
             params: vec!["value".to_string(), "intrinsic".to_string()],
             ops: vec![OpIR {
@@ -147,6 +151,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper_poll".to_string(),
             params: vec!["state".to_string()],
             ops: vec![OpIR {
@@ -174,6 +179,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
 fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
     let mut functions = vec![
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "value_helper".to_string(),
             params: vec!["value".to_string()],
             ops: vec![OpIR {
@@ -188,6 +194,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "void_helper".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -231,6 +238,7 @@ fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
         ..OpIR::default()
     });
     let mut functions = vec![FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "app__large".into(),
         execution_context: crate::ir::ExecutionContextPolicy::Inherited,
         ops,

@@ -11,7 +11,12 @@ fn refcount_uses_lowered_carriers_without_boxing() {
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let func = TirFunction::new("rc_carriers".into(), vec![], TirType::None);
+        let func = TirFunction::new(
+            "rc_carriers".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let llvm_fn =
             backend
                 .module
@@ -60,7 +65,12 @@ fn refcount_uses_lowered_carriers_without_boxing() {
 fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let func = TirFunction::new("owned_box".into(), vec![TirType::DynBox], TirType::Str);
+    let func = TirFunction::new(
+        "owned_box".into(),
+        vec![TirType::DynBox],
+        TirType::Str,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let llvm_fn = backend.module.add_function(
         "owned_box",
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
@@ -110,6 +120,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
             "discarded_representation".into(),
             vec![ty.clone()],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let llvm_fn = backend.module.add_function(
             "discarded_representation",
@@ -158,7 +169,12 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
 fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let func = TirFunction::new("decode_i64".into(), vec![TirType::DynBox], TirType::I64);
+    let func = TirFunction::new(
+        "decode_i64".into(),
+        vec![TirType::DynBox],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let llvm_fn = backend.module.add_function(
         "decode_i64",
         ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
@@ -225,7 +241,12 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let func = TirFunction::new("literal_ownership".into(), vec![], result_ty.clone());
+        let func = TirFunction::new(
+            "literal_ownership".into(),
+            vec![],
+            result_ty.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let llvm_fn = backend.module.add_function(
             "literal_ownership",
             ctx.i64_type().fn_type(&[], false),
@@ -302,7 +323,12 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
 fn repeated_attribute_name_literals_use_owned_string_materialization() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let func = TirFunction::new("literal_names".into(), vec![], TirType::Str);
+    let func = TirFunction::new(
+        "literal_names".into(),
+        vec![],
+        TirType::Str,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let llvm_fn =
         backend
             .module
@@ -362,7 +388,12 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let func = TirFunction::new("checked_name".into(), vec![], TirType::DynBox);
+        let func = TirFunction::new(
+            "checked_name".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let llvm_fn =
             backend
                 .module
@@ -467,7 +498,12 @@ fn lower_unary_carrier_fixture(
 ) -> (String, TirType) {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let func = TirFunction::new("unary_carrier".into(), vec![], TirType::DynBox);
+    let func = TirFunction::new(
+        "unary_carrier".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let llvm_fn =
         backend
             .module
@@ -636,6 +672,7 @@ fn lower_i64_comparison() {
         "cmp_lt".into(),
         vec![TirType::I64, TirType::I64],
         TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let v_result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -676,7 +713,12 @@ fn lower_box_i64() {
     let mut backend = make_backend(&ctx);
 
     // Build: fn box_it(x: i64) -> DynBox { return box(x) }
-    let mut func = TirFunction::new("box_i64".into(), vec![TirType::I64], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "box_i64".into(),
+        vec![TirType::I64],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v_boxed = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -736,7 +778,12 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
 
-    let mut func = TirFunction::new("masked_shift".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "masked_shift".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let s_start = func.fresh_value(); // ConstInt 1
     let mask_c = func.fresh_value(); // ConstInt (2**32 - 1)
     let one_c = func.fresh_value(); // ConstInt 1 (shift count)
@@ -873,7 +920,12 @@ fn lower_codegen_partition_emits_real_llvm_noinline_attribute() {
     for partitioned in [false, true] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let mut function = TirFunction::new("__molt_chunk_v1_user".into(), vec![], TirType::None);
+        let mut function = TirFunction::new(
+            "__molt_chunk_v1_user".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         function.attrs.insert(
             crate::tir::function::CODEGEN_PARTITION_ATTR.into(),
             AttrValue::Bool(partitioned),

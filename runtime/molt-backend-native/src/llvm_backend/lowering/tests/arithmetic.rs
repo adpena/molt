@@ -66,6 +66,7 @@ fn lower_f64_add() {
         "add_f64".into(),
         vec![TirType::F64, TirType::F64],
         TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -101,6 +102,7 @@ fn lower_dynbox_add_calls_runtime() {
         "dyn_add".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -132,7 +134,12 @@ fn lower_conditional_branch() {
     let backend = make_backend(&ctx);
 
     // Build: fn cond(flag: Bool) -> i64 { if flag: return 1 else: return 0 }
-    let mut func = TirFunction::new("cond_branch".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "cond_branch".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let then_id = func.fresh_block();
     let else_id = func.fresh_block();
@@ -222,7 +229,12 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         "helper_bool".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::Bool)),
     );
-    let dummy = TirFunction::new("dummy".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),
@@ -254,7 +266,12 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         "helper_f64".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::F64)),
     );
-    let dummy = TirFunction::new("dummy".into(), vec![], TirType::DynBox);
+    let dummy = TirFunction::new(
+        "dummy".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let dummy_fn = backend.module.add_function(
         "dummy",
         ctx.i64_type().fn_type(&[], false),

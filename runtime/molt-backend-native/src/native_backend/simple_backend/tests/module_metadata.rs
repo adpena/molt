@@ -4,6 +4,7 @@ use super::*;
 fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
     let result = compute_function_has_ret(&[
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -17,6 +18,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "demo____molt_globals_builtin__".to_string(),
             params: vec![],
             ops: vec![
@@ -50,6 +52,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
 #[test]
 fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "importlib__import_module".to_string(),
         params: vec!["name".to_string(), "package".to_string()],
         ops: vec![
@@ -89,6 +92,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
 #[test]
 fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "stdlib_void_helper".to_string(),
         params: vec![],
         ops: vec![OpIR {
@@ -120,6 +124,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
 #[test]
 fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     let mut extern_helper = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stdlib_value_helper".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -142,6 +147,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     };
     crate::externalize_function_with_signature(&mut extern_helper);
     let caller = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -206,6 +212,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
 fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets() {
     let result = compute_function_has_ret(&[
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "user_func".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -219,6 +226,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -242,6 +250,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
 #[test]
 fn compute_function_has_ret_treats_state_machines_as_value_returning() {
     let result = compute_function_has_ret(&[FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "raises_only_coroutine_poll".to_string(),
         params: vec!["self".to_string()],
         ops: vec![

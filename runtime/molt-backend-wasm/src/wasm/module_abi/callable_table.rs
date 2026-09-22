@@ -536,6 +536,7 @@ mod tests {
     fn ir_with_op(kind: &str, target: &str) -> SimpleIR {
         SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 ops: vec![OpIR {

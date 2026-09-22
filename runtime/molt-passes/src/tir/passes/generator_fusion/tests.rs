@@ -58,7 +58,12 @@ fn const_int(f: &mut TirFunction, value: i64) -> ValueId {
 ///         (post) i2 = load56 + 1; closure_store 56, i2; br header
 ///   exhausted: closure_store 16 true; ret (None,True)
 fn counter_poll() -> TirFunction {
-    let mut f = TirFunction::new("counter_poll".into(), vec![TirType::DynBox], TirType::None);
+    let mut f = TirFunction::new(
+        "counter_poll".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     // %0 = self
     let header = f.fresh_block();
     let test = f.fresh_block();
@@ -224,7 +229,12 @@ fn counter_poll() -> TirFunction {
 ///   body: elem=Index(pair,0); ... ; br loophdr
 ///   exit: ret
 fn consumer() -> TirFunction {
-    let mut f = TirFunction::new("consumer".into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        "consumer".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let guard = f.fresh_block();
     let loophdr = f.fresh_block();
     let condb = f.fresh_block();

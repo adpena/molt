@@ -22,7 +22,11 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
         .enumerate()
         .map(|(i, ty)| format!("%arg{}: {}", i, mlir_type(ty)))
         .collect();
-    let ret = mlir_type(&func.return_type);
+    let ret = if func.return_abi.returns_value() {
+        mlir_type(&func.return_type)
+    } else {
+        "()"
+    };
     writeln!(
         out,
         "func.func @{}({}) -> {} {{",
@@ -70,9 +74,23 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
 
         match &block.terminator {
             Terminator::Return { values } => {
+                assert!(
+                    values.len() <= 1 && (func.return_abi.returns_value() || values.is_empty()),
+                    "TIR return payload disagrees with authored function ABI"
+                );
                 let v: Vec<String> = values.iter().map(|v| format!("%{}", v.0)).collect();
-                if v.is_empty() {
+                if !func.return_abi.returns_value() {
                     writeln!(out, "  return").unwrap();
+                } else if v.is_empty() {
+                    // Materialize the empty exit at the final target boundary,
+                    // without altering TIR's zero-payload return terminator.
+                    writeln!(
+                        out,
+                        "  %none_bb{} = \"molt.const_none\"() : () -> {ret}",
+                        bid.0
+                    )
+                    .unwrap();
+                    writeln!(out, "  return %none_bb{} : {ret}", bid.0).unwrap();
                 } else {
                     writeln!(out, "  return {} : {ret}", v.join(", ")).unwrap();
                 }
@@ -192,7 +210,7 @@ fn mlir_type(ty: &TirType) -> &'static str {
         TirType::Bool => "i1",
         TirType::None | TirType::DynBox => "i64",
         TirType::Str | TirType::Bytes | TirType::Ptr(_) => "!molt.ptr",
-        TirType::Never => "none",
+        TirType::Never => "i64",
         _ => "i64",
     }
 }
@@ -331,8 +349,12 @@ mod tests {
     use crate::tir::ops::{AttrDict, TirOp};
 
     fn make_add_func() -> TirFunction {
-        let mut func =
-            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let v2 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -353,6 +375,28 @@ mod tests {
         assert!(text.contains("func.func @add"));
         assert!(text.contains("\"molt.add\""));
         assert!(text.contains("return"));
+    }
+
+    #[test]
+    fn none_return_type_does_not_erase_value_abi() {
+        let mut function = TirFunction::new(
+            "none_value".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        function
+            .blocks
+            .get_mut(&function.entry_block)
+            .unwrap()
+            .terminator = Terminator::Return { values: vec![] };
+        let text = to_mlir_text(&function);
+        assert!(text.contains("func.func @none_value() -> i64"));
+        assert!(text.contains("return %none_bb0 : i64"));
+        function.return_abi = molt_ir::FunctionReturnAbi::Void;
+        let text = to_mlir_text(&function);
+        assert!(text.contains("func.func @none_value() -> ()"));
+        assert!(!text.contains("molt.const_none"));
     }
 
     #[test]
@@ -396,7 +440,12 @@ mod tests {
 
     #[test]
     fn mlir_text_conditional() {
-        let mut f = TirFunction::new("cond".into(), vec![TirType::Bool], TirType::I64);
+        let mut f = TirFunction::new(
+            "cond".into(),
+            vec![TirType::Bool],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let tb = f.fresh_block();
         let eb = f.fresh_block();
         let v1 = f.fresh_value();

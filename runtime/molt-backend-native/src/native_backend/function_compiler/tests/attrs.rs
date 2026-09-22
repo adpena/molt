@@ -11,6 +11,7 @@ const RETIRED_OFFSET_SLOW_SYMBOL: &str = "molt_getattr_ic_slow";
 fn attr_program(kind: &str) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: format!("native_{kind}_authority"),
             params: vec!["receiver".to_string()],
             ops: vec![

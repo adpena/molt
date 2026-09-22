@@ -71,7 +71,12 @@ fn state_transition(awaitable: ValueId, slot: ValueId, pending_state: ValueId) -
 }
 
 fn split_cleanup_function() -> TirFunction {
-    let mut func = TirFunction::new("split_cleanup".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "split_cleanup".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let clean = func.fresh_block();
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -117,7 +122,12 @@ fn split_cleanup_function() -> TirFunction {
 }
 
 fn ambiguous_depth_function() -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("ambiguous_depth".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "ambiguous_depth".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let before_try = func.fresh_block();
     let handler = func.fresh_block();
     func.label_id_map.insert(handler.0, 7);
@@ -160,6 +170,7 @@ fn mixed_exception_exit_observer_function() -> (TirFunction, ValueId) {
         "mixed_exception_exit_observer".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let before_try = func.fresh_block();
     let exit_cleanup = func.fresh_block();
@@ -199,7 +210,12 @@ fn mixed_pending_exit_observer_without_pop_function(
     source_kind: &str,
     name: &str,
 ) -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new(name.into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let before_try = func.fresh_block();
     let exit_cleanup = func.fresh_block();
     func.label_id_map.insert(exit_cleanup.0, 3);
@@ -253,6 +269,7 @@ fn same_owner_with_different_outer_prefix_function() -> (TirFunction, ValueId) {
         "same_owner_with_different_outer_prefix".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let direct_inner = func.fresh_block();
     let outer_then_inner = func.fresh_block();
@@ -322,6 +339,7 @@ fn exception_edge_unwinds_to_target_handler_function() -> (TirFunction, ValueId)
         "exception_edge_unwinds_to_target_handler".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -361,6 +379,7 @@ fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, Value
         "forced_raise_check_exception_handler_branch".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -402,6 +421,7 @@ fn explicit_raise_branch_to_labeled_handler_function() -> (TirFunction, ValueId,
         "explicit_raise_branch_to_labeled_handler".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -443,6 +463,7 @@ fn inactive_check_exception_target_function() -> (TirFunction, ValueId) {
         "inactive_check_exception_target".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -477,7 +498,12 @@ fn inactive_check_exception_target_function() -> (TirFunction, ValueId) {
 }
 
 fn body_close_to_normal_exit_function() -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("body_close_to_normal_exit".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "body_close_to_normal_exit".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let normal_exit = func.fresh_block();
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -523,7 +549,12 @@ fn body_close_to_normal_exit_function() -> (TirFunction, ValueId) {
 }
 
 fn split_exit_pops_function() -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("split_exit_pops".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "split_exit_pops".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let handler = func.fresh_block();
     let pop_a = func.fresh_block();
     let pop_b = func.fresh_block();
@@ -568,7 +599,12 @@ fn finally_cleanup_join_function() -> (TirFunction, ValueId, BlockId) {
 }
 
 fn finally_cleanup_join_function_with_source(source_kind: &str) -> (TirFunction, ValueId, BlockId) {
-    let mut func = TirFunction::new("finally_cleanup_join".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finally_cleanup_join".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let normal = func.fresh_block();
     let cleanup = func.fresh_block();
     let pop = func.fresh_block();
@@ -621,6 +657,7 @@ fn depth_zero_observer_after_pop_function() -> (TirFunction, ValueId) {
         "depth_zero_observer_after_pop".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     func.label_id_map.insert(handler.0, 12);
@@ -651,6 +688,7 @@ fn loop_reentry_after_try_end_and_exception_pop_function() -> (TirFunction, Valu
         "loop_reentry_after_try_end_and_exception_pop".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let loop_block = func.fresh_block();
     let normal = func.fresh_block();
@@ -726,7 +764,12 @@ fn loop_reentry_after_try_end_and_exception_pop_function() -> (TirFunction, Valu
 }
 
 fn state_resume_inside_try_function() -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("state_resume_inside_try".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "state_resume_inside_try".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let initial = func.fresh_block();
     let resume = func.fresh_block();
     let handler = func.fresh_block();
@@ -799,6 +842,7 @@ fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
         "repoll_state_resume_inside_try".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let initial = func.fresh_block();
     let resume = func.fresh_block();
@@ -907,7 +951,12 @@ fn exception_region_pairs_match_ref_with_reachable_handler_pop() {
 
 #[test]
 fn exception_region_reports_match_without_reachable_pop() {
-    let mut func = TirFunction::new("missing_pop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "missing_pop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let handler = func.fresh_block();
     func.label_id_map.insert(handler.0, 9);
     let exc = func.fresh_value();
@@ -940,6 +989,7 @@ fn exception_region_ignores_depth_zero_exception_observer() {
         "depth_zero_exception_observer".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let exc = func.fresh_value();
     func.blocks.get_mut(&func.entry_block).unwrap().ops =
@@ -958,6 +1008,7 @@ fn exception_region_ignores_owned_exception_last_exit_observer_without_pop() {
         "owned_exception_last_exit_observer".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let cleanup = func.fresh_block();
     func.label_id_map.insert(cleanup.0, 3);
@@ -1358,7 +1409,12 @@ fn exception_region_repoll_state_resume_uses_pending_state_depth() {
 
 #[test]
 fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
-    let mut func = TirFunction::new("state_resume_stack_cycle".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "state_resume_stack_cycle".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let initial = func.fresh_block();
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(7, initial, vec![])],
@@ -1485,7 +1541,12 @@ fn lexical_handler_query_is_total_and_fail_closed() {
 
 #[test]
 fn anonymous_try_region_resolves_destination_and_closes_at_unlabeled_end() {
-    let mut func = TirFunction::new("anonymous_region".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "anonymous_region".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.entry_block;
     let handler = func.fresh_block();
     func.label_id_map.insert(handler.0, 73);
@@ -1530,7 +1591,12 @@ fn anonymous_try_region_resolves_destination_and_closes_at_unlabeled_end() {
 
 #[test]
 fn anonymous_try_exception_edge_enters_owner_and_releases_match_ref() {
-    let mut func = TirFunction::new("anonymous_handler_owner".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "anonymous_handler_owner".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.entry_block;
     let handler = func.fresh_block();
     let matched = func.fresh_value();
@@ -1569,7 +1635,12 @@ fn anonymous_try_exception_edge_enters_owner_and_releases_match_ref() {
 }
 
 fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: bool) {
-    let mut func = TirFunction::new("nested_region_pop_order".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "nested_region_pop_order".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let initial = func.fresh_block();
     let outer_handler = func.fresh_block();
     let inner_handler = func.fresh_block();
@@ -1775,7 +1846,12 @@ fn state_resume_preserves_chronological_region_custody_and_match_ref_releases() 
 
 #[test]
 fn nested_finally_join_uses_inner_custody_on_normal_and_exceptional_paths() {
-    let mut func = TirFunction::new("nested_finally_join".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "nested_finally_join".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let outer_handler = func.fresh_block();
     let inner_handler = func.fresh_block();
     let cleanup = func.fresh_block();
@@ -1851,7 +1927,12 @@ fn nested_finally_join_uses_inner_custody_on_normal_and_exceptional_paths() {
 
 #[test]
 fn exceptional_transfer_discards_younger_handler_and_normal_custody() {
-    let mut func = TirFunction::new("unwind_younger_custody".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "unwind_younger_custody".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let outer_handler = func.fresh_block();
     let inner_handler = func.fresh_block();
     let observed = func.fresh_value();
@@ -1912,7 +1993,12 @@ fn exceptional_transfer_discards_younger_handler_and_normal_custody() {
 
 #[test]
 fn try_end_after_nonlocal_pop_does_not_recreate_region_custody() {
-    let mut func = TirFunction::new("already_popped_region".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "already_popped_region".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
         try_start(10),
         original("exception_pop", vec![]),
@@ -1937,46 +2023,47 @@ fn repoll_loop_custody_survives_target_optimization() {
     // A resume edge enters the middle of the structured loop. Its pending-state
     // constant must remain available on that edge, not move to a pre-loop site
     // that resume bypasses. Exercise the real target pipeline, not facts alone.
-    let ir: crate::ir::FunctionIR = serde_json::from_value(serde_json::json!({
-        "name": "repoll_loop_custody",
-        "params": ["self", "keep_running", "awaitable"],
-        "param_types": ["i64", "bool", "Any"],
-        "ops": [
-            {"kind": "state_switch"},
-            {"kind": "exception_push"},
-            {"kind": "try_start", "value": 307},
-            {"kind": "loop_start"},
-            {"kind": "loop_break_if_false", "args": ["keep_running"]},
-            {"kind": "exception_push"},
-            {"kind": "try_start", "value": 310},
-            {"kind": "state_label", "value": 313},
-            {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
-            {"kind": "check_exception", "value": 310},
-            {"kind": "const", "value": 313, "out": "pending"},
-            {"kind": "const", "value": 152, "out": "slot"},
-            {"kind": "state_transition", "value": 314,
-             "args": ["awaitable", "slot", "pending"], "out": "ready"},
-            {"kind": "check_exception", "value": 310},
-            {"kind": "try_end", "value": 310},
-            {"kind": "jump", "value": 311},
-            {"kind": "label", "value": 310},
-            {"kind": "try_end", "value": 310},
-            {"kind": "exception_clear"},
-            {"kind": "label", "value": 311},
-            {"kind": "exception_pop"},
-            {"kind": "loop_continue"},
-            {"kind": "loop_end"},
-            {"kind": "try_end", "value": 307},
-            {"kind": "jump", "value": 308},
-            {"kind": "label", "value": 307},
-            {"kind": "try_end", "value": 307},
-            {"kind": "exception_clear"},
-            {"kind": "label", "value": 308},
-            {"kind": "exception_pop"},
-            {"kind": "ret_void"}
-        ]
-    }))
-    .unwrap();
+    let ir: crate::ir::FunctionIR =
+        serde_json::from_value(serde_json::json!({"return_abi": "value",
+            "name": "repoll_loop_custody",
+            "params": ["self", "keep_running", "awaitable"],
+            "param_types": ["i64", "bool", "Any"],
+            "ops": [
+                {"kind": "state_switch"},
+                {"kind": "exception_push"},
+                {"kind": "try_start", "value": 307},
+                {"kind": "loop_start"},
+                {"kind": "loop_break_if_false", "args": ["keep_running"]},
+                {"kind": "exception_push"},
+                {"kind": "try_start", "value": 310},
+                {"kind": "state_label", "value": 313},
+                {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
+                {"kind": "check_exception", "value": 310},
+                {"kind": "const", "value": 313, "out": "pending"},
+                {"kind": "const", "value": 152, "out": "slot"},
+                {"kind": "state_transition", "value": 314,
+                 "args": ["awaitable", "slot", "pending"], "out": "ready"},
+                {"kind": "check_exception", "value": 310},
+                {"kind": "try_end", "value": 310},
+                {"kind": "jump", "value": 311},
+                {"kind": "label", "value": 310},
+                {"kind": "try_end", "value": 310},
+                {"kind": "exception_clear"},
+                {"kind": "label", "value": 311},
+                {"kind": "exception_pop"},
+                {"kind": "loop_continue"},
+                {"kind": "loop_end"},
+                {"kind": "try_end", "value": 307},
+                {"kind": "jump", "value": 308},
+                {"kind": "label", "value": 307},
+                {"kind": "try_end", "value": 307},
+                {"kind": "exception_clear"},
+                {"kind": "label", "value": 308},
+                {"kind": "exception_pop"},
+                {"kind": "ret_void"}
+            ]
+        }))
+        .unwrap();
     for target in [
         crate::tir::target_info::TargetInfo::native_release_fast(),
         crate::tir::target_info::TargetInfo::wasm_release_fast(),
@@ -2018,7 +2105,12 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
     // outer307 -> loop -> inner310 -> repoll313 -> end/pop310 -> loop.
     // Both normal and exceptional inner exits must restore outer307, while
     // state dispatch resumes inside inner310 rather than at depth zero.
-    let mut func = TirFunction::new("nested_try_repoll_loop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "nested_try_repoll_loop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let initial = func.fresh_block();
     let header = func.fresh_block();
     let inner_entry = func.fresh_block();
@@ -2151,7 +2243,12 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
     // Case presence is not a save witness: cover no save, a self-supported
     // repoll island, and two islands which only save one another's state.
     for island_count in 0..=2 {
-        let mut func = TirFunction::new("unwitnessed_resume".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "unwitnessed_resume".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let handler = func.fresh_block();
         let observer = func.fresh_block();
         let dispatch = func.fresh_block();
@@ -2308,7 +2405,12 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
 #[test]
 fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
     for owned in [false, true] {
-        let mut func = TirFunction::new("chained_resume".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "chained_resume".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let initial = func.fresh_block();
         let first = func.fresh_block();
         let second = func.fresh_block();
@@ -2391,7 +2493,12 @@ fn reachable_unresolved_saves_fail_closed_for_every_generated_suspend_kind() {
             continue;
         }
         for reachable in [false, true] {
-            let mut func = TirFunction::new("unresolved_resume".into(), vec![], TirType::None);
+            let mut func = TirFunction::new(
+                "unresolved_resume".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
             let initial = func.fresh_block();
             let resume = func.fresh_block();
             func.blocks.get_mut(&func.entry_block).unwrap().terminator =
@@ -2487,42 +2594,43 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
     // return pops region94 and jumps out, followed by dead normal cleanup whose
     // only pending113 save is inside its own island. The live observer joins
     // normal closure and handler custody, never a fabricated depth-zero resume.
-    let ir: crate::ir::FunctionIR = serde_json::from_value(serde_json::json!({
-        "name": "dead_return_cleanup_repoll",
-        "params": ["self", "return_now", "awaitable"],
-        "param_types": ["i64", "bool", "Any"],
-        "ops": [
-            {"kind": "state_switch"},
-            {"kind": "exception_push"},
-            {"kind": "try_start", "value": 94},
-            {"kind": "br_if", "args": ["return_now"], "value": 92},
-            {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
-            {"kind": "check_exception", "value": 94},
-            {"kind": "try_end", "value": 94},
-            {"kind": "jump", "value": 95},
-            {"kind": "label", "value": 92},
-            {"kind": "exception_pop"},
-            {"kind": "jump", "value": 93},
-            {"kind": "state_label", "value": 113},
-            {"kind": "const", "value": 113, "out": "pending"},
-            {"kind": "const", "value": 152, "out": "slot"},
-            {"kind": "state_transition", "value": 114,
-             "args": ["awaitable", "slot", "pending"], "out": "ready"},
-            {"kind": "check_exception", "value": 94},
-            {"kind": "try_end", "value": 94},
-            {"kind": "jump", "value": 95},
-            {"kind": "label", "value": 94},
-            {"kind": "try_end", "value": 94},
-            {"kind": "label", "value": 95},
-            {"kind": "exception_last_pending", "out": "observed"},
-            {"kind": "call", "s_value": "consume", "args": ["observed"], "out": "consumed"},
-            {"kind": "exception_pop"},
-            {"kind": "ret_void"},
-            {"kind": "label", "value": 93},
-            {"kind": "ret_void"}
-        ]
-    }))
-    .unwrap();
+    let ir: crate::ir::FunctionIR =
+        serde_json::from_value(serde_json::json!({"return_abi": "value",
+            "name": "dead_return_cleanup_repoll",
+            "params": ["self", "return_now", "awaitable"],
+            "param_types": ["i64", "bool", "Any"],
+            "ops": [
+                {"kind": "state_switch"},
+                {"kind": "exception_push"},
+                {"kind": "try_start", "value": 94},
+                {"kind": "br_if", "args": ["return_now"], "value": 92},
+                {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
+                {"kind": "check_exception", "value": 94},
+                {"kind": "try_end", "value": 94},
+                {"kind": "jump", "value": 95},
+                {"kind": "label", "value": 92},
+                {"kind": "exception_pop"},
+                {"kind": "jump", "value": 93},
+                {"kind": "state_label", "value": 113},
+                {"kind": "const", "value": 113, "out": "pending"},
+                {"kind": "const", "value": 152, "out": "slot"},
+                {"kind": "state_transition", "value": 114,
+                 "args": ["awaitable", "slot", "pending"], "out": "ready"},
+                {"kind": "check_exception", "value": 94},
+                {"kind": "try_end", "value": 94},
+                {"kind": "jump", "value": 95},
+                {"kind": "label", "value": 94},
+                {"kind": "try_end", "value": 94},
+                {"kind": "label", "value": 95},
+                {"kind": "exception_last_pending", "out": "observed"},
+                {"kind": "call", "s_value": "consume", "args": ["observed"], "out": "consumed"},
+                {"kind": "exception_pop"},
+                {"kind": "ret_void"},
+                {"kind": "label", "value": 93},
+                {"kind": "ret_void"}
+            ]
+        }))
+        .unwrap();
     for target in [
         crate::tir::target_info::TargetInfo::native_release_fast(),
         crate::tir::target_info::TargetInfo::wasm_release_fast(),

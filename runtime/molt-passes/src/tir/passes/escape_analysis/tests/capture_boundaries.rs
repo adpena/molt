@@ -18,7 +18,12 @@ fn assert_opaque_use_preserves_allocation(
     result_count: usize,
     attrs: AttrDict,
 ) {
-    let mut func = TirFunction::new("capture".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "capture".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let operands: Vec<_> = (0..arity).map(|_| func.fresh_value()).collect();
     let results = (0..result_count).map(|_| func.fresh_value()).collect();
     let none = func.fresh_value();
@@ -157,7 +162,12 @@ fn overloaded_reads_iteration_and_store_receivers_are_capture_boundaries() {
 #[test]
 fn every_cfg_edge_carries_escape_back_to_the_allocation() {
     for shape in 0..4 {
-        let mut func = TirFunction::new("edge".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "edge".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let root = func.fresh_value();
         let parameter = func.fresh_value();
         let control = func.fresh_value();
@@ -212,7 +222,12 @@ fn every_cfg_edge_carries_escape_back_to_the_allocation() {
 
 #[test]
 fn finalizer_obligations_flow_through_cfg_and_retained_fields() {
-    let mut func = TirFunction::new("finalizer".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let owner = func.fresh_value();
     let child = func.fresh_value();
     let parameter = func.fresh_value();
@@ -252,7 +267,12 @@ fn finalizer_obligations_flow_through_cfg_and_retained_fields() {
 
 #[test]
 fn escaping_root_preserves_reference_counts_on_every_copy_alias() {
-    let mut func = TirFunction::new("aliases".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "aliases".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let root = func.fresh_value();
     let alias = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -269,7 +289,12 @@ fn escaping_root_preserves_reference_counts_on_every_copy_alias() {
 
 #[test]
 fn storing_into_mixed_cfg_owner_does_not_prove_local_containment() {
-    let mut func = TirFunction::new("mixed_owner".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "mixed_owner".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let owner = func.fresh_value();
     let child = func.fresh_value();
     let parameter = func.fresh_value();

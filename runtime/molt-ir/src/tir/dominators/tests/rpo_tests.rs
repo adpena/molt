@@ -17,7 +17,12 @@ use crate::tir::types::TirType;
 /// Build a function with `num_blocks` empty blocks (terminators initialized
 /// to `Unreachable`; tests overwrite them as needed).
 fn make_func_with_blocks(name: &str, num_blocks: u32) -> TirFunction {
-    let mut func = TirFunction::new(name.into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        TirType::I64,
+        crate::FunctionReturnAbi::Value,
+    );
     for _ in 1..num_blocks {
         let bid = func.fresh_block();
         func.blocks.insert(

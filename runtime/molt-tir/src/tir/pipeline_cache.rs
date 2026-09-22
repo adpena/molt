@@ -583,6 +583,10 @@ where
                         cached_tir_func.name
                     );
                     let func_ir = &mut functions[index];
+                    assert_eq!(
+                        func_ir.return_abi, cached_tir_func.return_abi,
+                        "cached TIR must preserve the authored function return ABI"
+                    );
                     func_ir.ops = cached_ops;
                     cached_tir_custody.insert(func_ir.name.clone(), cached_tir_func);
                 } else {
@@ -629,6 +633,10 @@ where
 
             for output in results {
                 let func_ir = &mut functions[output.index];
+                assert_eq!(
+                    func_ir.return_abi, output.tir_func.return_abi,
+                    "optimized TIR must preserve the authored function return ABI"
+                );
                 func_ir.ops = output.simple_ops;
                 let bytes = super::serialize::serialize_tir_function(&output.tir_func)
                     .unwrap_or_else(|error| {
@@ -859,6 +867,10 @@ fn backconvert_changed_tir_module_to_simple_ir(
             super::lower_to_simple::validate_labels(&ops),
             "{backconvert_context} back-conversion emitted invalid labels for '{}'",
             tir_func.name
+        );
+        assert_eq!(
+            functions[orig_idx].return_abi, tir_func.return_abi,
+            "module optimization must preserve the authored function return ABI"
         );
         functions[orig_idx].ops = ops;
     }
@@ -1091,6 +1103,7 @@ mod tests {
     #[test]
     fn cache_hash_includes_target_and_platform_fingerprint() {
         let mut func = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "f".to_string(),
             params: vec!["x".to_string()],
             ops: vec![OpIR {
@@ -1190,6 +1203,9 @@ mod tests {
             content_hash_for_function(&baseline, TirPipelineCacheFlavor::Native, &native);
         let mut contract_mutations = Vec::new();
         let mut changed = baseline.clone();
+        changed.return_abi = molt_ir::FunctionReturnAbi::Value;
+        contract_mutations.push(changed);
+        let mut changed = baseline.clone();
         changed.params.push("y".to_string());
         contract_mutations.push(changed);
         let mut changed = baseline.clone();
@@ -1255,6 +1271,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&cache_dir);
         let base = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "prepared_cache_identity".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {
@@ -1338,6 +1355,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&cache_dir);
         let base = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "policy_separation".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {
@@ -1404,6 +1422,7 @@ mod tests {
     #[test]
     fn cached_tir_custody_preserves_function_source_file() {
         let mut functions = vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {

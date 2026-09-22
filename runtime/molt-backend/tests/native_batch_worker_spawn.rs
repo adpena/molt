@@ -50,7 +50,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
         &ir_path,
         r#"{
   "functions": [
-    {
+    {"return_abi": "value",
       "name": "molt_main",
       "params": [],
       "ops": [
@@ -61,7 +61,7 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "value",
       "name": "helper",
       "params": [],
       "ops": [
@@ -132,7 +132,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         &ir_path,
         r#"{
   "functions": [
-    {
+    {"return_abi": "void",
       "name": "molt_main",
       "params": [],
       "ops": [
@@ -143,7 +143,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "molt_host_init",
       "params": [],
       "ops": [
@@ -154,7 +154,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "molt_init_demo",
       "params": [],
       "ops": [
@@ -166,7 +166,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "demo__molt_module_chunk_1",
       "params": [],
       "ops": [
@@ -176,7 +176,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "molt_isolate_bootstrap",
       "params": [],
       "ops": [
@@ -186,7 +186,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "molt_isolate_import",
       "params": ["p0"],
       "ops": [
@@ -196,7 +196,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "molt_init_sys",
       "params": [],
       "execution_context": "local",
@@ -210,7 +210,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "sys__helper",
       "params": [],
       "execution_context": "inherited",
@@ -357,7 +357,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
         &ir_path,
         r#"{
   "functions": [
-    {
+    {"return_abi": "void",
       "name": "molt_main",
       "params": [],
       "ops": [
@@ -368,7 +368,7 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
       "source_file": null,
       "is_extern": false
     },
-    {
+    {"return_abi": "void",
       "name": "helper",
       "params": [],
       "ops": [

@@ -4,6 +4,7 @@ use super::super::*;
 fn test_list_and_string_get_item_emit_index_error_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "index_guards".to_string(),
             params: vec!["xs".to_string(), "s".to_string(), "i".to_string()],
             param_types: Some(vec![
@@ -56,6 +57,7 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
 fn test_string_get_item_uses_utf8_codepoint_offsets() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "string_index".to_string(),
             params: vec!["s".to_string(), "i".to_string()],
             param_types: Some(vec!["str".to_string(), "int".to_string()]),
@@ -98,6 +100,7 @@ fn test_string_get_item_uses_utf8_codepoint_offsets() {
 fn test_ord_at_emits_utf8_codepoint_helper() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "ord_at_unicode".to_string(),
             params: vec!["s".to_string(), "i".to_string()],
             param_types: Some(vec!["str".to_string(), "int".to_string()]),
@@ -138,6 +141,7 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
 fn test_list_set_and_delete_emit_index_error_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "mutation_index_guards".to_string(),
             params: vec!["xs".to_string(), "i".to_string(), "v".to_string()],
             param_types: Some(vec![
@@ -185,6 +189,7 @@ fn test_list_set_and_delete_emit_index_error_guards() {
 fn test_list_pop_and_index_emit_python_error_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_method_guards".to_string(),
             params: vec!["xs".to_string(), "i".to_string(), "needle".to_string()],
             param_types: Some(vec![
@@ -238,6 +243,7 @@ fn test_list_pop_and_index_emit_python_error_guards() {
 fn test_call_method_list_pop_uses_python_error_guards() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_call_method_pop_guards".to_string(),
             params: vec!["xs".to_string(), "i".to_string()],
             param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),
@@ -281,6 +287,7 @@ fn test_call_method_list_pop_uses_python_error_guards() {
 fn test_call_method_list_count_and_index_use_collection_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_call_method_count_index".to_string(),
             params: vec![
                 "xs".to_string(),
@@ -399,6 +406,7 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
 fn test_list_index_range_honors_start_stop_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_index_range_bounds".to_string(),
             params: vec![
                 "xs".to_string(),
@@ -456,6 +464,7 @@ fn test_list_index_range_honors_start_stop_bounds() {
 fn test_dict_popitem_emits_empty_dict_key_error_guard() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dict_popitem_guard".to_string(),
             params: vec!["d".to_string()],
             param_types: Some(vec!["dict[str, int]".to_string()]),
@@ -490,6 +499,7 @@ fn test_dict_popitem_emits_empty_dict_key_error_guard() {
 fn test_list_insert_clamps_python_index_bounds() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_insert_clamps".to_string(),
             params: vec!["xs".to_string(), "i".to_string(), "v".to_string()],
             param_types: Some(vec![
@@ -531,6 +541,7 @@ fn test_list_insert_clamps_python_index_bounds() {
 fn test_list_extend_uses_table_move_fast_path() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "list_extend_fast_path".to_string(),
             params: vec!["dst".to_string(), "src".to_string()],
             param_types: Some(vec!["list[int]".to_string(), "list[int]".to_string()]),
@@ -570,6 +581,7 @@ fn test_retired_range_repeat_is_rejected_before_luau_emission() {
         let params: Vec<String> = names.into_iter().map(str::to_owned).collect();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "retired_range_repeat".to_string(),
                 params: params.clone(),
                 param_types: Some(vec!["int".to_string(); params.len()]),
@@ -607,6 +619,7 @@ fn test_retired_range_repeat_is_rejected_before_luau_emission() {
 fn test_string_slice_opcode_aliases_use_range_lowering() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "string_slice_opcode_aliases".to_string(),
             params: vec![
                 "s".to_string(),

@@ -22,6 +22,7 @@ fn closure_offset_ops_stay_lir_fast_runtime_calls() {
             } else {
                 TirType::None
             },
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = has_result.then(|| {
             let id = func.fresh_value();

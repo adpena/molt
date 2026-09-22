@@ -164,7 +164,12 @@ mod tests {
     }
 
     fn make_affine_loop_func() -> TirFunction {
-        let mut func = TirFunction::new("test_affine".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "test_affine".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let bid = func.entry_block;
         let block = func.blocks.get_mut(&bid).unwrap();
         // Add a ForIter op with only affine body ops
@@ -189,7 +194,12 @@ mod tests {
     }
 
     fn make_non_affine_loop_func() -> TirFunction {
-        let mut func = TirFunction::new("test_non_affine".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "test_non_affine".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let bid = func.entry_block;
         let block = func.blocks.get_mut(&bid).unwrap();
         block.ops.push(TirOp {

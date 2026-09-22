@@ -19,6 +19,7 @@ mod tests {
 
     fn make_function(ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "test".to_string(),
             params: vec![],
             ops,
@@ -31,7 +32,10 @@ mod tests {
     }
 
     fn roundtrip(ops: Vec<OpIR>) -> Vec<OpIR> {
-        let ir = make_function(ops);
+        roundtrip_function(make_function(ops))
+    }
+
+    fn roundtrip_function(ir: FunctionIR) -> Vec<OpIR> {
         let target = TargetInfo::native_release_fast();
         let mut tir = lower_to_tir_for_target(&ir, &target);
         refine_types(&mut tir);
@@ -266,6 +270,7 @@ mod tests {
             },
         ];
         let ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_if_return_continue_roundtrip".to_string(),
             params: vec!["xs".to_string(), "value".to_string()],
             ops,
@@ -403,6 +408,7 @@ mod tests {
     #[test]
     fn roundtrip_with_params() {
         let ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "with_params".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
             ops: vec![
@@ -435,6 +441,7 @@ mod tests {
     #[test]
     fn roundtrip_typed_params() {
         let ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_params".to_string(),
             params: vec!["n".to_string()],
             ops: vec![
@@ -1364,42 +1371,89 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_trace_ops_survive() {
-        // Reproduce the exact pattern from native_backend_can_opt_in_trace_imports
-        let ops = vec![
-            OpIR {
-                kind: "trace_enter_slot".to_string(),
-                value: Some(7),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "trace_exit".to_string(),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                ..OpIR::default()
-            },
-        ];
-        let result = roundtrip(ops.clone());
-        let has_trace_enter = result.iter().any(|o| o.kind == "trace_enter_slot");
-        let has_trace_exit = result.iter().any(|o| o.kind == "trace_exit");
-        assert!(
-            has_trace_enter,
-            "trace_enter_slot must survive round-trip with optimization. Got: {:?}",
-            result
+    fn roundtrip_checked_frame_entry_preserves_guard_and_attempt_cleanup() {
+        for (return_abi, value_payload) in [
+            (molt_ir::FunctionReturnAbi::Void, false),
+            (molt_ir::FunctionReturnAbi::Value, false),
+            (molt_ir::FunctionReturnAbi::Value, true),
+        ] {
+            let ops = vec![
+                OpIR {
+                    kind: "trace_enter_slot".to_string(),
+                    value: Some(7),
+                    ..OpIR::default()
+                },
+                op_val("check_exception", 19),
+                op_args("frame_locals_set", &["locals"]),
+                OpIR {
+                    kind: "trace_exit".to_string(),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: if value_payload { "ret" } else { "ret_void" }.to_string(),
+                    args: value_payload.then(|| vec!["locals".into()]),
+                    ..OpIR::default()
+                },
+                op_val("label", 19),
+                op("trace_exit"),
+                op("ret_void"),
+            ];
+            let mut source = FunctionIR {
+                return_abi,
+                params: vec!["locals".into()],
+                execution_context: crate::ExecutionContextPolicy::Local,
+                ..make_function(ops)
+            };
+            let signature = source.function_signature().unwrap();
+            let result = roundtrip_function(source.clone());
+            source.ops = result.clone();
+            assert_eq!(source.function_signature().unwrap(), signature);
+            crate::validate_simple_ir(&crate::SimpleIR {
+                functions: vec![source],
+                profile: None,
+            })
+            .expect("checked frame returns remain schema-valid after optimization");
+            let has_trace_enter = result.iter().any(|o| o.kind == "trace_enter_slot");
+            let has_trace_exit = result.iter().any(|o| o.kind == "trace_exit");
+            assert!(
+                has_trace_enter,
+                "trace_enter_slot must survive round-trip with optimization. Got: {:?}",
+                result
+                    .iter()
+                    .map(|o| format!("{}(v={:?})", o.kind, o.value))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                has_trace_exit,
+                "trace_exit must survive round-trip with optimization. Got: {:?}",
+                result
+                    .iter()
+                    .map(|o| format!("{}(v={:?})", o.kind, o.value))
+                    .collect::<Vec<_>>()
+            );
+            let enter = result
                 .iter()
-                .map(|o| format!("{}(v={:?})", o.kind, o.value))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            has_trace_exit,
-            "trace_exit must survive round-trip with optimization. Got: {:?}",
-            result
+                .position(|op| op.kind == "trace_enter_slot")
+                .unwrap();
+            let check = &result[enter + 1];
+            assert_eq!(check.kind, "check_exception", "{result:?}");
+            let failure_label = check.value.expect("entry guard retains a target");
+            let failure = result
                 .iter()
-                .map(|o| format!("{}(v={:?})", o.kind, o.value))
-                .collect::<Vec<_>>()
-        );
+                .position(|op| op.kind == "label" && op.value == Some(failure_label))
+                .expect("entry cleanup remains reachable");
+            assert_eq!(result[failure + 1].kind, "trace_exit", "{result:?}");
+            assert_eq!(result[failure + 2].kind, "ret_void", "{result:?}");
+            for (index, operation) in result.iter().enumerate() {
+                if operation.kind == "trace_exit" {
+                    assert!(
+                        crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
+                            &result[index + 1].kind
+                        )
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -224,7 +224,12 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn simple_copy_chain() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let a = func.fresh_value();
         let b = func.fresh_value();
         let c = func.fresh_value();
@@ -250,7 +255,12 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn attributed_copy_not_propagated() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let a = func.fresh_value();
         let b = func.fresh_value();
 
@@ -286,7 +296,12 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn operand_replacement() {
-        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let param = ValueId(0);
         let copy_val = func.fresh_value();
         let add_result = func.fresh_value();
@@ -318,7 +333,12 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn no_copies_no_changes() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let a = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

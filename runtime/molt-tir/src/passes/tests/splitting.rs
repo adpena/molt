@@ -11,6 +11,7 @@ fn split_for_test(
 
 fn adversarial_named_large_function(name: &str) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: name.to_string(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
@@ -67,6 +68,7 @@ fn split_chunk_names_are_injective_and_reserved_against_the_full_module_namespac
 #[test]
 fn split_large_function_preserves_protected_runtime_import_entrypoint() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_isolate_import".to_string(),
         params: vec!["p0".to_string()],
         param_types: None,
@@ -98,6 +100,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
 #[test]
 fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_isolate_bootstrap".to_string(),
         params: vec![],
         param_types: None,
@@ -125,6 +128,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
 #[test]
 fn split_large_function_still_splits_regular_large_functions() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "user_large".to_string(),
         params: vec!["p0".to_string()],
         param_types: None,
@@ -258,6 +262,7 @@ fn split_large_function_uses_generated_return_family_and_collision_free_syntheti
     .map(str::to_string)
     .collect::<Vec<_>>();
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "generated_return_family".to_string(),
         params: reserved_names.clone(),
         execution_context: ExecutionContextPolicy::Inherited,
@@ -336,6 +341,7 @@ fn split_large_function_uses_generated_return_family_and_collision_free_syntheti
 #[test]
 fn split_large_function_preserves_drop_authority_on_chunks_only() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "drop_inserted_large".to_string(),
         params: vec![],
         param_types: None,
@@ -416,6 +422,7 @@ fn split_large_function_preserves_drop_authority_on_chunks_only() {
 #[test]
 fn split_large_function_threads_cross_chunk_builtin_type_tag() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "threading__molt_module_chunk_3".to_string(),
         params: vec!["__molt_module_obj__".to_string()],
         param_types: None,
@@ -495,6 +502,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
 #[test]
 fn split_generated_op_verifier_rejects_noncanonical_frame_load() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "__molt_chunk_bad_0".to_string(),
         params: vec!["__molt_split_frame".to_string()],
         param_types: None,
@@ -635,6 +643,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
     ops.push(make_op("ret_void"));
 
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "builtins__molt_module_chunk_2".to_string(),
         params: vec!["__molt_module_obj__".to_string()],
         param_types: None,
@@ -791,6 +800,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
     ops.push(make_op("ret_void"));
 
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "cleanup_suffix".to_string(),
         params: vec![],
         param_types: None,
@@ -841,6 +851,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
 #[test]
 fn split_large_function_void_only_stub_returns_none() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "void_only".to_string(),
         params: vec!["p0".to_string()],
         param_types: None,
@@ -878,12 +889,17 @@ fn split_large_function_void_only_stub_returns_none() {
     );
 }
 
-#[test]
-fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chunks() {
+fn checked_local_split_fixture(returns_value: bool) -> FunctionIR {
     let mut ops = vec![
         OpIR {
             kind: "trace_enter_slot".to_string(),
             value: Some(17),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "check_exception".to_string(),
+            // Deliberately collide with the first synthetic-label candidate.
+            value: Some(0),
             ..OpIR::default()
         },
         OpIR {
@@ -910,21 +926,44 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
             ..OpIR::default()
         },
         OpIR {
-            kind: "ret_void".to_string(),
+            kind: if returns_value { "ret" } else { "ret_void" }.to_string(),
+            // A value from the first chunk exercises heap-frame transport and
+            // proves the entry guard precedes synthetic frame allocation.
+            args: returns_value.then(|| vec!["value_1".to_string()]),
             ..OpIR::default()
         },
+        OpIR {
+            kind: "label".to_string(),
+            value: Some(0),
+            ..OpIR::default()
+        },
+        make_op("trace_exit"),
+        make_op("ret_void"),
     ]);
-    let original = FunctionIR {
+    FunctionIR {
+        return_abi: if returns_value {
+            molt_ir::FunctionReturnAbi::Value
+        } else {
+            molt_ir::FunctionReturnAbi::Void
+        },
         name: "framed_large".to_string(),
         params: vec!["locals".to_string()],
         ops,
         source_file: Some("framed_large.py".to_string()),
         execution_context: ExecutionContextPolicy::Local,
         ..FunctionIR::default()
-    };
+    }
+}
 
+#[test]
+fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chunks() {
+    let original = checked_local_split_fixture(false);
+    let original_entry = original.ops[..2].to_vec();
+    let original_failure_tail = original.ops[original.ops.len() - 3..].to_vec();
     let (stub, chunks) = split_for_test(original, 3).expect("expected framed split");
     assert_eq!(stub.execution_context, ExecutionContextPolicy::Local);
+    assert_eq!(stub.ops[..2], original_entry);
+    assert_eq!(stub.ops[stub.ops.len() - 3..], original_failure_tail);
     assert_eq!(
         stub.ops
             .iter()
@@ -950,7 +989,24 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
                 .ops
                 .iter()
                 .all(|op| !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
+            && chunk.ops.iter().all(|op| {
+                !crate::tir::op_kinds_generated::simpleir_kind_uses_function_label_id(&op.kind)
+                    || op.value != Some(0)
+            })
     }));
+    let stub_labels = stub
+        .ops
+        .iter()
+        .filter(|op| {
+            crate::tir::op_kinds_generated::simpleir_kind_is_verifier_label_definition(&op.kind)
+        })
+        .filter_map(|op| op.value)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stub_labels.len(),
+        stub_labels.iter().copied().collect::<BTreeSet<_>>().len(),
+        "synthetic labels must not reuse the retained entry-failure label"
+    );
     assert!(
         chunks
             .iter()
@@ -962,6 +1018,224 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
         profile: None,
     })
     .expect("the transformed SimpleIR execution-context ABI must validate");
+}
+
+#[test]
+fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
+    let mut original = checked_local_split_fixture(true);
+    let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
+    original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
+    assert_eq!(typed.return_abi, original.return_abi);
+    let original_entry = original.ops[..2].to_vec();
+    let original_failure_tail = original.ops[original.ops.len() - 3..].to_vec();
+    original.ops.splice(
+        0..0,
+        [
+            make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+            make_op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+        ],
+    );
+    let (stub, chunks) = split_for_test(original, 3).expect("expected checked value-return split");
+    assert_eq!(stub.return_abi, molt_ir::FunctionReturnAbi::Value);
+    assert_eq!(stub.ops[..2], original_entry);
+    assert_eq!(stub.ops[stub.ops.len() - 3..], original_failure_tail);
+    let frame_allocation = stub
+        .ops
+        .iter()
+        .position(|op| op.kind == "list_new")
+        .expect("cross-chunk return value requires a split heap frame");
+    let allocation_guard = &stub.ops[frame_allocation + 1];
+    assert_eq!(allocation_guard.kind, "check_exception");
+    let allocation_failure_label = allocation_guard.value.expect("targeted allocation guard");
+    assert_ne!(allocation_failure_label, 0);
+    assert!(
+        stub.ops
+            .iter()
+            .position(|op| op.kind == "call_internal")
+            .is_some_and(|index| index > frame_allocation + 1),
+        "allocation failure must be observed before any chunk executes"
+    );
+    let allocation_cleanup = stub
+        .ops
+        .iter()
+        .position(|op| op.kind == "label" && op.value == Some(allocation_failure_label))
+        .expect("allocation failure belongs to the owner's exception return");
+    assert_eq!(
+        stub.ops[allocation_cleanup..stub.ops.len() - 3]
+            .iter()
+            .map(|op| op.kind.as_str())
+            .collect::<Vec<_>>(),
+        ["label", "const_none", "trace_exit", "ret"]
+    );
+    assert!(chunks.iter().all(|chunk| {
+        chunk.ops.iter().all(|op| {
+            !crate::tir::op_kinds_generated::simpleir_kind_uses_function_label_id(&op.kind)
+                || op.value != Some(allocation_failure_label)
+        })
+    }));
+    assert!(
+        stub.ops
+            .iter()
+            .any(crate::tir::simple_def_use::simple_ir_return_has_value)
+    );
+    assert!(!stub.ops.iter().any(is_drop_fact_marker_op));
+    assert!(chunks.iter().all(|chunk| {
+        chunk
+            .ops
+            .iter()
+            .filter(|op| is_drop_fact_marker_op(op))
+            .count()
+            == 2
+            && chunk.ops.iter().take(2).all(is_drop_fact_marker_op)
+            && chunk.ops.iter().all(|op| {
+                !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit")
+                    && (!crate::tir::op_kinds_generated::simpleir_kind_uses_function_label_id(
+                        &op.kind,
+                    ) || op.value != Some(0))
+            })
+    }));
+    for (index, op) in stub.ops.iter().enumerate() {
+        if crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(&op.kind) {
+            assert_eq!(stub.ops[index - 1].kind, "trace_exit");
+            assert_ne!(stub.ops[index - 2].kind, "trace_exit");
+        }
+    }
+    crate::validate_simple_ir(&SimpleIR {
+        functions: std::iter::once(stub).chain(chunks).collect(),
+        profile: None,
+    })
+    .expect("value-returning owner must retain its original void entry-failure return");
+}
+
+#[test]
+fn split_preserves_value_abi_when_only_empty_returns_survive() {
+    let mut original = checked_local_split_fixture(false);
+    original.return_abi = molt_ir::FunctionReturnAbi::Value;
+    let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
+    original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
+    let (stub, chunks) = split_for_test(original, 3).expect("empty payload value-ABI split");
+    assert_eq!(stub.return_abi, molt_ir::FunctionReturnAbi::Value);
+    assert!(stub.function_signature().unwrap().returns_value);
+    assert_eq!(stub.ops.last().unwrap().kind, "ret_void");
+    crate::validate_simple_ir(&SimpleIR {
+        functions: std::iter::once(stub).chain(chunks).collect(),
+        profile: None,
+    })
+    .expect("split retains ABI independently of its no-payload transport strategy");
+}
+
+#[test]
+fn split_nonisolated_local_entry_refuses_without_mutating_source_or_names() {
+    let mut cases = Vec::new();
+    let mut missing_guard = checked_local_split_fixture(false);
+    missing_guard.ops.remove(1);
+    cases.push(("missing guard", missing_guard, 3));
+    let mut delayed_guard = checked_local_split_fixture(false);
+    delayed_guard
+        .ops
+        .insert(1, make_const_int("before_guard", 9));
+    cases.push(("delayed guard", delayed_guard, 3));
+    let mut untargeted_guard = checked_local_split_fixture(false);
+    untargeted_guard.ops[1].value = None;
+    cases.push(("untargeted guard", untargeted_guard, 3));
+    let mut fallthrough = checked_local_split_fixture(false);
+    let tail_start = fallthrough.ops.len() - 3;
+    fallthrough.ops.drain(tail_start - 2..tail_start);
+    cases.push(("body falls through to entry cleanup", fallthrough, 3));
+    let mut nonterminal_tail = checked_local_split_fixture(false);
+    nonterminal_tail.ops.push(make_const_int("after_tail", 1));
+    cases.push(("nonterminal entry cleanup", nonterminal_tail, 3));
+    let mut early_return = checked_local_split_fixture(false);
+    early_return
+        .ops
+        .splice(3..3, [make_op("trace_exit"), make_op("ret_void")]);
+    cases.push(("ordinary early return remains ineligible", early_return, 3));
+
+    let mut staged_module = checked_local_split_fixture(false);
+    staged_module.name = "molt_init_staged".to_string();
+    staged_module.ops.splice(
+        0..0,
+        [
+            make_const_int("module_setup", 1),
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(42),
+                ..OpIR::default()
+            },
+        ],
+    );
+    let tail_start = staged_module.ops.len() - 3;
+    staged_module.ops.splice(
+        tail_start..tail_start,
+        [
+            OpIR {
+                kind: "label".to_string(),
+                value: Some(42),
+                ..OpIR::default()
+            },
+            make_op("ret_void"),
+        ],
+    );
+    cases.push(("pre-entry module setup and cleanup", staged_module, 3));
+    let mut shared_rollback = checked_local_split_fixture(false);
+    let exit_index = shared_rollback.ops.len() - 2;
+    shared_rollback.ops.insert(
+        exit_index,
+        OpIR {
+            kind: "module_cache_del".to_string(),
+            args: Some(vec!["locals".to_string()]),
+            ..OpIR::default()
+        },
+    );
+    cases.push((
+        "entry cleanup also owns module rollback",
+        shared_rollback,
+        3,
+    ));
+
+    for kind in [
+        "check_exception",
+        "async_work_poll",
+        "jump",
+        "goto",
+        "br_if",
+        "try_start",
+        "try_end",
+        "state_transition",
+        "state_yield",
+        "chan_recv_yield",
+        "chan_send_yield",
+        "label",
+        "state_label",
+    ] {
+        let mut shared_label = checked_local_split_fixture(false);
+        shared_label.ops.insert(
+            3,
+            OpIR {
+                kind: kind.to_string(),
+                value: Some(0),
+                ..OpIR::default()
+            },
+        );
+        cases.push((kind, shared_label, 3));
+    }
+    cases.push(("late size refusal", checked_local_split_fixture(false), 0));
+    cases.push((
+        "initial size refusal",
+        checked_local_split_fixture(false),
+        usize::MAX,
+    ));
+    for (reason, function, max_ops) in cases {
+        let mut occupied = BTreeSet::from([function.name.clone(), "untouched".to_string()]);
+        let before_names = occupied.clone();
+        let mut before = Vec::new();
+        crate::write_function_ir_contract(&function, &mut before).unwrap();
+        let rejected = split_large_function(function, max_ops, &mut occupied).expect_err(reason);
+        let mut after = Vec::new();
+        crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+        assert_eq!(after, before, "{reason}");
+        assert_eq!(occupied, before_names, "{reason}");
+    }
 }
 
 #[test]
@@ -979,6 +1253,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
 
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "builtins__molt_module_chunk_2".to_string(),
             params: vec!["__molt_module_obj__".to_string()],
             param_types: None,

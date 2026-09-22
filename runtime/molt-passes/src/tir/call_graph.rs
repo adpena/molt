@@ -557,7 +557,12 @@ mod tests {
     /// Build a function whose entry block contains the given call ops, each as a
     /// first-class `Call` with an optional `s_value` callee name.
     fn func_calling(name: &str, callees: &[Option<&str>]) -> TirFunction {
-        let mut func = TirFunction::new(name.into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         let block = func.blocks.get_mut(&entry).unwrap();
         for callee in callees {
@@ -625,7 +630,12 @@ mod tests {
 
     #[test]
     fn call_method_disqualifies_leaf() {
-        let mut f = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut f = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
@@ -646,7 +656,12 @@ mod tests {
     fn call_builtin_does_not_disqualify_leaf() {
         // A CallBuiltin (range/print/…) is NOT a user-level call — matches the
         // legacy SimpleIR scan, which ignores `call_builtin`.
-        let mut f = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut f = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
@@ -782,7 +797,12 @@ mod tests {
     #[test]
     fn copy_fallback_call_kind_disqualifies_leaf() {
         // A `Copy` op carrying _original_kind=call_func is a disguised call.
-        let mut f = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut f = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         let mut attrs = AttrDict::new();
@@ -810,7 +830,12 @@ mod tests {
     #[test]
     fn plain_copy_is_not_a_call() {
         // A `Copy` with no _original_kind (a real SSA copy) is NOT a call.
-        let mut f = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut f = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = f.entry_block;
         let v = f.fresh_value();
         let w = f.fresh_value();
@@ -916,7 +941,12 @@ mod tests {
     #[test]
     fn alloc_task_records_poll_edge_but_not_leaf_disqualifier() {
         // g allocates a task referencing g_poll. g_poll is a leaf.
-        let mut g = TirFunction::new("g".into(), vec![], TirType::None);
+        let mut g = TirFunction::new(
+            "g".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = g.entry_block;
         let block = g.blocks.get_mut(&entry).unwrap();
         let mut attrs = AttrDict::new();

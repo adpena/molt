@@ -4,8 +4,8 @@ use crate::ir::OpIR;
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode};
-use crate::tir::simple_value_names::{temporary_var, value_var};
+use crate::tir::ops::OpCode;
+use crate::tir::simple_value_names::value_var;
 use crate::tir::values::ValueId;
 
 use super::cfg::collect_guard_raise_path_blocks;
@@ -61,11 +61,6 @@ pub(super) fn emit_structured_loop_region(
 ) {
     let region = loop_regions.get(&header).expect("loop region missing");
     let block = func.blocks.get(&header).expect("loop header block missing");
-    let original_has_ret = func
-        .attrs
-        .get("_original_has_ret")
-        .map(|v| matches!(v, AttrValue::Bool(true)))
-        .unwrap_or(false);
 
     // Collect deferred raise-path blocks from guard CondBranches
     // where the raise successor is targeted by br_if (not fallthrough).
@@ -474,7 +469,6 @@ pub(super) fn emit_structured_loop_region(
                     trampoline_label_id,
                     &loop_inline_blocks,
                     out,
-                    original_has_ret,
                     &func.loop_break_kinds,
                 );
             }
@@ -552,7 +546,6 @@ pub(super) fn emit_structured_loop_region(
             trampoline_label_id,
             if_inlined_blocks,
             out,
-            original_has_ret,
             &func.loop_break_kinds,
         );
     }
@@ -576,12 +569,6 @@ pub(super) fn emit_guard_raise_path(
     label_to_block: &HashMap<i64, BlockId>,
     out: &mut Vec<OpIR>,
 ) {
-    let original_has_ret = func
-        .attrs
-        .get("_original_has_ret")
-        .map(|v| matches!(v, AttrValue::Bool(true)))
-        .unwrap_or(false);
-
     // Emit store_var for entry args before the first block label.
     emit_block_arg_stores(start_bid, start_args, block_param_vars, out);
 
@@ -626,7 +613,6 @@ pub(super) fn emit_guard_raise_path(
                     trampoline_label_id,
                     if_inlined_blocks,
                     out,
-                    original_has_ret,
                     &func.loop_break_kinds,
                 );
                 cur = *target;
@@ -639,7 +625,6 @@ pub(super) fn emit_guard_raise_path(
                     trampoline_label_id,
                     if_inlined_blocks,
                     out,
-                    original_has_ret,
                     &func.loop_break_kinds,
                 );
                 break;
@@ -657,7 +642,6 @@ pub(super) fn emit_guard_raise_path(
                     trampoline_label_id,
                     if_inlined_blocks,
                     out,
-                    original_has_ret,
                     &func.loop_break_kinds,
                 );
                 break;
@@ -692,26 +676,12 @@ pub(super) fn emit_block_ops_inner(
 // ---------------------------------------------------------------------------
 // Terminator emission
 /// Emit return ops for inlined if/else blocks.
-pub(super) fn emit_return_ops(values: &[ValueId], original_has_ret: bool, out: &mut Vec<OpIR>) {
+pub(super) fn emit_return_ops(values: &[ValueId], out: &mut Vec<OpIR>) {
     if values.is_empty() {
-        if original_has_ret {
-            let ret_name = temporary_var(&format!("_ret_value_{}", out.len()));
-            out.push(OpIR {
-                kind: "const_none".to_string(),
-                out: Some(ret_name.clone()),
-                ..OpIR::default()
-            });
-            out.push(OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec![ret_name]),
-                ..OpIR::default()
-            });
-        } else {
-            out.push(OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            });
-        }
+        out.push(OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        });
     } else {
         let [value] = values else {
             panic!(
@@ -736,12 +706,11 @@ pub(super) fn emit_terminator(
     trampoline_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
     out: &mut Vec<OpIR>,
-    original_has_ret: bool,
     _loop_break_kinds: &HashMap<BlockId, LoopBreakKind>,
 ) {
     match &block.terminator {
         Terminator::Return { values } => {
-            emit_return_ops(values, original_has_ret, out);
+            emit_return_ops(values, out);
         }
 
         Terminator::Branch { target, args } => {

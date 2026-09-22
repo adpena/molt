@@ -4,6 +4,7 @@ use super::*;
 fn test_compile_checked_lowers_type_check_helpers() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "type_check_test".to_string(),
             params: vec![],
             param_types: None,
@@ -118,6 +119,7 @@ fn test_compile_checked_lowers_type_check_helpers() {
 fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "callable_builtin_test".to_string(),
             params: vec!["candidate".to_string()],
             param_types: None,
@@ -175,6 +177,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_attribute_test".to_string(),
                 params: vec![],
                 param_types: None,
@@ -365,6 +368,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 ],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_method".to_string(),
                 params: vec!["self".to_string()],
                 param_types: None,
@@ -378,6 +382,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_class".to_string(),
                 params: vec!["cls".to_string()],
                 param_types: None,
@@ -391,6 +396,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_static".to_string(),
                 params: vec![],
                 param_types: None,
@@ -404,6 +410,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_get".to_string(),
                 params: vec!["self".to_string()],
                 param_types: None,
@@ -417,6 +424,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_set".to_string(),
                 params: vec!["self".to_string(), "value".to_string()],
                 param_types: None,
@@ -430,6 +438,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 }],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_del".to_string(),
                 params: vec!["self".to_string()],
                 param_types: None,
@@ -504,6 +513,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "class_apply_set_name_test".to_string(),
                 params: vec![],
                 param_types: None,
@@ -562,6 +572,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
                 ],
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "descriptor_set_name".to_string(),
                 params: vec!["self".to_string(), "owner".to_string(), "name".to_string()],
                 param_types: None,
@@ -604,6 +615,7 @@ fn test_compile_checked_lowers_class_apply_set_name_authority() {
 fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "internal_test".to_string(),
             params: vec![],
             param_types: None,
@@ -636,6 +648,7 @@ fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
 fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "bridge_unavailable_test".to_string(),
             params: vec![],
             param_types: None,
@@ -680,6 +693,7 @@ fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
 fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "invoke_ffi_capability_test".to_string(),
             params: vec![],
             param_types: None,
@@ -713,6 +727,7 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
 fn test_compile_checked_lowers_object_set_class_metatable() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "object_set_class_test".to_string(),
             params: vec![],
             param_types: None,
@@ -756,6 +771,7 @@ fn test_compile_checked_lowers_object_set_class_metatable() {
 fn test_compile_checked_lowers_class_layout_metadata() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "class_layout_metadata_test".to_string(),
             params: vec![],
             param_types: None,
@@ -858,6 +874,7 @@ fn test_default_luau_dispatch_uses_checked_path() {
     // This ensures no fail-open path exists.
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dispatch_test".to_string(),
             params: vec![],
             param_types: None,
@@ -894,6 +911,7 @@ fn test_luau_repr_authority_typed_list_call_method_dispatch() {
     // list-method lowering for Luau tables.
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "append_to".to_string(),
             params: vec!["xs".to_string(), "v".to_string()],
             param_types: Some(vec!["list[int]".to_string(), "int".to_string()]),

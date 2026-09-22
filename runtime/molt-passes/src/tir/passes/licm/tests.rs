@@ -158,7 +158,12 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
 /// with a+b computed inside the loop body.
 #[test]
 fn invariant_add_hoisted_to_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = func.fresh_value();
     let b = func.fresh_value();
 
@@ -281,7 +286,12 @@ fn invariant_add_hoisted_to_preheader() {
 
 #[test]
 fn reachable_preheader_ignores_retained_unreachable_predecessor() {
-    let mut func = TirFunction::new("dead_predecessor".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "dead_predecessor".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let loop_shape = build_single_loop(&mut func);
     let invariant = func.fresh_value();
     func.blocks
@@ -323,6 +333,7 @@ fn function_parameter_operand_can_hoist() {
         "parameter_dominates_preheader".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let parameter = ValueId(0);
     let loop_shape = build_single_loop(&mut func);
@@ -353,7 +364,12 @@ fn function_parameter_operand_can_hoist() {
 
 #[test]
 fn loop_block_argument_operand_cannot_hoist() {
-    let mut func = TirFunction::new("loop_argument".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "loop_argument".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let loop_shape = build_single_loop(&mut func);
     let copied = func.fresh_value();
     func.blocks
@@ -382,7 +398,12 @@ fn loop_block_argument_operand_cannot_hoist() {
 
 #[test]
 fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
-    let mut func = TirFunction::new("sibling_definition".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "sibling_definition".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let loop_shape = build_single_loop(&mut func);
     let sibling = func.fresh_block();
     let entry_cond = func.fresh_value();
@@ -441,7 +462,12 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
 
 #[test]
 fn same_round_hoists_preserve_source_order() {
-    let mut func = TirFunction::new("stable_hoist_order".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "stable_hoist_order".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let loop_shape = build_single_loop(&mut func);
     let first = func.fresh_value();
     let second = func.fresh_value();
@@ -471,6 +497,7 @@ fn same_round_hoists_preserve_source_order() {
 #[test]
 fn luau_loop_pending_observer_stays_inside_executable_loop_through_pass_manager() {
     let source = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "loop_pending_observer".into(),
         ops: vec![
             OpIR {
@@ -554,6 +581,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
         "f".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let module = ValueId(0);
     let attr_name = ValueId(1);
@@ -893,7 +921,12 @@ fn build_nested_loop(func: &mut TirFunction) -> NestedLoop {
 /// longer contain it.
 #[test]
 fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = func.fresh_value();
     let b = func.fresh_value();
 
@@ -971,7 +1004,12 @@ fn nested_loop_inner_invariant_hoisted_to_outer_preheader() {
 /// invariant transitively across both preheaders.
 #[test]
 fn nested_loop_outer_invariant_hoisted_via_inner() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = func.fresh_value();
     let b = func.fresh_value();
 
@@ -1046,7 +1084,12 @@ fn nested_loop_outer_invariant_hoisted_via_inner() {
 /// preheader (not the outer preheader, since `i` changes per outer iteration).
 #[test]
 fn nested_loop_partially_invariant_hoists_to_inner_preheader() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = func.fresh_value();
 
     let nl = build_nested_loop(&mut func);
@@ -1096,7 +1139,12 @@ fn nested_loop_partially_invariant_hoists_to_inner_preheader() {
 
 #[test]
 fn non_invariant_not_hoisted() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let a = ValueId(0);
 
     let preheader = func.fresh_block();
@@ -1334,7 +1382,12 @@ fn throw_condition_disproven_per_opcode() {
 /// determines whether the shift's `ValueError` throw is range-disproven.
 /// Returns the function plus the loop-body block id and the shift result id.
 fn invariant_shift_loop(shift_count: i64) -> (TirFunction, BlockId, ValueId) {
-    let mut func = TirFunction::new("sh".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "sh".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let x = func.fresh_value();
     let preheader = func.fresh_block();
     let loop_header = func.fresh_block();

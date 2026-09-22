@@ -42,7 +42,12 @@ pub(super) fn emit_terminator<'c, 'a>(
                     tir_func.name
                 ));
             }
-            let return_values = if let Some(&value_id) = values.first() {
+            let return_values = if !tir_func.return_abi.returns_value() {
+                if !values.is_empty() {
+                    return Err("value return through a void function ABI".to_string());
+                }
+                vec![]
+            } else if let Some(&value_id) = values.first() {
                 let value = resolve_value(value_map, value_id)?;
                 vec![coerce_value_to_tir_type(
                     ctx,
@@ -51,8 +56,6 @@ pub(super) fn emit_terminator<'c, 'a>(
                     &tir_func.return_type,
                     location,
                 )?]
-            } else if matches!(tir_func.return_type, TirType::Never) {
-                vec![]
             } else {
                 vec![zero_value_for_return_type(
                     ctx,
@@ -196,7 +199,7 @@ pub(super) fn emit_terminator<'c, 'a>(
 
         Terminator::Unreachable => {
             append_unreachable_assert(ctx, block, location);
-            if matches!(tir_func.return_type, TirType::Never) {
+            if !tir_func.return_abi.returns_value() {
                 block.append_operation(func::r#return(&[], location));
             } else {
                 let zero_val =
@@ -376,6 +379,9 @@ fn zero_value_for_return_type<'c, 'a>(
     return_type: &TirType,
     location: Location<'c>,
 ) -> Value<'c, 'a> {
+    // Match this backend's existing ConstNone convention (i64 zero for None
+    // and DynBox), or its typed raw-scalar placeholder. This MLIR carrier is
+    // not the NaN-boxed runtime ABI used by the native/WASM boxed emitters.
     let mlir_type = mlir_type_for_tir(ctx, return_type);
     let op = if matches!(return_type, TirType::F64) {
         arith::constant(

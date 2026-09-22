@@ -53,6 +53,27 @@ def test_cache_payload_digest_matches_canonical_json_bytes() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "project", ["_cache_ir_payload_ir", "_cache_backend_payload_ir"]
+)
+def test_cache_identity_preserves_return_abi_without_payload_returns(
+    project: str,
+) -> None:
+    projection = getattr(CACHE_KEYS, project)
+    digests = set()
+    for return_abi in ("void", "value"):
+        function = {
+            "name": "function",
+            "params": [],
+            "return_abi": return_abi,
+            "ops": [{"kind": "ret_void"}],
+        }
+        payload = projection({"functions": [function]})
+        assert payload["functions"][0]["return_abi"] == return_abi
+        digests.add(CACHE_KEYS._cache_payload_digest(payload))
+    assert len(digests) == 2
+
+
 @pytest.fixture
 def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"

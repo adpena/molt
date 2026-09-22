@@ -167,26 +167,10 @@ fn canonicalize_non_executable_blocks(func: &mut TirFunction) {
 }
 
 fn lir_return_types(func: &TirFunction) -> Vec<TirType> {
-    let mut arities = func
-        .blocks
-        .values()
-        .filter_map(|block| match &block.terminator {
-            Terminator::Return { values } => Some(values.len()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    arities.sort_unstable();
-    arities.dedup();
-    match arities.as_slice() {
-        [] => Vec::new(),
-        [0] => Vec::new(),
-        [1] => vec![func.return_type.clone()],
-        _ => match &func.return_type {
-            TirType::Tuple(items) if items.len() == *arities.iter().max().unwrap_or(&0) => {
-                items.clone()
-            }
-            other => vec![other.clone()],
-        },
+    if func.return_abi.returns_value() {
+        vec![func.return_type.clone()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -642,39 +626,12 @@ fn lower_return_values(
     // expected `LirRepr` is the type-floor of the return ABI type (`expected_id`
     // is `None`). The actual operand's `Repr` still comes from the override.
     let expected_types = lir_return_types(func);
-    if values.is_empty() && !expected_types.is_empty() {
-        return expected_types
-            .iter()
-            .cloned()
-            .map(|expected_ty| {
-                let none_id = allocator.fresh();
-                ops.push(LirOp {
-                    tir_op: TirOp {
-                        dialect: super::ops::Dialect::Molt,
-                        opcode: OpCode::ConstNone,
-                        operands: vec![],
-                        results: vec![none_id],
-                        attrs: AttrDict::new(),
-                        source_span: None,
-                    },
-                    result_values: vec![LirValue {
-                        id: none_id,
-                        ty: TirType::None,
-                        repr: LirRepr::DynBox,
-                    }],
-                });
-                materialize_value_for_type(
-                    none_id,
-                    expected_ty,
-                    None,
-                    type_map,
-                    allocator,
-                    ops,
-                    repr,
-                )
-            })
-            .collect();
-    }
+    assert!(
+        values.len() <= 1 && (func.return_abi.returns_value() || values.is_empty()),
+        "TIR return payload disagrees with authored function ABI"
+    );
+    // Empty exits remain empty. The final ABI emitter materializes the None
+    // carrier without inserting a new SSA operation after frame teardown.
     values
         .iter()
         .enumerate()
@@ -856,6 +813,7 @@ mod tests {
             },
         );
         let func = TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "checked_add".into(),
             execution_context: Default::default(),
             param_names: vec![],
@@ -885,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_return_values_follow_lir_return_surface_not_raw_function_return_type() {
+    fn lower_return_values_preserve_none_as_a_value_abi_type() {
         let entry = BlockId(0);
         let mut blocks = HashMap::new();
         blocks.insert(
@@ -900,6 +858,7 @@ mod tests {
             },
         );
         let func = TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "implicit_raise_helper".into(),
             execution_context: Default::default(),
             param_names: vec![],
@@ -924,6 +883,35 @@ mod tests {
         match &lir.blocks[&entry].terminator {
             LirTerminator::Return { values } => assert_eq!(values.len(), 1),
             other => panic!("expected return terminator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lir_return_surface_survives_empty_and_unreachable_exits() {
+        for terminator in [
+            Terminator::Return { values: vec![] },
+            Terminator::Unreachable,
+        ] {
+            let mut func = TirFunction::new(
+                "value_abi_without_payload".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            func.blocks.get_mut(&func.entry_block).unwrap().terminator = terminator;
+            let lir = lower_function_to_lir_for_repr_fact_extraction(&func);
+            assert_eq!(lir.return_types, vec![TirType::None]);
+            crate::tir::verify_lir::verify_lir_function(&lir).unwrap();
+            let entry = &lir.blocks[&lir.entry_block];
+            assert!(
+                entry.ops.is_empty(),
+                "empty exits must not synthesize SSA payloads"
+            );
+            match &entry.terminator {
+                LirTerminator::Return { values } => assert!(values.is_empty()),
+                LirTerminator::Unreachable => {}
+                other => panic!("unexpected empty exit: {other:?}"),
+            }
         }
     }
 
@@ -955,6 +943,7 @@ mod tests {
             },
         );
         let func = TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "alloc_point".into(),
             execution_context: Default::default(),
             param_names: vec!["cls".into()],
@@ -1045,6 +1034,7 @@ mod tests {
         );
 
         let func = TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dead_loop_end_lir".into(),
             execution_context: Default::default(),
             param_names: vec![],

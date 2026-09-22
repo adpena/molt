@@ -5,6 +5,7 @@ use molt_tir::target_admission::PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON;
 fn test_compile_checked_keeps_ordinary_programs_available() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             param_types: None,
@@ -51,6 +52,7 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
     for (kind, op) in cases {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: format!("{kind}_test"),
                 params: vec![],
                 param_types: None,
@@ -188,6 +190,7 @@ pub(super) fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
 fn path_local_exception_fixture() -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "path_local_catch".into(),
             params: vec!["callback".into(), "condition".into()],
             ops: vec![
@@ -373,6 +376,7 @@ fn captured_result_store_executes_before_exception_observer() {
 fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "module_global_test".into(),
             params: vec![],
             param_types: None,
@@ -433,6 +437,7 @@ fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
 fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "type_descriptor_test".into(),
             params: vec![],
             param_types: None,
@@ -482,6 +487,7 @@ fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
 fn test_pcall_try_except_compile() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "try_except_test".into(),
             params: vec![],
             param_types: None,
@@ -570,6 +576,7 @@ fn test_no_duplicate_local_declarations() {
     // plain assignment to avoid Luau syntax errors.
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dup_local_test".into(),
             params: vec![],
             param_types: None,
@@ -654,6 +661,7 @@ fn alternative_nested_try_closes_never_capture_lexical_control() {
 fn structured_return_keeps_explicit_exception_cleanup() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "stored_return".into(),
             params: vec![
                 "slot".into(),
@@ -685,6 +693,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
     let mut ir = path_local_exception_fixture();
     ir.functions.extend([
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "loop_pending_observer".into(),
             params: vec!["callback".into(), "cleanup".into()],
             ops: vec![
@@ -699,6 +708,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "terminal_observer".into(),
             params: vec!["handled".into()],
             ops: vec![
@@ -712,6 +722,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "bare_reraise".into(),
             ops: vec![
                 exception_op("raise", &[], None, None),
@@ -720,6 +731,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "cleanup_override".into(),
             params: vec!["saved".into(), "replacement".into()],
             ops: vec![
@@ -734,6 +746,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_resume_state".into(),
             ops: vec![
                 exception_op("const_bool", &[], Some("done"), Some(0)),

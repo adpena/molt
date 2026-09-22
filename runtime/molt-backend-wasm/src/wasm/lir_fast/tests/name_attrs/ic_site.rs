@@ -4,7 +4,12 @@ use super::super::*;
 fn generic_obj_literal_name_attr_uses_source_site_ic_id() {
     let func_name = "generic_obj_literal_name_attr";
     let source_op_idx = 23usize;
-    let mut func = TirFunction::new(func_name.into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        func_name.into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

@@ -19,6 +19,7 @@ fn field_fixture(allocation_kind: &str, payload: Option<i64>, body: Vec<OpIR>) -
     ops.extend(body);
     ops.push(field_op("ret_void", &[], None, None));
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "field_store_authority".into(),
         params: ["cls", "heap", "callback", "dynamic"]
             .map(str::to_owned)

@@ -53,6 +53,7 @@ fn type_section_has_at_least_49_static_types() {
     // test only asserts the lower bound, since it cannot see the const.
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],
@@ -76,6 +77,7 @@ fn type_section_has_at_least_49_static_types() {
 fn type_0_is_nullary_to_i64() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],
@@ -98,6 +100,7 @@ fn type_0_is_nullary_to_i64() {
 fn type_1_is_unary_to_void() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],
@@ -120,6 +123,7 @@ fn type_1_is_unary_to_void() {
 fn type_8_is_void_to_void() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],
@@ -147,6 +151,7 @@ fn user_function_with_params_adds_dynamic_type() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![op("ret_void")],
@@ -157,6 +162,7 @@ fn user_function_with_params_adds_dynamic_type() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_user_func".to_string(),
                 params: vec!["a".to_string(), "b".to_string(), "c".to_string()],
                 ops: vec![{
@@ -188,6 +194,7 @@ fn functions_with_same_arity_share_type() {
     let wasm_single = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![op("ret_void")],
@@ -198,6 +205,7 @@ fn functions_with_same_arity_share_type() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_func_a".to_string(),
                 params: vec!["x".to_string(), "y".to_string()],
                 ops: vec![{
@@ -218,6 +226,7 @@ fn functions_with_same_arity_share_type() {
     let wasm_double = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![op("ret_void")],
@@ -228,6 +237,7 @@ fn functions_with_same_arity_share_type() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_func_a".to_string(),
                 params: vec!["x".to_string(), "y".to_string()],
                 ops: vec![{
@@ -242,6 +252,7 @@ fn functions_with_same_arity_share_type() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_func_b".to_string(),
                 params: vec!["a".to_string(), "b".to_string()],
                 ops: vec![{
@@ -275,6 +286,7 @@ fn type_section_contains_expected_arity_signatures() {
     // used by imports and user functions.
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],
@@ -316,6 +328,7 @@ fn type_section_contains_expected_arity_signatures() {
 fn high_arity_static_types_exist() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![op("ret_void")],

@@ -26,7 +26,12 @@ fn peephole_instrs(input: Vec<Instruction<'static>>) -> Vec<Instruction<'static>
 
 /// Build a trivial function: returns a constant i64.
 fn make_const_return_func(val: i64) -> TirFunction {
-    let mut func = TirFunction::new("const_ret".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "const_ret".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -53,7 +58,12 @@ fn make_scalar_const_return_func(
     return_type: TirType,
     attrs: AttrDict,
 ) -> TirFunction {
-    let mut func = TirFunction::new(name.into(), vec![], return_type);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        return_type,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -84,6 +94,7 @@ fn make_fixed_runtime_service_func(
         } else {
             TirType::None
         },
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = has_result.then(|| {
         let id = func.fresh_value();
@@ -119,6 +130,7 @@ fn make_copy_original_kind_runtime_func(
         } else {
             TirType::None
         },
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = has_result.then(|| {
         let id = func.fresh_value();
@@ -154,6 +166,7 @@ fn make_add_two_params_func() -> TirFunction {
         "add_two_params".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value(); // ValueId(2)
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -172,7 +185,12 @@ fn make_add_two_params_func() -> TirFunction {
 }
 
 fn make_binary_two_consts_func(name: &str, opcode: OpCode, lhs: i64, rhs: i64) -> TirFunction {
-    let mut func = TirFunction::new(name.into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        name.into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let lhs_id = func.fresh_value();
     let rhs_id = func.fresh_value();
     let result_id = func.fresh_value();
@@ -208,7 +226,12 @@ fn make_add_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
 }
 
 fn make_checked_mul_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
-    let mut func = TirFunction::new("checked_mul_two_consts".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "checked_mul_two_consts".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let lhs_id = func.fresh_value();
     let rhs_id = func.fresh_value();
     let product_id = func.fresh_value();
@@ -241,7 +264,12 @@ fn make_checked_mul_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
 }
 
 fn make_lt_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
-    let mut func = TirFunction::new("lt_two_consts".into(), vec![], TirType::Bool);
+    let mut func = TirFunction::new(
+        "lt_two_consts".into(),
+        vec![],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let lhs_id = func.fresh_value();
     let rhs_id = func.fresh_value();
     let result_id = func.fresh_value();

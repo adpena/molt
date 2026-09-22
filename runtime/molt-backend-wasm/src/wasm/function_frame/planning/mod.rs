@@ -194,6 +194,7 @@ mod tests {
     #[test]
     fn frame_slots_follow_reads_and_definitions_not_wire_field_spelling() {
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "field_role_slots".into(),
             params: vec!["source".into()],
             ops: vec![

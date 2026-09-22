@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-/// One return-contract projection shared by initial lifting and refinement.
-/// Only exact producer facts may enter this ABI projection, never annotations
+/// Semantic return-value type shared by initial lifting and refinement.
+/// This never selects function return arity; the authored return ABI owns that.
+/// Only exact producer facts may enter this carrier projection, never annotations
 /// or subtype guards whose operands can override scalar Python operations.
 pub(crate) fn infer_return_type<'a>(
     blocks: impl Iterator<Item = &'a crate::tir::blocks::TirBlock>,

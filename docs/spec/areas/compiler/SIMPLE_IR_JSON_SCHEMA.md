@@ -31,8 +31,8 @@ One JSON object per line. The backend accepts both formats via
 
 ```
 {"kind":"ir_stream_start","profile":null}
-{"kind":"function","name":"molt_main","params":[],"ops":[...]}
-{"kind":"function","name":"helper","params":["a"],"ops":[...]}
+{"kind":"function","name":"molt_main","params":[],"return_abi":"void","ops":[...]}
+{"kind":"function","name":"helper","params":["a"],"return_abi":"value","ops":[...]}
 {"kind":"ir_stream_end"}
 ```
 
@@ -71,11 +71,26 @@ only the remaining functions; hotness cannot replace semantic entry identity.
 |---------------|------------|----------|-------------------------------------------------------|
 | `name`        | `string`   | yes      | Mangled function name (e.g. `molt_main`, `__main__`)  |
 | `params`      | `string[]` | yes      | Parameter names (SSA value names)                     |
+| `return_abi`  | `"void" \| "value"` | yes | Immutable linkage return convention, independent of body exits |
 | `ops`         | `OpIR[]`   | yes      | Ordered instruction sequence                          |
 | `param_types` | `string[]?`| no       | Optional type annotations parallel to `params`        |
 
 The frontend may also emit `borrowed_params` (list of param names eligible for
 Perceus-style borrow elision), but the backend does not require it.
+
+`return_abi` is authored when the function is constructed and survives
+optimization, partitioning, extern projection, and SimpleIR/TIR cache transport.
+It is never inferred from the remaining `ret` operations or a refined semantic
+return type. `ret_void` in a value-returning function returns boxed Python `None`;
+in a void function it has no machine result. A value payload in a void function
+is invalid. Removing every value-returning path, including making the whole body
+unreachable, does not change the calling convention. Missing or unknown ABI
+values are rejected, not reconstructed from the body.
+
+An `is_extern: true` declaration has empty `ops` and retains the same explicit
+signature fields. Extern bodies do not carry synthetic `missing`/`ret` signature
+instructions. Function-contract and TIR cache versions reject obsolete carriers;
+old artifacts are not upgraded by guessing a signature.
 
 Before CLI assembly, source initializers carry `source_module_publication` with
 the canonical `module_name`, SSA `module_value`, and integer `failure_label`.
@@ -348,7 +363,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `loop_break_if_false` | `args` [cond]         | Conditional break (inverted)             |
 | `loop_index_start`    | `args`, `out`         | Initialize loop counter                  |
 | `loop_index_next`     | `args`, `out`         | Increment loop counter                   |
-| `ret_void`            | --                    | Return void (module-level)               |
+| `ret_void`            | --                    | Empty exit: no result for `void` ABI; Python `None` for `value` ABI |
 | `return`              | `args` [value]        | Return value from function               |
 
 **Example:**
@@ -682,7 +697,7 @@ All use the standard `args` + `out` pattern.
 |---------------------|-----------------------|----------------------------------|
 | `nop`               | --                    | No operation                     |
 | `line`              | `value` (line number) | Source line mapping               |
-| `trace_enter_slot`  | `value` (slot)        | Enter trace slot                 |
+| `trace_enter_slot`  | `value` (slot)        | Attempt frame entry; next `check_exception` owns failure cleanup |
 | `trace_exit`        | --                    | Exit trace                       |
 | `frame_locals_set`  | `args`                | Set frame locals dict            |
 | `copy`              | --                    | SSA copy / variable alias        |
@@ -796,6 +811,7 @@ Unknown kind strings fall through to `Copy` (no-op).
     {
       "name": "molt_main",
       "params": [],
+      "return_abi": "void",
       "ops": [
         {"kind": "call", "s_value": "molt_init___main__", "args": [], "value": 0, "out": "v0"},
         {"kind": "ret_void"}
@@ -804,6 +820,7 @@ Unknown kind strings fall through to `Copy` (no-op).
     {
       "name": "molt_init___main__",
       "params": [],
+      "return_abi": "void",
       "ops": [
         {"kind": "const", "value": 10, "out": "v0"},
         {"kind": "const", "value": 20, "out": "v1"},

@@ -903,6 +903,7 @@ mod tests {
     fn verify(params: &[&str], ops: Vec<OpIR>) -> SimpleIrVerificationReport {
         verify_simple_ir(&SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Value,
                 name: "molt_main".to_string(),
                 params: params.iter().map(|name| (*name).to_string()).collect(),
                 ops,
@@ -944,6 +945,7 @@ mod tests {
                 };
                 let ir = SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: crate::FunctionReturnAbi::Void,
                         name: "bad_graph".into(),
                         ops: vec![reference],
                         ..FunctionIR::default()
@@ -966,6 +968,7 @@ mod tests {
     fn control_flow_admission_keeps_valid_falloff_and_path_local_metadata() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
                 name: "falloff".into(),
                 ops: vec![
                     OpIR {

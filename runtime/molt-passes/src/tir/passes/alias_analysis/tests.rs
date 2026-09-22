@@ -727,7 +727,12 @@ fn generic_heap_aliases_opaque_regions() {
 
 #[test]
 fn transparent_copy_chain_resolves_to_root() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let obj = ValueId(0);
     let a = func.fresh_value();
     let b = func.fresh_value();
@@ -744,7 +749,12 @@ fn transparent_copy_chain_resolves_to_root() {
 
 #[test]
 fn container_builder_passthrough_copy_is_not_an_alias() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let obj = ValueId(0);
     let lst = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -764,7 +774,12 @@ fn container_builder_passthrough_copy_is_not_an_alias() {
 
 #[test]
 fn owned_binding_alias_copy_is_not_a_transparent_root() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let obj = ValueId(0);
     let alias = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -929,7 +944,12 @@ fn copy_lowering_classes_are_total_and_disjoint() {
 /// are two independent owned references on a correct (FreshValue) backend.
 #[test]
 fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Str], TirType::Str);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Str],
+        TirType::Str,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let src = ValueId(0);
     let start = func.fresh_value();
     let stop = func.fresh_value();
@@ -956,7 +976,12 @@ fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
 
 #[test]
 fn unpack_sequence_results_are_independent_owned_roots() {
-    let mut func = TirFunction::new("unpack".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "unpack".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let sequence = ValueId(0);
     let first = func.fresh_value();
     let second = func.fresh_value();
@@ -983,7 +1008,12 @@ fn unpack_sequence_results_are_independent_owned_roots() {
 
 #[test]
 fn escape_map_matches_escape_analysis_and_caches() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0);
     let inst = func.fresh_value();
     let load = func.fresh_value();
@@ -1475,6 +1505,7 @@ fn cfg_parameter_that_may_select_external_does_not_mint_allocation_identity() {
         "mixed_field_receiver".into(),
         vec![TirType::DynBox, TirType::Bool],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let external = ValueId(0);
     let control = ValueId(1);
@@ -1582,7 +1613,12 @@ fn borrow_provenance_records_loadattr_and_index_sources() {
         }
     }
 
-    let mut func = TirFunction::new("bp".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "bp".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let h = func.fresh_value(); // LoadAttr(obj)
     let cont = func.fresh_value();
@@ -1631,7 +1667,12 @@ fn borrow_provenance_is_transitive() {
         }
     }
 
-    let mut func = TirFunction::new("bpt".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "bpt".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let h1 = func.fresh_value();
     let h2 = func.fresh_value();

@@ -92,6 +92,7 @@ fn roundtrip_compile(func: FunctionIR) -> CompileOutput {
     eprintln!("ROUNDTRIPPED_SIMPLE_DEBUG: {round_tripped:#?}");
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: func.name,
             params: func.params,
             ops: round_tripped,
@@ -250,6 +251,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "nested_loop_if_phi_regression".to_string(),
             params: Vec::new(),
             ops,
@@ -340,6 +342,7 @@ fn loop_body_if_join_then_continue_compiles() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_body_if_join_continue".to_string(),
             params: Vec::new(),
             ops,
@@ -435,6 +438,7 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
     ops.push(ret_false);
 
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "loop_if_return_continue_roundtrip".to_string(),
         params: Vec::new(),
         ops,
@@ -593,6 +597,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
     ops.push(ret_acc);
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "nested_loop_if_phi_direct_tir".to_string(),
         params: Vec::new(),
         ops,

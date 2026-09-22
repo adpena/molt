@@ -56,6 +56,7 @@ fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
             } else {
                 TirType::None
             },
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = has_result.then(|| {
             let id = func.fresh_value();

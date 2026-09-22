@@ -3513,6 +3513,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
             {
                 "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
                 "params": [],
+                "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
             }
             for module_name in module_order
@@ -3583,6 +3584,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
             {
                 "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
                 "params": [],
+                "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
             }
             for module_name in module_order
@@ -3649,6 +3651,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
             {
                 "name": cli.SimpleTIRGenerator.module_init_symbol("demo"),
                 "params": [],
+                "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
             }
         ],
@@ -8416,6 +8419,7 @@ def _source_init_for_native_callable_publication(
     return {
         "name": SimpleTIRGenerator.module_init_symbol(module_name),
         "params": [],
+        "return_abi": "void",
         "source_module_publication": {
             "module_name": module_name,
             "module_value": "v1",
@@ -8644,6 +8648,13 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     generator = SimpleTIRGenerator(
         module_name="nativepkg",
         source_path="/tmp/nativepkg/__init__.py",
+        known_modules={
+            "nativepkg",
+            "nativepkg._provider",
+            "builtins",
+            "importlib",
+            "importlib.machinery",
+        },
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         native_callable_exports={export.qualified_name: export.digest_payload()},
@@ -8681,6 +8692,12 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
 
     spec = _ExternalNativeModuleInitSpec(
         module="nativepkg",
+        module_attr_exports=(
+            _ExternalNativeModuleAttrPublishSpec(
+                provider_module="nativepkg._provider",
+                attr="provided",
+            ),
+        ),
         direct_symbol_exports=(export,),
     )
     BACKEND_IR._append_static_native_callable_wrapper_functions(
@@ -8712,6 +8729,26 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     frame_locals_index = next(
         index for index, op in enumerate(init_ops) if op["kind"] == "frame_locals_set"
     )
+    const_strings = {
+        op["out"]: op["s_value"] for op in init_ops if op["kind"] == "const_str"
+    }
+    spec_index = next(
+        index
+        for index, op in enumerate(init_ops)
+        if op["kind"] == "module_set_attr"
+        and const_strings.get(op["args"][1]) == "__spec__"
+    )
+    enter_index = next(
+        index for index, op in enumerate(init_ops) if op["kind"] == "trace_enter_slot"
+    )
+    assert enter_index < spec_index < frame_locals_index
+    provider_symbol = SimpleTIRGenerator.module_init_symbol("nativepkg._provider")
+    provider_index = next(
+        index
+        for index, op in enumerate(init_ops)
+        if op["kind"] == "call" and op.get("s_value") == provider_symbol
+    )
+    assert provider_index > frame_locals_index
     wrapper_index = next(
         index
         for index, op in enumerate(init_ops)
@@ -11431,7 +11468,13 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
 def test_backend_ir_text_is_compact() -> None:
     text = CACHE_KEYS._backend_ir_text(
         {
-            "functions": [{"name": "main", "ops": [{"kind": "ret", "args": []}]}],
+            "functions": [
+                {
+                    "name": "main",
+                    "return_abi": "value",
+                    "ops": [{"kind": "ret", "args": []}],
+                }
+            ],
             "profile": {"hash": "abc"},
         }
     )
@@ -11453,7 +11496,15 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
 
     lease_path = cli._write_backend_ir_lease(
         tmp_path,
-        {"functions": [{"name": "main", "ops": [{"kind": "ret_void"}]}]},
+        {
+            "functions": [
+                {
+                    "name": "main",
+                    "return_abi": "value",
+                    "ops": [{"kind": "ret_void"}],
+                }
+            ]
+        },
     )
 
     assert lease_path.parent == tmp_path / "tmp" / "backend-ir-leases"
@@ -15690,6 +15741,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
             {
                 "name": "molt_main",
                 "params": [],
+                "return_abi": "void",
                 "ops": [
                     {
                         "kind": "call",
@@ -15934,7 +15986,11 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
         context_digest=context_digest,
         result={
             "functions": [
-                {"name": "molt_main", "ops": [{"kind": "code_slot_set", "value": 1}]}
+                {
+                    "name": "molt_main",
+                    "return_abi": "void",
+                    "ops": [{"kind": "code_slot_set", "value": 1}],
+                }
             ],
             "func_code_ids": {"molt_main": 1},
             "local_class_names": [],
@@ -15973,6 +16029,7 @@ def test_finalize_backend_ir_pads_truncated_param_types() -> None:
                 "name": "pkg__f",
                 "params": ["s", "x", "kw"],
                 "param_types": ["Any"],
+                "return_abi": "value",
                 "ops": [],
             }
         ],
@@ -16005,6 +16062,7 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
                     "name": "pkg__f",
                     "params": ["s", "x", "kw"],
                     "param_types": ["Any"],
+                    "return_abi": "value",
                     "ops": [],
                 }
             ],
@@ -29461,7 +29519,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     assert (
         BACKEND_IR._write_emitted_ir(
             emitted_ir_path,
-            {"functions": [{"name": "main", "ops": []}]},
+            {"functions": [{"name": "main", "return_abi": "value", "ops": []}]},
         )
         is None
     )
