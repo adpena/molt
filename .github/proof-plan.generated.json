@@ -129,7 +129,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "ece082ed8dd7c1ecacba50086443c6b7bc8788eb609be08c3ec95e442849f2ca",
+  "authority_sha256": "82847890db152f07c16156df39d677379179af94ae6b43ef5931b09f0e833764",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -3638,7 +3638,7 @@
         }
       }
     },
-    "inventory_hash_workers": 4,
+    "inventory_hash_workers": 12,
     "max_workers": 4,
     "resource_policies": [
       {
