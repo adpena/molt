@@ -3716,13 +3716,13 @@ def test_run_wasm_ld_links_staged_native_objects(
         output,
         linked,
         native_objects=(native_object,),
-        native_link_arguments=("--allow-undefined",),
+        native_link_arguments=("--undefined=ndimage_edt",),
     )
 
     assert rc == 0
     output_index = wasm_ld_inputs.index("-o") + 2
     assert Path(wasm_ld_inputs[output_index + 2]).name == native_object.name
-    assert "--allow-undefined" in wasm_ld_inputs
+    assert "--undefined=ndimage_edt" in wasm_ld_inputs
 
 
 def test_run_wasm_ld_rejects_signature_mismatch_warning(
@@ -3989,7 +3989,7 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         split_runtime=True,
         split_output_dir=split_dir,
         native_objects=(native_object,),
-        native_link_arguments=("--allow-undefined",),
+        native_link_arguments=("--undefined=ndimage_edt",),
     )
 
     assert rc == 0
@@ -3997,8 +3997,8 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     monolithic_cmd, split_app_cmd = link_calls
     assert any(Path(part).name == native_object.name for part in monolithic_cmd)
     assert any(Path(part).name == native_object.name for part in split_app_cmd)
-    assert "--allow-undefined" in monolithic_cmd
-    assert "--allow-undefined" in split_app_cmd
+    assert "--undefined=ndimage_edt" in monolithic_cmd
+    assert "--undefined=ndimage_edt" in split_app_cmd
     assert any(Path(part).name == runtime.name for part in monolithic_cmd)
     assert not any(Path(part).name == runtime.name for part in split_app_cmd)
     assert "--stack-first" in monolithic_cmd

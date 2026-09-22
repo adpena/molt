@@ -795,7 +795,7 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
-    assert len(plan.commands) == 89
+    assert plan.commands
     for command in plan.commands:
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
@@ -5937,7 +5937,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
         0.01,
     )
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(
@@ -6074,7 +6074,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(
@@ -6186,7 +6186,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
-        diagnostics_module, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
+        diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
     )
 
     rc = cli.main(

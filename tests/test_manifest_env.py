@@ -10,6 +10,7 @@ from molt.capability_manifest import (
     AuditConfig,
     IoConfig,
 )
+from molt._host_capabilities_generated import CAPABILITY_PROFILES
 
 
 def test_manifest_to_env_vars_empty():
@@ -22,7 +23,8 @@ def test_manifest_to_env_vars_empty():
 def test_manifest_to_env_vars_with_caps():
     m = CapabilityManifest(allow=["net", "fs.read"])
     env = m.to_env_vars()
-    assert env["MOLT_CAPABILITIES"] == "fs.read,net,websocket.connect,websocket.listen"
+    expected = sorted({"fs.read", *CAPABILITY_PROFILES["net"]})
+    assert env["MOLT_CAPABILITIES"] == ",".join(expected)
 
 
 def test_manifest_to_env_vars_with_resources():
