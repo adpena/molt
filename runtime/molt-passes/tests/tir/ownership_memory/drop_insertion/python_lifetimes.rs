@@ -6,6 +6,7 @@ fn multi_result_unpack_releases_every_owned_output_once() {
         "unpack_sequence_outputs".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let sequence = ValueId(0);
     let first = func.fresh_value();
@@ -42,6 +43,7 @@ fn getattr_default_result_and_default_temporary_are_independent_owned_roots() {
         "getattr_default_owned_result".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let receiver = ValueId(0);
     let name = ValueId(1);
@@ -82,6 +84,7 @@ fn special_attribute_result_is_an_independent_owned_root() {
         "special_attr_owned_result".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let receiver = ValueId(0);
     let result = func.fresh_value();
@@ -112,7 +115,12 @@ fn special_attribute_result_is_an_independent_owned_root() {
 
 #[test]
 fn finalizer_sensitive_container_releases_at_return_boundary() {
-    let mut func = TirFunction::new("finalizer_scope".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_scope".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let item = func.fresh_value();
     let list = func.fresh_value();
     for v in [item, list] {
@@ -156,7 +164,12 @@ fn finalizer_sensitive_container_releases_at_return_boundary() {
 
 #[test]
 fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
-    let mut func = TirFunction::new("finalizer_scope_store_result".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_scope_store_result".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let item = func.fresh_value();
     let list = func.fresh_value();
     let stored = func.fresh_value();
@@ -222,6 +235,7 @@ fn store_var_boundary_transferred_to_cleanup_block_arg_releases_once() {
         "store_var_cleanup_join_transfers_owner".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let class_obj = func.fresh_value();
     let stored = func.fresh_value();
@@ -290,6 +304,7 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
         "store_var_transfer_phi_live_in_descendant".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let join = func.fresh_block();
     let then_block = func.fresh_block();
@@ -414,6 +429,7 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
         "store_var_scope_root_survives_loop_exit".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let header = func.fresh_block();
     let body = func.fresh_block();
@@ -503,7 +519,12 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
 
 #[test]
 fn store_var_boundary_mixed_return_paths_split_non_transfer_release() {
-    let mut func = TirFunction::new("store_var_mixed_return_paths".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "store_var_mixed_return_paths".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let then_block = func.fresh_block();
     let else_block = func.fresh_block();
     let ret = func.fresh_block();
@@ -614,6 +635,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
         "store_var_rebind_epoch_cleanup".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let rebind = func.fresh_block();
     let keep = func.fresh_block();
@@ -781,6 +803,7 @@ fn store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release() {
         "store_var_origin_carrier_live_to_return_cleanup".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let carrier_a_block = func.fresh_block();
     let carrier_b_block = func.fresh_block();
@@ -901,6 +924,7 @@ fn owned_root_forwarded_to_three_owned_phis_gets_two_retains() {
         "owned_root_three_phi_retain_multiplicity".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let join = func.fresh_block();
     let owner = func.fresh_value();
@@ -968,6 +992,7 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
         "store_var_loop_phi_transfers_owner".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let header = func.fresh_block();
     let body = func.fresh_block();
@@ -1097,6 +1122,7 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
         "finalizer_scope_store_result_later_absorb".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let list = func.fresh_value();
     let stored = func.fresh_value();
@@ -1171,7 +1197,12 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
 
 #[test]
 fn copy_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
-    let mut func = TirFunction::new("finalizer_scope_copy_list".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_scope_copy_list".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let item = func.fresh_value();
     let list = func.fresh_value();
     for v in [item, list] {
@@ -1223,6 +1254,7 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
         "finalizer_scope_copy_class_def".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let name = func.fresh_value();
     let descriptor = func.fresh_value();
@@ -1301,6 +1333,7 @@ fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary(
         "finalizer_scope_call_bind_list".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let item = func.fresh_value();
     let list = func.fresh_value();
@@ -1353,6 +1386,7 @@ fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
         "finalizer_scope_unbound_call_arg".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let item = func.fresh_value();
     let list = func.fresh_value();
@@ -1412,6 +1446,7 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
         "finalizer_scope_real_call_bind_list".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let callee = func.fresh_value();
     let builder = func.fresh_value();
@@ -1475,7 +1510,12 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
 
 #[test]
 fn list_append_absorbed_temp_releases_at_append_boundary() {
-    let mut func = TirFunction::new("finalizer_scope_list_append".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_scope_list_append".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let list = func.fresh_value();
     let item = func.fresh_value();
     for v in [list, item] {
@@ -1529,6 +1569,7 @@ fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
         "finalizer_scope_module_set_attr".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let module = func.fresh_value();
     let name = func.fresh_value();
@@ -1604,6 +1645,7 @@ fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use
         "finalizer_scope_generic_attr_defaults".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let item = func.fresh_value();
     let func_obj = func.fresh_value();
@@ -1690,7 +1732,12 @@ fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use
 
 #[test]
 fn discarded_list_pop_result_releases_at_pop_boundary() {
-    let mut func = TirFunction::new("finalizer_scope_list_pop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_scope_list_pop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let item = func.fresh_value();
     let list = func.fresh_value();
     let popped = func.fresh_value();
@@ -1756,6 +1803,7 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
         "finalizer_scope_named_local_list".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let item = func.fresh_value();
     let list = func.fresh_value();
@@ -1808,7 +1856,12 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
 
 #[test]
 fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
-    let mut func = TirFunction::new("ordinary_local_scope".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "ordinary_local_scope".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let list = func.fresh_value();
     func.value_types.insert(list, TirType::DynBox);
     let entry = func.entry_block;
@@ -1853,7 +1906,12 @@ fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
 
 #[test]
 fn edge_dying_skips_finalizer_boundary_owned_local_root() {
-    let mut func = TirFunction::new("finalizer_boundary_edge_exit".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_boundary_edge_exit".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let gate = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -1941,7 +1999,12 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
 
 #[test]
 fn explicit_decref_is_the_finalizer_del_boundary() {
-    let mut func = TirFunction::new("finalizer_del".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer_del".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let item = func.fresh_value();
     func.value_types.insert(item, TirType::DynBox);
     let entry = func.entry_block;
@@ -1974,6 +2037,7 @@ fn delete_var_releases_old_slot_at_delete_boundary() {
         "delete_var_finalizer_boundary".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let missing = func.fresh_value();
     let item = func.fresh_value();
@@ -2042,6 +2106,7 @@ fn positive_named_ownership_not_finalizer_absence_selects_python_boundary() {
                             "named_owner_admission".into(),
                             vec![TirType::DynBox],
                             TirType::None,
+                            molt_ir::FunctionReturnAbi::Void,
                         );
                         let value = func.fresh_value();
                         func.value_types.insert(value, TirType::DynBox);

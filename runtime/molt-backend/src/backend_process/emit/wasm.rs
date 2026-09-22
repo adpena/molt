@@ -94,6 +94,7 @@ mod tests {
         let mut functions = Vec::new();
         if body_present {
             functions.push(FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: symbol.to_string(),
                 ..FunctionIR::default()
             });

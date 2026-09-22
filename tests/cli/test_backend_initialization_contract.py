@@ -136,6 +136,7 @@ def test_serialized_bootstrap_matches_native_signature_fixture() -> None:
     emitted = {
         "name": "molt_isolate_bootstrap",
         "params": [],
+        "return_abi": "value",
         "ops": _build_isolate_bootstrap_ops(code_slot_count=17, version_ops=[]),
     }
     assert json.loads(json.dumps(emitted)) == fixture
@@ -223,6 +224,13 @@ def test_module_initializers_solely_own_code_and_globals_publication(
     assert error is None
     assert prepared is not None
     functions = {function["name"]: function for function in prepared.ir["functions"]}
+    for name, function in functions.items():
+        expected = (
+            "value"
+            if name in {"molt_isolate_bootstrap", "molt_isolate_import"}
+            else "void"
+        )
+        assert function["return_abi"] == expected, name
     for name in (
         "molt_main",
         "molt_host_init",

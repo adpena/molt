@@ -142,6 +142,7 @@ fn simple_sum_loop_vectorizable() {
     );
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "sum_loop".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -251,6 +252,7 @@ fn loop_with_call_not_vectorizable() {
     );
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "call_loop".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -348,6 +350,7 @@ fn build_loop_func(
     // fresh ids; the vectorize pass is annotation-only, so a generous
     // upper bound is sufficient and keeps tests robust to future edits.
     TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: name.into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -610,7 +613,12 @@ fn boolean_mixed_in_blocks_vectorization_correctness() {
 // -----------------------------------------------------------------------
 #[test]
 fn no_loops_no_changes() {
-    let mut func = TirFunction::new("no_loops".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "no_loops".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.terminator = Terminator::Return { values: vec![] };
 

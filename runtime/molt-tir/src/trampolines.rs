@@ -235,9 +235,8 @@ pub struct TrampolineSpec {
     pub has_closure: bool,
     pub kind: TrampolineKind,
     pub closure_size: i64,
-    /// Whether the target function returns a value. Trampolines use this
-    /// to set the correct import signature: functions with ret_void only
-    /// don't have a return in their signature.
+    /// The target's authored function return ABI. Trampolines project this
+    /// metadata into the import signature independently of surviving exits.
     pub target_has_ret: bool,
 }
 

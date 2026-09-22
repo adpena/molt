@@ -81,6 +81,7 @@ fn wasm_backend_uses_lir_fast_path_for_simple_scalar_function() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_wasm_lir_fast_path____molt_globals_builtin__".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             ops: vec![add, ret],
@@ -110,6 +111,7 @@ fn wasm_backend_skips_lir_fast_path_for_void_return_function() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_wasm_lir_fast_path_void____molt_globals_builtin__".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             ops: vec![add, op("ret_void")],

@@ -16,8 +16,9 @@ const boxedNone = BigInt(config.boxed_none);
 const boxedFalse = BigInt(config.boxed_false);
 const boxedTrue = BigInt(config.boxed_true);
 let state;
-function reset(label, inherited = false, exceptionAt = 0) {
+function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
   state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
+           initialDepth: inherited ? 1 : 0, attempts: [], failEntry,
            lines: [], polls: 0, exceptionAt, pending: false};
 }
 function ensure(condition, message) {
@@ -31,21 +32,35 @@ function instantiate(path) {
   }};
   const hooks = {
     trace_enter_slot(slot) {
-      ensure(state.depth === 0 && state.enters === 0, 'unexpected frame entry');
+      ensure(state.depth === state.initialDepth && state.enters === 0,
+             'unexpected frame entry');
       ensure(slot === 5n, 'wrong owner code slot ' + slot);
-      state.depth++; state.enters++; return boxedNone;
+      state.enters++;
+      state.attempts.push(!state.failEntry);
+      if (state.failEntry) {
+        state.pending = true;
+      } else {
+        state.depth++;
+      }
+      return boxedNone;
     },
     trace_exit() {
-      ensure(state.depth === 1 && state.enters === 1 && state.exits === 0,
+      ensure(state.attempts.length === 1 && state.enters === 1 && state.exits === 0,
              'frame pop without owned entry');
-      state.depth--; state.exits++; return boxedNone;
+      const pushed = state.attempts.pop();
+      ensure(state.depth === state.initialDepth + Number(pushed),
+             'frame depth does not match the owned entry attempt');
+      if (pushed) state.depth--;
+      state.exits++; return boxedNone;
     },
     trace_set_line(line) {
-      ensure(state.depth === 1, 'line update outside the executing frame');
+      ensure(!state.failEntry && state.depth === 1,
+             'line update outside the executing frame');
       state.lines.push(Number(line)); return boxedNone;
     },
     exception_pending() {
-      ensure(state.depth === 1, 'exception observer outside the executing frame');
+      ensure(state.attempts.length === 1 || (state.enters === 0 && state.depth === 1),
+             'exception observer outside the owned attempt or inherited frame');
       state.polls++;
       state.pending ||= state.polls === state.exceptionAt;
       return state.pending ? 1n : 0n;
@@ -75,14 +90,20 @@ function instantiate(path) {
   }
   return new WebAssembly.Instance(module, imports).exports;
 }
-function verifyOwner(exports, owner, lines, polls, exceptionAt = 0) {
-  reset(owner + ' exceptionAt=' + exceptionAt, false, exceptionAt);
-  exports[owner]();
-  ensure(state.depth === 0 && state.enters === 1 && state.exits === 1,
+function verifyOwner(exports, owner, lines, polls, exceptionAt = 0, failEntry = false) {
+  // Failed capture must consume only its false attempt marker, even when a
+  // caller frame already exists and would otherwise accept line mutations.
+  reset(owner + ' exceptionAt=' + exceptionAt + ' failEntry=' + failEntry,
+        failEntry, exceptionAt, failEntry);
+  const result = exports[owner]();
+  ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
+         && state.attempts.length === 0,
          'owner return must enter/pop exactly once');
+  assert.equal(result, boxedNone, state.label + ': void payload returns boxed None');
   assert.deepEqual(state.lines, lines, state.label + ': executed chunk lines');
-  assert.equal(state.polls, polls, state.label + ': executed chunk exception checks');
-  assert.equal(state.pending, exceptionAt !== 0, state.label + ': exception remains pending');
+  assert.equal(state.polls, polls, state.label + ': executed entry/chunk exception checks');
+  assert.equal(state.pending, exceptionAt !== 0 || failEntry,
+               state.label + ': exception remains pending');
 }
 reset('instantiate split module');
 const baseline = config.cases[0];
@@ -98,10 +119,12 @@ for (const chunk of baseline.chunks) {
   assert.equal(state.polls, 0, state.label);
 }
 // Actual owner/chunks: normal return and pending exception at each boundary.
-verifyOwner(app, baseline.owner, baseline.chunks.flatMap(c => c.lines), baseline.chunks.length);
+verifyOwner(app, baseline.owner, baseline.chunks.flatMap(c => c.lines), baseline.chunks.length + 1);
+verifyOwner(app, baseline.owner, [], 1, 1);
+verifyOwner(app, baseline.owner, [], 1, 0, true);
 for (let boundary = 1; boundary <= baseline.chunks.length; boundary++) {
   verifyOwner(app, baseline.owner,
-    baseline.chunks.slice(0, boundary).flatMap(c => c.lines), boundary, boundary);
+    baseline.chunks.slice(0, boundary).flatMap(c => c.lines), boundary + 1, boundary + 1);
 }
 // Separate status-injection fixtures cover each owner stop and fallthrough;
 // they are not evidence for unmodified chunk return behavior.
@@ -109,7 +132,7 @@ for (const test of config.cases.slice(1)) {
   reset('instantiate status module ' + test.owner);
   const statusApp = instantiate(test.module);
   verifyOwner(statusApp, test.owner,
-    test.chunks.slice(0, test.executed).flatMap(c => c.lines), test.executed);
+    test.chunks.slice(0, test.executed).flatMap(c => c.lines), test.executed + 1);
 }
 // The same observer rejects executable malformed frame lifecycles.
 reset('instantiate malformed-frame controls');
@@ -122,15 +145,28 @@ for (const [name, message] of [
 ]) {
   assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
 }
-console.log('split-frame execution: actual chunks, normal/exceptional owner, status edges, negative controls passed');
+for (const test of config.empty_return_modules) {
+  reset('empty value-ABI return ' + test.lane);
+  const empty = instantiate(test.module);
+  assert.equal(empty.molt_main(), boxedNone, state.label);
+  ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
+}
+console.log('split-frame execution: checked/failed entry, actual chunks, normal/exceptional owner, status edges, negative controls passed');
 "#;
 
 fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
-    let mut ops = vec![OpIR {
-        kind: "trace_enter_slot".into(),
-        value: Some(5),
-        ..OpIR::default()
-    }];
+    let mut ops = vec![
+        OpIR {
+            kind: "trace_enter_slot".into(),
+            value: Some(5),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "check_exception".into(),
+            value: Some(0),
+            ..OpIR::default()
+        },
+    ];
     for line in 1..=6 {
         ops.push(OpIR {
             kind: "line".into(),
@@ -146,8 +182,16 @@ fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
     ops.extend([
         wasm_test_op("trace_exit", None, vec![]),
         wasm_test_op("ret_void", None, vec![]),
+        OpIR {
+            kind: "label".into(),
+            value: Some(0),
+            ..OpIR::default()
+        },
+        wasm_test_op("trace_exit", None, vec![]),
+        wasm_test_op("ret_void", None, vec![]),
     ]);
     let original = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.into(),
         ops,
         execution_context: ExecutionContextPolicy::Local,
@@ -332,6 +376,31 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         case["module"] = json!(module_path);
         cases.push(case);
     }
+    let mut empty_return_modules = Vec::new();
+    for dispatch in [false, true] {
+        let mut ops = Vec::new();
+        if dispatch {
+            ops.extend(["jump", "label"].map(|kind| OpIR {
+                kind: kind.into(),
+                value: Some(7),
+                ..OpIR::default()
+            }));
+        }
+        ops.push(wasm_test_op("ret_void", None, vec![]));
+        let function = wasm_test_function("molt_main", vec![], None, ops);
+        assert_eq!(function.return_abi, molt_ir::FunctionReturnAbi::Value);
+        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+            functions: vec![function],
+            profile: None,
+        });
+        let (pages, entries) = wasm_import_minimums(&output.wasm);
+        memory_pages = memory_pages.max(pages);
+        table_entries = table_entries.max(entries);
+        let lane = if dispatch { "dispatch" } else { "ordinary" };
+        let module = temp.join(format!("empty_return_{lane}.wasm"));
+        fs::write(&module, output.wasm).expect("write empty-return ABI module");
+        empty_return_modules.push(json!({"lane": lane, "module": module}));
+    }
     let negative = malformed_frame_module();
     wasmparser::Validator::new()
         .validate_all(&negative)
@@ -349,6 +418,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
             "cases": cases,
+            "empty_return_modules": empty_return_modules,
         }))
         .unwrap(),
     )

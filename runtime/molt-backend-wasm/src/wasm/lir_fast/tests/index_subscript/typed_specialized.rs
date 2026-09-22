@@ -20,6 +20,7 @@ fn typed_dict_and_tuple_index_select_specialized_runtime_calls() {
             name.into(),
             vec![container_type, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::DynBox);

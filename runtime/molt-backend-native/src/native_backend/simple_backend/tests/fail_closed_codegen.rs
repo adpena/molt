@@ -24,6 +24,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
         _ => Vec::new(),
     };
     let caller = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -139,6 +140,7 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
 #[should_panic(expected = "builtin_func declaration mismatch for `helper`")]
 fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -167,6 +169,7 @@ fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "func_new declaration mismatch for `helper`")]
 fn func_new_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -195,6 +198,7 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "asyncgen_locals_register declaration mismatch for `helper`")]
 fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -232,6 +236,7 @@ fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "gen_locals_register declaration mismatch for `helper`")]
 fn gen_locals_register_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -269,6 +274,7 @@ fn gen_locals_register_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "call declaration mismatch for `helper`")]
 fn call_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -302,6 +308,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
 fn compile_missing_static_target_symbol(kind: &str) {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "caller".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -349,6 +356,7 @@ fn call_guarded_missing_target_symbol_fails_closed_at_codegen() {
 fn const_str_missing_payload_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "const_str_missing_payload".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -376,6 +384,7 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
 fn const_str_empty_string_payload_still_compiles() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "const_str_empty_payload".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -407,6 +416,7 @@ fn const_str_empty_string_payload_still_compiles() {
 #[should_panic(expected = "call_guarded declaration mismatch for `helper`")]
 fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![
@@ -448,6 +458,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "helper".to_string(),
                 params: vec!["value".to_string()],
                 ops: vec![OpIR {
@@ -462,6 +473,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "caller".to_string(),
                 params: Vec::new(),
                 ops: vec![
@@ -506,6 +518,7 @@ fn call_internal_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "func_new_closure declaration mismatch for `helper`")]
 fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
         ops: vec![

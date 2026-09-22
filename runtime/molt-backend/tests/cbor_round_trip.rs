@@ -19,6 +19,7 @@ mod cbor_tests {
 
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "test_fn".to_string(),
                 params: vec!["x".to_string()],
                 ops: vec![c0, ret],
@@ -63,6 +64,7 @@ fn test_cbor_nan_infinity_round_trip() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "test_nan".to_string(),
             params: vec![],
             ops: vec![

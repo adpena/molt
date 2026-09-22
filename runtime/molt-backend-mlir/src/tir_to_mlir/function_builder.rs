@@ -10,7 +10,7 @@ use melior::{
         r#type::{FunctionType, IntegerType},
     },
 };
-use molt_backend::tir::{blocks::BlockId, function::TirFunction, types::TirType};
+use molt_backend::tir::{blocks::BlockId, function::TirFunction};
 
 use super::{
     ops::emit_tir_op, terminators::emit_terminator, types::mlir_type_for_tir, values::ValueMap,
@@ -31,7 +31,7 @@ pub(super) fn build_func_op<'c>(
         .iter()
         .map(|ty| mlir_type_for_tir(ctx, ty))
         .collect();
-    let return_mlir_types: Vec<Type<'c>> = if matches!(tir_func.return_type, TirType::Never) {
+    let return_mlir_types: Vec<Type<'c>> = if !tir_func.return_abi.returns_value() {
         vec![]
     } else {
         vec![mlir_type_for_tir(ctx, &tir_func.return_type)]

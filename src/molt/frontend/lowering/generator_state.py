@@ -334,6 +334,7 @@ class GeneratorStateMixin(_MixinBase):
             "molt_main": {
                 "params": [],
                 "param_types": [],
+                "return_abi": "void",
                 "return_hint": None,
                 "ops": self._new_tracked_ops(),
             }

@@ -71,7 +71,12 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
     let ret_idx = (eat(data)? as usize) % TYPES.len();
     let return_type = TYPES[ret_idx].clone();
 
-    let mut func = TirFunction::new("fuzz_fn".to_string(), param_types, return_type.clone());
+    let mut func = TirFunction::new(
+        "fuzz_fn".to_string(),
+        param_types,
+        return_type.clone(),
+        molt_backend::ir::FunctionReturnAbi::Value,
+    );
 
     // Number of extra blocks: 0..=7
     let num_extra_blocks = (eat(data)? & 0x07) as u32;

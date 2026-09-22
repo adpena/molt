@@ -6,6 +6,7 @@ fn structured_if_skips_join_with_external_predecessor() {
         "branch_with_shared_join".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let inner_if = func.fresh_block();
@@ -106,6 +107,7 @@ fn structured_if_skips_arm_with_external_predecessor() {
         "branch_with_shared_then_arm".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let inner_if = func.fresh_block();
@@ -206,6 +208,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
         "branch_with_join_arg".into(),
         vec![TirType::Bool],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let then_blk = func.fresh_block();
@@ -305,7 +308,12 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
 
 #[test]
 fn check_exception_materializes_handler_arg_stores() {
-    let mut func = TirFunction::new("check_exception_handler_args".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "check_exception_handler_args".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let value = func.fresh_value();
     let exit_block = func.fresh_block();
@@ -395,7 +403,12 @@ fn check_exception_materializes_handler_arg_stores() {
 
 #[test]
 fn try_start_materializes_handler_arg_stores() {
-    let mut func = TirFunction::new("try_start_handler_args".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "try_start_handler_args".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let value = func.fresh_value();
     let exit_block = func.fresh_block();
@@ -489,6 +502,7 @@ fn structured_if_skips_one_return_one_continue_shape() {
         "branch_with_fallthrough_join".into(),
         vec![TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let then_blk = func.fresh_block();
@@ -553,6 +567,7 @@ fn structured_if_skips_successor_with_nested_scf() {
         "branch_with_nested_scf_successor".into(),
         vec![TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let then_blk = func.fresh_block();
@@ -627,6 +642,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
         "branch_with_try_region_successor".into(),
         vec![TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let then_blk = func.fresh_block();
@@ -724,6 +740,7 @@ fn structured_if_skips_join_that_is_loop_header() {
         "branch_with_loop_header_join".into(),
         vec![TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let then_blk = func.fresh_block();
@@ -793,6 +810,7 @@ fn loop_end_block_target_must_keep_its_label() {
         "loop_end_block_target_must_keep_its_label".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let target_block = func.fresh_block();

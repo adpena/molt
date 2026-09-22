@@ -38,6 +38,7 @@ fn exception_elision_requires_clean_fallthrough_and_generated_nothrow_facts() {
         "box",
         "box_from_raw_int",
         "call_func",
+        "trace_enter_slot",
         "label",
         "state_label",
         "unknown_operation",
@@ -160,6 +161,7 @@ fn untargeted_observers_cannot_hide_pending_failures_from_later_checks() {
 #[test]
 fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "direct_raise".to_string(),
         params: vec![],
         param_types: None,
@@ -226,6 +228,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
 fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "param_copy".to_string(),
             params: vec!["n".to_string()],
             param_types: None,
@@ -266,6 +269,7 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
 fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "copy_source".to_string(),
             params: vec![],
             param_types: None,
@@ -307,6 +311,7 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
 fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "copy_source_metadata".to_string(),
             params: vec![],
             param_types: None,
@@ -353,6 +358,7 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
 fn dead_op_elim_keeps_unused_potentially_throwing_index() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unused_index".to_string(),
             params: vec!["mapping".to_string(), "key".to_string()],
             param_types: None,
@@ -386,6 +392,7 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
 fn dead_op_elim_preserves_observable_module_lookup_chain() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "dead_static_class_guard".to_string(),
             params: vec![],
             param_types: None,
@@ -441,6 +448,7 @@ fn dead_op_elim_preserves_observable_module_lookup_chain() {
 fn dead_op_elim_keeps_unused_untyped_arithmetic() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unused_untyped_add".to_string(),
             params: vec!["left".to_string(), "right".to_string()],
             param_types: None,
@@ -471,6 +479,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
     add.fast_int = Some(true);
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unused_transport_hint_add".to_string(),
             params: vec!["left".to_string(), "right".to_string()],
             param_types: None,
@@ -496,6 +505,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
 fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unused_typed_param_add".to_string(),
             params: vec!["left".to_string(), "right".to_string()],
             param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -527,6 +537,7 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
     let add = make_arith("add", &["_v0", "_v1"], "_unused");
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unused_typed_const_add".to_string(),
             params: vec![],
             param_types: None,

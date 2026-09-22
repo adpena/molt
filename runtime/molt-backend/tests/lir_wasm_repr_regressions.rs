@@ -18,6 +18,7 @@ fn empty_tir_function(
     next_block: u32,
 ) -> TirFunction {
     TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -185,6 +186,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
         },
     );
     let func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "truthy_branch".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into()],
@@ -275,6 +277,7 @@ fn wasm_lir_loop_carried_i64_params_stay_i64() {
         },
     );
     let func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "loop_i64".into(),
         execution_context: Default::default(),
         param_names: vec!["i".into()],

@@ -41,6 +41,7 @@ mod tests {
             functions: names
                 .iter()
                 .map(|name| FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: (*name).into(),
                     ..FunctionIR::default()
                 })

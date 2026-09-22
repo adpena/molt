@@ -56,6 +56,7 @@ mod tests {
                 ops.push(op("state_switch", None));
             }
             let function = FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "path_local_context_close".to_string(),
                 params: vec!["self".to_string(), "condition".to_string()],
                 ops,

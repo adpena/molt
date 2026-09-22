@@ -22,6 +22,7 @@ fn object_new_bound_stays_lir_fast_and_uses_class_owned_layout_size() {
             name.into(),
             vec![TirType::DynBox],
             TirType::UserClass("Point".into()),
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types

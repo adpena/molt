@@ -84,7 +84,12 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
 fn forward_same_block_store_to_load() {
     // obj = alloc(16); store(obj, val, 0); r = load(obj, 0); return r
     // → the load becomes Copy(val).
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -121,6 +126,7 @@ fn unknown_value_store_does_not_enable_forwarding() {
         "unknown_stored_value".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let unknown = ValueId(0);
     let object = func.fresh_value();
@@ -158,6 +164,7 @@ fn replacing_store_is_not_a_forwarding_source() {
         "replacing_store".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let loaded = func.fresh_value();
     {
@@ -184,6 +191,7 @@ fn later_store_to_initialized_fresh_slot_is_not_a_forwarding_source() {
         "fresh_heap_old_replacement".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let first = ValueId(0);
     let replacement = ValueId(1);
@@ -218,6 +226,7 @@ fn field_result_escape_keeps_callback_barrier_without_receiver_operands() {
             format!("local_callback_{allocation:?}"),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let object = func.fresh_value();
         let value = func.fresh_value();
@@ -268,7 +277,12 @@ fn forward_blocked_by_interposed_call() {
     // obj = alloc(16); store(obj, val, 0); call(obj); r = load(obj, 0)
     // The call is a GenericHeap def between store and load → the load's
     // reaching def is the call, not the store → NOT forwarded.
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let val = ValueId(0);
     let obj = func.fresh_value();
     let call_r = func.fresh_value();
@@ -303,6 +317,7 @@ fn forwarding_is_blocked_by_callback_effects_without_root_operands() {
             format!("callback_{opcode:?}"),
             vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let val = ValueId(0);
         let unrelated_lhs = ValueId(1);
@@ -340,7 +355,12 @@ fn forwarding_is_blocked_by_callback_effects_without_root_operands() {
 
 #[test]
 fn exact_integer_add_does_not_block_forwarding() {
-    let mut func = TirFunction::new("exact_add".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "exact_add".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let left = func.fresh_value();
@@ -377,7 +397,12 @@ fn exact_integer_add_does_not_block_forwarding() {
 
 #[test]
 fn marked_async_work_poll_blocks_forwarding() {
-    let mut func = TirFunction::new("async_poll".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "async_poll".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let value = ValueId(0);
     let object = func.fresh_value();
     let loaded = func.fresh_value();
@@ -411,7 +436,12 @@ fn forward_blocked_by_different_offset() {
     // Different offset → the load does NOT read the store's bytes → NOT
     // forwarded. Exact-site admission does not invent a stored SSA value for
     // offset 0 from the store at offset 8.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -438,7 +468,12 @@ fn forward_blocked_by_different_offset() {
 #[test]
 fn interposed_other_offset_store_does_not_misforward() {
     // obj = alloc(16); store(obj, v0, 0); store(obj, v8, 8); r = load(obj, 0)
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let v0 = func.fresh_value();
     let v8 = func.fresh_value();
@@ -469,7 +504,12 @@ fn interposed_other_offset_store_does_not_misforward() {
 #[test]
 fn forward_cross_block_through_dominating_store() {
     // bb0: obj = alloc(16); store(obj, val, 0) → bb1 → bb2: r = load(obj, 0)
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let bb1 = func.fresh_block();
@@ -537,6 +577,7 @@ fn forward_blocked_by_memory_phi_merge() {
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::Bool],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let v1 = ValueId(0);
     let v2 = ValueId(1);
@@ -607,7 +648,12 @@ fn redundant_load_elim_same_block() {
     // r1 = load(obj, 0); r2 = load(obj, 0); return r1 + r2
     // No store and no clobber between → both loads read LIVE_ON_ENTRY for
     // the same slot → the second collapses to Copy(r1).
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let r1 = func.fresh_value();
     let r2 = func.fresh_value();
@@ -644,7 +690,12 @@ fn redundant_load_blocked_by_clobber() {
     // r1 = load(obj, 0); call(obj); r2 = load(obj, 0)
     // The call clobbers the slot (GenericHeap def) → the two loads read
     // DIFFERENT memory versions → the second is NOT redundant.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let r1 = func.fresh_value();
     let call_r = func.fresh_value();
@@ -677,6 +728,7 @@ fn redundant_load_not_across_sibling_blocks() {
         "f".into(),
         vec![TirType::DynBox, TirType::Bool],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let obj = ValueId(0);
     let cond = ValueId(1);
@@ -746,7 +798,12 @@ fn redundant_load_not_across_sibling_blocks() {
 #[test]
 fn forward_blocked_by_different_object() {
     // a = alloc(16); b = alloc(16); store(a, val, 0); r = load(b, 0).
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let val = ValueId(0);
     let a = func.fresh_value();
     let b = func.fresh_value();
@@ -774,7 +831,12 @@ fn forward_blocked_by_different_object() {
 fn forward_through_transparent_alias() {
     // obj = alloc(16); a = Copy(obj); store(obj, val, 0); r = load(a, 0)
     // → Copy(val).
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let a = func.fresh_value();
@@ -804,7 +866,12 @@ fn forward_through_transparent_alias() {
 
 #[test]
 fn same_allocation_base_and_derived_views_forward_one_physical_store() {
-    let mut func = TirFunction::new("base_derived_view".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "base_derived_view".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let object = func.fresh_value();
     let base_value = func.fresh_value();
     let loaded = func.fresh_value();
@@ -846,6 +913,7 @@ fn unknown_receiver_field_views_remain_callback_capable() {
         "unknown_base_derived_view".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let object = ValueId(0);
     let base_load = func.fresh_value();
@@ -915,6 +983,7 @@ fn guarded_field_get_fallback_blocks_forwarding() {
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let cls = ValueId(0);
     let ver = ValueId(1);
@@ -945,7 +1014,12 @@ fn guarded_field_get_fallback_blocks_forwarding() {
 /// CheckException status observation.
 #[test]
 fn redundant_plain_load_across_check_exception_collapses() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let r1 = func.fresh_value();
     let r2 = func.fresh_value();
@@ -985,7 +1059,12 @@ fn redundant_plain_load_across_check_exception_collapses() {
 
 #[test]
 fn run_forwards_without_ambient_disable_path() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -1024,7 +1103,12 @@ fn every_forward_acquires_a_reference() {
     //   obj = alloc(16); store(obj,val,0); r1 = load(obj,0);
     //   r2 = load(obj,0); sum=r1+r2
     // r1 forwards from the store; r2 is redundant against r1.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r1 = func.fresh_value();

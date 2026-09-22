@@ -1,7 +1,12 @@
 use super::super::*;
 
 fn unary_carrier_function(opcode: OpCode, operand_ty: TirType) -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("unary_carrier".into(), vec![operand_ty], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "unary_carrier".into(),
+        vec![operand_ty],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -163,6 +168,7 @@ fn dynbox_or_retains_selected_operand_result() {
         "or_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -208,7 +214,12 @@ fn dynbox_unary_scalar_helpers_stay_lir_fast_runtime_calls() {
     ];
 
     for (name, opcode, runtime_call) in cases {
-        let mut func = TirFunction::new(name.into(), vec![TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -243,6 +254,7 @@ fn dynbox_pow_stays_lir_fast_runtime_call() {
         "pow_dynbox".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -286,6 +298,7 @@ fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
             name.into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -324,7 +337,12 @@ fn bool_bitwise_results_stay_bool1_without_boxed_runtime_calls() {
     ];
 
     for (name, opcode) in cases {
-        let mut func = TirFunction::new(name.into(), vec![], TirType::Bool);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![],
+            TirType::Bool,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let lhs = func.fresh_value();
         let rhs = func.fresh_value();
         let result = func.fresh_value();
@@ -386,8 +404,12 @@ fn raw_bitwise_operands_with_boxed_results_use_boxed_runtime_calls() {
     ];
 
     for (name, opcode, runtime_call) in cases {
-        let mut func =
-            TirFunction::new(name.into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            name.into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -438,6 +460,7 @@ fn integer_invert_with_raw_input_and_boxed_result_uses_boxed_runtime() {
         "invert_raw_carrier".into(),
         vec![TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -500,6 +523,7 @@ fn dynbox_inplace_arithmetic_uses_generated_numeric_lir_helpers() {
             name.into(),
             vec![TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

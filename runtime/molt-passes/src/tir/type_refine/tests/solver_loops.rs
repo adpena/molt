@@ -83,6 +83,7 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
     blocks.insert(exit_id, exit);
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "iv_loop".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -187,6 +188,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
     blocks.insert(exit_id, exit);
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "iv_loop_dynamic_backedge".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -310,6 +312,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
     blocks.insert(dead_loop_end_id, dead_loop_end);
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "unreachable_loop_end_meet".into(),
         execution_context: Default::default(),
         param_names: vec![],

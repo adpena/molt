@@ -771,6 +771,7 @@ mod tests {
 
     fn deferred_finally_payload_ir() -> FunctionIR {
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "deferred_finally_payload".into(),
             params: vec![
                 "__molt_closure__".into(),
@@ -1001,6 +1002,7 @@ mod tests {
             ..OpIR::default()
         };
         let ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "rewritten_loop_call".into(),
             ops: vec![
                 OpIR {
@@ -1059,6 +1061,7 @@ mod tests {
     #[test]
     fn loop_latch_poll_is_materialized_before_ssa_with_handler_payload() {
         let mut ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "payload_loop".into(),
             params: vec!["payload".into()],
             ops: vec![
@@ -1147,7 +1150,12 @@ mod tests {
 
     #[test]
     fn generated_call_returns_and_loop_backedges_share_one_poll_marker() {
-        let mut func = TirFunction::new("polls".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "polls".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.entry_block;
         let latch = func.fresh_block();
         add_handler(&mut func, 70, vec![]);
@@ -1197,6 +1205,7 @@ mod tests {
             "call_cleanup_poll".into(),
             vec![TirType::DynBox],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let entry = func.entry_block;
         let handler = func.fresh_block();
@@ -1259,7 +1268,12 @@ mod tests {
 
     #[test]
     fn poll_lookup_never_crosses_a_second_call() {
-        let mut func = TirFunction::new("two_call_barrier".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "two_call_barrier".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 70, vec![]);
         func.blocks.get_mut(&entry).unwrap().ops = vec![call(), call(), check(70)];
@@ -1297,7 +1311,12 @@ mod tests {
 
     #[test]
     fn poll_lookup_follows_only_unique_empty_fallthrough_blocks() {
-        let mut func = TirFunction::new("split_call_boundary".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "split_call_boundary".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         let observer = func.fresh_block();
         add_handler(&mut func, 70, vec![]);
@@ -1385,8 +1404,12 @@ mod tests {
 
     #[test]
     fn latch_lookup_reuses_payload_check_before_nonraising_transport_suffix() {
-        let mut func =
-            TirFunction::new("latch_suffix".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new(
+            "latch_suffix".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let latch = func.entry_block;
         add_handler(&mut func, 70, vec![]);
         let mut transport = op(OpCode::Copy);
@@ -1438,7 +1461,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "has no pre-SSA-authored exception transfer")]
     fn post_ssa_loop_without_transfer_fails_closed() {
-        let mut func = TirFunction::new("synthetic_loop".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "synthetic_loop".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.entry_block;
         let latch = BlockId(1);
         func.next_block = 2;
@@ -1464,7 +1492,12 @@ mod tests {
 
     #[test]
     fn nested_try_call_uses_inner_lexical_handler_not_a_later_outer_check() {
-        let mut func = TirFunction::new("nested_try".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "nested_try".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 10, vec![]);
         add_handler(&mut func, 20, vec![]);
@@ -1490,7 +1523,12 @@ mod tests {
 
     #[test]
     fn same_block_try_transition_routes_each_call_from_its_exact_boundary() {
-        let mut func = TirFunction::new("try_transition".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "try_transition".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 30, vec![]);
         add_handler(&mut func, 31, vec![]);
@@ -1517,7 +1555,12 @@ mod tests {
 
     #[test]
     fn anonymous_try_call_uses_its_recovered_handler_destination() {
-        let mut func = TirFunction::new("anonymous_try_call".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "anonymous_try_call".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 73, vec![op(OpCode::TryEnd)]);
         func.blocks.get_mut(&entry).unwrap().ops =
@@ -1541,7 +1584,12 @@ mod tests {
 
     #[test]
     fn anonymous_try_loop_latch_uses_its_recovered_handler_destination() {
-        let mut func = TirFunction::new("anonymous_try_loop".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "anonymous_try_loop".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.entry_block;
         let latch = func.fresh_block();
         add_handler(&mut func, 74, vec![op(OpCode::TryEnd)]);
@@ -1573,7 +1621,12 @@ mod tests {
 
     #[test]
     fn nested_anonymous_try_calls_keep_inner_and_outer_destinations() {
-        let mut func = TirFunction::new("nested_anonymous_try".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "nested_anonymous_try".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 80, vec![labeled_op(OpCode::TryEnd, 80)]);
         add_handler(&mut func, 81, vec![labeled_op(OpCode::TryEnd, 81)]);
@@ -1604,7 +1657,12 @@ mod tests {
 
     #[test]
     fn loop_backedge_inside_try_uses_the_active_handler() {
-        let mut func = TirFunction::new("try_loop".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "try_loop".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let header = func.entry_block;
         let latch = func.fresh_block();
         add_handler(&mut func, 40, vec![]);
@@ -1639,6 +1697,7 @@ mod tests {
             "multi_header_latch".into(),
             vec![TirType::Bool],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let outer = func.entry_block;
         let inner = func.fresh_block();
@@ -1697,6 +1756,7 @@ mod tests {
             "nonlocal_inner_unwinds".into(),
             vec![TirType::Bool],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let entry = func.entry_block;
         let header = func.fresh_block();
@@ -1767,7 +1827,12 @@ mod tests {
 
     #[test]
     fn depth_zero_exit_lowers_as_value_return_for_non_none_function() {
-        let mut func = TirFunction::new("value_function".into(), vec![], TirType::I64);
+        let mut func = TirFunction::new(
+            "value_function".into(),
+            vec![],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 1, vec![]);
         let value = func.fresh_value();
@@ -1794,7 +1859,12 @@ mod tests {
 
     #[test]
     fn unreachable_block_call_is_not_a_poll_site() {
-        let mut func = TirFunction::new("dead_call_block".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "dead_call_block".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
             Terminator::Return { values: vec![] };
         let dead = func.fresh_block();
@@ -1816,7 +1886,12 @@ mod tests {
 
     #[test]
     fn unreachable_in_block_post_call_boundary_is_not_a_poll_site() {
-        let mut func = TirFunction::new("dead_post_transfer_call".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "dead_post_transfer_call".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let entry = func.entry_block;
         add_handler(&mut func, 91, vec![]);
         func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Raise), check(91), call()];
@@ -1835,7 +1910,12 @@ mod tests {
 
     #[test]
     fn unreachable_loop_latch_is_not_a_poll_site() {
-        let mut func = TirFunction::new("dead_loop".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "dead_loop".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
             Terminator::Return { values: vec![] };
         let header = func.fresh_block();

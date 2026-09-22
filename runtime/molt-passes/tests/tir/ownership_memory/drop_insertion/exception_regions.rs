@@ -2,7 +2,12 @@ use super::*;
 
 #[test]
 fn retained_exception_alias_outlives_its_match_region() {
-    let mut func = TirFunction::new("retained_context_error".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "retained_context_error".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let handler = func.fresh_block();
     let observed = func.fresh_value();
     let retained = func.fresh_value();
@@ -54,6 +59,7 @@ fn zero_insertion_borrowed_param_function_still_marks_drop_inserted() {
         "borrowed_param_no_owned_temps".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let param = func.blocks[&func.entry_block].args[0].id;
     {
@@ -82,7 +88,12 @@ fn zero_insertion_borrowed_param_function_still_marks_drop_inserted() {
 
 #[test]
 fn exception_region_match_release_inserts_before_handler_full_drop() {
-    let mut func = TirFunction::new("split_exception_cleanup".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "split_exception_cleanup".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let clean = func.fresh_block();
     let handler = func.fresh_block();
     let handler_pop = func.fresh_block();
@@ -169,7 +180,12 @@ fn exception_region_match_release_inserts_before_handler_full_drop() {
 
 #[test]
 fn exception_creation_ref_releases_at_raise_with_handler_full_drop() {
-    let mut func = TirFunction::new("raise_creation_cleanup".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "raise_creation_cleanup".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let handler = func.fresh_block();
     let exc = func.fresh_value();
     func.label_id_map.insert(handler.0, 4);
@@ -218,6 +234,7 @@ fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
         "exception_edge_borrowed_payload".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_arg = func.fresh_value();
@@ -274,6 +291,7 @@ fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
         "try_start_edge_borrowed_payload".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let handler = func.fresh_block();
     let handler_arg = func.fresh_value();
@@ -326,7 +344,12 @@ fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
 
 #[test]
 fn exception_creation_ref_release_is_path_local_for_alternative_raises() {
-    let mut func = TirFunction::new("raise_creation_diamond".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "raise_creation_diamond".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let then_raise = func.fresh_block();
     let else_raise = func.fresh_block();
     let cond = func.fresh_value();
@@ -377,7 +400,12 @@ fn exception_creation_ref_release_is_path_local_for_alternative_raises() {
 
 #[test]
 fn handler_match_ref_is_not_released_at_reraise() {
-    let mut func = TirFunction::new("reraise_match_ref_cleanup".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "reraise_match_ref_cleanup".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let handler = func.fresh_block();
     let exc = func.fresh_value();
     func.label_id_map.insert(handler.0, 4);
@@ -430,7 +458,12 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
     // (`exception_last_pending`) — owned by that region — and both handlers flow
     // into ONE shared cleanup block that pops both regions in LIFO order, giving
     // two exception_pop carriers (two release positions) in a single block.
-    let mut func = TirFunction::new("two_pops_one_block".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "two_pops_one_block".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let body = func.fresh_block();
     let inner_handler = func.fresh_block();
     let outer_handler = func.fresh_block();
@@ -531,7 +564,12 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
 
 #[test]
 fn exception_region_match_release_splits_shared_pop_by_dominating_edge() {
-    let mut func = TirFunction::new("shared_exception_pop".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "shared_exception_pop".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let normal = func.fresh_block();
     let shared_pop = func.fresh_block();
     let after_pop = func.fresh_block();
@@ -647,6 +685,7 @@ fn exception_region_match_release_splits_shared_pop_with_block_args() {
         "shared_exception_pop_with_arg".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let normal = func.fresh_block();
     let handler = func.fresh_block();
@@ -796,6 +835,7 @@ fn exception_region_match_release_remaps_dominated_successor_uses() {
         "shared_exception_pop_successor_uses_arg".into(),
         vec![],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let normal = func.fresh_block();
     let handler = func.fresh_block();

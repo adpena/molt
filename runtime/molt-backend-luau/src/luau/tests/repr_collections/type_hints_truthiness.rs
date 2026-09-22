@@ -4,6 +4,7 @@ use super::super::*;
 fn test_bool_arithmetic_coerces_bool_operands() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "bool_arithmetic".to_string(),
             params: vec![],
             param_types: None,
@@ -66,6 +67,7 @@ fn test_bool_arithmetic_coerces_bool_operands() {
 fn test_result_type_hint_does_not_prove_luau_not_operand_bool() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "truthy_not".to_string(),
             params: vec!["x".to_string()],
             param_types: None,
@@ -106,6 +108,7 @@ fn test_result_type_hint_does_not_prove_luau_not_operand_bool() {
 fn test_result_type_hint_does_not_prove_luau_and_or_operands_bool() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "truthy_and_or".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: None,
@@ -157,6 +160,7 @@ fn test_result_type_hint_does_not_prove_luau_and_or_operands_bool() {
 fn test_result_type_hint_does_not_force_luau_numeric_add() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hinted_add".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: None,
@@ -197,6 +201,7 @@ fn test_result_type_hint_does_not_force_luau_numeric_add() {
 fn test_transport_hints_do_not_force_luau_numeric_add() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "transport_hinted_add".to_string(),
             params: vec!["a".to_string(), "b".to_string()],
             param_types: None,
@@ -239,6 +244,7 @@ fn test_transport_hints_do_not_force_luau_numeric_add() {
 fn test_type_hint_int_does_not_force_luau_integer_index() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hinted_index".to_string(),
             params: vec!["xs".to_string(), "key".to_string()],
             param_types: None,
@@ -280,6 +286,7 @@ fn test_type_hint_int_does_not_force_luau_integer_index() {
 fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hinted_container_index".to_string(),
             params: vec!["xs".to_string(), "key".to_string(), "value".to_string()],
             param_types: None,
@@ -338,6 +345,7 @@ fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
 fn test_len_transport_hint_does_not_force_luau_raw_length() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hinted_len".to_string(),
             params: vec!["xs".to_string()],
             param_types: None,
@@ -379,6 +387,7 @@ fn test_len_transport_hint_does_not_force_luau_raw_length() {
 fn test_len_uses_tir_container_fact_for_packed_sequence_length() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_len".to_string(),
             params: vec!["xs".to_string()],
             param_types: Some(vec!["list[int]".to_string()]),
@@ -419,6 +428,7 @@ fn test_len_uses_tir_container_fact_for_packed_sequence_length() {
 fn test_typed_string_len_uses_unicode_codepoint_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_string_len".to_string(),
             params: vec!["text".to_string()],
             param_types: Some(vec!["str".to_string()]),
@@ -454,6 +464,7 @@ fn test_typed_string_len_uses_unicode_codepoint_authority() {
 fn test_typed_list_truthiness_uses_packed_sequence_length_for_not() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_list_not".to_string(),
             params: vec!["xs".to_string()],
             param_types: Some(vec!["list[int]".to_string()]),
@@ -494,6 +505,7 @@ fn test_typed_list_truthiness_uses_packed_sequence_length_for_not() {
 fn test_typed_dict_truthiness_uses_ordered_dict_size_authority() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_dict_or".to_string(),
             params: vec!["d".to_string(), "fallback".to_string()],
             param_types: Some(vec![

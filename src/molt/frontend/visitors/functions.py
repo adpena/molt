@@ -414,7 +414,9 @@ class FunctionVisitorMixin(_MixinBase):
             return None
         self.funcs_map.setdefault(
             func_symbol,
-            FuncInfo(params=[], param_types=[], return_hint=None, ops=[]),
+            FuncInfo(
+                params=[], param_types=[], return_abi="value", return_hint=None, ops=[]
+            ),
         )
         self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
             node.returns
@@ -912,7 +914,9 @@ class FunctionVisitorMixin(_MixinBase):
         self._record_func_default_specs(func_symbol, node.args)
         self.funcs_map.setdefault(
             func_symbol,
-            FuncInfo(params=[], param_types=[], return_hint=None, ops=[]),
+            FuncInfo(
+                params=[], param_types=[], return_abi="value", return_hint=None, ops=[]
+            ),
         )
         self.funcs_map[func_symbol]["return_hint"] = None
         prev_func = self.current_func_name

@@ -318,7 +318,12 @@ mod tests {
 
     /// Helper: create a function with one I64 param and given ops, run strength reduction.
     fn run_sr(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
-        let mut func = TirFunction::new("test".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "test".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops = ops;

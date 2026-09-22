@@ -11,8 +11,12 @@ use super::run;
 fn full_width_or_unknown_integer_boxing_is_never_elided_even_when_dead() {
     for value in [Some(i64::MIN), Some(i64::MAX), None] {
         for used in [false, true] {
-            let mut func =
-                TirFunction::new("fallible_box".into(), vec![TirType::I64], TirType::I64);
+            let mut func = TirFunction::new(
+                "fallible_box".into(),
+                vec![TirType::I64],
+                TirType::I64,
+                molt_ir::FunctionReturnAbi::Value,
+            );
             let raw = if value.is_some() {
                 func.fresh_value()
             } else {
@@ -49,7 +53,12 @@ fn full_width_or_unknown_integer_boxing_is_never_elided_even_when_dead() {
 #[test]
 fn full_width_box_keeps_its_cross_block_exception_observer() {
     use crate::tir::blocks::TirBlock;
-    let mut func = TirFunction::new("box_exception".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "box_exception".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let next = func.fresh_block();
     let raw = func.fresh_value();
     let boxed = func.fresh_value();
@@ -102,7 +111,12 @@ fn proven_nonallocating_scalar_pairs_remain_optimizable() {
         ),
         (OpCode::ConstNone, None, TirType::None),
     ] {
-        let mut func = TirFunction::new("safe_box".into(), vec![], ty.clone());
+        let mut func = TirFunction::new(
+            "safe_box".into(),
+            vec![],
+            ty.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let boxed = func.fresh_value();
         let unboxed = func.fresh_value();
@@ -130,7 +144,12 @@ fn proven_nonallocating_scalar_pairs_remain_optimizable() {
 #[test]
 fn box_unbox_elision_requires_matching_semantic_result_and_target() {
     for mismatch_hint in [false, true] {
-        let mut func = TirFunction::new("mismatched_unbox".into(), vec![], TirType::F64);
+        let mut func = TirFunction::new(
+            "mismatched_unbox".into(),
+            vec![],
+            TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let raw = func.fresh_value();
         let boxed = func.fresh_value();
         let unboxed = func.fresh_value();
@@ -201,7 +220,12 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
 
 #[test]
 fn simple_box_unbox_pair_eliminated() {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -245,7 +269,12 @@ fn simple_box_unbox_pair_eliminated() {
 
 #[test]
 fn multiple_unbox_consumers_all_eliminated() {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -298,7 +327,12 @@ fn multiple_unbox_consumers_all_eliminated() {
 
 #[test]
 fn mixed_consumers_not_eliminated() {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;
@@ -337,7 +371,12 @@ fn mixed_consumers_not_eliminated() {
 
 #[test]
 fn no_box_ops_no_changes() {
-    let mut func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "add".into(),
+        vec![TirType::I64, TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v2 = ValueId(func.next_value);
     func.next_value += 1;
@@ -368,7 +407,12 @@ fn no_box_ops_no_changes() {
 
 #[test]
 fn nested_box_unbox_inner_pair_eliminated() {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let v0 = ValueId(func.next_value);
     func.next_value += 1;

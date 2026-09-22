@@ -33,6 +33,7 @@ fn typeguard_result_gets_proven_type() {
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "guard_test".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into()],
@@ -122,6 +123,7 @@ fn guard_propagates_to_dominated_blocks() {
     );
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "guard_prop_test".into(),
         execution_context: Default::default(),
         param_names: vec!["x".into()],

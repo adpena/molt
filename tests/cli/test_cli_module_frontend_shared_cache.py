@@ -195,7 +195,10 @@ def test_lowering_reuse_across_sessions_no_relower(
     project_root.mkdir()
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
-    ir_result = {"functions": [{"name": "m__g", "params": []}], "profile": "release"}
+    ir_result = {
+        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+        "profile": "release",
+    }
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
@@ -256,6 +259,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
             {
                 "name": "m__g",
                 "params": [],
+                "return_abi": "value",
                 "ops": [{"kind": "const", "value": 42}],
             }
         ],
@@ -369,7 +373,10 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     project_root.mkdir()
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
-    ir_result = {"functions": [{"name": "m__g", "params": []}], "profile": "release"}
+    ir_result = {
+        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+        "profile": "release",
+    }
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(
@@ -473,7 +480,9 @@ def test_same_size_different_content_is_not_reused(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": ["a"]}]},
+        result={
+            "functions": [{"name": "m__f", "params": ["a"], "return_abi": "value"}]
+        },
     )
 
     _use_session(monkeypatch, "B")
@@ -515,7 +524,9 @@ def test_changed_source_content_is_not_reused_from_shared(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": ["a"]}]},
+        result={
+            "functions": [{"name": "m__f", "params": ["a"], "return_abi": "value"}]
+        },
     )
     shared_slot = MC._shared_module_lowering_cache_path_for(
         path, module_name="m", is_package=False, context_digest=context_digest
@@ -610,7 +621,7 @@ def test_changed_target_python_is_not_reused_from_shared(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": []}]},
+        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
         target_python=py312,
     )
 
@@ -665,7 +676,7 @@ def test_publish_and_hydrate_never_use_os_link(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__f", "params": []}]},
+        result={"functions": [{"name": "m__f", "params": [], "return_abi": "value"}]},
     )
     _use_session(monkeypatch, "B")
     MC._read_persisted_module_lowering(
@@ -697,7 +708,7 @@ def test_env_optout_forces_cold_lowering_miss(
     project_root.mkdir()
     path = _write_module(project_root, "m", "def g():\n    return 41 + 1\n")
     context_digest = "ab" * 32
-    ir_result = {"functions": [{"name": "m__g", "params": []}]}
+    ir_result = {"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]}
 
     # Populate BOTH tiers in session A with the cache enabled.
     _use_session(monkeypatch, "A")
@@ -762,7 +773,7 @@ def test_env_optout_skips_shared_publish(
         module_name="m",
         is_package=False,
         context_digest=context_digest,
-        result={"functions": [{"name": "m__g", "params": []}]},
+        result={"functions": [{"name": "m__g", "params": [], "return_abi": "value"}]},
     )
     shared_slot = MC._shared_module_lowering_cache_path_for(
         path, module_name="m", is_package=False, context_digest=context_digest

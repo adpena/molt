@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn empty_value_abi_return_emits_boxed_none_without_lir_payload() {
+    let mut func = TirFunction::new(
+        "empty_none_value".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+        Terminator::Return { values: vec![] };
+    for output in [
+        lower_tir_to_wasm(&func),
+        lower_tir_to_wasm_boxed_i64_abi(&func).expect("empty Value ABI fits boxed LIR lowering"),
+    ] {
+        let view = output.test_view();
+        assert!(!view.bails_to_generic_path);
+        assert_eq!(view.result_types, vec![ValType::I64]);
+        assert!(view.instructions.windows(2).any(|pair| matches!(
+            pair,
+            [Instruction::I64Const(value), Instruction::Return]
+                if *value == box_none_bits() as i64
+        )));
+    }
+}
+
+#[test]
 fn trivial_const_return() {
     let func = make_const_return_func(42);
     let output = lower_tir_to_wasm(&func).test_view();
@@ -126,7 +151,12 @@ fn lir_literal_consts_materialize_without_generic_bail() {
 #[test]
 #[should_panic(expected = "generated WASM const policy requires a result for ConstStr")]
 fn lir_literal_const_without_result_fails_closed() {
-    let mut func = TirFunction::new("bad_const_str".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "bad_const_str".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     let mut attrs = AttrDict::new();
     attrs.insert("s_value".into(), AttrValue::Str("orphan".into()));
@@ -149,6 +179,7 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
         "binding_alias_copy".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let alias = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

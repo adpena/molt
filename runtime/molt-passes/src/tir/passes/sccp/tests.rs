@@ -6,7 +6,12 @@ use crate::tir::types::TirType;
 
 /// Helper: create a function with a single block, apply SCCP, return the block's ops.
 fn run_sccp_on_ops(ops: Vec<TirOp>, next_value: u32) -> (Vec<TirOp>, Terminator) {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
@@ -114,7 +119,12 @@ fn fold_comparison_gt() {
 #[test]
 fn fold_constant_cond_branch_true() {
     // if true: goto bb1, else: goto bb2 => Branch to bb1
-    let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let then_id = func.fresh_block();
     let else_id = func.fresh_block();
 
@@ -166,7 +176,12 @@ fn fold_constant_cond_branch_true() {
 
 #[test]
 fn branch_fold_keeps_check_exception_handler_block_reachable() {
-    let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.has_exception_handling = true;
     let active_id = func.fresh_block();
     let dead_id = func.fresh_block();
@@ -245,7 +260,12 @@ fn branch_fold_keeps_check_exception_handler_block_reachable() {
 #[test]
 fn no_fold_parameter_plus_const() {
     // x + 1 where x is a function parameter => no folding
-    let mut func = TirFunction::new("test".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     // param is ValueId(0)
     let const_one = make_const_int(1, 1);
     let add = make_binop(OpCode::Add, 2, 0, 1);
@@ -685,7 +705,12 @@ fn malformed_producers_never_seed_rewrite_or_fold_downstream_control() {
                 if admits_constant_result(&producer) {
                     continue;
                 }
-                let mut func = TirFunction::new("invalid_producer".into(), vec![], TirType::None);
+                let mut func = TirFunction::new(
+                    "invalid_producer".into(),
+                    vec![],
+                    TirType::None,
+                    molt_ir::FunctionReturnAbi::Void,
+                );
                 let then_block = func.fresh_block();
                 let else_block = func.fresh_block();
                 for id in [then_block, else_block] {

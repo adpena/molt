@@ -1,6 +1,7 @@
 {
   "name": "molt_isolate_bootstrap",
   "params": [],
+  "return_abi": "value",
   "ops": [
     {
       "kind": "code_slots_init",

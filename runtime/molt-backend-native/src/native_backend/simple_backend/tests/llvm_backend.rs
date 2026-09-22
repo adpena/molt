@@ -5,6 +5,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
     use object::{BinaryFormat, Object, ObjectSymbol};
 
     let caller = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_main".to_string(),
         params: vec![],
         ops: vec![
@@ -26,6 +27,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         execution_context: Default::default(),
     };
     let provider = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_sys".to_string(),
         params: vec![],
         ops: vec![OpIR {

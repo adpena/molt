@@ -91,6 +91,7 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_class_slots".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -163,6 +164,7 @@ fn rust_backend_lowers_module_attr_round_trip() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_module_attrs".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -222,6 +224,7 @@ fn rust_backend_lowers_admitted_runtime_value_surface_ops() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_runtime_surface".to_string(),
             params: Vec::new(),
             ops: vec![word, string, repr, ascii, message, bridge, ret],
@@ -263,6 +266,7 @@ fn rust_backend_runtime_value_surface_rejects_wrong_arity() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_runtime_surface_wrong_arity".to_string(),
             params: Vec::new(),
             ops: vec![string],
@@ -303,6 +307,7 @@ fn rust_backend_keeps_unstructured_branch_fail_closed() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_branch_gap".to_string(),
             params: Vec::new(),
             ops: vec![cond, branch],
@@ -402,6 +407,7 @@ fn rust_backend_stamps_target_python_version_state() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_target_python_probe".to_string(),
             params: Vec::new(),
             ops: vec![
@@ -461,6 +467,7 @@ fn rust_backend_rejects_sys_import_without_python_import_protocol() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_target_python_sys_import_probe".to_string(),
             params: Vec::new(),
             ops: vec![import_sys, ret],
@@ -519,6 +526,7 @@ fn rust_backend_rejects_class_merge_layout_without_class_representation() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_class_merge_layout".to_string(),
             params: Vec::new(),
             ops: vec![

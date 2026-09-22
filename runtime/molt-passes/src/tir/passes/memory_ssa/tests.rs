@@ -120,7 +120,12 @@ fn run(func: &TirFunction) -> MemorySsaResult {
 #[test]
 fn single_block_store_then_load_has_direct_reaching_def() {
     // entry: obj = alloc(8); store(obj, val, 0); r = load(obj, 0); return r
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -158,7 +163,12 @@ fn check_exception_between_store_and_load_does_not_clobber() {
     // version between the store and the load: it is emitted after nearly
     // every op in exception-bearing bodies, so classifying it as a
     // GenericHeap def starves store-to-load forwarding function-wide.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -195,7 +205,12 @@ fn check_exception_between_store_and_load_does_not_clobber() {
 fn analysis_manager_registration_matches_compute_standalone() {
     // The S1 manager path (`am.get::<MemorySSA>`) must yield exactly the
     // result `compute_standalone` produces over the alias substrate.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();
@@ -227,7 +242,12 @@ fn analysis_manager_registration_matches_compute_standalone() {
 #[test]
 fn store_store_kills_earlier_version_for_load() {
     // alloc(8); store(obj, v1, 0); store(obj, v2, 0); r = load(obj, 0)
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let v1 = func.fresh_value();
     let v2 = func.fresh_value();
@@ -264,7 +284,12 @@ fn store_store_kills_earlier_version_for_load() {
 fn distinct_offsets_have_independent_reaching_defs() {
     // Fresh boxed storage proves both initial stores release-neutral. Local
     // fields retain byte offsets, so store@8 does not clobber load@0.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let v1 = func.fresh_value();
     let v2 = func.fresh_value();
@@ -315,6 +340,7 @@ fn unproved_replacing_store_clobbers_a_distinct_class() {
             TirType::DynBox,
         ],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let p = ValueId(0);
     let l = func.fresh_value();
@@ -345,7 +371,12 @@ fn unproved_replacing_store_clobbers_a_distinct_class() {
 
 #[test]
 fn distinct_fresh_roots_at_same_offset_do_not_clobber() {
-    let mut func = TirFunction::new("fresh_roots".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "fresh_roots".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p = func.fresh_value();
     let q = func.fresh_value();
     let pv = func.fresh_value();
@@ -377,6 +408,7 @@ fn distinct_offset_replacement_keeps_its_finalizer_clobber() {
         "releasing_offset".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let object = func.fresh_value();
     let r = func.fresh_value();
@@ -413,6 +445,7 @@ fn same_class_offset_store_still_clobbers() {
             TirType::DynBox,
         ],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let a = ValueId(0);
     let b = ValueId(1); // possibly the same Point as `a` at runtime
@@ -445,6 +478,7 @@ fn classless_replacing_store_remains_a_generic_heap_clobber() {
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let obj = ValueId(0);
     let v1 = ValueId(1);
@@ -476,6 +510,7 @@ fn unknown_value_store_does_not_prove_inline_load_presence() {
         "unknown_stored_value".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let unknown = ValueId(0);
     let object = func.fresh_value();
@@ -512,6 +547,7 @@ fn phi_placed_at_join_of_two_stores() {
             TirType::Bool,
         ],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let obj = ValueId(0);
     let v1 = ValueId(1);
@@ -609,6 +645,7 @@ fn generic_heap_call_kills_typed_field_load_reaching_def() {
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let obj = ValueId(0);
     let v1 = ValueId(1);
@@ -658,6 +695,7 @@ fn callback_effects_without_root_operands_are_memory_defs() {
             format!("callback_{opcode:?}"),
             vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let obj = ValueId(0);
         let val = ValueId(1);
@@ -705,7 +743,12 @@ fn callback_effects_without_root_operands_are_memory_defs() {
 
 #[test]
 fn exact_integer_add_does_not_clobber_typed_field() {
-    let mut func = TirFunction::new("exact_add".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "exact_add".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let left = func.fresh_value();
@@ -747,6 +790,7 @@ fn marked_async_work_check_exception_clobbers_memory() {
         "async_poll".into(),
         vec![TirType::DynBox, TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let loaded = func.fresh_value();
     let mut poll = op(OpCode::CheckException, vec![], vec![]);
@@ -780,6 +824,7 @@ fn loop_back_edge_places_memory_phi_at_header() {
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let obj = ValueId(0);
     let v = ValueId(1);
@@ -863,7 +908,12 @@ fn loop_back_edge_places_memory_phi_at_header() {
 
 #[test]
 fn empty_function_has_no_memory_accesses() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.blocks.get_mut(&func.entry_block).unwrap().terminator =
         Terminator::Return { values: vec![] };
     let mem = run(&func);
@@ -896,7 +946,12 @@ fn use_node_carries_region_and_reaching_def() {
     // as a full `Use` node carrying its physical field region and
     // the reaching def. This pins the `MemAccess::Use` fields as load-bearing
     // for the S5-2b MemGVN consumer.
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r = func.fresh_value();

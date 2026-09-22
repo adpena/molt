@@ -256,6 +256,7 @@ mod tests {
         ops.extend(extra_ops);
         SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "builtin_bootstrap".into(),
                 params: vec!["module".into()],
                 ops,
@@ -353,6 +354,7 @@ mod tests {
     fn stored_intrinsic_names_share_resolver_and_import_reachability() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sys_bootstrap".into(),
                 params: vec![],
                 ops: vec![
@@ -401,6 +403,7 @@ mod tests {
             let plan = WasmRuntimeSurfacePlan::build(
                 &SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "lookup".into(),
                         params: vec!["module".into()],
                         ops: vec![
@@ -452,6 +455,7 @@ mod tests {
         ] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "lookup".into(),
                     params: vec!["module".into(), "computed".into()],
                     ops: vec![

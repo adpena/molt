@@ -22,6 +22,7 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
         "and_bool1".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -80,7 +81,12 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
 
 #[test]
 fn raw_unary_pos_stays_noop_without_runtime_call() {
-    let mut func = TirFunction::new("pos_raw_i64".into(), vec![TirType::I64], TirType::I64);
+    let mut func = TirFunction::new(
+        "pos_raw_i64".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -122,6 +128,7 @@ fn add_two_f64s() {
         "add_f64".into(),
         vec![TirType::F64, TirType::F64],
         TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -185,6 +192,7 @@ fn f64_mod_declares_emission_scratch_locals() {
         "mod_f64".into(),
         vec![TirType::F64, TirType::F64],
         TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

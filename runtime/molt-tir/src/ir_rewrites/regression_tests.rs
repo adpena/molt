@@ -93,7 +93,7 @@ fn try_elision_preserves_try_finally_cleanup_shape() {
 }
 
 #[test]
-fn try_except_elision_drops_body_checks_to_removed_handler_labels() {
+fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
     let mut ops = vec![
         OpIR {
             kind: "exception_push".to_string(),
@@ -162,6 +162,22 @@ fn try_except_elision_drops_body_checks_to_removed_handler_labels() {
         },
     ];
 
+    // Frame entry may initialize builtins and fail. A structurally owned
+    // frontend check is not a proof that its producer cannot throw.
+    let mut checked_entry = ops.clone();
+    checked_entry[2] = OpIR {
+        kind: "trace_enter_slot".into(),
+        value: Some(7),
+        ..OpIR::default()
+    };
+    checked_entry.remove(4); // The scalar-only fixture's store has no producer here.
+    assert!(
+        !crate::passes::simple_ir_op_is_provably_nonthrowing_with_facts(None, &checked_entry[2],)
+    );
+    let original_entry = checked_entry.clone();
+    elide_useless_try_blocks(&mut checked_entry);
+    assert_eq!(op_shapes(&checked_entry), op_shapes(&original_entry));
+
     elide_useless_try_blocks(&mut ops);
 
     let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
@@ -183,6 +199,7 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
     };
     add.fast_int = Some(true);
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "transport_hint_try_body".to_string(),
         params: vec!["left".to_string(), "right".to_string()],
         param_types: None,
@@ -270,6 +287,7 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
 #[test]
 fn try_except_elision_uses_typed_int_body_without_transport_hints() {
     let mut func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "typed_int_try_body".to_string(),
         params: vec!["left".to_string(), "right".to_string()],
         param_types: Some(vec!["int".to_string(), "int".to_string()]),

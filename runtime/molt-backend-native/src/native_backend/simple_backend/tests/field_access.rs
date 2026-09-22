@@ -187,6 +187,7 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
             ..OpIR::default()
         });
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "field_backing_guards".into(),
             params: vec![if fresh {
                 "class".into()
@@ -215,6 +216,7 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
             vec!["object".into()]
         };
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "field_read_admission".into(),
             params: params.clone(),
             ops: vec![
@@ -284,6 +286,7 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
             ..OpIR::default()
         });
         let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "tagged_guarded_receiver".into(),
             params,
             ops,

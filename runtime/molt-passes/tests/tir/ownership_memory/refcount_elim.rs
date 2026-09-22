@@ -18,7 +18,12 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 }
 
 fn make_func() -> TirFunction {
-    TirFunction::new("f".into(), vec![], TirType::None)
+    TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    )
 }
 
 fn add_block(func: &mut TirFunction, ops: Vec<TirOp>, terminator: Terminator) -> BlockId {
@@ -964,7 +969,12 @@ fn cfg_forwarded_capture_keeps_original_owner_release() {
 
 #[test]
 fn mixed_cfg_value_never_inherits_stack_rc_elision() {
-    let mut func = TirFunction::new("mixed".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "mixed".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let stack = func.fresh_value();
     let parameter = func.fresh_value();
     let control = func.fresh_value();
@@ -1248,7 +1258,12 @@ fn proven_nonheap_carrier_release_is_elided_without_lifetime_inference() {
 
 #[test]
 fn nominal_float_annotation_is_not_nonheap_release_permission() {
-    let mut func = TirFunction::new("annotation".into(), vec![TirType::F64], TirType::None);
+    let mut func = TirFunction::new(
+        "annotation".into(),
+        vec![TirType::F64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry
         .ops

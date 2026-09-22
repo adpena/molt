@@ -33,7 +33,12 @@ fn const_str(result: ValueId) -> TirOp {
 /// op index 1 and v1 is dead afterward (not live-out, not in Return).
 #[test]
 fn straight_line_last_use() {
-    let mut func = TirFunction::new("sl".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "sl".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v0 = func.fresh_value(); // some root str
     let v1 = func.fresh_value();
     let v2 = func.fresh_value();
@@ -63,7 +68,12 @@ fn straight_line_last_use() {
 /// CondBranch: value used in both arms and live-out of the cond block.
 #[test]
 fn used_in_both_branches_is_live_out() {
-    let mut func = TirFunction::new("br".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "br".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let cond = func.fresh_value();
     let x = func.fresh_value();
     let r1 = func.fresh_value();
@@ -116,7 +126,12 @@ fn used_in_both_branches_is_live_out() {
 /// back-edge arg.
 #[test]
 fn loop_carried_block_arg_live() {
-    let mut func = TirFunction::new("loop".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "loop".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let header = func.fresh_block();
     let body = func.fresh_block();
     let exit = func.fresh_block();
@@ -195,7 +210,12 @@ fn loop_carried_block_arg_live() {
 /// sets even when used.
 #[test]
 fn raw_i64_excluded_from_live_sets() {
-    let mut func = TirFunction::new("raw".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "raw".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
     let s = func.fresh_value();
@@ -239,7 +259,12 @@ fn raw_i64_excluded_from_live_sets() {
 /// An exact Bool producer has no heap obligation without a type annotation.
 #[test]
 fn bool_excluded_from_live_sets() {
-    let mut func = TirFunction::new("b".into(), vec![], TirType::Bool);
+    let mut func = TirFunction::new(
+        "b".into(),
+        vec![],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let c = func.fresh_value();
     let entry = func.entry_block;
     {
@@ -255,7 +280,12 @@ fn bool_excluded_from_live_sets() {
 #[test]
 fn annotations_and_refined_calls_do_not_erase_heap_liveness() {
     for ty in [TirType::Bool, TirType::F64, TirType::I64, TirType::None] {
-        let mut func = TirFunction::new("annotated".into(), vec![ty.clone()], ty.clone());
+        let mut func = TirFunction::new(
+            "annotated".into(),
+            vec![ty.clone()],
+            ty.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let arg = func.blocks[&func.entry_block].args[0].id;
         let copied = func.fresh_value();
         let called = func.fresh_value();
@@ -279,7 +309,12 @@ fn annotations_and_refined_calls_do_not_erase_heap_liveness() {
 
 #[test]
 fn stale_never_heap_result_floors_to_boxed_rc_liveness() {
-    let mut func = TirFunction::new("stale_never_result".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "stale_never_result".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let heap = func.fresh_value();
     let copied = func.fresh_value();
     func.value_types.insert(heap, TirType::Never);
@@ -311,7 +346,12 @@ fn stale_never_heap_result_floors_to_boxed_rc_liveness() {
 
 #[test]
 fn stale_never_block_arg_and_copy_retain_heap_liveness() {
-    let mut func = TirFunction::new("stale_never_phi".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "stale_never_phi".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let source = func.fresh_value();
     let block_arg = func.fresh_value();
     let copied = func.fresh_value();
@@ -362,7 +402,12 @@ fn stale_never_block_arg_and_copy_retain_heap_liveness() {
 #[test]
 fn exact_float_copy_excludes_heap_obligation_without_refinement() {
     for declared_type in [None, Some(TirType::Never)] {
-        let mut func = TirFunction::new("exact_float".into(), vec![], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "exact_float".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let constant = func.fresh_value();
         let copied = func.fresh_value();
         // Stale bottom metadata cannot suppress heap liveness by itself, but the
@@ -404,7 +449,12 @@ fn exact_float_copy_excludes_heap_obligation_without_refinement() {
 /// refcounted heap ownership obligation, so RC placement must ignore it.
 #[test]
 fn none_excluded_from_live_sets() {
-    let mut func = TirFunction::new("none".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "none".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let n = func.fresh_value();
     let entry = func.entry_block;
     {

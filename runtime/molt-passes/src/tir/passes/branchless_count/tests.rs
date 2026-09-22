@@ -12,7 +12,12 @@ use super::run;
 ///   if cond: count += 1
 ///   return count
 fn make_bool_counting_func() -> TirFunction {
-    let mut func = TirFunction::new("test_count".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "test_count".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let const_zero_id = ValueId(1);
     let const_one_id = ValueId(2);
@@ -218,6 +223,7 @@ fn branchless_count_works_with_comparison_cond() {
         "test_cmp_count".into(),
         vec![TirType::I64, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let cmp_result = ValueId(2);
     let counter_val = ValueId(3);

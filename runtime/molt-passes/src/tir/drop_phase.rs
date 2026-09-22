@@ -306,6 +306,10 @@ pub fn finalize_simple_ir_drops_with_tir_custody(
         // (its SimpleIR is the optimized output), so it is NOT yet drop-inserted —
         // its debug_assert verifies that.
         if finalize_function_drops(&mut tir_func, tti) {
+            assert_eq!(
+                func_ir.return_abi, tir_func.return_abi,
+                "terminal drops must preserve the authored function return ABI"
+            );
             let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
             debug_assert!(
                 super::lower_to_simple::validate_labels(&ops),
@@ -330,6 +334,7 @@ mod tests {
     fn module_finalizer_reports_marker_only_change_for_trivial_function() {
         // A trivial `return` function has no values whose ownership must move.
         let func_ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "trivial".into(),
             params: vec![],
             ops: vec![OpIR {
@@ -369,6 +374,7 @@ mod tests {
     #[test]
     fn luau_terminal_drop_phase_does_not_materialize_target_dead_rc_authority() {
         let func_ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "luau_gc".into(),
             params: vec![],
             ops: vec![
@@ -416,6 +422,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_skips_extern() {
         let mut funcs = vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "ext".into(),
             params: vec![],
             ops: vec![],
@@ -433,6 +440,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_prefers_tir_custody() {
         let mut funcs = vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "custody".into(),
             params: vec![],
             ops: vec![OpIR {
@@ -446,7 +454,12 @@ mod tests {
             execution_context: Default::default(),
         }];
 
-        let mut tir = TirFunction::new("custody".into(), vec![], crate::tir::types::TirType::I64);
+        let mut tir = TirFunction::new(
+            "custody".into(),
+            vec![],
+            crate::tir::types::TirType::I64,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let value = tir.fresh_value();
         tir.value_types
             .insert(value, crate::tir::types::TirType::I64);
@@ -488,6 +501,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_back_converts_zero_drop_authority_marker() {
         let mut funcs = vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "borrowed_param_store".into(),
             params: vec!["self".into()],
             ops: vec![
@@ -524,6 +538,7 @@ mod tests {
     #[test]
     fn native_roundtrip_preserves_call_bind_finalizer_fact_for_absorption_drops() {
         let func_ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "call_bind_finalizer_roundtrip".into(),
             params: vec![],
             ops: vec![
@@ -613,6 +628,7 @@ mod tests {
         );
 
         let mut funcs = vec![FunctionIR {
+            return_abi: func_ir.return_abi,
             name: func_ir.name.clone(),
             params: func_ir.params.clone(),
             ops: optimized_ops,

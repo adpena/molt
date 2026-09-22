@@ -46,7 +46,12 @@ fn make_op_with_container(
 ///   bb2 (body): some_op(elem), Branch -> bb1
 ///   bb3 (exit): Return
 fn build_list_for_loop(use_build_list: bool) -> TirFunction {
-    let mut func = TirFunction::new("test_list_iter".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test_list_iter".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let list_val = func.fresh_value();
     let iter_val = func.fresh_value();
@@ -387,7 +392,12 @@ fn no_devirt_from_legacy_list_int_container_type() {
 #[test]
 fn no_devirt_from_get_iter_container_type_only() {
     // Transport-only container_type on the GetIter op itself is not proof.
-    let mut func = TirFunction::new("test".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let param = ValueId(0);
     let iter_val = func.fresh_value();
@@ -472,6 +482,7 @@ fn devirt_list_from_typed_param() {
         "test".into(),
         vec![TirType::List(Box::new(TirType::DynBox))],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let param = ValueId(0);
@@ -543,7 +554,12 @@ fn devirt_list_from_typed_param() {
 #[test]
 fn no_devirt_non_list_loop() {
     // A loop with GetIter on a non-list source should not be transformed.
-    let mut func = TirFunction::new("test".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let param = ValueId(0);
     let iter_val = func.fresh_value();
@@ -625,7 +641,12 @@ fn devirt_preserves_loop_break_kind() {
 #[test]
 fn no_devirt_dict_with_container_type() {
     // A loop with GetIter on a dict should not be transformed.
-    let mut func = TirFunction::new("test".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let dict_val = func.fresh_value();
     let iter_val = func.fresh_value();
@@ -698,7 +719,12 @@ fn devirt_list_repeat_mul_build_list() {
     // `for x in [True] * n` should be devirtualized.
     // Source: Mul(BuildList([True]), n) — recognized as a list via
     // is_list_source tracing through Mul to BuildList.
-    let mut func = TirFunction::new("test_mul_list".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "test_mul_list".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let true_val = func.fresh_value();
     let list_1 = func.fresh_value();

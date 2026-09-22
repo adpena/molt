@@ -7,7 +7,7 @@ use super::op_kinds_generated::{
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
-use crate::ir::ExecutionContextPolicy;
+use crate::ir::{ExecutionContextPolicy, FunctionReturnAbi};
 
 mod block_retention;
 
@@ -18,6 +18,8 @@ pub const CODEGEN_PARTITION_ATTR: &str = "codegen_partition";
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirFunction {
     pub name: String,
+    /// Frozen callable ABI; type refinement and body optimization preserve it.
+    pub return_abi: FunctionReturnAbi,
     /// Target-neutral execution-context ABI preserved through cached TIR and
     /// every SimpleIR relift.
     #[serde(default)]
@@ -80,7 +82,12 @@ impl TirFunction {
     }
 
     /// Create a new function with a single empty entry block.
-    pub fn new(name: String, param_types: Vec<TirType>, return_type: TirType) -> Self {
+    pub fn new(
+        name: String,
+        param_types: Vec<TirType>,
+        return_type: TirType,
+        return_abi: FunctionReturnAbi,
+    ) -> Self {
         use super::blocks::Terminator;
         use super::values::TirValue;
 
@@ -114,6 +121,7 @@ impl TirFunction {
 
         Self {
             name,
+            return_abi,
             execution_context: ExecutionContextPolicy::None,
             param_names: param_types
                 .iter()
@@ -235,7 +243,12 @@ mod tests {
 
     #[test]
     fn function_new_creates_entry_block_with_params() {
-        let func = TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
 
         assert_eq!(func.name, "add");
         assert_eq!(func.entry_block, BlockId(0));
@@ -250,7 +263,12 @@ mod tests {
 
     #[test]
     fn function_fresh_ids_increment() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let v0 = func.fresh_value();
         let v1 = func.fresh_value();
         assert_eq!(v0, ValueId(0));
@@ -264,7 +282,12 @@ mod tests {
 
     #[test]
     fn function_with_multiple_blocks() {
-        let mut func = TirFunction::new("branch_example".into(), vec![TirType::Bool], TirType::I64);
+        let mut func = TirFunction::new(
+            "branch_example".into(),
+            vec![TirType::Bool],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
 
         // Create two successor blocks.
         let then_id = func.fresh_block();
@@ -333,8 +356,18 @@ mod tests {
 
     #[test]
     fn module_holds_functions() {
-        let f1 = TirFunction::new("a".into(), vec![], TirType::None);
-        let f2 = TirFunction::new("b".into(), vec![TirType::I64], TirType::I64);
+        let f1 = TirFunction::new(
+            "a".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
+        let f2 = TirFunction::new(
+            "b".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
         let module = TirModule {
             name: "test_module".into(),
             functions: vec![f1, f2],

@@ -341,7 +341,8 @@ def _build_isolate_bootstrap_ops(
         *version_ops,
     ]
     # Native runtime and WASM host imports share () -> owned Molt object.
-    # A ret_void-only body has a genuinely void native linkage signature.
+    # The generated function declares its value return ABI independently of
+    # these return payloads, including failure exits with no explicit payload.
     result = f"v{_next_tir_var_index(ops)}"
     ops.extend(
         [
@@ -1032,7 +1033,7 @@ def _native_callable_wrapper_function(
                 {"kind": "ret", "args": ["v5"]},
             ]
         )
-    return {"name": symbol, "params": params, "ops": ops}
+    return {"name": symbol, "params": params, "return_abi": "value", "ops": ops}
 
 
 class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
@@ -1817,6 +1818,7 @@ def _append_static_native_module_init_functions(
         function = {
             "name": init_symbol,
             "params": [],
+            "return_abi": "void",
             "ops": build_ops(
                 spec,
                 register_global_code_id=register_global_code_id,
@@ -2144,6 +2146,7 @@ def _prepare_backend_ir(
                 {
                     "name": _main_init,
                     "params": [],
+                    "return_abi": "void",
                     "ops": [
                         {
                             "kind": "call",
@@ -2261,14 +2264,28 @@ def _prepare_backend_ir(
     entry_ops.insert(1, {"kind": "code_slots_init", "value": len(global_code_ids)})
     host_init_ops = _guard_initialization_ops(host_init_ops)
     entry_ops = _guard_initialization_ops(entry_ops)
-    functions.append({"name": "molt_host_init", "params": [], "ops": host_init_ops})
-    functions.append({"name": "molt_main", "params": [], "ops": entry_ops})
+    functions.append(
+        {
+            "name": "molt_host_init",
+            "params": [],
+            "return_abi": "void",
+            "ops": host_init_ops,
+        }
+    )
+    functions.append(
+        {"name": "molt_main", "params": [], "return_abi": "void", "ops": entry_ops}
+    )
     isolate_bootstrap_ops = _build_isolate_bootstrap_ops(
         code_slot_count=len(global_code_ids),
         version_ops=version_ops,
     )
     functions.append(
-        {"name": "molt_isolate_bootstrap", "params": [], "ops": isolate_bootstrap_ops}
+        {
+            "name": "molt_isolate_bootstrap",
+            "params": [],
+            "return_abi": "value",
+            "ops": isolate_bootstrap_ops,
+        }
     )
     module_registry: ModuleRegistry | None = None
     if catalog_lane:
@@ -2311,7 +2328,12 @@ def _prepare_backend_ir(
             register_global_code_id=register_global_code_id,
         )
         functions.append(
-            {"name": "molt_isolate_import", "params": ["p0"], "ops": import_ops}
+            {
+                "name": "molt_isolate_import",
+                "params": ["p0"],
+                "return_abi": "value",
+                "ops": import_ops,
+            }
         )
     ir = _finalize_backend_ir(
         functions=functions,

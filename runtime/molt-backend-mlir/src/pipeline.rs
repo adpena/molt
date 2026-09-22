@@ -201,7 +201,12 @@ mod tests {
     };
 
     fn make_identity_func() -> TirFunction {
-        let mut func = TirFunction::new("identity".into(), vec![TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "identity".into(),
+            vec![TirType::I64],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0)],
@@ -210,8 +215,12 @@ mod tests {
     }
 
     fn make_sub_func() -> TirFunction {
-        let mut func =
-            TirFunction::new("sub".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "sub".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -242,7 +251,12 @@ mod tests {
 
     #[test]
     fn test_compile_result_stages() {
-        let func = TirFunction::new("empty_ret".into(), vec![], TirType::I64);
+        let func = TirFunction::new(
+            "empty_ret".into(),
+            vec![],
+            TirType::I64,
+            molt_backend::ir::FunctionReturnAbi::Value,
+        );
         // The unreachable terminator emits an assert trap before the verifier-required return.
         let result = compile_via_mlir(
             &func,

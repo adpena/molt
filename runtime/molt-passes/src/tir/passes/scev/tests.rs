@@ -41,7 +41,12 @@ fn const_int(result: ValueId, value: i64) -> TirOp {
 ///
 /// Returns (func, header, iv, body).
 fn range_loop(stop: i64, nsw: bool) -> (TirFunction, BlockId, ValueId, BlockId) {
-    let mut func = TirFunction::new("rl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "rl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let start = func.fresh_value();
     let stop_v = func.fresh_value();
     let step = func.fresh_value();
@@ -219,7 +224,12 @@ fn degree_two_recurrence_is_unknown() {
 
 #[test]
 fn loopless_function_has_no_scev() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let v = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();

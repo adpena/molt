@@ -138,7 +138,12 @@ fn run_inliner_preserves_typed_execution_context_boundaries() {
 fn run_inliner_inlines_add_call_with_args() {
     // g(p, q) { return addfn(p, q) }, addfn(a, b) = a + b.
     let callee = add_callee();
-    let mut g = TirFunction::new("g".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![TirType::I64, TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let p = ValueId(0);
     let q = ValueId(1);
     let res = g.fresh_value();
@@ -266,7 +271,12 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     // BOTH (a refused/early site must not block the other). After inlining,
     // zero Call ops remain and SSA is valid.
     let callee = const_callee();
-    let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let x = g.fresh_value();
     let y = g.fresh_value();
     let sum = g.fresh_value();

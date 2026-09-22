@@ -105,7 +105,12 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
         entry_block: entry_id,
         next_value: 100,
         next_block: 1,
-        ..TirFunction::new("test".into(), vec![], TirType::None)
+        ..TirFunction::new(
+            "test".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        )
     }
 }
 
@@ -140,7 +145,12 @@ fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirF
         entry_block: entry_id,
         next_value: 100,
         next_block: 2,
-        ..TirFunction::new("two_block_test".into(), vec![], TirType::None)
+        ..TirFunction::new(
+            "two_block_test".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        )
     }
 }
 

@@ -4,6 +4,7 @@ use super::*;
 fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "float_primary_tuple_cleanup".to_string(),
             params: vec![],
             ops: vec![
@@ -96,6 +97,7 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
 fn compile_alias_owner_transfer(alias_kind: &str, release_source: bool) {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: format!("{alias_kind}_owner_transfer"),
             params: vec![],
             ops: {

@@ -25,7 +25,12 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 /// select frame storage or erase destruction.
 #[test]
 fn local_only_object_new_bound_is_no_escape() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0); // function parameter standing in for the class ref
     let inst_val = func.fresh_value();
     let load_result = func.fresh_value();
@@ -102,7 +107,12 @@ fn terminator_direct_uses_preserve_escape_obligations_without_classifying_edges(
         ),
         (Terminator::Unreachable, EscapeState::NoEscape),
     ] {
-        let mut func = TirFunction::new("direct_uses".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "direct_uses".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::Alloc, vec![], vec![object]));
         entry.terminator = terminator;
@@ -133,7 +143,12 @@ fn terminator_direct_uses_preserve_escape_obligations_without_classifying_edges(
 /// type `object`) that only manifested under dev-mode codegen.
 #[test]
 fn object_new_bound_copied_into_container_escapes() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0);
     let inst_val = func.fresh_value();
     let copy_val = func.fresh_value();
@@ -221,7 +236,12 @@ fn make_passthrough(original_kind: &str, operands: Vec<ValueId>, results: Vec<Va
 /// dev-mode codegen).
 #[test]
 fn object_new_bound_into_list_new_passthrough_escapes() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0);
     let inst_val = func.fresh_value();
     let list_val = func.fresh_value();
@@ -251,7 +271,12 @@ fn object_new_bound_into_list_new_passthrough_escapes() {
 /// preserving the allocation's escape obligation through the value operand.
 #[test]
 fn object_new_bound_into_dict_new_passthrough_escapes() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0);
     let key_val = func.fresh_value();
     let inst_val = func.fresh_value();
@@ -286,7 +311,12 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
 
 #[test]
 fn generic_store_through_move_alias_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let class_ref = ValueId(0);
     let instance = func.fresh_value();
     let alias = func.fresh_value();
@@ -316,7 +346,12 @@ fn generic_store_through_move_alias_is_global_escape() {
 
 #[test]
 fn object_new_bound_argument_to_method_call_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let class_ref = ValueId(0);
     let instance = func.fresh_value();
     let bound_callable = func.fresh_value();
@@ -347,6 +382,7 @@ fn object_new_bound_stored_to_module_attr_is_global_escape() {
         "module_init".into(),
         vec![TirType::DynBox, TirType::Str, TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let module = ValueId(0);
     let attr_name = ValueId(1);
@@ -372,7 +408,12 @@ fn object_new_bound_stored_to_module_attr_is_global_escape() {
 /// — same lattice handling as `Alloc`.
 #[test]
 fn returned_object_new_bound_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let class_ref = ValueId(0);
     let inst_val = func.fresh_value();
 
@@ -393,7 +434,12 @@ fn returned_object_new_bound_is_global_escape() {
 /// Test 1: Local-only alloc (created, identity observed, no escape) → NoEscape.
 #[test]
 fn local_only_alloc_is_no_escape() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let load_result = func.fresh_value();
     let const_result = func.fresh_value();
@@ -421,7 +467,12 @@ fn local_only_alloc_is_no_escape() {
 /// Test 2: Returned alloc → GlobalEscape.
 #[test]
 fn returned_alloc_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -439,7 +490,12 @@ fn returned_alloc_is_global_escape() {
 /// Test 3: Alloc stored into another (non-alloc) object's field → GlobalEscape.
 #[test]
 fn alloc_stored_into_non_alloc_field_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let param = ValueId(0); // function parameter, not an alloc
     let alloc_val = func.fresh_value();
     let const_result = func.fresh_value();
@@ -483,7 +539,12 @@ fn make_op_with_attrs(
 /// A builtin spelling is not a proof that callbacks cannot retain an argument.
 #[test]
 fn builtin_name_does_not_prove_noncapture() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
@@ -516,7 +577,12 @@ fn builtin_name_does_not_prove_noncapture() {
 /// A mutating method remains an opaque escape boundary.
 #[test]
 fn mutating_method_append_causes_escape() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let list_val = func.fresh_value();
     let call_result = func.fresh_value();
@@ -559,7 +625,12 @@ fn mutating_method_append_causes_escape() {
 /// provenance. A mutating method call remains an opaque escape boundary.
 #[test]
 fn frontend_canonical_form_list_append_still_escapes() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let list_val = func.fresh_value();
     let call_result = func.fresh_value();
@@ -602,7 +673,12 @@ fn frontend_canonical_form_list_append_still_escapes() {
 /// A frontend `BoundMethod:` receiver hint is not an exact non-capture fact.
 #[test]
 fn bound_method_hint_does_not_prove_noncapture() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
@@ -638,7 +714,12 @@ fn bound_method_hint_does_not_prove_noncapture() {
 /// Even an apparently read-only builtin may invoke user callbacks that capture.
 #[test]
 fn callback_capable_builtin_defaults_to_escape() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
@@ -671,7 +752,12 @@ fn callback_capable_builtin_defaults_to_escape() {
 /// Alloc passed to Call becomes GlobalEscape.
 #[test]
 fn alloc_passed_to_call_is_global_escape() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
@@ -697,7 +783,12 @@ fn alloc_passed_to_call_is_global_escape() {
 /// Test 6: Empty function → empty results.
 #[test]
 fn empty_function_produces_empty_results() {
-    let func = TirFunction::new("empty".into(), vec![], TirType::None);
+    let func = TirFunction::new(
+        "empty".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let escapes = analyze(&func);
     assert!(escapes.is_empty());
 }

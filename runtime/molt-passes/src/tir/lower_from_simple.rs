@@ -21,9 +21,7 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, TirBlock};
 use super::cfg::CFG;
 use super::function::{TirFunction, TirModule};
-use super::op_kinds_generated::{
-    SimpleIrReturnShape, opcode_sets_exception_handling_table, simpleir_return_shape,
-};
+use super::op_kinds_generated::opcode_sets_exception_handling_table;
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::target_info::TargetInfo;
 use super::types::TirType;
@@ -147,6 +145,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
 
     let mut tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
+        return_abi: ir.return_abi,
         ops: working_ops,
         params: ir.params.clone(),
         param_types: ir.param_types.clone(),
@@ -308,6 +307,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     let loop_cond_blocks = detect_loop_cond_blocks(ir, cfg);
 
     let mut function = TirFunction {
+        return_abi: ir.return_abi,
         name: ir.name.clone(),
         execution_context: ir.execution_context,
         param_names: ir.params.clone(),
@@ -322,16 +322,6 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
             if ir.codegen_partition {
                 a.insert(
                     super::function::CODEGEN_PARTITION_ATTR.into(),
-                    super::ops::AttrValue::Bool(true),
-                );
-            }
-            if ir
-                .ops
-                .iter()
-                .any(|op| simpleir_return_shape(op.kind.as_str()) == SimpleIrReturnShape::Value)
-            {
-                a.insert(
-                    "_original_has_ret".into(),
                     super::ops::AttrValue::Bool(true),
                 );
             }

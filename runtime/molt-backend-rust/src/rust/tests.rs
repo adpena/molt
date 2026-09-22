@@ -14,28 +14,16 @@ mod labelled_flow;
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "stdlib_void_helper".to_string(),
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: Vec::new(),
             is_extern: true,
             ..FunctionIR::default()
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "stdlib_value_helper".to_string(),
-            ops: vec![
-                OpIR {
-                    kind: "missing".to_string(),
-                    out: Some(crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec![crate::ir::EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
-                    ..OpIR::default()
-                },
-            ],
+            ops: Vec::new(),
             is_extern: true,
             ..FunctionIR::default()
         },
@@ -118,6 +106,7 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
     exit.args = Some(vec!["previous_baseline".to_string()]);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -155,6 +144,7 @@ fn emitted_stack_clear_preserves_the_nested_execution_baseline() {
 fn compile_checked_keeps_ordinary_programs_available() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -183,6 +173,7 @@ fn representation_conversions_preserve_only_declared_results() {
             for output in [None, Some("none"), Some("converted")] {
                 let ir = SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_main".to_string(),
                         ops: vec![
                             OpIR {
@@ -274,6 +265,7 @@ fn raw_integer_representation_conversions_require_arbitrary_precision_authority(
             let error = backend
                 .compile_checked(&SimpleIR {
                     functions: vec![FunctionIR {
+                        return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_main".to_string(),
                         ops: vec![
                             OpIR {
@@ -365,6 +357,7 @@ fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary(
     for (kind, op, expected_reason) in cases {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: format!("{kind}_test"),
                 params: vec![],
                 ops: vec![
@@ -414,6 +407,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "__main____annotate__".to_string(),
                 params: vec!["args".to_string()],
                 ops: vec![OpIR {
@@ -427,6 +421,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -452,6 +447,7 @@ fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![
                 "value".to_string(),
@@ -499,6 +495,7 @@ fn compile_numeric_equality_does_not_fall_back_for_non_numeric_values() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -535,6 +532,7 @@ fn compile_checked_rejects_untyped_integer_capable_arithmetic_before_emission() 
     add.type_hint = Some("int".to_string());
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![
@@ -571,6 +569,7 @@ fn compile_checked_rejects_typed_integer_arithmetic_before_emission() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![
@@ -609,6 +608,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "helper".to_string(),
                 params: vec!["v0".to_string(), "v1".to_string(), "v3".to_string()],
                 ops: vec![
@@ -635,6 +635,7 @@ fn compile_list_append_writes_back_indexed_aliases() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
@@ -662,6 +663,7 @@ fn compile_call_method_uses_s_value_method_name() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec!["items".to_string(), "value".to_string()],
             ops: vec![
@@ -695,6 +697,7 @@ fn compile_ord_at_emits_fused_helper() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "ord_at_unicode".to_string(),
             params: vec!["s".to_string(), "i".to_string()],
             ops: vec![
@@ -771,6 +774,7 @@ fn compile_checked_rejects_code_slots_exception_and_refcount_models() {
         let expected_kind = unsupported_op.kind.clone();
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: name.to_string(),
                 params,
                 ops: vec![
@@ -807,6 +811,7 @@ fn compile_checked_rejects_unsupported_dispatch() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "unsupported".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -847,6 +852,7 @@ fn compile_checked_rejects_module_import_before_source_emission() {
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "import_probe".to_string(),
                 params: ["module_name", "module", "member", "namespace"]
                     .map(str::to_string)
@@ -890,6 +896,7 @@ fn compile_boolean_short_circuit_omits_unused_if_parentheses() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -931,6 +938,7 @@ fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1086,6 +1094,7 @@ fn compile_unpack_sequence_iterates_unicode_scalars_not_utf8_bytes() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1135,6 +1144,7 @@ fn malformed_simple_ir_unpack_is_reported_not_emitted() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec!["seq".to_string()],
             ops: vec![
@@ -1172,6 +1182,7 @@ fn compile_module_cache_ops_lower_to_runtime_cache() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1241,6 +1252,7 @@ fn compile_checked_rejects_even_i64_sized_bigint_literals() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1277,6 +1289,7 @@ fn compile_checked_rejects_unrepresented_literal_values() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1375,6 +1388,7 @@ fn compile_store_var_and_load_var_use_named_local_storage() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper".to_string(),
             params: vec![],
             ops: vec![
@@ -1479,21 +1493,25 @@ fn result_carrying_store_var_executes_in_structured_and_labelled_flow() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 ops: vec![op("ret_void", &[], None)],
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "structured_store_results".to_string(),
                 ops: body(false),
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "labelled_store_results".to_string(),
                 ops: body(true),
                 ..FunctionIR::default()
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "aliased_store_result".to_string(),
                 ops: vec![
                     OpIR {
@@ -1612,6 +1630,7 @@ fn jump_after_loop_rejects_an_undefined_target_before_emission() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "helper".to_string(),
             params: vec!["frame".to_string()],
             ops: vec![
@@ -1679,6 +1698,7 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![
@@ -1718,6 +1738,7 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -1749,6 +1770,7 @@ fn compile_checked_rejects_malformed_callable_family_without_substitute_values()
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![

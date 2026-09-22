@@ -34,6 +34,7 @@ fn import_func_ref_validates_signature_before_local_reuse() {
 #[test]
 fn preanalysis_keeps_mixed_join_store_targets_boxed() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "mixed_join".to_string(),
         params: vec!["callable".to_string(), "args".to_string()],
         ops: vec![
@@ -88,6 +89,7 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
 #[test]
 fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "integer_family_chain".to_string(),
         params: vec!["x".to_string(), "seed".to_string()],
         ops: vec![
@@ -158,6 +160,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
 #[test]
 fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: vec!["arg".to_string()],
         ops: vec![
@@ -221,7 +224,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
 
     let analysis = preanalyze_for_test(&func);
 
-    assert!(analysis.has_ret);
+    assert!(analysis.returns_value);
     assert!(analysis.stateful);
     assert_eq!(analysis.if_to_end_if.get(&1), Some(&4));
     assert_eq!(analysis.if_to_else.get(&1), Some(&3));
@@ -245,13 +248,13 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
 }
 
 #[test]
-fn preanalysis_distinguishes_ret_from_ret_void() {
+fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
     let value_ret = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "value_ret".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "ret".to_string(),
-            args: Some(vec!["out".to_string()]),
+            kind: "ret_void".to_string(),
             ..OpIR::default()
         }],
         param_types: None,
@@ -261,6 +264,7 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
         execution_context: Default::default(),
     };
     let void_ret = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "void_ret".to_string(),
         params: vec![],
         ops: vec![OpIR {
@@ -275,18 +279,25 @@ fn preanalysis_distinguishes_ret_from_ret_void() {
     };
 
     assert!(
-        preanalyze_for_test(&value_ret).has_ret,
-        "`ret` should mark the function as value-returning"
+        preanalyze_for_test(&value_ret).returns_value,
+        "a surviving empty return must preserve the value ABI"
     );
     assert!(
-        !preanalyze_for_test(&void_ret).has_ret,
-        "`ret_void` must not mark the function as value-returning"
+        !preanalyze_for_test(&void_ret).returns_value,
+        "the same payload shape must also support an authored void ABI"
     );
+    let mut unreachable = value_ret;
+    unreachable.ops = vec![OpIR {
+        kind: "unreachable".into(),
+        ..OpIR::default()
+    }];
+    assert!(preanalyze_for_test(&unreachable).returns_value);
 }
 
 #[test]
 fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stateful_ready_continuations".to_string(),
         params: vec!["self".to_string()],
         ops: vec![
@@ -352,6 +363,7 @@ fn preanalysis_marks_every_persisted_coroutine_state_resumable() {
 #[test]
 fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "resume_label_collision".to_string(),
         params: vec!["self".to_string()],
         ops: vec![
@@ -409,6 +421,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
 #[test]
 fn preanalysis_marks_pending_plain_labels_as_shared_resume_entries() {
     let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "pending_plain_label".to_string(),
         params: vec!["self".to_string()],
         ops: vec![

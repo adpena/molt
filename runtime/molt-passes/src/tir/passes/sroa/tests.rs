@@ -84,7 +84,12 @@ fn n_allocs(func: &TirFunction) -> usize {
 /// stores and the complete allocation in the same rewrite.
 #[test]
 fn bench_struct_pattern_removes_all_stores() {
-    let mut func = TirFunction::new("main".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "main".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
@@ -117,6 +122,7 @@ fn scalar_replacement_erases_owned_candidate_as_one_lifetime_unit() {
             "owned_candidate".into(),
             vec![TirType::DynBox],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let object = func.fresh_value();
         let copied = func.fresh_value();
@@ -150,6 +156,7 @@ fn class_allocation_sealing_and_class_release_timing_are_observable() {
         "class_lifetime".into(),
         vec![TirType::DynBox],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let class = func.fresh_value();
     let object = func.fresh_value();
@@ -188,7 +195,12 @@ fn class_allocation_sealing_and_class_release_timing_are_observable() {
 /// annotation alone admits subclasses and is not a refcount-neutral proof.
 #[test]
 fn exact_bool_store_value_is_neutral() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let b = func.fresh_value();
     let obj = func.fresh_value();
@@ -215,7 +227,12 @@ fn exact_bool_store_value_is_neutral() {
 /// store-only; in production MemGVN would have forwarded this load first).
 #[test]
 fn blocked_when_object_has_surviving_load() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let c = func.fresh_value();
     let obj = func.fresh_value();
@@ -241,7 +258,12 @@ fn blocked_when_object_has_surviving_load() {
 /// via the return terminator. SROA refuses.
 #[test]
 fn blocked_when_object_escapes_via_return() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let c = func.fresh_value();
     let obj = func.fresh_value();
@@ -261,7 +283,12 @@ fn blocked_when_object_escapes_via_return() {
 /// object to an opaque call escapes/observes it. SROA refuses.
 #[test]
 fn blocked_when_object_passed_to_call() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let c = func.fresh_value();
     let obj = func.fresh_value();
@@ -294,6 +321,7 @@ fn blocked_when_store_value_is_unproven_int() {
         "f".into(),
         vec![TirType::DynBox, TirType::I64],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let x = ValueId(1); // I64 param, unbounded → MaybeBigInt
@@ -316,7 +344,12 @@ fn blocked_when_store_value_is_unproven_int() {
 /// window). Storing it is NOT refcount-neutral. SROA refuses.
 #[test]
 fn blocked_when_store_value_is_bigint_const() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let big = func.fresh_value();
     let obj = func.fresh_value();
@@ -337,6 +370,7 @@ fn range_only_impostor_does_not_prove_refcount_neutrality() {
         "range_only".into(),
         vec![TirType::DynBox, TirType::I64],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let mask = func.fresh_value();
     let narrowed = func.fresh_value();
@@ -372,7 +406,12 @@ fn range_only_impostor_does_not_prove_refcount_neutrality() {
 /// a candidate root (escape), and `b` is referenced as a store value (blocker).
 #[test]
 fn blocked_when_object_stored_into_another() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let a = func.fresh_value();
     let b = func.fresh_value();
@@ -396,7 +435,12 @@ fn blocked_when_object_stored_into_another() {
 
 #[test]
 fn run_removes_raw_boxed_stores_without_ambient_disable_path() {
-    let mut func = TirFunction::new("main".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "main".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let c0 = func.fresh_value();
     let obj = func.fresh_value();
@@ -423,7 +467,12 @@ fn run_removes_raw_boxed_stores_without_ambient_disable_path() {
 /// Stores split across two blocks, object never observed. SROA removes both.
 #[test]
 fn removes_stores_across_blocks() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let c0 = func.fresh_value();
     let c1 = func.fresh_value();
@@ -464,6 +513,7 @@ fn annotated_scalar_field_value_does_not_prove_refcount_neutrality() {
             "annotated".into(),
             vec![TirType::DynBox, hint.clone()],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let object = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -491,7 +541,12 @@ fn field_removal_requires_shared_fixed_layout_extent() {
         (0, 0, false),
         (-8, 0, false),
     ] {
-        let mut func = TirFunction::new("offset".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new(
+            "offset".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let constant = func.fresh_value();
         let object = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -513,8 +568,12 @@ fn field_removal_requires_shared_fixed_layout_extent() {
 #[test]
 fn nonheap_overwrite_cannot_erase_prior_heap_slot_ownership() {
     for heap_first in [true, false] {
-        let mut func =
-            TirFunction::new("slot_lifetime".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new(
+            "slot_lifetime".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
 
         let object = func.fresh_value();
         let heap_value = func.fresh_value();
@@ -550,7 +609,12 @@ fn nonheap_overwrite_cannot_erase_prior_heap_slot_ownership() {
 #[test]
 fn raw_i64_carriers_that_box_to_bigint_retain_slot_ownership() {
     for value in [i64::MIN, -(1_i64 << 46) - 1, 1_i64 << 46, i64::MAX] {
-        let mut func = TirFunction::new("boxed_slot".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new(
+            "boxed_slot".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let raw = func.fresh_value();
         let copied = func.fresh_value();
         let zero = func.fresh_value();
@@ -580,7 +644,12 @@ fn raw_i64_carriers_that_box_to_bigint_retain_slot_ownership() {
 
 #[test]
 fn finalizer_bearing_allocation_artifact_cannot_erase_fields() {
-    let mut func = TirFunction::new("finalizer".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "finalizer".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let value = func.fresh_value();
     let object = func.fresh_value();
     let mut allocation = raw_alloc(object, 24);

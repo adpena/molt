@@ -303,6 +303,7 @@ def _prepare_native_ir(tmp_path: Path, *, gc_ops: list[dict] | None = None):
             {
                 "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
                 "params": [],
+                "return_abi": "void",
                 "ops": (
                     [*(gc_ops or ()), {"kind": "ret_void"}]
                     if module_name == "gc"

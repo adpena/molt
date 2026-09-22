@@ -157,6 +157,7 @@ fn const_int(out: &str, value: i64) -> OpIR {
 /// fires, then layers the op-under-test on top.
 fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: format!("bounded_{}_loop", int_op.simple_kind),
         params: vec![],
         param_types: None,
@@ -279,7 +280,12 @@ fn tir_cint(result: ValueId, value: i64) -> TirOp {
 /// SCEV recognises and value-range turns into a proven `[0, stop)` range),
 /// plus the body op whose result `body` we probe. Returns `(func, body_value)`.
 fn bounded_loop_body_op_tir(int_op: IntOp, stop: i64) -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("rl".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "rl".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let startc = func.fresh_value();
     let stopc = func.fresh_value();
     let stepc = func.fresh_value();

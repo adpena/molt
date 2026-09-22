@@ -25,6 +25,7 @@ impl LuauBackend {
         };
         let flow = dispatch.then(|| molt_ir::simple_verify::simple_ir_logical_flow(&ops));
         let scalar_func = FunctionIR {
+            return_abi: func.return_abi,
             name: func.name.clone(),
             params: func.params.clone(),
             ops: ops.clone(),

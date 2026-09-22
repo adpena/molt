@@ -6,6 +6,7 @@ fn raw_index_result_refuses_boxed_runtime_bits() {
         "raw_index_result".into(),
         vec![TirType::DynBox, TirType::I64],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::I64);

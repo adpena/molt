@@ -75,6 +75,7 @@ mod tests {
         let mut blocks = HashMap::new();
         blocks.insert(entry_id, block);
         TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.into(),
             execution_context: Default::default(),
             param_names: vec![],
@@ -126,6 +127,7 @@ mod tests {
         let mut blocks = HashMap::new();
         blocks.insert(entry_id, block);
         TirFunction {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.into(),
             execution_context: Default::default(),
             param_names: vec!["p0".into(), "p1".into()],

@@ -57,6 +57,7 @@ fn exception_label_forwarding_args_widen_downstream_merge_args() {
     let mut label_id_map = HashMap::new();
     label_id_map.insert(handler.0, 10);
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "exception_label_forwarding_args_widen_downstream_merge_args".into(),
         execution_context: Default::default(),
         param_names: vec![],
@@ -177,6 +178,7 @@ fn block_arg_meet_same_types() {
     );
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "join_test".into(),
         execution_context: Default::default(),
         param_names: vec!["p0".into()],
@@ -285,6 +287,7 @@ fn block_arg_meet_different_types_produces_union() {
     );
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "union_test".into(),
         execution_context: Default::default(),
         param_names: vec!["p0".into()],
@@ -372,6 +375,7 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
     let mut blocks = HashMap::new();
     blocks.insert(entry_id, block);
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "dynbox_test".into(),
         execution_context: Default::default(),
         param_names: vec!["p0".into(), "p1".into()],
@@ -463,6 +467,7 @@ fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
     blocks.insert(entry_id, entry);
 
     let mut func = TirFunction {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "never_bottom_late_dominator".into(),
         execution_context: Default::default(),
         param_names: vec![],

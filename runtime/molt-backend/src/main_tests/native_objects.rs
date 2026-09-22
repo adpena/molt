@@ -4,6 +4,7 @@ use super::*;
 fn partition_functions_for_batches_respects_op_budget() {
     let funcs = vec![
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "a".to_string(),
             params: vec![],
             ops: vec![Default::default(); 90],
@@ -14,6 +15,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "b".to_string(),
             params: vec![],
             ops: vec![Default::default(); 90],
@@ -24,6 +26,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "c".to_string(),
             params: vec![],
             ops: vec![Default::default(); 10],
@@ -54,6 +57,7 @@ fn partition_functions_for_batches_respects_op_budget() {
 fn partition_functions_for_batches_respects_count_budget() {
     let funcs = (0..5)
         .map(|idx| FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: format!("f{idx}"),
             params: vec![],
             ops: vec![Default::default(); 1],
@@ -195,6 +199,7 @@ fn native_artifact_test_directory(label: &str) -> std::path::PathBuf {
 
 fn native_artifact_test_ir() -> SimpleIR {
     let function = |name: &str, ops| FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: vec![],
         ops,
@@ -278,6 +283,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
     ]);
     let batch_funcs = vec![
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -291,6 +297,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__module".to_string(),
             params: vec![],
             ops: vec![OpIR {
@@ -321,6 +328,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
 #[test]
 fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     let inherited = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "demo__molt_module_chunk_1".to_string(),
         params: Vec::new(),
         ops: vec![OpIR {
@@ -334,6 +342,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
     };
     let local = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_demo".to_string(),
         params: vec![],
         ops: vec![
@@ -366,6 +375,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     let declarations = external_function_declarations(&[local.clone(), inherited.clone()]);
 
     let mut string_only_reference = vec![FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "string_collision".to_string(),
         params: Vec::new(),
         ops: vec![OpIR {
@@ -388,6 +398,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     );
 
     let mut dynamic_method_collision = vec![FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "method_collision".to_string(),
         ops: vec![OpIR {
             kind: "call_method".to_string(),
@@ -404,6 +415,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     );
 
     let mut local_external_reference = vec![FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "warm_user".to_string(),
         params: Vec::new(),
         ops: vec![OpIR {
@@ -438,8 +450,8 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     assert_eq!(declaration.param_types, inherited.param_types);
     assert_eq!(declaration.source_file, inherited.source_file);
     assert!(declaration.is_extern);
-    assert_eq!(declaration.ops.len(), 1);
-    assert_eq!(declaration.ops[0].kind, "ret_void");
+    assert!(declaration.ops.is_empty());
+    assert_eq!(declaration.return_abi, molt_ir::FunctionReturnAbi::Void);
     assert_eq!(
         declaration.execution_context,
         molt_backend::ir::ExecutionContextPolicy::Inherited

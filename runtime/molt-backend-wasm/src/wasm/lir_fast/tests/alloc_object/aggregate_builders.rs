@@ -42,6 +42,7 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
             name.into(),
             vec![TirType::DynBox; operand_count],
             TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
         );
         let result_id = func.fresh_value();
         func.value_types.insert(result_id, TirType::DynBox);

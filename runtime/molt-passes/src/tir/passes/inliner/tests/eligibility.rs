@@ -3,7 +3,12 @@ use super::*;
 #[test]
 fn recursive_not_inlined() {
     // f calls f -> recursive.
-    let mut f = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = f.entry_block;
     let mut attrs = AttrDict::new();
     attrs.insert("s_value".into(), AttrValue::Str("f".into()));
@@ -26,7 +31,12 @@ fn recursive_not_inlined() {
 #[test]
 fn too_large_not_inlined() {
     // A callee with op_count > budget.
-    let mut f = TirFunction::new("big".into(), vec![], TirType::I64);
+    let mut f = TirFunction::new(
+        "big".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = f.entry_block;
     let tti = TargetInfo::native_release_fast();
     let budget = tti.inline_budget("big");
@@ -58,7 +68,12 @@ fn too_large_not_inlined() {
 
 #[test]
 fn generator_not_inlined() {
-    let mut f = TirFunction::new("gen".into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        "gen".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = f.entry_block;
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -80,7 +95,12 @@ fn generator_not_inlined() {
 fn entry_predecessor_callee_not_inlined() {
     // A callee whose entry block is a branch target (a back-edge to entry)
     // cannot be spliced by the direct-param-binding model - refuse it.
-    let mut f = TirFunction::new("looper".into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        "looper".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let body = f.fresh_block();
     f.blocks.insert(
         body,
@@ -114,7 +134,12 @@ fn handler_bearing_callee_not_inlined() {
     // A callee with a REAL exception handler region (TryStart/TryEnd) is
     // excluded - splicing across a handler boundary needs handler-label
     // re-targeting this arc does not perform.
-    let mut f = TirFunction::new("guarded".into(), vec![], TirType::None);
+    let mut f = TirFunction::new(
+        "guarded".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     f.has_exception_handling = true;
     let entry = f.entry_block;
     {
@@ -218,7 +243,12 @@ fn run_inliner_refuses_closure_call_site() {
     let callee = closure_callee("__main____add");
     // caller g(): r = __main____add(<func>, 10); return r.
     // Operands model the real call ABI [callee_value, arg0].
-    let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let func_val = g.fresh_value();
     let ten = g.fresh_value();
     let res = g.fresh_value();

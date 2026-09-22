@@ -266,7 +266,12 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn fixture() -> TirFunction {
-        let mut func = TirFunction::new("retention".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "retention".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
             Terminator::Return { values: vec![] };
         for id in 1..=4 {

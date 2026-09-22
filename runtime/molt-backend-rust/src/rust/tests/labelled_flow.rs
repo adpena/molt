@@ -46,6 +46,7 @@ fn store(name: &str, value: &str) -> OpIR {
 
 fn function(name: &str, params: &[(&str, &str)], ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|(name, _)| (*name).to_string()).collect(),
         param_types: Some(params.iter().map(|(_, ty)| (*ty).to_string()).collect()),

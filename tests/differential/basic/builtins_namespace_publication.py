@@ -29,6 +29,20 @@ print(hasattr(builtins, "PythonFinalizationError") == (sys.version_info >= (3, 1
 print(hasattr(builtins, "WindowsError") == (sys.platform == "win32"))
 print(importlib.machinery.ModuleSpec("pkg.leaf", None).parent == "pkg")
 
+# Cold startup must finish builtin capture before recursive loader metadata;
+# user code sees the original namespace and complete parent/module specs.
+print(
+    all(
+        module.__spec__.name == module.__name__
+        and isinstance(module.__spec__, importlib.machinery.ModuleSpec)
+        for module in (builtins, sys, importlib)
+    )
+)
+frame = sys._getframe()
+print(frame.f_builtins is builtins.__dict__)
+print(frame.f_globals is globals(), frame.f_locals is globals())
+del frame
+
 # Runtime exception identity must not repair a deleted Python namespace entry.
 name = "Value" + "Error"
 saved = getattr(builtins, name)

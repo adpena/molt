@@ -22,7 +22,12 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 // -----------------------------------------------------------------------
 #[test]
 fn unused_constant_removed() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let v0 = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -37,7 +42,12 @@ fn unused_constant_removed() {
 #[test]
 fn unused_heap_literal_materialization_preserves_allocation_failure() {
     for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
-        let mut func = TirFunction::new("heap_literal".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "heap_literal".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
         let value = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(opcode, vec![], vec![value]));
@@ -56,7 +66,12 @@ fn unused_heap_literal_materialization_preserves_allocation_failure() {
 // -----------------------------------------------------------------------
 #[test]
 fn unused_arithmetic_removed() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let p0 = func.fresh_value();
     let p1 = func.fresh_value();
     let sum = func.fresh_value();
@@ -79,7 +94,12 @@ fn unused_arithmetic_removed() {
 // -----------------------------------------------------------------------
 #[test]
 fn used_value_kept() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::I64);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let v0 = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -96,7 +116,12 @@ fn used_value_kept() {
 // -----------------------------------------------------------------------
 #[test]
 fn unused_call_result_with_runtime_effect_is_kept() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let callee = func.fresh_value();
     let result = func.fresh_value();
 
@@ -124,6 +149,7 @@ fn index_kept_when_result_dead() {
         "f".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let container = ValueId(0);
     let key = ValueId(1);
@@ -150,7 +176,12 @@ fn index_kept_when_result_dead() {
 
 #[test]
 fn ord_at_kept_when_result_dead() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Str, TirType::I64], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Str, TirType::I64],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let container = ValueId(0);
     let key = ValueId(1);
     let result = func.fresh_value();
@@ -180,6 +211,7 @@ fn module_get_attr_kept_when_result_dead() {
         "f".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let module = ValueId(0);
     let attr_name = ValueId(1);
@@ -208,7 +240,12 @@ fn module_get_attr_kept_when_result_dead() {
 
 #[test]
 fn module_cache_get_kept_when_result_dead() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Str], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Str],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let module_name = ValueId(0);
     let result = func.fresh_value();
 
@@ -235,7 +272,12 @@ fn module_cache_get_kept_when_result_dead() {
 
 #[test]
 fn dead_module_class_lookup_chain_is_preserved() {
-    let mut func = TirFunction::new("f".into(), vec![TirType::Str, TirType::Str], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::Str, TirType::Str],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let module_name = ValueId(0);
     let attr_name = ValueId(1);
     let module = func.fresh_value();
@@ -278,6 +320,7 @@ fn module_get_global_kept_when_result_dead() {
         "f".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let module = ValueId(0);
     let name = ValueId(1);
@@ -310,6 +353,7 @@ fn module_get_name_kept_when_result_dead() {
         "f".into(),
         vec![TirType::DynBox, TirType::Str],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let module = ValueId(0);
     let name = ValueId(1);
@@ -341,6 +385,7 @@ fn assert_module_mutation_kept_when_result_dead(opcode: OpCode, operands: Vec<Va
         "f".into(),
         operands.iter().map(|_| TirType::DynBox).collect(),
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -405,7 +450,12 @@ fn module_del_global_if_present_kept_when_result_dead() {
 // -----------------------------------------------------------------------
 #[test]
 fn cascade_removal() {
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let a = func.fresh_value();
     let b = func.fresh_value();
     let c = func.fresh_value();
@@ -427,7 +477,12 @@ fn cascade_removal() {
 #[test]
 fn block_arg_not_removed() {
     // Build: entry -> loop_body(v_arg) -> loop_body   (trivial loop)
-    let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
 
     let loop_id = func.fresh_block();
     let v_arg_id = func.fresh_value();
@@ -473,7 +528,12 @@ fn block_arg_not_removed() {
 // -----------------------------------------------------------------------
 #[test]
 fn empty_function_no_change() {
-    let mut func = TirFunction::new("empty".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "empty".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let stats = run(&mut func);
     assert_eq!(stats.ops_removed, 0);
 }

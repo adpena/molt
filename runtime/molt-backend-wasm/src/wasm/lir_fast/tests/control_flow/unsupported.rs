@@ -2,7 +2,12 @@ use super::super::*;
 
 #[test]
 fn alloc_task_bails_to_generic_emission() {
-    let mut func = TirFunction::new("alloc_task".into(), vec![TirType::DynBox], TirType::DynBox);
+    let mut func = TirFunction::new(
+        "alloc_task".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -40,6 +45,7 @@ fn state_switch_bails_to_generic_emission() {
         "state_switch".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

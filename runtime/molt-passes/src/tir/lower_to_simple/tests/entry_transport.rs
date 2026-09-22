@@ -17,6 +17,7 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
             "entry_argument_rotation".into(),
             vec![TirType::Bool, TirType::F64, TirType::F64],
             TirType::F64,
+            molt_ir::FunctionReturnAbi::Value,
         );
         func.param_names = vec!["run".into(), "left".into(), "right".into()];
         let entry = func.entry_block;
@@ -126,6 +127,7 @@ fn implicit_invocation_prevents_consuming_entry_as_an_if_arm_or_loop_body() {
             "implicit_entry_predecessor".into(),
             vec![TirType::Bool],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let entry = func.entry_block;
         let cond = func.fresh_block();
@@ -189,6 +191,7 @@ fn entry_join_and_structured_loop_exit_keep_explicit_backedges() {
             "entry_destination_edges".into(),
             vec![TirType::Bool],
             TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
         );
         let entry = func.entry_block;
         let first = func.fresh_block();
@@ -272,6 +275,7 @@ fn inlined_if_arms_preserve_incoming_and_join_argument_transport() {
         "inline_argument_edges".into(),
         vec![TirType::Bool, TirType::F64, TirType::F64],
         TirType::F64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let entry = func.entry_block;
     let left = func.fresh_block();
@@ -376,7 +380,12 @@ fn block_argument_transport_rejects_missing_short_and_excess_vectors_before_emis
 #[test]
 #[should_panic(expected = "invalid label lowering")]
 fn missing_label_after_lowering_is_never_an_optional_warning() {
-    let mut func = TirFunction::new("missing_destination".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "missing_destination".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     func.blocks
         .get_mut(&func.entry_block)
         .unwrap()

@@ -82,6 +82,7 @@ fn native_callable_program(
     ops.push(ret("result"));
     SimpleIR {
         functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "native_callable_dispatch".to_string(),
             params: vec![],
             ops,
@@ -351,6 +352,7 @@ fn cleanup_oracle_function(
     ops: Vec<OpIR>,
 ) -> FunctionIR {
     FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|name| (*name).to_string()).collect(),
         ops,

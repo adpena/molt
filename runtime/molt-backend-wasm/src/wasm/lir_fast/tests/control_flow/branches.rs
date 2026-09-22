@@ -2,7 +2,12 @@ use super::super::*;
 
 #[test]
 fn conditional_branch() {
-    let mut func = TirFunction::new("cond_branch".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "cond_branch".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let then_id = func.fresh_block();
     let else_id = func.fresh_block();
@@ -76,7 +81,12 @@ fn conditional_branch() {
 
 #[test]
 fn dynbox_bool_uses_lir_truthiness_without_generic_bail() {
-    let mut func = TirFunction::new("bool_dynbox".into(), vec![TirType::DynBox], TirType::Bool);
+    let mut func = TirFunction::new(
+        "bool_dynbox".into(),
+        vec![TirType::DynBox],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
@@ -116,6 +126,7 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
         "cond_branch_dynbox".into(),
         vec![TirType::DynBox],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let then_id = func.fresh_block();

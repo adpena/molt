@@ -230,6 +230,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
     let clif = compile_function_to_clif_text(
         vec![
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: chunk0,
                 params: vec![],
                 ops: vec![OpIR {
@@ -243,6 +244,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: chunk1,
                 params: vec![],
                 ops: vec![
@@ -265,6 +267,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: stub.clone(),
                 params: vec![],
                 ops: vec![
@@ -324,11 +327,18 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
 
 #[test]
 fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
-    let mut ops = vec![OpIR {
-        kind: "trace_enter_slot".to_string(),
-        value: Some(5),
-        ..OpIR::default()
-    }];
+    let mut ops = vec![
+        OpIR {
+            kind: "trace_enter_slot".to_string(),
+            value: Some(5),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "check_exception".to_string(),
+            value: Some(1),
+            ..OpIR::default()
+        },
+    ];
     for line in 1..=6 {
         ops.push(OpIR {
             kind: "line".to_string(),
@@ -350,8 +360,22 @@ fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
             kind: "ret_void".to_string(),
             ..OpIR::default()
         },
+        OpIR {
+            kind: "label".to_string(),
+            value: Some(1),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "trace_exit".to_string(),
+            ..OpIR::default()
+        },
+        OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        },
     ]);
     let original = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "native_framed_large".to_string(),
         ops,
         execution_context: crate::ir::ExecutionContextPolicy::Local,

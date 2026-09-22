@@ -7,6 +7,7 @@ fn generic_obj_literal_name_attr_without_source_op_index_fails_closed() {
         "get_attr_generic_obj_without_source".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let result_id = func.fresh_value();
     func.value_types.insert(result_id, TirType::DynBox);

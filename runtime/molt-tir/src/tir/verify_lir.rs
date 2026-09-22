@@ -7,8 +7,8 @@
 //! - branch arguments match the target block parameters in semantic type and
 //!   low-level representation;
 //! - conditional branches consume `Bool1`;
-//! - return values match the declared function return arity and a valid
-//!   representation for the declared semantic type.
+//! - zero/one return payloads fit the frozen function return ABI and use a
+//!   valid representation for the declared semantic type.
 //!
 //! The verifier is split move-only into cohesive submodules:
 //! - [`signature`]: entry-block signature and type/repr acceptance;
@@ -64,6 +64,11 @@ impl LirVerifyError {
 
 pub fn verify_lir_function(func: &LirFunction) -> Result<(), Vec<LirVerifyError>> {
     let mut errors = Vec::new();
+    if func.return_types.len() > 1 {
+        errors.push(LirVerifyError::func(
+            "function return ABI must declare zero or one result",
+        ));
+    }
     if !func.blocks.contains_key(&func.entry_block) {
         errors.push(LirVerifyError::func(format!(
             "entry block ^{} does not exist in blocks map",

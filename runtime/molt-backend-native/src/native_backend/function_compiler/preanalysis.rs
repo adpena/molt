@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
-    pub(in crate::native_backend::function_compiler) has_ret: bool,
+    pub(in crate::native_backend::function_compiler) returns_value: bool,
     pub(in crate::native_backend::function_compiler) stateful: bool,
     /// Only proven DirectNonHeap stores omit the field-store profiling path.
     pub(in crate::native_backend::function_compiler) needs_field_store_profile: bool,
@@ -217,7 +217,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     func_ir: &FunctionIR,
     representation_plan: &ScalarRepresentationPlan,
 ) -> FunctionPreanalysis {
-    let mut has_ret = false;
+    let returns_value = func_ir.return_abi.returns_value();
     let mut stateful = false;
     // RC drop-insertion substrate (design 20, R1 guard): set by the leading
     // `drop_inserted` marker op the TIR back-conversion emits for drop-processed
@@ -273,11 +273,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
-            kind if crate::tir::op_kinds_generated::simpleir_return_shape(kind)
-                == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
-            {
-                has_ret = true;
-            }
             "drop_inserted" => drop_inserted = true,
             "state_switch" | "state_transition" | "state_yield" | "chan_send_yield"
             | "chan_recv_yield" => stateful = true,
@@ -863,7 +858,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let cfg_liveness = crate::tir::cfg_liveness::analyze_simple_cfg_liveness(&func_ir.ops);
 
     FunctionPreanalysis {
-        has_ret,
+        returns_value,
         stateful,
         needs_field_store_profile,
         var_names,

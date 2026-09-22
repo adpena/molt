@@ -483,7 +483,12 @@ mod tests {
 
     #[test]
     fn natural_loop_body_excludes_retained_unreachable_feeders() {
-        let mut func = TirFunction::new("loop_with_dead_feeder".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "loop_with_dead_feeder".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let header = func.fresh_block();
         let latch = func.fresh_block();
         let dead_feeder = func.fresh_block();
@@ -520,7 +525,12 @@ mod tests {
 
     #[test]
     fn absent_entry_has_no_reachable_or_dominator_nodes() {
-        let mut func = TirFunction::new("empty".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "empty".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         func.blocks.clear();
         for policy in [CfgEdgePolicy::Full, CfgEdgePolicy::TerminatorOnly] {
             let preds = build_pred_map_with(&func, policy);
@@ -540,7 +550,12 @@ mod tests {
 
     #[test]
     fn dangling_edges_are_not_nodes_and_remain_verifier_errors() {
-        let mut func = TirFunction::new("dangling".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "dangling".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let missing = BlockId(99);
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
             target: missing,
@@ -573,7 +588,12 @@ mod tests {
 
     #[test]
     fn single_block_dominates_itself() {
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.terminator = Terminator::Return { values: vec![] };
@@ -586,7 +606,12 @@ mod tests {
     #[test]
     fn linear_chain_dominance() {
         // bb0 -> bb1 -> bb2
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
 
@@ -633,7 +658,12 @@ mod tests {
     #[test]
     fn diamond_dominance() {
         // bb0 -> bb1, bb0 -> bb2, bb1 -> bb3, bb2 -> bb3
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
         let bb3 = func.fresh_block();
@@ -712,7 +742,12 @@ mod tests {
         use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
         use crate::tir::values::TirValue;
 
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let normal = func.fresh_block();
         let handler = func.fresh_block();
         let entry_arg = func.blocks[&func.entry_block].args[0].id;
@@ -788,7 +823,12 @@ mod tests {
     fn try_end_label_is_not_an_exception_transfer_edge() {
         use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 
-        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![],
+            TirType::None,
+            crate::FunctionReturnAbi::Void,
+        );
         let normal = func.fresh_block();
         let handler = func.fresh_block();
 

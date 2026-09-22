@@ -145,7 +145,12 @@ fn field(opcode: OpCode, object: ValueId, value: ValueId, offset: i64) -> TirOp 
 }
 
 fn fixture(class: bool) -> (TirFunction, ValueId) {
-    let mut func = TirFunction::new("slot_access".into(), vec![TirType::DynBox], TirType::None);
+    let mut func = TirFunction::new(
+        "slot_access".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let object = func.fresh_value();
     let mut alloc = allocation(
         if class {

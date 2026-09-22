@@ -251,6 +251,7 @@ fn list_storage_certified_loop_scope_is_published_only_by_its_actual_preheader()
 #[test]
 fn list_storage_loop_certification_uses_actual_native_owner_custody() {
     let input = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "generic_loop_ownership".into(),
         params: vec!["lst".into(), "idx".into()],
         param_types: Some(vec!["list".into(), "int".into()]),
@@ -472,6 +473,7 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
             ..OpIR::default()
         });
         functions.push(FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.into(),
             params: if generic {
                 vec!["condition".into(), "lst".into()]
@@ -526,6 +528,7 @@ fn tir_drop_hoist_fixture_roots(
     // Actual NativeValueTracking custody is tested separately; no absent or
     // unrelated cleanup table may silently certify a heap result here.
     let input = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "hoist_effect_fixture".into(),
         params: pre_loop_defined
             .difference(&collect_pre_loop_defined_names(ops, start_idx))

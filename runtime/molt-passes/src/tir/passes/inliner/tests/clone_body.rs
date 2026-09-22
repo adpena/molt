@@ -3,7 +3,12 @@ use super::*;
 #[test]
 fn clone_produces_disjoint_ids() {
     let callee = add_callee();
-    let mut caller = TirFunction::new("caller".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     // Two argument values already live in the caller.
     let a = caller.fresh_value();
     let b = caller.fresh_value();
@@ -32,7 +37,12 @@ fn clone_produces_disjoint_ids() {
 #[test]
 fn clone_entry_has_empty_args() {
     let callee = add_callee();
-    let mut caller = TirFunction::new("caller".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let a = caller.fresh_value();
     let b = caller.fresh_value();
     let cloned = clone_function_body_with_fresh_ids(&callee, &mut caller, &[a, b]);
@@ -42,7 +52,12 @@ fn clone_entry_has_empty_args() {
 #[test]
 fn clone_transfers_all_loop_metadata() {
     // A callee with a header block carrying every loop-metadata kind.
-    let mut callee = TirFunction::new("loopfn".into(), vec![], TirType::None);
+    let mut callee = TirFunction::new(
+        "loopfn".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let header = callee.fresh_block();
     let end = callee.fresh_block();
     let cond = callee.fresh_block();
@@ -74,7 +89,12 @@ fn clone_transfers_all_loop_metadata() {
     callee.loop_cond_blocks.insert(header, cond);
     callee.label_id_map.insert(header.0, 7);
 
-    let mut caller = TirFunction::new("caller".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let cloned = clone_function_body_with_fresh_ids(&callee, &mut caller, &[]);
 
     // All four maps + label_id_map must have one remapped entry each.
@@ -140,7 +160,12 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     // The failed spectral_norm unlock exposed exactly this shape: inlined
     // callee store_var/load_var markers clobbered the caller loop locals when
     // lower_to_simple re-emitted `_var` as the SimpleIR local slot name.
-    let mut callee = TirFunction::new("uses_i".into(), vec![TirType::I64], TirType::I64);
+    let mut callee = TirFunction::new(
+        "uses_i".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let param = ValueId(0);
     let stored = callee.fresh_value();
     let loaded = callee.fresh_value();
@@ -176,7 +201,12 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     callee.value_types.insert(stored, TirType::I64);
     callee.value_types.insert(loaded, TirType::I64);
 
-    let mut caller = TirFunction::new("caller".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let arg = caller.fresh_value();
     let caller_slot = caller.fresh_value();
     {
@@ -240,7 +270,12 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     // store to the same local dominates the first read, cloning that initializer
     // only pollutes representation propagation: all-source store analysis sees a
     // fake missing source for an otherwise scalar local carrier.
-    let mut callee = TirFunction::new("init_then_assign".into(), vec![TirType::I64], TirType::I64);
+    let mut callee = TirFunction::new(
+        "init_then_assign".into(),
+        vec![TirType::I64],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let param = ValueId(0);
     let missing = callee.fresh_value();
     let missing_store = callee.fresh_value();
@@ -301,7 +336,12 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     callee.value_types.insert(assigned, TirType::I64);
     callee.value_types.insert(loaded, TirType::I64);
 
-    let mut caller = TirFunction::new("caller".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "caller".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let arg = caller.fresh_value();
     let cloned = clone_function_body_with_fresh_ids(&callee, &mut caller, &[arg]);
     let cloned_entry = &caller.blocks[&cloned.entry];
@@ -347,7 +387,12 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
     // container-dispatch lookup cannot resolve the inlined value to the
     // caller's kind. Before the strip, the merged body had two ops named
     // "collide" - a latent miscompile.
-    let mut callee = TirFunction::new("c".into(), vec![], TirType::I64);
+    let mut callee = TirFunction::new(
+        "c".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let cv = callee.fresh_value();
     {
         let entry = callee.entry_block;
@@ -368,7 +413,12 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
     callee.value_types.insert(cv, TirType::I64);
 
     // caller g(): own = const 9 (named "collide"); r = c(); return own.
-    let mut g = TirFunction::new("g".into(), vec![], TirType::I64);
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let own = g.fresh_value();
     let call_res = g.fresh_value();
     {

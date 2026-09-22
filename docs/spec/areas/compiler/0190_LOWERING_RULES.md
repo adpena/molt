@@ -510,6 +510,32 @@ guard, bypass, exception or resume path cannot establish validity. Fusion must
 preserve exhaustion-payload lifetime across intervening effects; preserving the
 effect instruction alone is not enough. Invalid candidates remain materialized.
 
+Frame entry is a checked lifecycle operation in typed frontend IR, not a late
+serialization prepend. `trace_enter_slot` is followed by its `check_exception`
+before exception-stack baselines, locals mutation, metadata or body execution.
+Its failure path owns only the entry attempt: it balances `trace_exit` without
+reading state that would have been initialized after successful entry. Module
+entry additionally preserves publication rollback; see the import contract.
+
+Backend scheduling must preserve this edge. Native heap-literal preparation
+initializes every cleanup anchor to boxed `None` before entry, but fallible
+literal constructors follow the leading entry check's success continuation.
+Early failure therefore releases only initialized anchors and consumes exactly
+one frame attempt. An IR-positioned module entry cannot be hoisted ahead of the
+code/global binding that it requires. Partitioning must keep the checked entry
+and its failure cleanup with the frame owner; inherited chunks neither enter
+nor exit that frame.
+
+The function's explicit `return_abi` owns the linkage result independently of
+return payloads and inferred semantic types. Python functions, pollers, and
+callable helpers have a value ABI even if optimization removes every value
+exit. Void module/entry wrappers declare their convention at construction.
+SimpleIR/TIR roundtrips and cache/extern projections preserve this fact without
+synthetic signature instructions or a scan of optimized returns. Empty returns
+in a value ABI lower to boxed `None` at the machine boundary, keeping
+`trace_exit` adjacent to its return in the IR. A Python `None` type is not a void
+calling convention. See `SIMPLE_IR_JSON_SCHEMA.md` for the transport contract.
+
 Luau coroutine wrappers retire their exact execution-context lookup on terminal
 completion, failure or explicit close through the shared frame authority.
 Weak indexing handles abandonment; terminal retirement does not depend on GC

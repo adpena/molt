@@ -9,6 +9,7 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "counted_loop".into(),
         params: vec![],
         ops: vec![
@@ -108,7 +109,12 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
 
 #[test]
 fn structured_if_must_not_inline_exception_handler_target_blocks() {
-    let mut func = TirFunction::new("eh_handler_if".into(), vec![TirType::Bool], TirType::I64);
+    let mut func = TirFunction::new(
+        "eh_handler_if".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
 
     let handler_block = func.fresh_block();
     let else_block = func.fresh_block();
@@ -196,6 +202,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         "emit_guard_raise_path_keeps_cleanup_blocks_after_raise".into(),
         vec![],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
     let raise_block = func.fresh_block();
     let cleanup_block = func.fresh_block();
@@ -295,6 +302,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
         "explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let header = func.entry_block;
     let cond = func.fresh_block();
@@ -449,6 +457,7 @@ fn loop_cond_with_external_reentry_keeps_label_no_dangling() {
         "state_machine_poll__loop_cond_external_reentry".into(),
         vec![TirType::Bool, TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let entry = func.entry_block;
     let header = func.fresh_block();
@@ -578,6 +587,7 @@ fn loop_shared_preheader_latch_body_keeps_label_no_dangling() {
         "shared_preheader_latch__keeps_label".into(),
         vec![TirType::Bool],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     let entry = func.entry_block;
     let latch = func.fresh_block(); // P: pre-header AND back-edge target
@@ -691,6 +701,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
         "loop_guard_raise_chain_keeps_cleanup_handler_label".into(),
         vec![TirType::Bool, TirType::Bool, TirType::Bool],
         TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
     );
 
     let header = func.fresh_block();

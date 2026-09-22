@@ -135,6 +135,11 @@ impl<'a> Arbitrary<'a> for ValidationInput {
                 }
 
                 functions.push(FunctionIR {
+                    return_abi: if u.arbitrary()? {
+                        molt_backend::ir::FunctionReturnAbi::Value
+                    } else {
+                        molt_backend::ir::FunctionReturnAbi::Void
+                    },
                     name,
                     params,
                     ops,

@@ -92,6 +92,7 @@ mod tests {
         ] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
+                    return_abi: crate::FunctionReturnAbi::Void,
                     name: "float_wire".into(),
                     ops: vec![OpIR {
                         kind: "const_float".into(),

@@ -502,8 +502,12 @@ mod tests {
         //     %2 = molt.add %0, %1
         //     return %2
         // }
-        let mut func =
-            TirFunction::new("add".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut func = TirFunction::new(
+            "add".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+            crate::FunctionReturnAbi::Value,
+        );
 
         let result = ValueId(func.next_value);
         func.next_value += 1;

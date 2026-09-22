@@ -290,6 +290,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
             {
                 "name": entry_init,
                 "params": [],
+                "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
             }
         ],

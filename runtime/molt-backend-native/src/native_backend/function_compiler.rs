@@ -172,7 +172,7 @@ impl SimpleBackend {
             ScalarRepresentationPlan::for_function_ir_for_target(&func_ir, target_info);
         let representation_plan = &representation_plan_storage;
         let FunctionPreanalysis {
-            has_ret,
+            returns_value,
             stateful,
             needs_field_store_profile,
             var_names,
@@ -211,7 +211,6 @@ impl SimpleBackend {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
         };
         let rc_authority = NativeRcAuthority::from_drop_inserted(drop_inserted);
-        let returns_value = has_ret || stateful;
 
         if returns_value {
             self.ctx
@@ -776,11 +775,47 @@ impl SimpleBackend {
             builder.def_var(entered, inactive);
             entered
         });
-        let leading_frame_code_id = func_ir
+        let leading_frame_entry_op_idx = func_ir
             .ops
-            .first()
-            .filter(|op| op.kind == "trace_enter_slot")
-            .map(|op| op.value.expect("admitted trace_enter_slot ID"));
+            .iter()
+            .position(|op| {
+                op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
+                    && op.kind
+                        != crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+            })
+            .filter(|&op_idx| func_ir.ops[op_idx].kind == "trace_enter_slot");
+        let leading_frame_code_id = leading_frame_entry_op_idx.map(|op_idx| {
+            func_ir.ops[op_idx]
+                .value
+                .expect("admitted trace_enter_slot ID")
+        });
+        let leading_frame_exception_check_idx = leading_frame_entry_op_idx.and_then(|op_idx| {
+            func_ir
+                .ops
+                .get(op_idx + 1)
+                .filter(|op| op.kind == "check_exception")
+                .map(|_| op_idx + 1)
+        });
+
+        // ── Heap-literal prologue preparation ───────────────────────────
+        //
+        // Allocate and initialize every immutable heap-literal anchor before
+        // any frame entry or constructor failure can reach the master return.
+        // Construction remains eager for non-leading module entries. A leading
+        // function entry instead consumes the frontend's adjacent exception
+        // edge before constructors run; native codegen does not duplicate that
+        // pending-exception policy.
+        //
+        // This is the correct fix for loop-carried heap literals:
+        // Cranelift SSA variables for heap constants can be corrupted to
+        // None by loop-header phi merges (entry-block None init vs
+        // back-edge value). Stack slots are immune to SSA phi because
+        // they are physical memory, not SSA values. By allocating all
+        // immutable heap literal anchors before the entry block is sealed,
+        // their object pointers are valid for the entire function lifetime.
+        let (literal_hoists, literal_materialization) =
+            fc::const_literals::prepare_heap_literals(&func_ir, &mut builder, representation_plan);
+
         if let (Some(entered), Some(code_id)) = (owned_frame_entered, leading_frame_code_id) {
             emit_owned_execution_frame_enter(
                 entered,
@@ -791,35 +826,24 @@ impl SimpleBackend {
             );
         }
 
-        // ── Heap-literal prologue hoisting ──────────────────────────────
-        //
-        // Hoist ALL immutable heap literals to the entry block. Each unique
-        // string/bytes payload is allocated once and stored in a dedicated
-        // stack slot. Subsequent const_str/const_bytes ops with the same
-        // content retain an independent owned result from the slot instead of
-        // re-allocating. The frame releases its anchors at the master return.
-        //
-        // This is the correct fix for loop-carried heap literals:
-        // Cranelift SSA variables for heap constants can be corrupted to
-        // None by loop-header phi merges (entry-block None init vs
-        // back-edge value). Stack slots are immune to SSA phi because
-        // they are physical memory, not SSA values. By allocating all
-        // immutable heap literals before the entry block is sealed, their
-        // object pointers are valid for the entire function lifetime.
-        let literal_hoists = fc::const_literals::hoist_heap_literals(
-            &func_ir,
-            &mut self.module,
-            &mut self.import_ids,
-            &mut self.data_pool,
-            &mut self.next_data_id,
-            &mut builder,
-            &vars,
-            representation_plan,
-            fc::const_literals::LiteralFailureExit {
-                block: master_return_block,
-                returns_value,
-            },
-        );
+        let mut deferred_literal_materialization = if leading_frame_exception_check_idx.is_some() {
+            Some(literal_materialization)
+        } else {
+            literal_materialization.materialize(
+                &literal_hoists,
+                &mut self.module,
+                &mut self.import_ids,
+                &mut self.data_pool,
+                &mut self.next_data_id,
+                &mut builder,
+                &vars,
+                fc::const_literals::LiteralFailureExit {
+                    block: master_return_block,
+                    returns_value,
+                },
+            );
+            None
+        };
 
         // Semantic execution-frame ownership is separate from full call tracing.
         // Leading function markers enter before the allocating literal prologue;
@@ -862,7 +886,7 @@ impl SimpleBackend {
         // Literal failure checks split the prologue from the Python body.
         // Entry-value tracking is rooted at the successful body entry, not the
         // now-terminated ABI parameter/anchor-initialization block.
-        let body_entry_block = builder
+        let mut body_entry_block = builder
             .current_block()
             .expect("literal prologue has a success continuation");
         sealed_blocks.insert(body_entry_block);
@@ -1542,7 +1566,7 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         owned_frame_entered,
-                        leading_frame_code_id.is_some(),
+                        leading_frame_entry_op_idx,
                         has_frame_slot,
                         is_block_filled,
                         rc_authority,
@@ -2022,6 +2046,32 @@ impl SimpleBackend {
                         );
                     }
                 }
+            }
+
+            // The frontend owns the exception policy for a leading frame entry.
+            // Materialize heap literals only in that check's success
+            // continuation, then make the final constructor-success block the
+            // entry-tracked cleanup root for the rest of the Python body.
+            if leading_frame_exception_check_idx == Some(op_idx)
+                && let Some(literal_materialization) = deferred_literal_materialization.take()
+            {
+                literal_materialization.materialize(
+                    &literal_hoists,
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut self.data_pool,
+                    &mut self.next_data_id,
+                    &mut builder,
+                    &vars,
+                    fc::const_literals::LiteralFailureExit {
+                        block: master_return_block,
+                        returns_value,
+                    },
+                );
+                body_entry_block = builder
+                    .current_block()
+                    .expect("literal prologue has a success continuation");
+                sealed_blocks.insert(body_entry_block);
             }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.

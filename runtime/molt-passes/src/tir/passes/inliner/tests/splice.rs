@@ -24,11 +24,21 @@ fn splice_removes_call_and_passes_verify() {
 #[test]
 fn splice_void_return() {
     // Callee returns nothing; caller calls it for effect.
-    let mut callee = TirFunction::new("eff".into(), vec![], TirType::None);
+    let mut callee = TirFunction::new(
+        "eff".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = callee.entry_block;
     callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
-    let mut caller = TirFunction::new("g".into(), vec![], TirType::None);
+    let mut caller = TirFunction::new(
+        "g".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let mut call_attrs = AttrDict::new();
     call_attrs.insert("s_value".into(), AttrValue::Str("eff".into()));
     let centry = caller.entry_block;
@@ -60,11 +70,21 @@ fn splice_void_return() {
 #[test]
 fn refcount_guard_refuses_arg_incref() {
     // Caller: IncRef(arg); call f(arg). The guard must refuse the splice.
-    let mut callee = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+    let mut callee = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let centry = callee.entry_block;
     callee.blocks.get_mut(&centry).unwrap().terminator = Terminator::Return { values: vec![] };
 
-    let mut caller = TirFunction::new("g".into(), vec![TirType::DynBox], TirType::None);
+    let mut caller = TirFunction::new(
+        "g".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let arg = ValueId(0); // the caller's param
     let entry = caller.entry_block;
     let mut call_attrs = AttrDict::new();

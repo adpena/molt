@@ -53,7 +53,12 @@ fn add_type(func: &mut TirFunction, id: ValueId, ty: TirType) {
 
 #[test]
 fn prunes_unused_branch_block_arg_and_incoming_payload() {
-    let mut func = TirFunction::new("branch_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "branch_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let join = func.fresh_block();
     let used = func.fresh_value();
@@ -90,7 +95,12 @@ fn prunes_unused_branch_block_arg_and_incoming_payload() {
 
 #[test]
 fn prunes_cond_branch_payloads_on_each_matching_edge() {
-    let mut func = TirFunction::new("cond_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "cond_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let then_block = func.fresh_block();
     let else_block = func.fresh_block();
@@ -146,7 +156,12 @@ fn prunes_cond_branch_payloads_on_each_matching_edge() {
 
 #[test]
 fn prunes_switch_payloads_on_cases_and_default() {
-    let mut func = TirFunction::new("switch_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "switch_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let case_block = func.fresh_block();
     let default_block = func.fresh_block();
@@ -204,7 +219,12 @@ fn prunes_switch_payloads_on_cases_and_default() {
 
 #[test]
 fn prunes_unused_check_exception_handler_payloads() {
-    let mut func = TirFunction::new("exception_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "exception_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let handler = func.fresh_block();
     let used = func.fresh_value();
@@ -234,7 +254,12 @@ fn prunes_unused_check_exception_handler_payloads() {
 
 #[test]
 fn prunes_unused_try_start_handler_payloads() {
-    let mut func = TirFunction::new("try_start_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "try_start_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let handler = func.fresh_block();
     let used = func.fresh_value();
@@ -265,7 +290,12 @@ fn prunes_unused_try_start_handler_payloads() {
 
 #[test]
 fn prunes_state_dispatch_payloads() {
-    let mut func = TirFunction::new("state_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "state_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let resume = func.fresh_block();
     let default = func.fresh_block();
@@ -320,6 +350,7 @@ fn never_prunes_entry_parameters() {
         "entry_params".into(),
         vec![TirType::I64, TirType::I64],
         TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
     );
     func.blocks.get_mut(&func.entry_block).unwrap().terminator =
         Terminator::Return { values: vec![] };
@@ -331,7 +362,12 @@ fn never_prunes_entry_parameters() {
 
 #[test]
 fn fixed_point_prunes_forwarded_dead_arg_chain() {
-    let mut func = TirFunction::new("chain_prune".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "chain_prune".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
     let entry = func.entry_block;
     let middle = func.fresh_block();
     let exit = func.fresh_block();
@@ -379,7 +415,12 @@ fn fixed_point_prunes_forwarded_dead_arg_chain() {
 
 #[test]
 fn keeps_arg_used_only_in_dominated_descendant() {
-    let mut func = TirFunction::new("descendant_use".into(), vec![], TirType::None);
+    let mut func = TirFunction::new(
+        "descendant_use".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
     let entry = func.entry_block;
     let carrier = func.fresh_block();
     let use_block = func.fresh_block();
