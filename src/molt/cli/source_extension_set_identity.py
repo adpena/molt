@@ -31,7 +31,7 @@ _OBJECT_SEQUENCE_FIELDS = (
     "required_capsules",
     "project_generated_c_api_symbols",
 )
-SOURCE_EXTENSION_SET_SCHEMA_VERSION = 4
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 5
 
 
 def _digest_payload(payload: Any) -> str:

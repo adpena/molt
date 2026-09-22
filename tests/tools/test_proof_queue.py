@@ -34,6 +34,9 @@ from molt.cli.source_build_environment import (
     SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
     canonical_source_marker_environment,
 )
+from molt.cli.source_extension_set_identity import (
+    SOURCE_EXTENSION_SET_SCHEMA_VERSION,
+)
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
 )
@@ -13167,7 +13170,7 @@ def _write_current_scientific_seal(
     (root / "extension_set_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": SOURCE_EXTENSION_SET_SCHEMA_VERSION,
                 "kind": "molt-source-extension-set",
                 "package": package,
                 "package_version": extension_set.package_version,
@@ -13246,6 +13249,7 @@ def _write_current_scientific_seal(
                     "backend": {
                         "distribution": "ninja",
                         "version": "1.13.0",
+                        "reported_version": "1.13.0",
                         "path": "ninja.exe",
                         "sha256": "b" * 64,
                     },

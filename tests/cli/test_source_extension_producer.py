@@ -281,6 +281,7 @@ def _write_meson_metadata(
         "backend": {
             "distribution": "ninja",
             "version": "1.13.0",
+            "reported_version": "1.13.0.git.kitware.jobserver-pipe-1",
             "path": "ninja.exe",
             "sha256": "a" * 64,
         },

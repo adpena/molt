@@ -815,13 +815,17 @@ def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
     path = binaries[0]
     command = (sys.executable, "-m", "ninja")
     result = _run_process((*command, "--version"), cwd=source_root)
-    version = result.stdout.strip()
-    if result.returncode != 0 or not version:
+    reported_version = result.stdout.strip()
+    if result.returncode != 0 or not reported_version:
         detail = (result.stderr or result.stdout).strip()
         raise SourceExtensionProducerError(
             f"Ninja backend cannot attest its version: {detail}"
         )
     distribution_name = distribution.metadata.get("Name")
+    # The locked distribution version is what the build dependency group pins
+    # and what custody links to; the binary's own version string (a vendor
+    # build such as "1.13.0.git.kitware.jobserver-pipe-1") is recorded as
+    # evidence beside it, never parsed as the custody identity.
     return _SourceNinjaDriver(
         command=command,
         manifest={
@@ -830,7 +834,8 @@ def _source_ninja_driver(source_root: Path) -> _SourceNinjaDriver:
                 if isinstance(distribution_name, str) and distribution_name.strip()
                 else "ninja"
             ),
-            "version": version,
+            "version": distribution.version,
+            "reported_version": reported_version,
             "path": path.name,
             "sha256": _sha256_file(path),
         },
