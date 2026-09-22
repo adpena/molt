@@ -2128,6 +2128,71 @@ def _recover_and_prune_producer_transactions(
         _remove_file_or_tree(prior)
 
 
+@dataclass(frozen=True, slots=True)
+class ProduceSetSelection:
+    package_version: str
+    python_version: str
+    source: str
+
+
+def resolve_produce_set_selection(
+    *,
+    package: str,
+    package_version: str | None,
+    python_version: str | None,
+    source: str | None,
+) -> ProduceSetSelection:
+    """Fill omitted produce-set selectors from their single authorities.
+
+    The package and CPython versions come from the selected scientific stack
+    (config/scientific_stack_versions.toml); the source checkout is the
+    registered package commit under the checkout custody root. Explicit values
+    are honored unchanged so a registered named-lane argv never carries a host
+    path while operators keep full control.
+    """
+    if package_version is None or python_version is None:
+        from molt.scientific_stack_versions import resolve_scientific_stack
+
+        stack = resolve_scientific_stack()
+        versions = {"numpy": stack.numpy, "scipy": stack.scipy}
+        if package_version is None:
+            if package not in versions:
+                raise SourceExtensionProducerError(
+                    f"--package-version is required for {package!r}: only the "
+                    "selected scientific stack packages are derivable"
+                )
+            package_version = versions[package]
+        if python_version is None:
+            python_version = stack.cpython
+    if source is None:
+        from molt.cli.source_extension_set_registry import (
+            load_source_extension_registry,
+        )
+        from molt.dx import checkout_custody
+
+        registry = load_source_extension_registry()
+        commit = registry.package(package, package_version).source.commit
+        custody_root = checkout_custody(_REPO_ROOT, os.environ).custody_root
+        candidate = (
+            custody_root
+            / "package-sources"
+            / f"{package}-{package_version}-{commit[:12]}"
+        )
+        if not candidate.is_dir():
+            raise SourceExtensionProducerError(
+                f"registered {package} {package_version} source checkout is absent: "
+                f"{candidate} (commit {commit})"
+            )
+        if _git_head(candidate) != commit:
+            raise SourceExtensionProducerError(
+                f"source checkout {candidate} is not at the registered commit {commit}"
+            )
+        source = str(candidate)
+    return ProduceSetSelection(
+        package_version=package_version, python_version=python_version, source=source
+    )
+
+
 def produce_source_extension_set(
     *,
     package: str,

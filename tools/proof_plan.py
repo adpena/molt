@@ -78,6 +78,15 @@ REQUIRED_SCHEDULED_FAMILY_FIELDS = (
     "timeout_minutes",
     "resource_class",
 )
+REQUIRED_NAMED_LANE_FIELDS = (
+    "description",
+    "argv",
+    "toolchains",
+    "resource_family",
+    "contention_key",
+    "timeout_seconds",
+    "scratch_roots",
+)
 REQUIRED_COMMAND_FIELDS = (
     "family",
     "cell",
@@ -147,6 +156,32 @@ class ProofCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class NamedLane:
+    """A queue-owned proof lane that runs under host custody, not in a CI family.
+
+    Its exact argv is the registered command authority for child-process
+    admission: a submission whose argv equals a named lane receives the lane's
+    declared toolchain closure (descendants admitted by image identity) instead
+    of being classified as a leaf that may spawn nothing.
+    """
+
+    id: str
+    data: dict[str, Any]
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.data.get("argv", ()))
+
+    @property
+    def toolchains(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.data.get("toolchains", ()))
+
+    @property
+    def scratch_roots(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.data.get("scratch_roots", ()))
+
+
+@dataclass(frozen=True, slots=True)
 class ToolchainPolicy:
     name: str
     data: dict[str, Any]
@@ -183,6 +218,7 @@ class ProofPlan:
     scheduled_families: tuple[ScheduledFamily, ...]
     commands: tuple[ProofCommand, ...]
     toolchain_policies: tuple[ToolchainPolicy, ...]
+    named_lanes: tuple[NamedLane, ...]
     executor_max_workers: int
     inventory_hash_workers: int
     resource_policies: tuple[ResourcePolicy, ...]
@@ -376,6 +412,10 @@ class ProofPlan:
                 for entry in data.get("scheduled_family", [])
             ),
             commands=tuple(commands),
+            named_lanes=tuple(
+                NamedLane(str(entry.get("id", "")), dict(entry))
+                for entry in data.get("named_lane", [])
+            ),
             toolchain_policies=tuple(
                 ToolchainPolicy(str(entry.get("name", "")), dict(entry))
                 for entry in data.get("toolchain_policy", [])
@@ -396,10 +436,86 @@ class ProofPlan:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
         return plan
 
+    def named_lane(self, lane_id: str) -> NamedLane:
+        for lane in self.named_lanes:
+            if lane.id == lane_id:
+                return lane
+        raise KeyError(f"proof plan has no named lane {lane_id!r}")
+
+    def _validate_named_lanes(self, errors: list[str]) -> None:
+        policy_names = {policy.name for policy in self.toolchain_policies}
+        command_argvs = {
+            tuple(str(value) for value in command.argv) for command in self.commands
+        }
+        seen_ids: set[str] = set()
+        seen_argvs: set[tuple[str, ...]] = set()
+        for lane in self.named_lanes:
+            if re.fullmatch(r"[a-z0-9]+(?:[._-][a-z0-9]+)*", lane.id) is None:
+                errors.append(f"named lane id is not canonical: {lane.id!r}")
+            if lane.id in seen_ids:
+                errors.append(f"{lane.id}: named lane ids must be unique")
+            seen_ids.add(lane.id)
+            for field in REQUIRED_NAMED_LANE_FIELDS:
+                if field not in lane.data:
+                    errors.append(f"{lane.id}: missing {field}")
+            extra = set(lane.data) - set(REQUIRED_NAMED_LANE_FIELDS) - {"id"}
+            if extra:
+                errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
+            argv = lane.argv
+            raw_argv = lane.data.get("argv")
+            if (
+                not isinstance(raw_argv, list)
+                or not argv
+                or any(not isinstance(value, str) or not value for value in raw_argv)
+            ):
+                errors.append(f"{lane.id}: argv must be a non-empty list of strings")
+            if argv in seen_argvs:
+                errors.append(f"{lane.id}: named lane argv duplicates another lane")
+            seen_argvs.add(argv)
+            if argv in command_argvs:
+                errors.append(
+                    f"{lane.id}: named lane argv duplicates a CI proof command"
+                )
+            toolchains = lane.toolchains
+            if not toolchains or not isinstance(lane.data.get("toolchains"), list):
+                errors.append(f"{lane.id}: toolchains must be a non-empty list")
+            for name in toolchains:
+                if name not in policy_names:
+                    errors.append(f"{lane.id}: unknown toolchain {name!r}")
+            if "python" not in toolchains:
+                errors.append(
+                    f"{lane.id}: named lanes are Python payloads; declare python"
+                )
+            timeout = lane.data.get("timeout_seconds")
+            if (
+                not isinstance(timeout, int)
+                or isinstance(timeout, bool)
+                or timeout <= 0
+            ):
+                errors.append(f"{lane.id}: timeout_seconds must be a positive integer")
+            for key in ("resource_family", "contention_key", "description"):
+                value = lane.data.get(key)
+                if not isinstance(value, str) or not value:
+                    errors.append(f"{lane.id}: {key} must be a non-empty string")
+            raw_scratch = lane.data.get("scratch_roots")
+            if not isinstance(raw_scratch, list):
+                errors.append(f"{lane.id}: scratch_roots must be a list")
+            else:
+                for root in raw_scratch:
+                    if (
+                        not isinstance(root, str)
+                        or not root.startswith("tmp/")
+                        or ".." in root.split("/")
+                    ):
+                        errors.append(
+                            f"{lane.id}: scratch roots must be repository-relative tmp/ paths"
+                        )
+
     def validate(self) -> list[str]:
         errors: list[str] = []
         if self.receipt_schema != RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {RECEIPT_SCHEMA!r}")
+        self._validate_named_lanes(errors)
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -2491,8 +2607,10 @@ def replay_recent_commits(plan: ProofPlan, count: int) -> dict[str, Any]:
 
 write_github_outputs = _proof_plan_cli.write_github_outputs
 
+
 def main(argv: list[str] | None = None) -> int:
     return _proof_plan_cli.main(sys.modules[__name__], argv)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

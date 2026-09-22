@@ -361,6 +361,16 @@ def _proof_command_registry() -> dict[str, object]:
                     f"proof plan executable {basename!r} has ambiguous toolchain policies"
                 )
             policy_executables[basename] = policy.name
+    named: dict[tuple[str, ...], dict[str, object]] = {}
+    named_entrypoints: dict[tuple[str, str], list[str]] = {}
+    for lane in plan.named_lanes:
+        argv = tuple(lane.argv)
+        named[argv] = {"id": lane.id, "toolchains": tuple(lane.toolchains)}
+        entrypoint = _command_entrypoint(argv)
+        if entrypoint is not None:
+            entrypoints.setdefault(entrypoint, []).append(lane.id)
+            entrypoint_variants.setdefault(entrypoint, set()).add(argv)
+            named_entrypoints.setdefault(entrypoint, []).append(lane.id)
     for command in plan.commands:
         argv = tuple(str(value) for value in command.argv)
         declared = tuple(command.toolchains)
@@ -387,6 +397,8 @@ def _proof_command_registry() -> dict[str, object]:
                 console_tools.setdefault(payload_name, set()).update(command.toolchains)
     return {
         "exact": exact,
+        "named": named,
+        "named_entrypoints": named_entrypoints,
         "console_tools": {
             name: tuple(sorted(toolchains))
             for name, toolchains in sorted(console_tools.items())
@@ -431,8 +443,31 @@ def _command_registration(
                 f"proof-plan commands {command_ids!r} have no toolchain authority"
             )
         return "proof-plan", toolchains, [str(command_id) for command_id in command_ids]
+    named = registry["named"]
+    assert isinstance(named, dict)
+    lane_match = named.get(tuple(str(value) for value in argv))
+    if isinstance(lane_match, dict):
+        declared = lane_match["toolchains"]
+        assert isinstance(declared, tuple)
+        toolchains = _toolchain_dependency_closure([str(name) for name in declared])
+        if not toolchains:
+            raise ValueError(
+                f"named lane {lane_match['id']!r} has no toolchain authority"
+            )
+        return "named-lane", toolchains, [str(lane_match["id"])]
 
     entrypoint = _command_entrypoint(argv)
+    named_entrypoints = registry["named_entrypoints"]
+    assert isinstance(named_entrypoints, dict)
+    lane_near_matches = named_entrypoints.get(entrypoint)
+    if isinstance(lane_near_matches, list):
+        # A program registered as a named lane spawns processes by design; an
+        # argv that differs from every registered lane must not silently
+        # degrade into a leaf with children forbidden.
+        raise ValueError(
+            "named-lane entrypoint argv must match its registered command exactly; "
+            f"near-match would discard the toolchain closure of {lane_near_matches!r}"
+        )
     registered_entrypoints = registry["entrypoints"]
     assert isinstance(registered_entrypoints, dict)
     near_matches = registered_entrypoints.get(entrypoint)
@@ -998,9 +1033,9 @@ def _envelope_for_command(
         for name in delegated["toolchains"]:  # type: ignore[union-attr]
             if name not in toolchains:
                 toolchains.append(str(name))
-    if registration_kind == "proof-plan":
+    if registration_kind in {"proof-plan", "named-lane"}:
         process_closure = {
-            "kind": "proof-plan",
+            "kind": registration_kind,
             "descendants": "declared-toolchains",
             "toolchains": list(toolchains),
         }
