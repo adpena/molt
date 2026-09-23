@@ -471,6 +471,18 @@ def test_toolchain_dependency_graph_fails_closed(
     )
 
 
+def test_node_policy_pins_the_tool_release() -> None:
+    policy = next(policy for policy in PLAN.toolchain_policies if policy.name == "node")
+    version = tool_releases.tool_release("node").version
+    assert policy.data["setup_value"] == version
+    assert re.fullmatch(str(policy.data["version_pattern"]), f"v{version}")
+    assert not re.fullmatch(str(policy.data["version_pattern"]), f"v{version}1")
+    assert (
+        f'config/tool_releases.toml::version = "{version}"'
+        in policy.data["setup_evidence"]
+    )
+
+
 def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> None:
     policy = next(
         policy for policy in PLAN.toolchain_policies if policy.name == "wasm-tools"

@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 # Pinned releases of standalone tool binaries that both CI and the local
 # custody toolchain root install from. One authority: the CI workflow pin
@@ -6,13 +6,18 @@ schema_version = 1
 # toolchain policy are gated against it, and src/molt/tool_releases.py
 # provisions the host asset into `<toolchain root>/<name>-<version>/bin`
 # only after the download matches the recorded size and SHA-256 exactly.
-# Digests come from the GitHub release asset records at `provenance_url`
-# and were re-verified by hashing the downloaded archive.
+# Each tool's `provenance` names the authority its digests were read from (a
+# GitHub release record, or an official SHASUMS256.txt checksum manifest whose
+# version directory holds the assets); every digest was re-verified by hashing
+# the downloaded archive.
 
 [tools.wasm-tools]
 version = "1.259.0"
 executable = "wasm-tools"
-provenance_url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.259.0"
+
+[tools.wasm-tools.provenance]
+kind = "github-release"
+url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.259.0"
 release_id = 386504111
 
 [tools.wasm-tools.assets.x86_64-windows]
@@ -48,7 +53,10 @@ archive_member = "wasm-tools-1.259.0-aarch64-macos/wasm-tools"
 [tools.sccache]
 version = "0.18.0"
 executable = "sccache"
-provenance_url = "https://api.github.com/repos/mozilla/sccache/releases/tags/v0.18.0"
+
+[tools.sccache.provenance]
+kind = "github-release"
+url = "https://api.github.com/repos/mozilla/sccache/releases/tags/v0.18.0"
 release_id = 388303267
 
 [tools.sccache.assets.x86_64-windows]
@@ -80,3 +88,44 @@ url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.1
 size = 7997637
 sha256 = "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e"
 archive_member = "sccache-v0.18.0-aarch64-apple-darwin/sccache"
+
+# Node runs the WASM witness/browser lanes (`wasm/run_wasm.js` under the queue's
+# child-custody preload). Official nodejs.org distribution, digests from the
+# release's SHASUMS256.txt; only the interpreter binary is installed.
+[tools.node]
+version = "24.16.0"
+executable = "node"
+
+[tools.node.provenance]
+kind = "checksum-manifest"
+url = "https://nodejs.org/dist/v24.16.0/SHASUMS256.txt"
+
+[tools.node.assets.x86_64-windows]
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"
+size = 36946639
+sha256 = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
+archive_member = "node-v24.16.0-win-x64/node.exe"
+
+[tools.node.assets.x86_64-linux]
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-x64.tar.gz"
+size = 57023429
+sha256 = "2faf6a387e9b62b888e21c54f01249fb27537ffecf1842f29f4c919d0a59a0ff"
+archive_member = "node-v24.16.0-linux-x64/bin/node"
+
+[tools.node.assets.aarch64-linux]
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-arm64.tar.gz"
+size = 56772294
+sha256 = "589f5b6dd4fcfee4dfda73013903c966abaa8abd93dbc9d436544e472b4f0e74"
+archive_member = "node-v24.16.0-linux-arm64/bin/node"
+
+[tools.node.assets.x86_64-macos]
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-darwin-x64.tar.gz"
+size = 53063476
+sha256 = "298b4c7b3cb80765c8703e42b90324a4ece3b6634947b89e769c3c980ab55185"
+archive_member = "node-v24.16.0-darwin-x64/bin/node"
+
+[tools.node.assets.aarch64-macos]
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-darwin-arm64.tar.gz"
+size = 51873536
+sha256 = "39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5df6"
+archive_member = "node-v24.16.0-darwin-arm64/bin/node"

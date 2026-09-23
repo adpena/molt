@@ -217,6 +217,7 @@ version_args = ["--version"]
 version_pattern = '^v24\.16\.0$'
 setup_value = "24.16.0"
 setup_evidence = [
+  "config/tool_releases.toml::version = \"24.16.0\"",
   ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
   ".github/workflows/formal.yml::node-version: \"24.16.0\"",
 ]
