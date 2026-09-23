@@ -231,6 +231,13 @@ release = [
 deployment = [
     "modal==1.5.2",
 ]
+# Locked oracle environment for the Pact witness lanes: their CPython
+# reference numerics run inside the attested environment provisioned from
+# this group (tools/pact_witness_acceptance.py, tools/pact_witness_oracle.py).
+pact-witness = [
+    "numpy==2.5.1",
+    "scipy==1.18.0",
+]
 source-build-numpy = [
     "Cython==3.2.8",
     "meson-python==0.20.0",

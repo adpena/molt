@@ -949,3 +949,69 @@ def source_build_environment_problems(payload: object) -> list[str]:
                 "the source requirement authority"
             )
     return problems
+
+
+def locked_console_tool_path(
+    scripts_root: str | Path,
+    inherited_path: str | None,
+    *,
+    separator: str = os.pathsep,
+) -> str:
+    """Put attested environment scripts ahead of intentional host tools.
+
+    The inherited suffix retains system and cross-toolchain discovery (LLVM,
+    Git, Rust, and platform SDKs). Only the locked environment's console-script
+    directory gains precedence; ambient Python environments gain no authority.
+    """
+    locked = str(scripts_root)
+    return separator.join((locked, inherited_path)) if inherited_path else locked
+
+
+def locked_environment_launch_env(
+    environment: LockedSourceBuildEnvironment,
+    inherited: Mapping[str, str],
+    *,
+    repo_root: Path,
+) -> dict[str, str]:
+    """The environment a locked environment's Python is launched with.
+
+    The environment holds no project install: the invoking checkout's ``src``
+    is the one ``PYTHONPATH`` entry. Ambient ``PYTHONHOME`` and the user site
+    gain no authority, the environment is the active ``VIRTUAL_ENV``, and its
+    console scripts precede intentional host tools on ``PATH``.
+    """
+    child = dict(inherited)
+    child["PYTHONPATH"] = str((repo_root / "src").resolve())
+    child.pop("PYTHONHOME", None)
+    child["PYTHONNOUSERSITE"] = "1"
+    child["VIRTUAL_ENV"] = str(environment.root)
+    child["PATH"] = locked_console_tool_path(
+        environment.python_executable.parent.resolve(), child.get("PATH")
+    )
+    return child
+
+
+def relaunch_in_locked_environment(
+    repo_root: Path, dependency_group: str, argv_tail: Sequence[str]
+) -> int | None:
+    """Run this program inside the locked environment of ``dependency_group``.
+
+    Returns ``None`` when the running interpreter already is that
+    environment's (its attestation validated on the way). Otherwise the
+    environment is provisioned if needed (idempotent; attested before any
+    launch) and the exit code of ``<environment python> -P <argv_tail...>``
+    run from ``repo_root`` is returned. Under proof-queue custody the
+    environment's Python is admitted through the lane's declared
+    ``uv-source-build-environment`` derived environment.
+    """
+    environment = source_build_environment(repo_root, dependency_group)
+    if environment.active:
+        return None
+    environment = provision_source_build_environment(repo_root, dependency_group)
+    argv = [str(environment.python_executable), "-P", *(str(v) for v in argv_tail)]
+    return process_guard.run_completed_command(
+        argv,
+        cwd=repo_root,
+        env=locked_environment_launch_env(environment, os.environ, repo_root=repo_root),
+        check=False,
+    ).returncode

@@ -529,7 +529,6 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
                 ".",
                 "--python",
                 "3.12",
-                "--with-requirements=requirements/proof.txt",
                 "--isolated",
                 "--directory",
                 "runtime",
@@ -930,17 +929,10 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     tmp_path: Path,
 ) -> None:
     runtime = tmp_path / "runtime"
-    requirements_dir = runtime / "requirements"
-    requirements_dir.mkdir(parents=True)
-    requirements = requirements_dir / "proof.txt"
-    requirements.write_text(
-        "numpy==2.3.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
-    )
+    runtime.mkdir(parents=True)
     command = [
         "uv",
         "run",
-        "--with-requirements",
-        "requirements/proof.txt",
         "--offline",
         "--isolated",
         "--directory=runtime",
@@ -951,15 +943,13 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "pytest",
     ]
     envelope = command_admission.envelope_for_command(command)
-    prefix, effective, overlays = command_admission._canonical_uv_prefix(
-        envelope, cwd=tmp_path
-    )
+    prefix, effective = command_admission._canonical_uv_prefix(envelope, cwd=tmp_path)
     exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
     probe = command_identity._python_probe_command(
         envelope, exact, source_root=effective
     )
     assert probe is not None
-    assert overlays == [requirements.resolve()]
+    assert effective == runtime.resolve()
     assert probe[: len(prefix)] == exact[: len(prefix)]
     assert probe[-4] == "python"
     assert probe[-3] == str(command_admission._PYTHON_IDENTITY_PROBE)
@@ -974,9 +964,8 @@ def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
     inside = command_admission.envelope_for_command(
         ["uv", "run", "--directory", "runtime", "--project", ".", "python", "-V"]
     )
-    effective, overlays = command_admission._execution_source_paths(inside, cwd=root)
+    effective = command_admission._execution_source_paths(inside, cwd=root)
     assert effective == (root / "runtime").resolve()
-    assert overlays == []
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -1006,67 +995,25 @@ def test_uv_symlinked_source_selector_cannot_escape_admitted_root(
         command_admission._canonical_uv_prefix(envelope, cwd=root)
 
 
-def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "source"
-    runtime = root / "runtime"
-    runtime.mkdir(parents=True)
-    requirements = runtime / "proof-requirements.txt"
-    requirements.write_text(
+def test_uv_requirements_overlays_are_not_modeled(tmp_path: Path) -> None:
+    # A `uv run --with-requirements` overlay is an ephemeral environment whose
+    # interpreter has no stable image to admit; the option is unmodeled, so an
+    # envelope carrying it fails closed instead of degrading to partial custody.
+    (tmp_path / "proof.txt").write_text(
         "pytest==8.4.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
     )
-    envelope = command_admission.envelope_for_command(
-        [
-            "uv",
-            "run",
-            "--directory",
-            "runtime",
-            "--with-requirements",
-            "proof-requirements.txt",
-            "--offline",
-            "python",
-            "-V",
-        ]
-    )
-    effective, overlays = command_admission._execution_source_paths(envelope, cwd=root)
-    assert effective == runtime.resolve()
-    assert overlays == [requirements.resolve()]
-    identity = command_identity._file_identity(overlays[0])
-    assert identity["size_bytes"] == len(requirements.read_bytes())
-    assert len(identity["sha256"]) == 64
-
-
-@pytest.mark.parametrize(
-    "requirement",
-    [
-        "pytest>=8",
-        "pytest==8.4.1",
-        "-e ../editable",
-        "--index-url https://example.invalid/simple",
-        "-r nested.txt",
-        "demo @ file:///tmp/demo.whl",
-        "demo==https://example.invalid/demo.whl --hash=sha256:" + "a" * 64,
-    ],
-)
-def test_uv_requirements_custody_rejects_unlocked_or_nested_inputs(
-    tmp_path: Path, requirement: str
-) -> None:
-    path = tmp_path / "proof.txt"
-    path.write_text(requirement + "\n", encoding="utf-8")
-    envelope = command_admission.envelope_for_command(
-        [
-            "uv",
-            "run",
-            "--offline",
-            "--with-requirements",
-            "proof.txt",
-            "python",
-            "-V",
-        ]
-    )
-    with pytest.raises(ValueError, match="exact name==version"):
-        command_admission._execution_source_paths(envelope, cwd=tmp_path)
+    with pytest.raises(ValueError, match="unmodeled uv run option"):
+        command_admission.envelope_for_command(
+            [
+                "uv",
+                "run",
+                "--offline",
+                "--with-requirements",
+                "proof.txt",
+                "python",
+                "-V",
+            ]
+        )
 
 
 def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
@@ -2899,11 +2846,11 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
     assert identity["version"] == "cargo 1.96.1"
 
 
-def test_unavailable_executable_and_requirements_hashes_are_never_evidence(
+def test_unavailable_executable_and_input_hashes_are_never_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requirements = tmp_path / "requirements.txt"
-    requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
+    requirements = tmp_path / "custody-input.txt"
+    requirements.write_text("input bytes\n", encoding="utf-8")
     monkeypatch.setattr(
         command_identity,
         "_hash_file",
@@ -12490,7 +12437,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:12] == [
+    assert command[:10] == [
         "uv",
         "run",
         "--active",
@@ -12500,16 +12447,8 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         "3.12",
         "--no-sync",
         "--no-config",
-        "--offline",
-        "--with-requirements",
-        pact._PACT_WITNESS_REQUIREMENTS,
+        "python",
     ]
-    stack = resolve_scientific_stack()
-    requirements = state.ROOT / pact._PACT_WITNESS_REQUIREMENTS
-    command_admission._validate_requirements_file(requirements)
-    requirements_text = requirements.read_text(encoding="utf-8")
-    assert stack.numpy_requirement in requirements_text
-    assert stack.scipy_requirement in requirements_text
     python_index = command.index("python")
     assert command[python_index : python_index + 2] == [
         "python",
@@ -12519,7 +12458,9 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     # repository-relative output path.
     assert not any(value.startswith("tmp/") for value in command)
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
-    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
+    # The oracle environment's authorities (the locked pact-witness group).
+    assert "pyproject.toml" in spec["scopes"]
+    assert "uv.lock" in spec["scopes"]
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
         state.ROOT.resolve()
     )
@@ -13946,7 +13887,7 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:12] == [
+    assert command[:9] == [
         "uv",
         "run",
         "--active",
@@ -13956,20 +13897,13 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
         "3.12",
         "--no-sync",
         "--no-config",
-        "--offline",
-        "--with-requirements",
-        pact._PACT_WITNESS_REQUIREMENTS,
     ]
     assert "--with" not in command
-    stack = resolve_scientific_stack()
-    requirements_text = (state.ROOT / pact._PACT_WITNESS_REQUIREMENTS).read_text(
-        encoding="utf-8"
-    )
-    assert stack.numpy_requirement in requirements_text
-    assert stack.scipy_requirement in requirements_text
+    assert "--with-requirements" not in command
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
-    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
+    assert "pyproject.toml" in spec["scopes"]
+    assert "uv.lock" in spec["scopes"]
     assert policy._proof_command_policy_error(command) is None
 
 
@@ -14683,118 +14617,3 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
         )
         is None
     )
-
-
-def _overlay_envelope(overlay: Path) -> dict[str, object]:
-    return {
-        "python": {
-            "kind": "uv",
-            "payload_executable": "python",
-            "prefix": [
-                "uv",
-                "run",
-                "--project",
-                ".",
-                "--offline",
-                "--with-requirements",
-                str(overlay),
-            ],
-        }
-    }
-
-
-def _overlay_file(tmp_path: Path) -> Path:
-    overlay = tmp_path / "overlay.txt"
-    overlay.write_text(
-        "numpy==2.5.1 --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8"
-    )
-    return overlay
-
-
-def test_requirement_overlay_provisioning_warms_a_cold_uv_cache_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tools.proof_queue_pkg import guarded_execution
-
-    overlay = _overlay_file(tmp_path)
-    seen: list[list[str]] = []
-
-    def run(command, *, cwd, env, timeout=30.0, text=True):
-        seen.append(list(command))
-        offline = "--offline" in command
-        # Cold cache: the offline probe fails until the online pass has run.
-        cold = offline and not any("--offline" not in c for c in seen[:-1])
-        return subprocess.CompletedProcess(
-            list(command),
-            1 if cold else 0,
-            "",
-            "hint: Packages were unavailable because the network was disabled."
-            if cold
-            else "",
-        )
-
-    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
-    receipt = guarded_execution.provision_requirement_overlays(
-        _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
-    )
-    assert receipt is not None
-    assert receipt["state"] == "provisioned"
-    assert [("--offline" in c) for c in seen] == [True, False, True]
-    assert all(c[-3:] == ["python", "-c", "raise SystemExit(0)"] for c in seen)
-    assert (
-        receipt["overlays"][0]["sha256"]
-        == hashlib.sha256(overlay.read_bytes()).hexdigest()
-    )
-
-
-def test_requirement_overlay_provisioning_is_a_no_op_on_a_warm_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tools.proof_queue_pkg import guarded_execution
-
-    overlay = _overlay_file(tmp_path)
-    seen: list[list[str]] = []
-
-    def run(command, *, cwd, env, timeout=30.0, text=True):
-        seen.append(list(command))
-        return subprocess.CompletedProcess(list(command), 0, "", "")
-
-    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
-    receipt = guarded_execution.provision_requirement_overlays(
-        _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
-    )
-    assert receipt is not None and receipt["state"] == "cached"
-    assert len(seen) == 1 and "--offline" in seen[0]
-    assert (
-        guarded_execution.provision_requirement_overlays(
-            _overlay_envelope(overlay), [], cwd=tmp_path, env={}
-        )
-        is None
-    )
-
-
-def test_requirement_overlay_provisioning_fails_closed_with_uv_reason(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tools.proof_queue_pkg import guarded_execution
-
-    overlay = _overlay_file(tmp_path)
-
-    def run(command, *, cwd, env, timeout=30.0, text=True):
-        return subprocess.CompletedProcess(
-            list(command), 1, "", "No solution found when resolving dependencies"
-        )
-
-    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
-    with pytest.raises(ValueError, match="cannot be provisioned.*No solution found"):
-        guarded_execution.provision_requirement_overlays(
-            _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
-        )
-    envelope = _overlay_envelope(overlay)
-    python = envelope["python"]
-    assert isinstance(python, dict)
-    python["prefix"] = ["uv", "run"]
-    with pytest.raises(ValueError, match="offline uv prefix"):
-        guarded_execution.provision_requirement_overlays(
-            envelope, [overlay], cwd=tmp_path, env={}
-        )

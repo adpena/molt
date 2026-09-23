@@ -246,9 +246,24 @@ def test_scientific_schema_v5_is_rejected_without_compatibility_lane(
         resolve_scientific_stack(config)
 
 
-def test_config_only_version_change_preserves_pinned_queue_overlay(
+def test_oracle_environment_group_pins_the_selected_stack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The locked `pact-witness` dependency group (the Pact witness lanes'
+    oracle environment) pins exactly the selected stack versions, and a
+    config-only version change cannot silently move it: the two authorities
+    must agree, so drift is red here rather than a different oracle."""
+    import tomllib
+
+    from molt.scientific_stack_versions import PACT_WITNESS_DEPENDENCY_GROUP
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    group = pyproject["dependency-groups"][PACT_WITNESS_DEPENDENCY_GROUP]
+    selected = resolve_scientific_stack()
+    assert sorted(group) == sorted(
+        [selected.numpy_requirement, selected.scipy_requirement]
+    )
+
     config = _write_configs(
         tmp_path,
         selected_numpy="9.9.9",
@@ -257,20 +272,13 @@ def test_config_only_version_change_preserves_pinned_queue_overlay(
         verified_scipy="8.8.8",
     )
     monkeypatch.setenv(CONFIG_ENV, str(config))
-    from tools.proof_queue_pkg import pact, state
+    from tools.proof_queue_pkg import pact
 
-    spec = pact._pact_witness_oracle_spec()
-    command = list(spec["command"])
-    assert command[command.index("--with-requirements") + 1] == (
-        pact._PACT_WITNESS_REQUIREMENTS
-    )
-    requirements_text = (state.ROOT / pact._PACT_WITNESS_REQUIREMENTS).read_text(
-        encoding="utf-8"
-    )
-    assert "numpy==2.5.1" in requirements_text
-    assert "scipy==1.18.0" in requirements_text
-    assert "numpy==9.9.9" not in requirements_text
-    assert "scipy==8.8.8" not in requirements_text
+    command = list(pact._pact_witness_oracle_spec()["command"])
+    assert "--with-requirements" not in command
+    assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
+    assert "numpy==9.9.9" not in group
+    assert "scipy==8.8.8" not in group
 
     bench_manifest = _load_tool("bench_friends_manifest")
     _, suites = bench_manifest._load_manifest(
