@@ -148,7 +148,7 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
-    def facts_provider(_scanner, _scratch_root, metrics=None):  # type: ignore[no-untyped-def]
+    def facts_provider(_scanner, _scratch_root, metrics=None, *, evidence_root=None):  # type: ignore[no-untyped-def]
         if metrics is not None:
             metrics.update(
                 {
@@ -5335,6 +5335,93 @@ def test_ensure_function_exports_by_symbol_names_uses_name_section_fallback() ->
     assert updated is not None
     exports = wasm_link._collect_exports(updated)
     assert "main_molt__init" in exports
+
+
+def _module_with_tag_section(
+    *, export_section: bytes | None, with_table: bool = False
+) -> bytes:
+    """A module whose Tag section (id 13) sits between Memory and Global, as
+    wasm-ld emits for exception-handling objects: numerically the largest
+    section id, canonically the sixth section."""
+    write_varuint = wasm_link._write_varuint
+    sections: list[tuple[int, bytes]] = []
+    type_payload = bytearray(write_varuint(1))
+    type_payload.append(0x60)
+    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(0))
+    sections.append((1, bytes(type_payload)))
+    sections.append((3, write_varuint(1) + write_varuint(0)))
+    if with_table:
+        sections.append((4, write_varuint(1) + bytes([0x70, 0x00]) + write_varuint(1)))
+    sections.append((5, write_varuint(1) + bytes([0x00]) + write_varuint(1)))
+    sections.append((13, write_varuint(1) + bytes([0x00]) + write_varuint(0)))
+    sections.append((6, write_varuint(1) + bytes([0x7F, 0x01, 0x41, 0x00, 0x0B])))
+    if export_section is not None:
+        sections.append((7, export_section))
+    sections.append((10, write_varuint(1) + write_varuint(2) + bytes([0x00, 0x0B])))
+    func_name_subsection = bytearray(write_varuint(1))
+    func_name_subsection.extend(write_varuint(0))
+    func_name_subsection.extend(wasm_link._write_string("__molt_output_export_7"))
+    name_payload = bytearray([1])
+    name_payload.extend(write_varuint(len(func_name_subsection)))
+    name_payload.extend(func_name_subsection)
+    sections.append((0, wasm_link._build_custom_section("name", bytes(name_payload))))
+    return wasm_link._build_sections(sections)
+
+
+def _standard_section_ids(data: bytes) -> list[int]:
+    return [sid for sid, _payload in wasm_link._parse_sections(data) if sid != 0]
+
+
+def test_ensure_function_exports_inserts_the_export_section_after_a_tag_section() -> (
+    None
+):
+    updated = wasm_link._ensure_function_exports_by_symbol_names(
+        _module_with_tag_section(export_section=None),
+        {"main_molt__init": "__molt_output_export_7"},
+    )
+    assert updated is not None
+    assert wasm_link._standard_section_order_error(updated) is None
+    assert _standard_section_ids(updated) == [1, 3, 5, 13, 6, 7, 10]
+    assert "main_molt__init" in wasm_link._collect_exports(updated)
+
+
+def test_ensure_function_exports_rewrites_an_export_section_after_a_tag_section() -> (
+    None
+):
+    existing = (
+        wasm_link._write_varuint(1)
+        + wasm_link._write_string("molt_main")
+        + bytes([0x00])
+        + wasm_link._write_varuint(0)
+    )
+    updated = wasm_link._ensure_function_exports_by_symbol_names(
+        _module_with_tag_section(export_section=existing),
+        {"main_molt__init": "__molt_output_export_7"},
+    )
+    assert updated is not None
+    assert wasm_link._standard_section_order_error(updated) is None
+    assert _standard_section_ids(updated) == [1, 3, 5, 13, 6, 7, 10]
+    exports = wasm_link._collect_exports(updated)
+    assert set(exports) == {"molt_main", "main_molt__init"}
+
+
+def test_ensure_table_export_inserts_the_export_section_after_a_tag_section() -> None:
+    updated = wasm_link._ensure_table_export(
+        _module_with_tag_section(export_section=None, with_table=True)
+    )
+    assert updated is not None
+    assert wasm_link._standard_section_order_error(updated) is None
+    assert _standard_section_ids(updated) == [1, 3, 4, 5, 13, 6, 7, 10]
+    assert "molt_table" in wasm_link._collect_exports(updated)
+
+
+def test_insert_standard_section_refuses_a_duplicate_standard_section() -> None:
+    sections = wasm_link._parse_sections(
+        _module_with_tag_section(export_section=b"\x00")
+    )
+    with pytest.raises(ValueError, match="duplicate standard section id 7"):
+        wasm_link._insert_standard_section(sections, 7, b"\x00")
 
 
 def test_run_wasm_ld_force_exports_user_module_exports(
