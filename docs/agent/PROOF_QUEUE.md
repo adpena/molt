@@ -227,6 +227,15 @@ executables the provisioner installed. The native supervisor sees the
 environments' home as a shared `attested-environment` derived root whose
 launch-time listing is receipted; every refusal records its precise reason.
 
+Every proof run also receives one fresh, custody-external scratch root in
+`MOLT_PROOF_SCRATCH_ROOT` (a run-owned derived root beside the run's Cargo
+target, role `scratch-output`, empty at launch and receipted). Producers
+default their build and output roots to it (`molt extension produce-set`
+without `--build-root`, `tools/pact_witness_acceptance.py` without
+`--out-dir`), so a named lane's registered argv carries no repository-relative
+output path and a proof's own outputs never register as input mutations of the
+watched checkout; source custody stays broad by construction.
+
 Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
 `config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.
 A toolchain policy that cites that manifest as setup evidence makes the queue

@@ -32,8 +32,9 @@ def test_registered_named_lanes_validate_and_are_distinct() -> None:
         assert "python" in lane.toolchains
         # No host path may ever ride in a registered argv.
         assert not any(":\\" in value or value.startswith("/") for value in lane.argv)
-        for root in lane.scratch_roots:
-            assert root.startswith("tmp/")
+        # Outputs go to the run's scratch root: no repository-relative output
+        # root may ride in a registered argv.
+        assert not any(value.startswith("tmp/") for value in lane.argv)
 
 
 @pytest.mark.parametrize("lane_id", LANE_IDS)
@@ -75,7 +76,6 @@ def test_pact_specs_take_their_argv_from_the_plan(
     class Lane:
         def __init__(self, argv: tuple[str, ...]) -> None:
             self.argv = argv
-            self.scratch_roots = ()
             self.data = {
                 "description": "d",
                 "resource_family": "wasm-browser",
@@ -95,17 +95,11 @@ def test_pact_specs_take_their_argv_from_the_plan(
     assert spec["command"] == ["python", "tools/registered.py", "pact.witness.oracle"]
 
 
-def test_named_lane_spec_resets_declared_scratch_roots(
+def test_named_lane_spec_takes_argv_from_the_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = tmp_path / "repo"
-    stale = repo / "tmp" / "pact_seal_build" / "numpy" / "stale.o"
-    stale.parent.mkdir(parents=True)
-    stale.write_bytes(b"old")
-
     class Lane:
         argv = ("python", "-m", "molt", "extension", "produce-set")
-        scratch_roots = ("tmp/pact_seal_build/numpy",)
         data = {
             "description": "seal",
             "resource_family": "wasm-source-extension",
@@ -121,19 +115,11 @@ def test_named_lane_spec_resets_declared_scratch_roots(
     monkeypatch.setattr(
         pact.proof_plan.ProofPlan, "load", classmethod(lambda cls: Plan())
     )
-    spec = pact._named_lane_spec("pact.seal.numpy.produce", repo_root=repo)
-    assert not stale.parent.exists()
+    spec = pact._named_lane_spec("pact.seal.numpy.produce", repo_root=tmp_path)
     assert spec["logical_id"] == "pact-seal-numpy-produce"
     assert spec["command"] == list(Lane.argv)
     assert spec["timeout"] == 7200.0
-    assert "tmp/pact_seal_build/numpy" in spec["scopes"]
-
-
-def test_scratch_roots_outside_tmp_are_refused(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match="outside tmp/"):
-        pact._clear_scratch_roots(tmp_path, ("src/molt",))
-    with pytest.raises(SystemExit, match="outside tmp/"):
-        pact._clear_scratch_roots(tmp_path, ("tmp",))
+    assert spec["scopes"] == ["tools/proof_plan.toml"]
 
 
 def test_named_lane_cli_subcommand_is_registered() -> None:

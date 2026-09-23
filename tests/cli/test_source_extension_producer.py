@@ -355,6 +355,10 @@ def _build_environment_manifest() -> dict[str, object]:
                 "version": "1.13.0",
             },
         ],
+        "installed_distributions": [
+            {"name": "meson", "version": "1.9.0"},
+            {"name": "ninja", "version": "1.13.0"},
+        ],
         "custody": custody,
     }
 
@@ -814,6 +818,11 @@ def test_source_build_environment_noop_records_exact_resolutions(
             "satisfied requirements must not install"
         ),
     )
+    attested = [
+        {"name": "cython", "version": "3.1.2"},
+        {"name": "meson", "version": "1.8.0"},
+    ]
+    monkeypatch.setattr(producer, "_installed_distributions", lambda: attested)
 
     environment = producer._ensure_source_build_environment(
         tmp_path, custody={"environment_id": "test"}
@@ -843,6 +852,7 @@ def test_source_build_environment_noop_records_exact_resolutions(
                 "version": "3.1.2",
             },
         ],
+        "installed_distributions": attested,
         "custody": {"environment_id": "test"},
     }
 

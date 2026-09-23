@@ -91,7 +91,6 @@ REQUIRED_NAMED_LANE_FIELDS = (
     "resource_family",
     "contention_key",
     "timeout_seconds",
-    "scratch_roots",
 )
 REQUIRED_COMMAND_FIELDS = (
     "family",
@@ -181,10 +180,6 @@ class NamedLane:
     @property
     def toolchains(self) -> tuple[str, ...]:
         return tuple(str(value) for value in self.data.get("toolchains", ()))
-
-    @property
-    def scratch_roots(self) -> tuple[str, ...]:
-        return tuple(str(value) for value in self.data.get("scratch_roots", ()))
 
     @property
     def derived_environments(self) -> tuple[str, ...]:
@@ -525,19 +520,6 @@ class ProofPlan:
                         errors.append(
                             f"{lane.id}: unknown derived environment kind {kind!r}; "
                             f"known: {list(DERIVED_ENVIRONMENT_KINDS)}"
-                        )
-            raw_scratch = lane.data.get("scratch_roots")
-            if not isinstance(raw_scratch, list):
-                errors.append(f"{lane.id}: scratch_roots must be a list")
-            else:
-                for root in raw_scratch:
-                    if (
-                        not isinstance(root, str)
-                        or not root.startswith("tmp/")
-                        or ".." in root.split("/")
-                    ):
-                        errors.append(
-                            f"{lane.id}: scratch roots must be repository-relative tmp/ paths"
                         )
 
     def validate(self) -> list[str]:
