@@ -2452,7 +2452,7 @@ def test_incumbent_that_fails_the_seal_contract_is_a_defect(tmp_path: Path) -> N
     )
     (stale / "files").mkdir()
 
-    defect = producer._incumbent_seal_defect(
+    defect, identity = producer._incumbent_seal_state(
         stale,
         extension_set=extension_set,
         variant=variant,
@@ -2460,15 +2460,43 @@ def test_incumbent_that_fails_the_seal_contract_is_a_defect(tmp_path: Path) -> N
     )
 
     assert defect is not None and "SourcePackageSeal" in defect
+    assert identity is None
     assert (
-        producer._incumbent_seal_defect(
+        producer._incumbent_seal_state(
             tmp_path / "absent",
             extension_set=extension_set,
             variant=variant,
             registry=stack.source_extension_registry,
-        )
+        )[0]
         is not None
     )
+
+
+def test_replacing_a_canonical_incumbent_is_an_explicit_compare_and_swap(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "pact_numpy_multiarray_sealed_for_witness"
+    incumbent = "a" * 64
+    moved = "b" * 64
+
+    def error(expected, candidate, registered):
+        return producer._incumbent_replacement_error(
+            destination=destination,
+            incumbent_identity=incumbent,
+            registered_identity=registered,
+            expected_identity_sha256=expected,
+            expected_candidate_identity_sha256=candidate,
+        )
+
+    # Registry still names the incumbent: a re-publication needs both flags.
+    assert "requires both" in str(error(None, None, incumbent))
+    # Registry moved on: the incumbent is not retired; the invocation must name
+    # it and the identity the registry now expects.
+    message = str(error(None, None, moved))
+    assert f"--expected-identity-sha256 {incumbent}" in message
+    assert f"--expected-candidate-identity-sha256 {moved}" in message
+    assert "does not name the canonical incumbent" in str(error(moved, moved, moved))
+    assert error(incumbent, moved, moved) is None
 
 
 def test_stale_incumbent_is_retired_beside_the_canonical_location(
