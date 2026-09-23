@@ -4212,7 +4212,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         [
             *wasm_link._parse_sections(
                 _add_data_address_global_exports(
-                    _build_exported_runtime_module_many(["molt_err_pending"]),
+                    _build_exported_runtime_module_many(
+                        ["molt_err_pending", "molt_PyType_Ready"]
+                    ),
                     {"PyLong_Type": 4096},
                 )
             ),
@@ -4271,7 +4273,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
             [
                 *wasm_link._parse_sections(
                     _build_env_function_import_module(
-                        ["molt_err_pending", "malloc", "__trunctfdf2"]
+                        ["molt_err_pending", "PyType_Ready", "malloc", "__trunctfdf2"]
                     )
                 ),
                 (
@@ -4422,6 +4424,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert deployed_native_imports == [
         [
             ("molt_runtime", "molt_err_pending"),
+            ("molt_runtime", "molt_PyType_Ready"),
             ("env", "malloc"),
             ("env", "__trunctfdf2"),
         ]
@@ -4429,9 +4432,45 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert data_alias_symbols == [[(wasm_link.FLAG_EXPLICIT_NAME, "molt_PyLong_Type")]]
     assert "molt_err_pending" not in allowlists[0]
     assert "molt_err_pending" in allowlists[1]
+    # The split app imports the CPython ABI under its split export name; the
+    # allowlist is the deploy runtime's export surface, never the relocatable
+    # runtime's canonical C names.
+    assert "molt_PyType_Ready" in allowlists[1]
+    assert "PyType_Ready" not in allowlists[1]
     assert "malloc" in allowlists[1]
     assert "__trunctfdf2" not in allowlists[0]
     assert "__trunctfdf2" not in allowlists[1]
+
+
+def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "wasm_allowed_imports.txt"
+    base.write_text("# base\nhost_only\n", encoding="utf-8")
+    native_object = tmp_path / "ext.molt.wasm"
+    native_object.write_bytes(b"\0asm\x01\0\0\0")
+    temp_dir = tempfile.TemporaryDirectory()
+    try:
+        composed = wasm_link._compose_split_runtime_native_allowlist(
+            base_allowlist=base,
+            native_objects=(native_object,),
+            split_runtime_exports={"molt_PyType_Ready", "molt_err_pending"},
+            temp_dir=temp_dir,
+        )
+        symbols = _parse_allowlist(composed)
+    finally:
+        temp_dir.cleanup()
+    assert {"host_only", "molt_PyType_Ready", "molt_err_pending"} <= symbols
+    assert "PyType_Ready" not in symbols
+    assert (
+        wasm_link._compose_split_runtime_native_allowlist(
+            base_allowlist=base,
+            native_objects=(),
+            split_runtime_exports={"molt_PyType_Ready"},
+            temp_dir=tempfile.TemporaryDirectory(),
+        )
+        == base
+    )
 
 
 def test_canonical_split_runtime_required_exports_uses_runtime_export_surface() -> None:
