@@ -1992,15 +1992,20 @@ def _compose_split_runtime_native_allowlist(
     *,
     base_allowlist: Path,
     native_objects: Sequence[Path],
-    runtime_exports: set[str],
+    split_runtime_exports: set[str],
     temp_dir: tempfile.TemporaryDirectory,
 ) -> Path:
     """Return the deployed split-app allowlist for static native extensions.
 
-    The monolithic validation link resolves Molt ABI symbols against the runtime
-    stub. The deployed split app deliberately leaves those same symbols as
-    ``molt_runtime`` imports, so wasm-ld must allow the generated runtime export
-    surface only for that transaction-local app link.
+    The monolithic validation link resolves Molt ABI symbols against the
+    relocatable runtime under their canonical C names. The deployed split app
+    deliberately leaves those same symbols as ``molt_runtime`` imports under
+    their split export names, so wasm-ld must allow exactly the export surface
+    of the runtime the app deploys with (``split_runtime_exports``, the deploy
+    runtime's export section) for that transaction-local app link. The
+    relocatable runtime's defined names are the wrong authority here: they
+    spell the CPython ABI canonically (``PyType_Ready``) while the split app
+    imports ``molt_PyType_Ready``.
     """
     if not native_objects:
         return base_allowlist
@@ -2008,7 +2013,7 @@ def _compose_split_runtime_native_allowlist(
         {
             *_read_link_allowlist_symbols(base_allowlist),
             *_external_native_host_link_imports(),
-            *runtime_exports,
+            *split_runtime_exports,
         }
     )
     composed = Path(temp_dir.name) / "wasm_allowed_imports.split_runtime_native.txt"

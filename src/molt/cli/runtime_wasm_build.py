@@ -115,12 +115,18 @@ class _RuntimeWasmMemberBuild:
         )
         started = time.perf_counter()
         try:
+            # The shared member publishes the FULL split ABI export surface:
+            # its export names are a property of the split-runtime ABI, never
+            # of the app whose build produced it. Renaming only the app's
+            # required subset left every other CPython ABI symbol under its
+            # canonical C name, so a split app importing `molt_PyType_Ready`
+            # (the split name every native object is rewritten to) could not
+            # link against the runtime it deploys with. ``required_exports``
+            # remains the validation obligation, not a naming input.
             metrics = transform_wasm_publication_file(
                 self.runtime_wasm,
                 rename_map=(
-                    {}
-                    if self.reloc
-                    else wasm_split_runtime_export_rename_map(self.required_exports)
+                    {} if self.reloc else wasm_split_runtime_export_rename_map(None)
                 ),
                 final_artifact=not self.reloc,
                 preserve_debug=preserve_debug,
