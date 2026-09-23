@@ -401,10 +401,14 @@ def test_oracle_selfcheck_lane_pins_numpy_dispatch_baseline(monkeypatch) -> None
 
     captured_envs: list[dict[str, str]] = []
 
-    def fake_subprocess_run(args, *, cwd, check, env):  # noqa: ANN001
+    def fake_run(self, args, *, cwd, check, env):  # noqa: ANN001
         captured_envs.append(dict(env))
 
-    monkeypatch.setattr(oracle.subprocess, "run", fake_subprocess_run)
+    # The oracle runs inside its locked environment; the test is already the
+    # process the relaunch would target. The executor is a frozen record, so
+    # the guarded run seam is patched on its type.
+    monkeypatch.setattr(oracle, "relaunch_in_locked_environment", lambda *a, **k: None)
+    monkeypatch.setattr(type(oracle._COMMANDS), "run", fake_run)
     monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
 
     assert oracle.main() == 0
