@@ -42,7 +42,21 @@ force_utf8_stdio()
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
-DEFAULT_OUT_DIR = ROOT / "tmp" / "pact_witness_acceptance_queue"
+
+
+def _owned_tmp_root() -> Path:
+    """Where this acceptance run may write: the proof queue's per-run scratch
+    root when it provides one, else the checkout's tmp for direct runs."""
+    scratch = os.environ.get("MOLT_PROOF_SCRATCH_ROOT", "").strip()
+    if scratch:
+        return Path(scratch).expanduser().resolve()
+    return (ROOT / "tmp").resolve()
+
+
+def _default_out_dir() -> Path:
+    return _owned_tmp_root() / "pact_witness_acceptance"
+
+
 # The ONE shared parity authority (011 parity-harness proposal §2): a
 # declarative <k>_gates.json manifest evaluated by the generalized fail-loud
 # engine, superseding the old per-kernel inline gate dicts in
@@ -203,7 +217,7 @@ def _node_bin() -> str:
 
 def _assert_owned_tmp(path: Path) -> Path:
     resolved = path.resolve()
-    tmp_root = (ROOT / "tmp").resolve()
+    tmp_root = _owned_tmp_root()
     try:
         resolved.relative_to(tmp_root)
     except ValueError as exc:
@@ -855,14 +869,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_OUT_DIR,
+        default=None,
         help="Owned tmp artifact root for build/, run/, and candidate_outputs.npz.",
     )
     args = parser.parse_args(argv)
 
     _assert_build_provenance()
     _attest_effective_numpy_seal()
-    build_dir, run_dir = _prepare_attempt_dirs(args.out_dir)
+    build_dir, run_dir = _prepare_attempt_dirs(
+        _default_out_dir() if args.out_dir is None else args.out_dir
+    )
 
     if _iteration_mode():
         print(

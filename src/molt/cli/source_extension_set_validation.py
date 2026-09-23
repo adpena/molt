@@ -176,10 +176,14 @@ def validate_source_extension_set_publish_root(
         raise SourceExtensionSetValidationError(
             "extension-set Meson metadata differs from registered build contract"
         )
-    resolved_build_requirements = {
-        canonicalize_name(str(item["distribution"])): str(item["version"])
-        for item in cast(Mapping[str, Any], build_environment)["resolved"]
-        if isinstance(item, Mapping)
+    # The locked environment's installed distributions are the identity the
+    # Meson driver and the Ninja backend link to: what the lock resolved and
+    # the provisioner attested, not the upstream build requirement list
+    # (which never names transitive tools such as meson under meson-python).
+    installed_versions = {
+        canonicalize_name(str(row["name"])): str(row["version"])
+        for row in cast(Mapping[str, Any], build_environment)["installed_distributions"]
+        if isinstance(row, Mapping)
     }
     backend = cast(Mapping[str, Any], meson["backend"])
     custody = cast(Mapping[str, Any], build_environment)["custody"]
@@ -208,6 +212,7 @@ def validate_source_extension_set_publish_root(
         != {"distribution", "version", "reported_version", "path", "sha256"}
         or canonicalize_name(str(backend.get("distribution"))) != "ninja"
         or not backend_matches_custody
+        or backend.get("version") != installed_versions.get("ninja")
         or not isinstance(backend.get("reported_version"), str)
         or not backend.get("reported_version")
         or not isinstance(backend.get("path"), str)
@@ -227,7 +232,7 @@ def validate_source_extension_set_publish_root(
             set(driver) != {"kind", "module", "distribution", "version"}
             or driver.get("module") != "mesonbuild.mesonmain"
             or canonicalize_name(str(driver.get("distribution"))) != "meson"
-            or driver.get("version") != resolved_build_requirements.get("meson")
+            or driver.get("version") != installed_versions.get("meson")
         ):
             raise SourceExtensionSetValidationError(
                 "extension-set Meson driver identity is invalid"
@@ -310,10 +315,10 @@ def validate_source_extension_set_publish_root(
                 raise SourceExtensionSetValidationError(
                     "extension-set Meson pkg-config identity differs from custody"
                 )
-        elif resolved_build_requirements.get(normalized_distribution) != version:
+        elif installed_versions.get(normalized_distribution) != version:
             raise SourceExtensionSetValidationError(
-                f"extension-set Meson config_tools[{index}] differs from resolved "
-                "build custody"
+                f"extension-set Meson config_tools[{index}] differs from the locked "
+                "environment's installed distribution"
             )
     expected_pkg_config_requirement = (
         MOLT_PKGCONF_REQUIREMENT if extension_set.use_pkg_config else None

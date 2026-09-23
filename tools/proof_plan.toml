@@ -2908,12 +2908,11 @@ gates = [
 [[named_lane]]
 id = "pact.witness.acceptance"
 description = "Pact Kernel A witness acceptance: build field_solve.py, execute the artifact, write candidate_outputs.npz, run check_parity.py."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_acceptance.py", "--out-dir", "tmp/pact_witness_acceptance_queue"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_acceptance.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node"]
 resource_family = "wasm-browser"
 contention_key = "wasm:pact-witness"
 timeout_seconds = 1800
-scratch_roots = []
 
 [[named_lane]]
 id = "pact.witness.oracle"
@@ -2923,28 +2922,25 @@ toolchains = ["python", "uv"]
 resource_family = "wasm-browser"
 contention_key = "wasm:pact-witness"
 timeout_seconds = 900
-scratch_roots = []
 
 [[named_lane]]
 id = "pact.seal.numpy.produce"
 description = "Produce the canonical NumPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
-argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "numpy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/numpy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
+argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "numpy", "--module-set", "pact-witness", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "llvm-ar", "llvm-ranlib", "llvm-nm", "llvm-strip"]
 resource_family = "wasm-source-extension"
 contention_key = "wasm:numpy-seal"
 timeout_seconds = 7200
-scratch_roots = ["tmp/pact_seal_build/numpy"]
 derived_environments = ["uv-source-build-environment"]
 
 [[named_lane]]
 id = "pact.seal.scipy.produce"
 description = "Produce the canonical SciPy pact-witness source-extension seal (wasm32-wasip1, cpython-abi) from the registered upstream source."
-argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "scipy", "--module-set", "pact-witness", "--build-root", "tmp/pact_seal_build/scipy", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
+argv = ["python", "-m", "molt", "extension", "produce-set", "--package", "scipy", "--module-set", "pact-witness", "--target", "wasm", "--abi-tier", "cpython-abi", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "llvm-ar", "llvm-ranlib", "llvm-nm", "llvm-strip"]
 resource_family = "wasm-source-extension"
 contention_key = "wasm:scipy-seal"
 timeout_seconds = 7200
-scratch_roots = ["tmp/pact_seal_build/scipy"]
 derived_environments = ["uv-source-build-environment"]
 
 # =========================================================================

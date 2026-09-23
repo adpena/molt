@@ -217,6 +217,14 @@ def execute_guarded_request(request_path: Path) -> int:
             )
             run_target.mkdir(parents=True, exist_ok=False)
             inherited_env["CARGO_TARGET_DIR"] = str(run_target.resolve(strict=True))
+        # Every proof gets one fresh scratch root outside the watched source tree;
+        # producers default their build and output roots to it, so the proof's
+        # own outputs never register as input mutations.
+        run_scratch = result_path.parent / "derived" / execution_nonce / "scratch"
+        run_scratch.mkdir(parents=True, exist_ok=False)
+        inherited_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(
+            run_scratch.resolve(strict=True)
+        )
         inherited_env, llvm_prefix = prefer_canonical_llvm_prefix(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )

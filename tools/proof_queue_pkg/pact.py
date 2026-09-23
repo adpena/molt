@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -168,35 +167,22 @@ def named_lane_argv(lane_id: str) -> list[str]:
     return list(proof_plan.ProofPlan.load().named_lane(lane_id).argv)
 
 
-def _clear_scratch_roots(repo_root: Path, roots: Sequence[str]) -> None:
-    """Reset a lane's declared repo-relative tmp/ scratch roots before submission."""
-    for raw in roots:
-        target = (repo_root / raw).resolve()
-        tmp_root = (repo_root / "tmp").resolve()
-        if target == tmp_root or tmp_root not in target.parents:
-            raise SystemExit(f"named lane scratch root is outside tmp/: {raw}")
-        if target.is_symlink():
-            raise SystemExit(f"named lane scratch root is a symlink: {raw}")
-        if target.exists():
-            shutil.rmtree(target)
-
-
 def _named_lane_spec(
     lane_id: str, timeout: float | None = None, repo_root: Path = state.ROOT
 ) -> dict[str, object]:
+    del repo_root
     lane = proof_plan.ProofPlan.load().named_lane(lane_id)
-    _clear_scratch_roots(repo_root, lane.scratch_roots)
     return {
         "logical_id": lane_id.replace(".", "-"),
         "reason": str(lane.data["description"]),
         "command": list(lane.argv),
         "resource_family": str(lane.data["resource_family"]),
         "contention_key": str(lane.data["contention_key"]),
-        "scopes": ["tools/proof_plan.toml", *lane.scratch_roots],
+        "scopes": ["tools/proof_plan.toml"],
         "env_overrides": {},
         "notes": [
             f"named lane {lane_id}: argv and toolchain closure come from "
-            "tools/proof_plan.toml; scratch roots were reset at submission."
+            "tools/proof_plan.toml; outputs go to the run's scratch root."
         ],
         "timeout": timeout
         if timeout is not None

@@ -79,6 +79,11 @@ DEFAULT_TARGET_ROOT_DIRNAME = "target-root"
 # under this directory of the toolchain root; every provisioner and discoverer
 # derives the path from here.
 TOOLCHAINS_DIRNAME = "toolchains"
+# A guarded proof run receives one fresh, custody-external scratch root for
+# everything it builds or emits (the proof queue creates it per run). Tools
+# that produce artifacts default their output roots to it, so a proof never
+# writes into the watched source checkout.
+PROOF_SCRATCH_ROOT_ENV = "MOLT_PROOF_SCRATCH_ROOT"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
