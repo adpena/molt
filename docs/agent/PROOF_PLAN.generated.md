@@ -95,7 +95,7 @@ Receipts record resolved path, version text, and the repository-relative probe w
 |---|---|---|---|---:|
 | `python` | `^Python 3\.12\.` | `.` | `3.12` | 1 |
 | `uv` | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
-| `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
+| `node` | `^v24\.16\.0$` | `.` | `24.16.0` | 3 |
 | `rustc` | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `cargo` | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `git` | `^git version 2\.` | `.` | `2.x` | 1 |

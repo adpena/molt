@@ -38,6 +38,75 @@ def test_repository_manifest_pins_every_host_asset_of_wasm_tools() -> None:
         )
         assert asset.archive_member.endswith(("wasm-tools", "wasm-tools.exe"))
     assert release.prefix_name == f"wasm-tools-{release.version}"
+    assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
+
+
+def test_repository_manifest_pins_node_from_the_official_distribution() -> None:
+    release = tool_releases.load_tool_releases(ROOT)["node"]
+    assert release.provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST
+    assert release.provenance.url == (
+        f"https://nodejs.org/dist/v{release.version}/SHASUMS256.txt"
+    )
+    assert release.provenance.release_id is None
+    assert set(release.assets) >= {
+        "x86_64-windows",
+        "x86_64-linux",
+        "aarch64-linux",
+        "x86_64-macos",
+        "aarch64-macos",
+    }
+    for asset in release.assets.values():
+        assert asset.url.startswith(f"https://nodejs.org/dist/v{release.version}/")
+        assert asset.archive_member.endswith(("/bin/node", "/node.exe"))
+
+
+def test_checksum_manifest_assets_must_live_in_the_manifest_directory(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "config").mkdir(parents=True)
+    manifest = tmp_path / "config" / "tool_releases.toml"
+
+    def write(asset_url: str, provenance_url: str) -> None:
+        manifest.write_text(
+            "\n".join(
+                [
+                    "schema_version = 2",
+                    "[tools.demo]",
+                    'version = "1.2.3"',
+                    'executable = "demo"',
+                    "[tools.demo.provenance]",
+                    'kind = "checksum-manifest"',
+                    f'url = "{provenance_url}"',
+                    f"[tools.demo.assets.{tool_releases.host_asset_key()}]",
+                    f'url = "{asset_url}"',
+                    "size = 1",
+                    f'sha256 = "{"a" * 64}"',
+                    'archive_member = "demo-1.2.3/demo"',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    write(
+        "https://dist.example/v1.2.3/demo-1.2.3.tar.gz",
+        "https://dist.example/v1.2.3/SHASUMS256.txt",
+    )
+    assert tool_releases.load_tool_releases(tmp_path)["demo"].provenance.kind == (
+        tool_releases.PROVENANCE_CHECKSUM_MANIFEST
+    )
+    write(
+        "https://dist.example/v1.2.4/demo-1.2.3.tar.gz",
+        "https://dist.example/v1.2.3/SHASUMS256.txt",
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="own\s+version directory"):
+        tool_releases.load_tool_releases(tmp_path)
+    write(
+        "https://dist.example/v1.2.3/demo-1.2.3.tar.gz",
+        "https://dist.example/v1.2.3/checksums.txt",
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="SHASUMS256"):
+        tool_releases.load_tool_releases(tmp_path)
 
 
 def _write_manifest(
@@ -45,11 +114,13 @@ def _write_manifest(
 ) -> None:
     (root / "config").mkdir(parents=True, exist_ok=True)
     lines = [
-        "schema_version = 1",
+        "schema_version = 2",
         f"[tools.{tool}]",
         'version = "1.2.3"',
         f'executable = "{tool}"',
-        'provenance_url = "https://api.github.com/repos/o/r/releases/tags/v1.2.3"',
+        f"[tools.{tool}.provenance]",
+        'kind = "github-release"',
+        'url = "https://api.github.com/repos/o/r/releases/tags/v1.2.3"',
         "release_id = 7",
         f"[tools.{tool}.assets.{tool_releases.host_asset_key()}]",
         *(f"{key} = {json.dumps(value)}" for key, value in asset.items()),

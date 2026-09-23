@@ -243,8 +243,10 @@ build root is the producer's own (keyed by package and seal variant under
 prior production's tree is replaced before the build and removed after
 publication, while a caller-supplied `--build-root` must be absent or empty.
 
-Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
-`config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.
+Tools that ship as prebuilt release binaries (`wasm-tools`, `sccache`, `node`)
+are pinned in `config/tool_releases.toml` by version-addressed asset URL,
+byte size and SHA-256, each under a declared provenance (a GitHub release
+record or an official `SHASUMS256.txt` checksum manifest).
 A toolchain policy that cites that manifest as setup evidence makes the queue
 provision the host asset under `<toolchain root>/toolchains/<name>-<version>`
 (digest-verified, attested, idempotent) and place its `bin` first on the lane's

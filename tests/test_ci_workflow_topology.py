@@ -905,7 +905,8 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert (
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
     )
-    assert 'node-version: "24.16.0"' in formal_workflow
+    node_version = tool_releases.tool_release("node").version
+    assert f'node-version: "{node_version}"' in formal_workflow
     assert "check-latest: true" not in setup_project
     assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
         formal_workflow
@@ -919,7 +920,7 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
         not in nightly_workflow
     )
-    assert "node-version: '24.16.0'" not in nightly_workflow
+    assert f"node-version: '{node_version}'" not in nightly_workflow
     assert "Install Quint Rust evaluator" not in nightly_workflow
 
 
