@@ -87,3 +87,125 @@ def test_default_argument_dunder_import_helper_is_in_static_closure() -> None:
     )
 
     assert "pkg.leaf" in module_import_scanner._collect_imports(tree)
+
+
+def test_iterating_a_constant_display_keeps_relative_imports_static() -> None:
+    # numpy's package init aliases extended-precision scalars in a loop over a
+    # literal list before its later `from . import lib` statements; a builtin
+    # container's iteration runs no user code, so the package anchor survives.
+    from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+
+    static = ast.parse(
+        "for ta in ['float96', 'float128']:\n"
+        "    try:\n"
+        "        globals()[ta] = getattr(_core, ta)\n"
+        "    except AttributeError:\n"
+        "        pass\n"
+        "del ta\n"
+        "from . import lib\n"
+    )
+    assert "pkg.lib" in module_import_scanner._collect_imports(
+        static, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+    dynamic = ast.parse(
+        "for ta in aliases():\n"
+        "    globals()[ta] = getattr(_core, ta)\n"
+        "from . import lib\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            dynamic, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("iteration over a call must keep runtime custody")
+
+
+def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
+    # numpy._core's package init collects environment keys in a list literal,
+    # iterates it in a finally clause, and only then imports its siblings.
+    from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+
+    static = ast.parse(
+        "env_added = []\n"
+        "for envkey in ['OPENBLAS_MAIN_FREE']:\n"
+        "    if envkey not in os.environ:\n"
+        "        env_added.append(envkey)\n"
+        "try:\n"
+        "    from . import multiarray\n"
+        "finally:\n"
+        "    for envkey in env_added:\n"
+        "        os.unsetenv(envkey)\n"
+        "del envkey\n"
+        "del env_added\n"
+        "from . import umath\n"
+    )
+    assert "pkg.umath" in module_import_scanner._collect_imports(
+        static, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+    rebound = ast.parse(
+        "env_added = []\n"
+        "env_added = discover()\n"
+        "for envkey in env_added:\n"
+        "    os.unsetenv(envkey)\n"
+        "from . import umath\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            rebound, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("a name rebound to a call must keep runtime custody")
+
+
+def test_a_raising_handler_does_not_taint_the_imports_after_its_try() -> None:
+    # numpy._core's import fallback iterates a call result while composing its
+    # error, then raises; the package anchor of the statements after the try
+    # comes only from paths that complete normally. Iterating the package's
+    # own __path__ is builtin iteration while the path is known.
+    from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+
+    raising = ast.parse(
+        "env_added = []\n"
+        "try:\n"
+        "    from . import multiarray\n"
+        "except ImportError as exc:\n"
+        "    candidates = []\n"
+        "    for path in __path__:\n"
+        "        candidates.extend(f for f in os.listdir(path))\n"
+        "    for f in discover():\n"
+        "        candidates.append(f)\n"
+        "    raise ImportError(candidates) from exc\n"
+        "finally:\n"
+        "    for envkey in env_added:\n"
+        "        os.unsetenv(envkey)\n"
+        "from . import umath\n"
+    )
+    assert "pkg.umath" in module_import_scanner._collect_imports(
+        raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+    falls_through = ast.parse(
+        "try:\n"
+        "    from . import multiarray\n"
+        "except ImportError:\n"
+        "    for f in discover():\n"
+        "        pass\n"
+        "from . import umath\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            falls_through,
+            module_name="pkg",
+            is_package=True,
+            import_scan_mode="module_init",
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("a handler that completes normally still taints")
