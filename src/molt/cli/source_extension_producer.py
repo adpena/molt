@@ -23,6 +23,7 @@ from packaging.version import InvalidVersion
 
 from molt.cli import extension_commands
 from molt.cli import source_extension_cython as _source_extension_cython
+from molt.dx import PROOF_SCRATCH_ROOT_ENV, checkout_custody
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
@@ -51,12 +52,13 @@ from molt.cli.source_extensions import (
     canonicalize_source_extension_manifest_required_capsules,
 )
 from molt.cli.source_build_environment import (
-    LockedSourceBuildEnvironment,
-    SourceBuildEnvironmentError,
     active_source_build_requirements,
     canonical_source_marker_environment,
+    _installed_distributions,
+    LockedSourceBuildEnvironment,
     provision_source_build_environment,
     source_build_environment,
+    SourceBuildEnvironmentError,
 )
 from molt.cli.build_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
@@ -187,6 +189,7 @@ class _SourceBuildEnvironment:
     marker_environment: Mapping[str, str]
     active_requirements: tuple[str, ...]
     resolved: tuple[_ResolvedBuildRequirement, ...]
+    installed_distributions: tuple[Mapping[str, str], ...]
     custody: Mapping[str, object]
 
     def manifest_payload(self) -> dict[str, Any]:
@@ -203,6 +206,9 @@ class _SourceBuildEnvironment:
             "marker_environment": dict(self.marker_environment),
             "active_requirements": list(self.active_requirements),
             "resolved": [item.manifest_payload() for item in self.resolved],
+            "installed_distributions": [
+                dict(row) for row in self.installed_distributions
+            ],
             "custody": dict(self.custody),
         }
 
@@ -521,6 +527,10 @@ def _ensure_source_build_environment(
         marker_environment=marker_environment,
         active_requirements=tuple(raw for raw, _requirement in active),
         resolved=tuple(resolved),
+        # The locked environment's attested distribution inventory (the
+        # active attestation already proved it equals the provisioning
+        # record): the authority the Meson driver and backend link to.
+        installed_distributions=tuple(_installed_distributions()),
         custody=custody,
     )
 
@@ -2183,6 +2193,22 @@ def _retire_stale_incumbent(destination: Path, *, reason: str) -> Path:
     return retired
 
 
+def default_seal_build_root(package: str) -> Path:
+    """The build root of a seal production when none is given.
+
+    Under the proof queue this is the run's own scratch root; a direct run
+    uses the checkout custody root's tmp. Neither is under the watched source
+    checkout, so a production never mutates the inputs it is proven from.
+    """
+    scratch = os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
+    base = (
+        Path(scratch).expanduser()
+        if scratch
+        else checkout_custody(_REPO_ROOT).custody_root / "tmp"
+    )
+    return (base / "pact_seal_build" / package).resolve()
+
+
 def _recover_and_prune_producer_transactions(
     destination: Path, *, publication_custody: SourceExtensionPublicationCustody
 ) -> None:
@@ -2281,7 +2307,7 @@ def produce_source_extension_set(
     module_set: str,
     python_version: str,
     source: str,
-    build_root: str,
+    build_root: str | None,
     target: str = "wasm",
     abi_tier: str = "cpython-abi",
     expected_identity_sha256: str | None = None,
@@ -2289,7 +2315,11 @@ def produce_source_extension_set(
     json_output: bool = False,
 ) -> int:
     source_root = Path(source).expanduser().resolve()
-    resolved_build_root = Path(build_root).expanduser().resolve()
+    resolved_build_root = (
+        default_seal_build_root(package)
+        if build_root is None
+        else Path(build_root).expanduser().resolve()
+    )
     transaction_root: Path | None = None
     producer_lock = None
     publication_custody = None

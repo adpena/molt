@@ -403,3 +403,40 @@ def test_plan_refuses_unknown_derived_environment_kinds() -> None:
     assert any("unknown derived environment kind" in error for error in plan.validate())
     lane.data["derived_environments"] = [KIND, KIND]
     assert any("distinct kinds" in error for error in plan.validate())
+
+
+def test_the_run_scratch_root_is_a_run_owned_derived_root(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = {supervisor_custody.PROOF_SCRATCH_ROOT_ENV: str(scratch)}
+    derived = supervisor_custody._supervisor_derived_roots(
+        descendants="declared-toolchains", env=env
+    )
+    assert derived == [
+        {"role": supervisor_custody.SCRATCH_OUTPUT_ROLE, "path": str(scratch.resolve())}
+    ]
+    assert (
+        supervisor_custody._supervisor_derived_roots(descendants="forbidden", env=env)
+        == []
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    result = tmp_path / "result" / "result.json"
+    result.parent.mkdir()
+    [row] = supervisor_custody._derived_root_provenance(
+        descendants="declared-toolchains",
+        env=env,
+        source_root=source,
+        result_path=result,
+    )
+    assert row["role"] == supervisor_custody.SCRATCH_OUTPUT_ROLE
+    assert row["run_owned"] is True
+    assert supervisor_custody.derived_root_row_consistent(row)
+    (scratch / "leftover").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="not fresh and empty"):
+        supervisor_custody._derived_root_provenance(
+            descendants="declared-toolchains",
+            env=env,
+            source_root=source,
+            result_path=result,
+        )

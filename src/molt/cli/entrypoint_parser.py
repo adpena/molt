@@ -640,8 +640,12 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     )
     extension_produce_set_parser.add_argument(
         "--build-root",
-        required=True,
-        help="Absent or empty build root for the single upstream Meson setup.",
+        default=None,
+        help=(
+            "Absent or empty build root for the single upstream Meson setup "
+            "(default: <MOLT_PROOF_SCRATCH_ROOT or checkout custody tmp>/"
+            "pact_seal_build/<package>)."
+        ),
     )
     extension_produce_set_parser.add_argument(
         "--target",

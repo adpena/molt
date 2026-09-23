@@ -776,6 +776,7 @@ def source_build_environment_problems(payload: object) -> list[str]:
         "marker_environment",
         "active_requirements",
         "resolved",
+        "installed_distributions",
         "custody",
     }
     if not isinstance(payload, Mapping) or set(payload) != expected_fields:
@@ -790,6 +791,31 @@ def source_build_environment_problems(payload: object) -> list[str]:
     resolved = payload.get("resolved")
     custody = payload.get("custody")
     problems.extend(_custody_problems(custody, subject="extension-set manifest"))
+    installed = payload.get("installed_distributions")
+    installed_versions: dict[str, str] = {}
+    if not isinstance(installed, list) or not all(
+        isinstance(row, Mapping)
+        and set(row) == {"name", "version"}
+        and all(isinstance(value, str) and value for value in row.values())
+        for row in installed
+    ):
+        problems.append(
+            "extension-set manifest locked environment distributions are invalid"
+        )
+    else:
+        installed_versions = {
+            canonicalize_name(str(row["name"])): str(row["version"])
+            for row in cast(list[Mapping[str, str]], installed)
+        }
+        if len(installed_versions) != len(installed) or [
+            str(row["name"]) for row in cast(list[Mapping[str, str]], installed)
+        ] != sorted(
+            str(row["name"]) for row in cast(list[Mapping[str, str]], installed)
+        ):
+            problems.append(
+                "extension-set manifest locked environment distributions are "
+                "not canonical"
+            )
 
     if (
         not isinstance(python, Mapping)
@@ -882,6 +908,12 @@ def source_build_environment_problems(payload: object) -> list[str]:
         distribution = cast(str, item["distribution"])
         raw_version = cast(str, item["version"])
         resolved_requirements.append(raw)
+        if installed_versions.get(canonicalize_name(distribution)) != raw_version:
+            problems.append(
+                "extension-set manifest resolved requirement is not the locked "
+                f"environment's installed distribution: {distribution}"
+            )
+            continue
         if index >= len(active) or raw != active[index][0]:
             continue
         requirement = active[index][1]

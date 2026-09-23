@@ -13237,6 +13237,14 @@ def _write_current_scientific_seal(
                             "version": "2.5.1",
                         },
                     ],
+                    "installed_distributions": [
+                        {"name": "cython", "version": "3.2.8"},
+                        {"name": "meson", "version": "1.9.0"},
+                        {"name": "ninja", "version": "1.13.0"},
+                        {"name": "numpy", "version": "2.5.1"},
+                        {"name": "pybind11", "version": "3.0.4"},
+                        {"name": "pythran", "version": "0.18.1"},
+                    ],
                     "custody": build_custody,
                 },
                 "meson": {

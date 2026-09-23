@@ -16,6 +16,8 @@ from typing import Mapping, Sequence
 from molt.dx import checkout_custody
 from molt.path_custody import host_path_is_within
 from molt.file_publication import durable_publish_directory_exclusive
+from molt import dx as _dx
+
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
@@ -323,7 +325,15 @@ def _supervisor_fixed_images(
 
 
 BUILD_OUTPUT_ROLE = "build-output"
+SCRATCH_OUTPUT_ROLE = "scratch-output"
 ATTESTED_ENVIRONMENT_ROLE = "attested-environment"
+PROOF_SCRATCH_ROOT_ENV = _dx.PROOF_SCRATCH_ROOT_ENV
+# Run-owned derived roots the queue creates fresh for every declared-tree
+# proof, named by the environment variable the proof reads them from.
+RUN_OWNED_DERIVED_ROOTS = (
+    (BUILD_OUTPUT_ROLE, "CARGO_TARGET_DIR"),
+    (SCRATCH_OUTPUT_ROLE, PROOF_SCRATCH_ROOT_ENV),
+)
 
 
 def _supervisor_derived_roots(
@@ -347,7 +357,7 @@ def _supervisor_derived_roots(
         roots.append(
             {"role": ATTESTED_ENVIRONMENT_ROLE, "path": str(path.resolve(strict=True))}
         )
-    for role, name in ((BUILD_OUTPUT_ROLE, "CARGO_TARGET_DIR"),):
+    for role, name in RUN_OWNED_DERIVED_ROOTS:
         raw = env.get(name)
         if not raw:
             continue
@@ -368,7 +378,7 @@ def derived_root_row_consistent(row: Mapping[str, object]) -> bool:
     listing is recorded so the receipt names which environments pre-existed.
     """
     role = row.get("role")
-    if role == BUILD_OUTPUT_ROLE:
+    if role in {BUILD_OUTPUT_ROLE, SCRATCH_OUTPUT_ROLE}:
         return (
             row.get("run_owned") is True
             and row.get("initial_entry_count") == 0
