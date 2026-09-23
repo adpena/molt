@@ -19,6 +19,7 @@ from wasm_link_format import (
     _ESSENTIAL_EXPORTS,
     _OUTPUT_EXPORT_ALIAS_PREFIX,
     _STANDARD_SECTION_ORDER,
+    _insert_standard_section,
     _append_linking_function_symbols,
     _build_custom_section,
     _build_linking_payload,
@@ -623,58 +624,42 @@ def _ensure_function_exports_by_symbol_names(
         return None
 
     sections = _parse_sections(data)
-    new_sections: list[tuple[int, bytes]] = []
-    modified = False
-    inserted = False
-    for section_id, payload in sections:
-        if section_id == 7:
-            offset = 0
-            count, offset = _read_varuint(payload, offset)
-            entries: list[tuple[str, int, int]] = []
-            while offset < len(payload):
-                name, offset = _read_string(payload, offset)
-                kind = payload[offset]
-                offset += 1
-                index, offset = _read_varuint(payload, offset)
-                if kind == 0 and name in replacements:
-                    index = replacements[name]
-                entries.append((name, kind, index))
-            updated_payload = bytearray()
-            updated_payload.extend(_write_varuint(count + len(additions)))
-            for name, kind, index in entries:
-                updated_payload.extend(_write_string(name))
-                updated_payload.append(kind)
-                updated_payload.extend(_write_varuint(index))
-            for public_name, symbol_index in additions:
-                updated_payload.extend(_write_string(public_name))
-                updated_payload.append(0)
-                updated_payload.extend(_write_varuint(symbol_index))
-            new_sections.append((section_id, bytes(updated_payload)))
-            modified = True
-            inserted = True
-            continue
-        if not inserted and section_id > 7:
-            export_payload = bytearray()
-            export_payload.extend(_write_varuint(len(additions)))
-            for public_name, symbol_index in additions:
-                export_payload.extend(_write_string(public_name))
-                export_payload.append(0)
-                export_payload.extend(_write_varuint(symbol_index))
-            new_sections.append((7, bytes(export_payload)))
-            modified = True
-            inserted = True
-        new_sections.append((section_id, payload))
-    if not inserted:
-        export_payload = bytearray()
-        export_payload.extend(_write_varuint(len(additions)))
-        for public_name, symbol_index in additions:
-            export_payload.extend(_write_string(public_name))
-            export_payload.append(0)
-            export_payload.extend(_write_varuint(symbol_index))
-        new_sections.append((7, bytes(export_payload)))
-        modified = True
-    if not modified:
-        return None
+    export_index = next(
+        (
+            index
+            for index, (section_id, _payload) in enumerate(sections)
+            if section_id == 7
+        ),
+        None,
+    )
+    entries: list[tuple[str, int, int]] = []
+    if export_index is not None:
+        payload = sections[export_index][1]
+        count, offset = _read_varuint(payload, 0)
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            offset += 1
+            index, offset = _read_varuint(payload, offset)
+            if kind == 0 and name in replacements:
+                index = replacements[name]
+            entries.append((name, kind, index))
+    entries.extend(
+        (public_name, 0, symbol_index) for public_name, symbol_index in additions
+    )
+    export_payload = bytearray(_write_varuint(len(entries)))
+    for name, kind, index in entries:
+        export_payload.extend(_write_string(name))
+        export_payload.append(kind)
+        export_payload.extend(_write_varuint(index))
+    if export_index is None:
+        # The export section takes its canonical position: ordering by numeric
+        # section id put it before a Tag section (id 13) and left the module
+        # with two export sections out of order.
+        new_sections = _insert_standard_section(sections, 7, bytes(export_payload))
+    else:
+        new_sections = list(sections)
+        new_sections[export_index] = (7, bytes(export_payload))
     return _build_sections(new_sections)
 
 

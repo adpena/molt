@@ -116,6 +116,7 @@ from wasm_link_format import (  # noqa: E402
     _collect_module_imports as _collect_module_imports,
     _count_func_imports as _count_func_imports,
     _ensure_table_export as _ensure_table_export,
+    _insert_standard_section as _insert_standard_section,
     _find_func_import_index as _find_func_import_index,
     _flatten_rec_groups as _flatten_rec_groups,
     _has_table as _has_table,
