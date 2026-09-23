@@ -32,16 +32,29 @@ from pathlib import Path
 from molt.dx import TOOLCHAINS_DIRNAME
 
 TOOL_RELEASES_PATH = "config/tool_releases.toml"
-TOOL_RELEASES_SCHEMA_VERSION = 1
+TOOL_RELEASES_SCHEMA_VERSION = 2
 TOOL_ATTESTATION_FILENAME = ".molt-tool-release.json"
-TOOL_ATTESTATION_SCHEMA = "molt.tool-release.v1"
+TOOL_ATTESTATION_SCHEMA = "molt.tool-release.v2"
 DOWNLOADS_DIRNAME = "downloads"
 
-# Release assets must be tag-addressed GitHub release downloads: the digest pin
-# is what makes the reference immutable, the URL shape keeps provenance legible.
+# A release's provenance names the authority its asset digests were read from.
+# The digest pin is what makes each asset immutable; the URL shapes keep that
+# provenance legible: a GitHub release's assets are tag-addressed downloads of
+# that release, an official checksum manifest's assets live in the manifest's
+# own version directory.
+PROVENANCE_GITHUB_RELEASE = "github-release"
+PROVENANCE_CHECKSUM_MANIFEST = "checksum-manifest"
+_PROVENANCE_KINDS = frozenset({PROVENANCE_GITHUB_RELEASE, PROVENANCE_CHECKSUM_MANIFEST})
+_GITHUB_RELEASE_URL_RE = re.compile(
+    r"^https://api\.github\.com/repos/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/releases/"
+    r"tags/[A-Za-z0-9_.\-]+$"
+)
 _RELEASE_ASSET_URL_RE = re.compile(
     r"^https://github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/releases/download/"
     r"[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+$"
+)
+_CHECKSUM_MANIFEST_URL_RE = re.compile(
+    r"^https://[A-Za-z0-9.\-]+(?:/[A-Za-z0-9_.\-]+)+/SHASUMS256\.txt$"
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*(?:[-+][A-Za-z0-9.]+)?$")
@@ -75,12 +88,24 @@ class ToolAsset:
 
 
 @dataclass(frozen=True)
+class ToolProvenance:
+    kind: str
+    url: str
+    release_id: int | None = None
+
+    def payload(self) -> dict[str, object]:
+        record: dict[str, object] = {"kind": self.kind, "url": self.url}
+        if self.release_id is not None:
+            record["release_id"] = self.release_id
+        return record
+
+
+@dataclass(frozen=True)
 class ToolRelease:
     name: str
     version: str
     executable: str
-    provenance_url: str
-    release_id: int
+    provenance: ToolProvenance
     assets: Mapping[str, ToolAsset]
 
     @property
@@ -113,6 +138,54 @@ def _require_str(table: Mapping[str, object], key: str, *, where: str) -> str:
     return value
 
 
+def _load_provenance(raw: Mapping[str, object], *, where: str) -> ToolProvenance:
+    table = raw.get("provenance")
+    if not isinstance(table, Mapping):
+        raise ToolReleaseError(f"{where}: provenance must be a table")
+    kind = _require_str(table, "kind", where=f"{where}.provenance")
+    if kind not in _PROVENANCE_KINDS:
+        raise ToolReleaseError(
+            f"{where}.provenance: kind must be one of {sorted(_PROVENANCE_KINDS)}"
+        )
+    url = _require_str(table, "url", where=f"{where}.provenance")
+    release_id = table.get("release_id")
+    if kind == PROVENANCE_GITHUB_RELEASE:
+        if not _GITHUB_RELEASE_URL_RE.fullmatch(url):
+            raise ToolReleaseError(
+                f"{where}.provenance: url must be a tag-addressed GitHub release "
+                f"record: {url}"
+            )
+        if not isinstance(release_id, int) or isinstance(release_id, bool):
+            raise ToolReleaseError(f"{where}.provenance: release_id must be an integer")
+        return ToolProvenance(kind=kind, url=url, release_id=release_id)
+    if not _CHECKSUM_MANIFEST_URL_RE.fullmatch(url):
+        raise ToolReleaseError(
+            f"{where}.provenance: url must be an official SHASUMS256.txt "
+            f"checksum manifest: {url}"
+        )
+    if release_id is not None:
+        raise ToolReleaseError(
+            f"{where}.provenance: a checksum manifest has no release_id"
+        )
+    return ToolProvenance(kind=kind, url=url)
+
+
+def _require_asset_url(url: str, provenance: ToolProvenance, *, where: str) -> None:
+    if provenance.kind == PROVENANCE_GITHUB_RELEASE:
+        if not _RELEASE_ASSET_URL_RE.fullmatch(url):
+            raise ToolReleaseError(
+                f"{where}: url must be a tag-addressed GitHub release asset: {url}"
+            )
+        return
+    directory = provenance.url.rsplit("/", 1)[0] + "/"
+    name = url[len(directory) :]
+    if not url.startswith(directory) or not name or "/" in name:
+        raise ToolReleaseError(
+            f"{where}: url must be an asset in the checksum manifest's own "
+            f"version directory {directory}: {url}"
+        )
+
+
 def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
     """Load and validate every pinned tool release."""
     path = tool_releases_path(root)
@@ -140,10 +213,7 @@ def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
             raise ToolReleaseError(
                 f"{where}: executable {executable!r} must equal the tool name"
             )
-        provenance_url = _require_str(raw, "provenance_url", where=where)
-        release_id = raw.get("release_id")
-        if not isinstance(release_id, int) or isinstance(release_id, bool):
-            raise ToolReleaseError(f"{where}: release_id must be an integer")
+        provenance = _load_provenance(raw, where=where)
         raw_assets = raw.get("assets")
         if not isinstance(raw_assets, Mapping) or not raw_assets:
             raise ToolReleaseError(f"{where}: assets must be a non-empty table")
@@ -155,11 +225,7 @@ def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
             if not isinstance(raw_asset, Mapping):
                 raise ToolReleaseError(f"{asset_where} must be a table")
             url = _require_str(raw_asset, "url", where=asset_where)
-            if not _RELEASE_ASSET_URL_RE.fullmatch(url):
-                raise ToolReleaseError(
-                    f"{asset_where}: url must be a tag-addressed GitHub release "
-                    f"asset: {url}"
-                )
+            _require_asset_url(url, provenance, where=asset_where)
             size = raw_asset.get("size")
             if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
                 raise ToolReleaseError(
@@ -180,8 +246,7 @@ def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
             name=name,
             version=version,
             executable=executable,
-            provenance_url=provenance_url,
-            release_id=release_id,
+            provenance=provenance,
             assets=assets,
         )
     return releases
@@ -248,6 +313,7 @@ def _attestation_payload(
         "asset": asset.key,
         "asset_url": asset.url,
         "asset_sha256": asset.sha256,
+        "provenance": release.provenance.payload(),
         "executable": release.executable_filename,
         "executable_sha256": executable_sha256,
     }

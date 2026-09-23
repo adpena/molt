@@ -128,7 +128,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "f523f07d3ca4c0b5c6b089d3c75425aef636871e67a8dd6ab5d44b38da6b1a39",
+  "authority_sha256": "989cb00068382afb4f91ab9fe8f97d097edd7255249958766a285682699a130a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -5114,6 +5114,7 @@
       "executable": "node",
       "name": "node",
       "setup_evidence": [
+        "config/tool_releases.toml::version = \"24.16.0\"",
         ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
         ".github/workflows/formal.yml::node-version: \"24.16.0\""
       ],
