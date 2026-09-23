@@ -50,6 +50,39 @@ impl WasmFunctionAnalysis {
         }
     }
 }
+pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
+    pub(super) backend: &'a mut WasmBackend,
+    pub(super) func_ir: &'a FunctionIR,
+    pub(super) ctx: &'a CompileFuncContext<'ctx>,
+    pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
+    pub(super) import_ids: &'a TrackedImportIds,
+    pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
+    pub(super) frame: &'a WasmFunctionFrame,
+    pub(super) func_index: u32,
+    pub(super) reloc_enabled: bool,
+    pub(super) native_eh_enabled: bool,
+    pub(super) tail_call_enabled: bool,
+    pub(super) tail_call_count: &'a Cell<usize>,
+    pub(super) analysis: &'a WasmFunctionAnalysis,
+}
+
+impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
+    pub(super) fn locals(&self) -> &WasmFrameLocals {
+        self.frame.locals()
+    }
+
+    pub(super) fn const_cache(&self) -> &ConstantCache {
+        self.frame.const_cache()
+    }
+
+    pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
+        self.frame.scalar_plan()
+    }
+
+    pub(super) fn arena_local(&self) -> Option<u32> {
+        self.frame.arena_local()
+    }
+}
 
 #[cfg(test)]
 mod analysis_tests {
@@ -110,39 +143,5 @@ mod analysis_tests {
         assert_eq!(last_use.get("owned"), Some(&1));
         assert_eq!(analysis.rc_skip_inc, HashSet::from([0, 2]));
         assert!(analysis.rc_skip_dec.is_empty());
-    }
-}
-
-pub(super) struct WasmFunctionEmitContext<'a, 'ctx> {
-    pub(super) backend: &'a mut WasmBackend,
-    pub(super) func_ir: &'a FunctionIR,
-    pub(super) ctx: &'a CompileFuncContext<'ctx>,
-    pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'ctx>,
-    pub(super) import_ids: &'a TrackedImportIds,
-    pub(super) exception_handler_region_indices: &'a BTreeSet<usize>,
-    pub(super) frame: &'a WasmFunctionFrame,
-    pub(super) func_index: u32,
-    pub(super) reloc_enabled: bool,
-    pub(super) native_eh_enabled: bool,
-    pub(super) tail_call_enabled: bool,
-    pub(super) tail_call_count: &'a Cell<usize>,
-    pub(super) analysis: &'a WasmFunctionAnalysis,
-}
-
-impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
-    pub(super) fn locals(&self) -> &WasmFrameLocals {
-        self.frame.locals()
-    }
-
-    pub(super) fn const_cache(&self) -> &ConstantCache {
-        self.frame.const_cache()
-    }
-
-    pub(super) fn scalar_plan(&self) -> &ScalarRepresentationPlan {
-        self.frame.scalar_plan()
-    }
-
-    pub(super) fn arena_local(&self) -> Option<u32> {
-        self.frame.arena_local()
     }
 }
