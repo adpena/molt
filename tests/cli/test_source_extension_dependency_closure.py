@@ -84,3 +84,45 @@ def test_object_closure_identity_includes_checksummed_headers(
         "@object-root/module.o",
     ]
     assert payload["objects"][0]["symbol_command"] == ["llvm-nm"]
+
+
+def test_dependency_facts_are_ordered_by_content_not_host_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        backend_cache,
+        "_native_object_global_symbol_sets",
+        lambda _path, **_kwargs: ({"PyInit_module"}, set()),
+    )
+    contents = {"first.h": b"int first(void);\n", "second.h": b"int second(void);\n"}
+    expected = sorted(
+        (hashlib.sha256(body).hexdigest(), name) for name, body in contents.items()
+    )
+
+    def facts(layout: dict[str, str]) -> list[tuple[str, str]]:
+        root = tmp_path / "-".join(sorted(layout.values()))
+        source = root / "module.c"
+        object_path = root / "module.o"
+        headers = []
+        for name, directory in layout.items():
+            header = root / directory / name
+            header.parent.mkdir(parents=True, exist_ok=True)
+            header.write_bytes(contents[name])
+            headers.append(header)
+        source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        object_path.write_bytes(b"object")
+        fact, error = source_extensions._source_extension_object_fact(
+            source_path=source,
+            object_path=object_path,
+            compile_command=("clang", "-c", str(source), "-o", str(object_path)),
+            nm_command=("llvm-nm",),
+            dependency_paths=(source, *headers),
+        )
+        assert error is None
+        assert fact is not None
+        return [(item.sha256, item.path.name) for item in fact.dependencies]
+
+    # Two layouts whose host-path order of the same headers is reversed.
+    assert facts({"first.h": "aa", "second.h": "zz"}) == expected
+    assert facts({"first.h": "zz", "second.h": "aa"}) == expected

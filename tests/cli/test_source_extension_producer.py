@@ -2487,3 +2487,72 @@ def test_stale_incumbent_is_retired_beside_the_canonical_location(
     assert record["reason"] == "old schema"
     assert record["retired_to"] == str(retired)
     assert record["canonical_location"] == str(destination)
+
+
+def test_default_seal_build_root_is_owned_per_seal_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(producer.PROOF_SCRATCH_ROOT_ENV, str(tmp_path / "scratch"))
+    root = producer.default_seal_build_root(
+        "numpy",
+        module_set="pact-witness",
+        python_version="3.12",
+        abi_tier="cpython-abi",
+        target="wasm",
+    )
+    assert (
+        root
+        == (
+            tmp_path
+            / "scratch/pact_seal_build/numpy/pact-witness-3.12-cpython-abi-wasm"
+        ).resolve()
+    )
+    other = producer.default_seal_build_root(
+        "numpy",
+        module_set="pact-witness",
+        python_version="3.12",
+        abi_tier="cpython-abi",
+        target="native",
+    )
+    assert other != root
+
+
+def test_locked_producer_reexec_omits_a_producer_owned_build_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _locked_environment_spec(tmp_path)
+    environment = build_environment.LockedSourceBuildEnvironment(
+        root=spec[0],
+        python_executable=spec[1],
+        manifest_path=spec[2],
+        custody=spec[3],
+        active=False,
+    )
+    observed: dict[str, object] = {}
+
+    def run(argv, **kwargs):
+        observed["argv"] = list(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(producer.process_guard, "run_completed_command", run)
+    environment.python_executable.parent.mkdir(parents=True, exist_ok=True)
+
+    assert (
+        producer._run_locked_source_extension_producer(
+            environment,
+            package="numpy",
+            package_version="2.5.1",
+            module_set="pact-witness",
+            python_version="3.12",
+            source="source-root",
+            build_root=None,
+            target="wasm",
+            abi_tier="cpython-abi",
+            json_output=False,
+        )
+        == 0
+    )
+    argv = observed["argv"]
+    assert isinstance(argv, list)
+    assert "--build-root" not in argv
+    assert argv[argv.index("--source") + 2 :][:2] == ["--target", "wasm"]
