@@ -13,6 +13,9 @@ import time
 from typing import Any, Literal
 
 from wasm_link_format import CallableTableLayout
+from molt.dx import proof_scratch_root
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 RuntimeLinkInputRole = Literal["reloc", "shared"]
 
@@ -103,7 +106,10 @@ def run_wasm_ld_with_custodied_inputs(
             wasm_facts_scanner,
             Path(temp_dir.name),
             facts_metrics,
-            evidence_root=output.parent / "wasm-link-evidence",
+            # A rejected scan input must outlive both the link scratch and the
+            # custodied copy of the output (itself a temporary directory): the
+            # run's own scratch root is the durable, run-owned home.
+            evidence_root=proof_scratch_root(_REPO_ROOT) / "wasm-link-evidence",
         )
         output_facts = facts_provider(output_data)
         output_callable_layout = api["_callable_layout_from_wasm_facts"](output_facts)
