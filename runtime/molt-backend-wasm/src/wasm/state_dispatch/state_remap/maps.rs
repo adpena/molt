@@ -48,40 +48,6 @@ pub(in crate::wasm::state_dispatch) fn stateful_entry_prologue_end(ops: &[OpIR])
     );
     index
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{build_state_resume_maps, stateful_entry_prologue_end};
-    use crate::OpIR;
-
-    fn op(kind: &str, value: Option<i64>) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            value,
-            ..OpIR::default()
-        }
-    }
-
-    #[test]
-    fn stateful_entry_prologue_runs_before_initial_and_resumed_dispatch() {
-        let ops = vec![
-            op("exception_stack_enter", None),
-            op("store_var", None),
-            op("state_switch", None),
-            op("jump", Some(9)),
-            op("state_yield", Some(5)),
-            op("state_label", Some(5)),
-            op("ret", None),
-        ];
-        let prologue_end = stateful_entry_prologue_end(&ops);
-        let (state_map, _) = build_state_resume_maps(&ops, prologue_end + 1);
-
-        assert_eq!(prologue_end, 2);
-        assert_eq!(state_map.get(&0), Some(&3));
-        assert_eq!(state_map.get(&5), Some(&5));
-    }
-}
-
 pub(in crate::wasm::state_dispatch) fn build_dense_state_remap_table(
     state_map: &BTreeMap<i64, usize>,
 ) -> Option<Vec<u8>> {
@@ -138,4 +104,37 @@ pub(in crate::wasm::state_dispatch) fn build_sparse_state_remap_entries(
     }
     entries.sort_unstable_by_key(|(state_id, _)| *state_id);
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_state_resume_maps, stateful_entry_prologue_end};
+    use crate::OpIR;
+
+    fn op(kind: &str, value: Option<i64>) -> OpIR {
+        OpIR {
+            kind: kind.to_string(),
+            value,
+            ..OpIR::default()
+        }
+    }
+
+    #[test]
+    fn stateful_entry_prologue_runs_before_initial_and_resumed_dispatch() {
+        let ops = vec![
+            op("exception_stack_enter", None),
+            op("store_var", None),
+            op("state_switch", None),
+            op("jump", Some(9)),
+            op("state_yield", Some(5)),
+            op("state_label", Some(5)),
+            op("ret", None),
+        ];
+        let prologue_end = stateful_entry_prologue_end(&ops);
+        let (state_map, _) = build_state_resume_maps(&ops, prologue_end + 1);
+
+        assert_eq!(prologue_end, 2);
+        assert_eq!(state_map.get(&0), Some(&3));
+        assert_eq!(state_map.get(&5), Some(&5));
+    }
 }
