@@ -59,11 +59,41 @@ def test_missing_symbol_fails_closed(repo: Path) -> None:
 
 def test_pep562_forwarding_module_is_dynamic(repo: Path) -> None:
     _write(
-        repo / "src" / "molt" / "cli" / "__init__.py",
+        repo / "src" / "molt" / "forwarding.py",
         "def __getattr__(name):\n    raise AttributeError(name)\n",
     )
-    _write(repo / "tools" / "consumer.py", "from molt.cli import _forwarded_helper\n")
+    _write(repo / "tools" / "consumer.py", "from molt.forwarding import anything\n")
     assert gate.scan() == []
+
+
+def test_finite_pep562_registry_resolves_exactly(repo: Path) -> None:
+    # A package binds its PEP 562 hooks from a facade module whose literal
+    # registry is the finite authority for lazy names: registered names
+    # resolve, submodules resolve, and any other name is a finding.
+    _write(
+        repo / "src" / "molt" / "pkg" / "_facade.py",
+        "_LAZY_REEXPORTS = {\n"
+        '    "lazy_value": ("impl", "lazy_value"),\n'
+        '    "impl_module": ("impl", None),\n'
+        "}\n\n\n"
+        "def __getattr__(name):\n"
+        "    raise AttributeError(name)\n\n\n"
+        "def __dir__():\n"
+        "    return []\n",
+    )
+    _write(
+        repo / "src" / "molt" / "pkg" / "__init__.py",
+        "from molt.pkg._facade import __dir__, __getattr__\n\nEAGER = 1\n",
+    )
+    _write(repo / "src" / "molt" / "pkg" / "impl.py", "lazy_value = 2\n")
+    consumer = _write(
+        repo / "tools" / "consumer.py",
+        "from molt.pkg import EAGER, lazy_value, impl_module, impl, unknown_name\n",
+    )
+    findings = gate.scan()
+    assert [(f.path, f.line, f.module, f.name) for f in findings] == [
+        (consumer, 1, "molt.pkg", "unknown_name")
+    ]
 
 
 def test_compiled_corpus_directories_are_not_host_imports(repo: Path) -> None:

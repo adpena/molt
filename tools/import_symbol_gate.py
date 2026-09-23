@@ -77,6 +77,43 @@ def _module_path(module: str) -> Path | None:
     return None
 
 
+def _lazy_reexport_names(path: Path) -> set[str] | None:
+    """The keys of a module's finite PEP 562 registry.
+
+    A module that forwards attributes through ``__getattr__`` from a literal
+    ``_LAZY_REEXPORTS`` dict has a finite, statically known set of lazy
+    bindings; anything else forwarded dynamically is unknown (``None``).
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError):
+        return None
+    for node in tree.body:
+        value = None
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_LAZY_REEXPORTS"
+        ):
+            value = node.value
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_LAZY_REEXPORTS"
+            for target in node.targets
+        ):
+            value = node.value
+        if value is None:
+            continue
+        if not isinstance(value, ast.Dict):
+            return None
+        keys: set[str] = set()
+        for key in value.keys:
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                return None
+            keys.add(key.value)
+        return keys
+    return None
+
+
 def _top_level_bindings(path: Path) -> set[str] | None:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -84,11 +121,13 @@ def _top_level_bindings(path: Path) -> set[str] | None:
         return None
     names: set[str] = set()
     star_import = False
+    # Modules whose ``__getattr__`` (PEP 562 forwarding) this module binds:
+    # itself when it defines one, or the module it imports one from.
+    forwarding_sources: list[Path] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == "__getattr__":
-                # PEP 562 module-level attribute forwarding: bindings are dynamic.
-                return None
+                forwarding_sources.append(path)
             names.add(node.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -97,8 +136,16 @@ def _top_level_bindings(path: Path) -> set[str] | None:
             for alias in node.names:
                 if alias.name == "*":
                     star_import = True
-                else:
-                    names.add(alias.asname or alias.name)
+                    continue
+                bound = alias.asname or alias.name
+                names.add(bound)
+                if bound == "__getattr__":
+                    source = (
+                        _module_path(node.module)
+                        if node.module and not node.level
+                        else None
+                    )
+                    forwarding_sources.append(source or path)
         elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
@@ -123,6 +170,12 @@ def _top_level_bindings(path: Path) -> set[str] | None:
                             star_import = True
     if star_import:
         return None
+    for source in forwarding_sources:
+        lazy = _lazy_reexport_names(source)
+        if lazy is None:
+            # Dynamic forwarding without a finite registry: bindings unknown.
+            return None
+        names |= lazy
     return names
 
 
