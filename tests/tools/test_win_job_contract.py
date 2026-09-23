@@ -146,7 +146,7 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
     monkeypatch.setattr(
         win_job,
         "remaining_process_images",
-        lambda _job: ((4242, "C:\tools\lingering.exe"),),
+        lambda _job: ((4242, r"C:\tools\lingering.exe"),),
     )
 
     cleanup = win_job.complete_job_custody(777, timeout=2.5)
@@ -154,7 +154,7 @@ def test_complete_job_custody_terminates_and_waits_for_exact_members(
     assert cleanup is not None
     assert cleanup.completed
     assert cleanup.terminated_remaining_processes
-    assert cleanup.remaining_processes == ((4242, "C:\tools\lingering.exe"),)
+    assert cleanup.remaining_processes == ((4242, r"C:\tools\lingering.exe"),)
     assert cleanup.before.active_processes == 3
     assert cleanup.after.active_processes == 0
     assert calls == [
