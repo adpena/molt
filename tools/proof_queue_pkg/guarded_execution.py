@@ -114,6 +114,85 @@ def prefer_tool_release_prefixes(
     return resolved, prefixes
 
 
+OVERLAY_PROBE_TIMEOUT_S = 180.0
+OVERLAY_PROVISION_TIMEOUT_S = 900.0
+
+
+def _uv_overlay_probe(
+    command: Sequence[str], *, cwd: Path, env: Mapping[str, str], timeout: float
+) -> str | None:
+    """Run a uv overlay resolution; None on success, else uv's reason."""
+    completed = command_identity._run_captured(
+        command, cwd=cwd, env=env, timeout=timeout
+    )
+    if completed.returncode == 0:
+        return None
+    stderr = completed.stderr if isinstance(completed.stderr, str) else ""
+    reason = stderr.strip() or f"exit code {completed.returncode}"
+    return reason[-1200:]
+
+
+def provision_requirement_overlays(
+    envelope: Mapping[str, object],
+    overlay_paths: Sequence[Path],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, object] | None:
+    """Make the lane's hash-locked requirement overlays resolvable offline.
+
+    A uv ``--with-requirements`` proof runs ``--offline`` by admission: the
+    overlay is the immutable, hash-bound authority and no index is consulted
+    at proof time, so the artifacts it names must already be in the uv cache.
+    Provisioning them is the queue's job, not the lane's. The exact uv prefix
+    the lane will run is probed offline; when the cache lacks the overlay's
+    artifacts, the same prefix resolves them once online (hash-bound, so only
+    the pinned artifacts can be admitted) and the offline probe is repeated.
+    The outcome is receipted with each overlay's content identity; an overlay
+    that still cannot resolve offline fails the proof closed with uv's reason.
+    """
+    if not overlay_paths:
+        return None
+    python = envelope.get("python")
+    prefix = python.get("prefix") if isinstance(python, Mapping) else None
+    if not isinstance(prefix, list) or "--offline" not in prefix:
+        raise ValueError("requirement overlay proofs need an offline uv prefix")
+    offline = [str(token) for token in prefix]
+    online = [token for token in offline if token != "--offline"]
+    probe = ["python", "-c", "raise SystemExit(0)"]
+    overlays = [command_identity._file_identity(path) for path in overlay_paths]
+    state = "cached"
+    reason = _uv_overlay_probe(
+        [*offline, *probe], cwd=cwd, env=env, timeout=OVERLAY_PROBE_TIMEOUT_S
+    )
+    if reason is not None:
+        state = "provisioned"
+        failure = _uv_overlay_probe(
+            [*online, *probe], cwd=cwd, env=env, timeout=OVERLAY_PROVISION_TIMEOUT_S
+        )
+        if failure is not None:
+            raise ValueError(
+                "requirement overlay cannot be provisioned into the uv cache: "
+                + ", ".join(str(path) for path in overlay_paths)
+                + f": {failure}"
+            )
+        reason = _uv_overlay_probe(
+            [*offline, *probe], cwd=cwd, env=env, timeout=OVERLAY_PROBE_TIMEOUT_S
+        )
+        if reason is not None:
+            raise ValueError(
+                "requirement overlay is not resolvable offline after provisioning: "
+                + ", ".join(str(path) for path in overlay_paths)
+                + f": {reason}"
+            )
+    return {
+        "schema": "molt.proof-requirement-overlay-provisioning.v1",
+        "state": state,
+        "uv_prefix": offline,
+        "overlays": overlays,
+    }
+
+
 def prefer_canonical_llvm_prefix(
     env: Mapping[str, str], toolchains: object, *, cwd: Path
 ) -> tuple[dict[str, str], str | None]:
@@ -250,6 +329,9 @@ def execute_guarded_request(request_path: Path) -> int:
                     *sorted(canonical_env),
                 ],
             )
+        )
+        overlay_provisioning = provision_requirement_overlays(
+            envelope, overlay_paths, cwd=cwd, env=execution_env
         )
         process_closure = envelope.get("process_closure")
         if not isinstance(process_closure, Mapping):
@@ -698,6 +780,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 "effective_cwd": str(effective_cwd),
                 "prelaunch": pre_source,
                 "overlay_inputs": {"prelaunch": overlay_pre},
+                "overlay_provisioning": overlay_provisioning,
             },
             "child_process_custody": {
                 "policy": child_policy,
