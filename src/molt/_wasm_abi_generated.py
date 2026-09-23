@@ -14978,6 +14978,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (
     "__tls_base",
     "__cpp_exception",
     "__dso_handle",
+    "MoltManaged_Type",
     "PyArg_ParseTuple",
     "PyArg_ParseTupleAndKeywords",
     "PyArg_UnpackTuple",
@@ -15779,6 +15780,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "__tls_base": "wasm_toolchain_link_import",
     "__cpp_exception": "wasm_toolchain_link_import",
     "__dso_handle": "wasm_toolchain_link_import",
+    "MoltManaged_Type": "molt_cpython_abi_link_import",
     "PyArg_ParseTuple": "molt_cpython_abi_link_import",
     "PyArg_ParseTupleAndKeywords": "molt_cpython_abi_link_import",
     "PyArg_UnpackTuple": "molt_cpython_abi_link_import",
@@ -16527,6 +16529,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
+    "MoltManaged_Type": "molt_MoltManaged_Type",
     "PyArg_ParseTuple": "molt_PyArg_ParseTuple",
     "PyArg_ParseTupleAndKeywords": "molt_PyArg_ParseTupleAndKeywords",
     "PyArg_UnpackTuple": "molt_PyArg_UnpackTuple",
@@ -17275,6 +17278,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_SPLIT_EXPORT_NAMES: dict[str, str] = {
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
+    "molt_MoltManaged_Type": "MoltManaged_Type",
     "molt_PyArg_ParseTuple": "PyArg_ParseTuple",
     "molt_PyArg_ParseTupleAndKeywords": "PyArg_ParseTupleAndKeywords",
     "molt_PyArg_UnpackTuple": "PyArg_UnpackTuple",
@@ -18023,6 +18027,7 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME: dict[str, str] = {
 }
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS: dict[str, str] = {
+    "MoltManaged_Type": "data",
     "PyArg_ParseTuple": "function",
     "PyArg_ParseTupleAndKeywords": "function",
     "PyArg_UnpackTuple": "function",

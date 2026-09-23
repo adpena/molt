@@ -5736,7 +5736,7 @@ def test_external_native_artifact_plan_rejects_wasm_import_missing_from_sidecar(
 
     assert plan is None
     assert any(
-        "_nd_image.molt.wasm imports symbols absent from "
+        "_nd_image.molt.wasm requires symbols absent from "
         "object_closure.undefined_symbols: PyLong_FromLong" in error
         for error in errors
     )
@@ -5828,8 +5828,8 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
 
     assert plan is None
     assert any(
-        "object_closure.undefined_symbols names symbols absent from "
-        "_nd_image.molt.wasm imports: PyLong_FromLong" in error
+        "object_closure.undefined_symbols names symbols "
+        "_nd_image.molt.wasm does not require: PyLong_FromLong" in error
         for error in errors
     )
 
@@ -29061,3 +29061,143 @@ def test_backend_daemon_digest_rejects_cross_fingerprint_reuse(tmp_path: Path) -
     ) != cli._backend_daemon_socket_path(
         tmp_path, "release-fast", config_digest=digest_b
     )
+
+
+def _wasm_with_linking_undefined_data(wasm_bytes: bytes, names: Sequence[str]) -> bytes:
+    """Append a linking section declaring ``names`` as undefined data symbols.
+
+    A non-PIC relocatable object references external data through relocations
+    against undefined linking-section symbols, never through imports.
+    """
+
+    def uleb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            out.append(byte | 0x80 if value else byte)
+            if not value:
+                return bytes(out)
+
+    def text(value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return uleb(len(encoded)) + encoded
+
+    entries = b"".join(bytes([1]) + uleb(0x10) + text(name) for name in names)
+    symbol_table = uleb(len(names)) + entries
+    linking = uleb(2) + bytes([8]) + uleb(len(symbol_table)) + symbol_table
+    custom = text("linking") + linking
+    return wasm_bytes + bytes([0]) + uleb(len(custom)) + custom
+
+
+def test_external_native_artifact_plan_reads_data_requirements_from_linking_section(
+    tmp_path: Path,
+) -> None:
+    # The sealed object needs PyLong_FromLong (a function import) and the
+    # PyExc_TypeError object (a data relocation, present only in the linking
+    # section); the closure sidecar names both, and only both.
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_with_linking_undefined_data(
+            _wasm_exporting_i64_unary_symbol(
+                "molt_nativepkg_placeholder", imports=("PyLong_FromLong",)
+            ),
+            ("PyExc_TypeError",),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong"],
+                "undefined_symbols": ["PyExc_TypeError", "PyLong_FromLong"],
+                "runtime_symbols": ["PyExc_TypeError", "PyLong_FromLong"],
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+
+
+def test_external_native_artifact_plan_resolves_numpy_c_api_from_package_sibling(
+    tmp_path: Path,
+) -> None:
+    # A secondary extension needs npy_cabs, which its package sibling defines
+    # (npymath embedded once by the primary extension): package-native at the
+    # final static link, not a missing runtime primitive.
+    external_root = tmp_path / "site"
+    secondary_overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "object_closure": {
+            "required_c_api_symbols": [],
+            "undefined_symbols": ["npy_cabs"],
+        },
+    }
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="linalg._umath_linalg",
+        artifact_name="_umath_linalg.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbol(
+            "molt_nativepkg_linalg", imports=("npy_cabs",)
+        ),
+        manifest_overrides=secondary_overrides,
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.linalg._umath_linalg"},
+    )
+    assert plan is None
+    assert any(
+        "undefined C-API symbol 'npy_cabs' is missing" in error for error in errors
+    )
+
+    _write_external_native_artifact(
+        external_root,
+        package="nativepkg",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_exporting_i64_unary_symbols(
+            ("molt_nativepkg_core", "npy_cabs")
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": [],
+                "undefined_symbols": [],
+                "defined_symbols": ["npy_cabs"],
+            },
+        },
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={
+            "nativepkg.linalg._umath_linalg",
+            "nativepkg._core._multiarray_umath",
+        },
+    )
+    assert errors == []
+    assert plan is not None
