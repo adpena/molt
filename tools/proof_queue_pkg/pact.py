@@ -189,6 +189,13 @@ def _named_lane_spec(
 
 
 def _cmd_named_lane(args: argparse.Namespace) -> int:
+    # A lane with a dedicated aperture (input custody, locked environment
+    # names, provenance pins) runs through that aperture whichever entry point
+    # names it: one lane id, one spec, so a generic submission can never strip
+    # the custody the lane's tool fails closed without.
+    dedicated = _DEDICATED_NAMED_LANE_HANDLERS.get(args.lane_id)
+    if dedicated is not None:
+        return dedicated(args)
     return _run_named_spec(
         args, _named_lane_spec(args.lane_id, args.timeout, state._repo_root(args))
     )
@@ -521,6 +528,12 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
     return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
+
+
+_DEDICATED_NAMED_LANE_HANDLERS = {
+    "pact.witness.acceptance": _cmd_pact_witness_acceptance,
+    "pact.witness.oracle": _cmd_pact_witness_oracle,
+}
 
 
 def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:
