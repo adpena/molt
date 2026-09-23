@@ -128,7 +128,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "fb80b7fc9e8454471c9af4c668ca155a475de63262200fb8a28b5dfe83b5b99e",
+  "authority_sha256": "f523f07d3ca4c0b5c6b089d3c75425aef636871e67a8dd6ab5d44b38da6b1a39",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
