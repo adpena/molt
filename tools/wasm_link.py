@@ -2047,9 +2047,11 @@ def _make_rust_wasm_facts_provider(
     scanner: Path,
     scratch_root: Path,
     metrics: dict[str, float] | None = None,
+    *,
+    evidence_root: Path | None = None,
 ) -> Callable[[bytes], dict[str, object]]:
     return _link_facts.make_rust_wasm_facts_provider(
-        globals(), scanner, scratch_root, metrics
+        globals(), scanner, scratch_root, metrics, evidence_root=evidence_root
     )
 
 
