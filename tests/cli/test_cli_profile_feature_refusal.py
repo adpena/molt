@@ -463,6 +463,10 @@ def test_full_remedy_for_reached_ast_refusal_is_truthful() -> None:
     message = _refusal_for_reached_symbols(
         "molt_ast_parse", profile="micro", target_triple=None
     )
+    # The refusal names the excluded feature and a remedy that really provides it.
+    assert message is not None
+    assert "'stdlib_ast'" in message
+    assert "--stdlib-profile full" in message
 
 
 @pytest.mark.parametrize(
