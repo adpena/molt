@@ -235,6 +235,28 @@ def _parse_sections(data: bytes) -> list[tuple[int, bytes]]:
     return sections
 
 
+def _insert_standard_section(
+    sections: list[tuple[int, bytes]], section_id: int, payload: bytes
+) -> list[tuple[int, bytes]]:
+    """Return ``sections`` with one standard section inserted at its canonical
+    position: before the first standard section that must follow it (custom
+    sections carry no order constraint and stay where they are). Section ids
+    are not ordered numerically (the Tag section, id 13, sits between Memory
+    and Global), so the canonical rank is the only valid insertion key."""
+    rank = _STANDARD_SECTION_ORDER[section_id]
+    for index, (existing_id, _payload) in enumerate(sections):
+        if existing_id == 0:
+            continue
+        existing_rank = _STANDARD_SECTION_ORDER.get(existing_id)
+        if existing_rank is None:
+            raise ValueError(f"unknown standard section id {existing_id}")
+        if existing_rank == rank:
+            raise ValueError(f"duplicate standard section id {section_id}")
+        if existing_rank > rank:
+            return [*sections[:index], (section_id, payload), *sections[index:]]
+    return [*sections, (section_id, payload)]
+
+
 def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
     output = bytearray()
     output.extend(WASM_MAGIC)
@@ -985,14 +1007,7 @@ def _ensure_table_export(data: bytes, export_name: str = "molt_table") -> bytes 
     if not saw_export:
         entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
         export_payload = _write_varuint(1) + entry
-        inserted = False
-        for idx, (section_id, payload) in enumerate(new_sections):
-            if section_id > 7:
-                new_sections.insert(idx, (7, export_payload))
-                inserted = True
-                break
-        if not inserted:
-            new_sections.append((7, export_payload))
+        new_sections = _insert_standard_section(new_sections, 7, export_payload)
         modified = True
     if not modified:
         return None
