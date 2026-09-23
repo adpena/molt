@@ -67,6 +67,9 @@ class ModuleImportState:
     name: StaticMetadataValue
     has_path: bool | None
     proven_pure_calls: frozenset[str] = frozenset()
+    # Module names proven bound to a builtin container (a display of
+    # constants or a string constant): iterating one runs no user code.
+    builtin_iterables: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +371,44 @@ def import_metadata_target_name(target: ast.AST) -> str | None:
     return _globals_subscript_name(target)
 
 
+def _builds_builtin_container(value: ast.AST) -> bool:
+    """Whether ``value`` is a display of constants or a string constant.
+
+    Such an expression builds a builtin container whose ``__iter__`` and
+    ``__next__`` are the interpreter's own; nothing in iterating it can rebind
+    the module's import metadata.
+    """
+    if isinstance(value, ast.Constant):
+        return isinstance(value.value, (str, bytes))
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return all(isinstance(element, ast.Constant) for element in value.elts)
+    return False
+
+
+def _iteration_runs_no_user_code(
+    iterable: ast.AST, states: Sequence[ModuleImportState]
+) -> bool:
+    """Whether iterating ``iterable`` can only run builtin iteration code.
+
+    True for a display of constants or a string constant, and for a name
+    every current state has proven bound to such a container (numpy._core's
+    ``env_added = []`` ... ``for envkey in env_added``). Any other iterable (a
+    call, a display with non-constant elements, an unproven name) may carry a
+    user-defined iteration protocol.
+    """
+    if _builds_builtin_container(iterable):
+        return True
+    if isinstance(iterable, ast.Name):
+        if iterable.id == "__path__":
+            # A package's own search path is the import system's list while
+            # nothing in the module has rebound it (has_path stays True).
+            return bool(states) and all(state.has_path is True for state in states)
+        return bool(states) and all(
+            iterable.id in state.builtin_iterables for state in states
+        )
+    return False
+
+
 def _unknown_module_import_state(state: ModuleImportState) -> ModuleImportState:
     return ModuleImportState(UNKNOWN_VALUE, UNKNOWN_VALUE, UNKNOWN_VALUE, None)
 
@@ -529,6 +570,7 @@ def _state_sort_key(state: ModuleImportState) -> tuple[str, ...]:
         state.name.value or "",
         str(state.has_path),
         "\0".join(sorted(state.proven_pure_calls)),
+        "\0".join(sorted(state.builtin_iterables)),
     )
 
 
@@ -545,6 +587,7 @@ def _merge_states(
 
     path_values = {state.has_path for state in states}
     proven_calls = set.intersection(*(set(state.proven_pure_calls) for state in states))
+    iterables = set.intersection(*(set(state.builtin_iterables) for state in states))
     return (
         ModuleImportState(
             join_value("package"),
@@ -552,6 +595,7 @@ def _merge_states(
             join_value("name"),
             next(iter(path_values)) if len(path_values) == 1 else None,
             frozenset(proven_calls),
+            frozenset(iterables),
         ),
     )
 
@@ -636,6 +680,19 @@ def _analyze_module_import_flow_uncached(
                     update_module_import_state(state, target, value)
                     for state in current
                 )
+            if isinstance(target, ast.Name):
+                bound = _builds_builtin_container(value)
+                current = _merge_states(
+                    replace(
+                        state,
+                        builtin_iterables=(
+                            state.builtin_iterables | {target.id}
+                            if bound
+                            else state.builtin_iterables - {target.id}
+                        ),
+                    )
+                    for state in current
+                )
         all_states.update(current)
         return current
 
@@ -694,9 +751,11 @@ def _analyze_module_import_flow_uncached(
         }
         if not rebound_names:
             return states
+        rebound_roots = {rebound.split(".", 1)[0] for rebound in rebound_names}
         current = _merge_states(
             replace(
                 state,
+                builtin_iterables=state.builtin_iterables - rebound_roots,
                 proven_pure_calls=frozenset(
                     call
                     for call in state.proven_pure_calls
@@ -831,8 +890,8 @@ def _analyze_module_import_flow_uncached(
         for child in expression_evaluation_children(expression):
             current = expression_effects(child, current)
         if isinstance(expression, ast.NamedExpr):
-            current = assign_states(current, (expression.target,), expression.value)
-            return invalidate_proven_call_bindings(current, (expression.target,))
+            current = invalidate_proven_call_bindings(current, (expression.target,))
+            return assign_states(current, (expression.target,), expression.value)
         if (
             isinstance(expression, ast.Call)
             and isinstance(expression.func, ast.Attribute)
@@ -917,6 +976,8 @@ def _analyze_module_import_flow_uncached(
             elif isinstance(statement, ast.Assign):
                 record(statement.value, current)
                 current = expression_effects(statement.value, current)
+                # Rebinding first: the assignment may prove the target anew.
+                current = invalidate_proven_call_bindings(current, statement.targets)
                 if mutate_metadata:
                     current = assign_states(
                         current,
@@ -924,13 +985,15 @@ def _analyze_module_import_flow_uncached(
                         statement.value,
                         direct_metadata_names=direct_metadata_names,
                     )
-                current = invalidate_proven_call_bindings(current, statement.targets)
                 update_mutator_bindings(statement.targets, statement.value)
             elif isinstance(statement, ast.AnnAssign):
                 record(statement.annotation, current)
                 if statement.value is not None:
                     record(statement.value, current)
                     current = expression_effects(statement.value, current)
+                    current = invalidate_proven_call_bindings(
+                        current, (statement.target,)
+                    )
                     if mutate_metadata:
                         current = assign_states(
                             current,
@@ -938,9 +1001,6 @@ def _analyze_module_import_flow_uncached(
                             statement.value,
                             direct_metadata_names=direct_metadata_names,
                         )
-                    current = invalidate_proven_call_bindings(
-                        current, (statement.target,)
-                    )
                     update_mutator_bindings((statement.target,), statement.value)
             elif isinstance(statement, ast.AugAssign):
                 record(statement, current)
@@ -992,8 +1052,15 @@ def _analyze_module_import_flow_uncached(
                     record(statement.iter, current)
                     current = expression_effects(statement.iter, current)
                     # Iteration itself invokes __iter__/__next__ independently
-                    # of evaluating the iterable expression.
-                    current = unknown_states(current)
+                    # of evaluating the iterable expression. A display of
+                    # constants (numpy's ``for ta in ["float96", ...]``) or a
+                    # string constant iterates a builtin whose protocol runs no
+                    # user code, so the module's import metadata survives it.
+                    if not _iteration_runs_no_user_code(statement.iter, current):
+                        current = unknown_states(current)
+                    current = invalidate_proven_call_bindings(
+                        current, (statement.target,)
+                    )
                     if mutate_metadata and target_writes_metadata(
                         statement.target, direct_metadata_names
                     ):
@@ -1172,6 +1239,14 @@ def _analyze_module_import_flow_uncached(
                         )
                     )
                 current = _merge_states(*branches)
+            elif isinstance(statement, (ast.Raise, ast.Return)):
+                # The path ends here: whatever this statement evaluates is
+                # recorded, but no state flows to the statements after it
+                # (a handler that always raises never reaches the code that
+                # follows its try statement).
+                record(statement, current)
+                current = expression_effects(statement, current)
+                current = ()
             else:
                 record(statement, current)
                 current = expression_effects(statement, current)
