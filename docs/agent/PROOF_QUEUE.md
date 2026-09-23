@@ -240,6 +240,17 @@ build root is the producer's own (keyed by package and seal variant under
 prior production's tree is replaced before the build and removed after
 publication, while a caller-supplied `--build-root` must be absent or empty.
 
+A lane whose uv prefix carries `--with-requirements <overlay>` runs `--offline`
+by admission: the hash-locked overlay is the immutable package authority and no
+index is consulted at proof time. The queue provisions it before launch rather
+than letting a cold uv cache fail the lane: the exact prefix is probed offline;
+if the cache lacks the overlay's artifacts the same prefix resolves them once
+online (hash-bound, so only the pinned artifacts can be admitted) and the
+offline probe is repeated. The outcome (`cached` or `provisioned`, with each
+overlay's content identity) is receipted under `overlay_provisioning`; an
+overlay that still cannot resolve offline fails the proof closed with uv's
+reason.
+
 Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
 `config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.
 A toolchain policy that cites that manifest as setup evidence makes the queue

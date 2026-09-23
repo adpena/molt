@@ -14683,3 +14683,118 @@ def test_queue_terminal_transition_frees_contention_key(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def _overlay_envelope(overlay: Path) -> dict[str, object]:
+    return {
+        "python": {
+            "kind": "uv",
+            "payload_executable": "python",
+            "prefix": [
+                "uv",
+                "run",
+                "--project",
+                ".",
+                "--offline",
+                "--with-requirements",
+                str(overlay),
+            ],
+        }
+    }
+
+
+def _overlay_file(tmp_path: Path) -> Path:
+    overlay = tmp_path / "overlay.txt"
+    overlay.write_text(
+        "numpy==2.5.1 --hash=sha256:" + "0" * 64 + "\n", encoding="utf-8"
+    )
+    return overlay
+
+
+def test_requirement_overlay_provisioning_warms_a_cold_uv_cache_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.proof_queue_pkg import guarded_execution
+
+    overlay = _overlay_file(tmp_path)
+    seen: list[list[str]] = []
+
+    def run(command, *, cwd, env, timeout=30.0, text=True):
+        seen.append(list(command))
+        offline = "--offline" in command
+        # Cold cache: the offline probe fails until the online pass has run.
+        cold = offline and not any("--offline" not in c for c in seen[:-1])
+        return subprocess.CompletedProcess(
+            list(command),
+            1 if cold else 0,
+            "",
+            "hint: Packages were unavailable because the network was disabled."
+            if cold
+            else "",
+        )
+
+    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
+    receipt = guarded_execution.provision_requirement_overlays(
+        _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
+    )
+    assert receipt is not None
+    assert receipt["state"] == "provisioned"
+    assert [("--offline" in c) for c in seen] == [True, False, True]
+    assert all(c[-3:] == ["python", "-c", "raise SystemExit(0)"] for c in seen)
+    assert (
+        receipt["overlays"][0]["sha256"]
+        == hashlib.sha256(overlay.read_bytes()).hexdigest()
+    )
+
+
+def test_requirement_overlay_provisioning_is_a_no_op_on_a_warm_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.proof_queue_pkg import guarded_execution
+
+    overlay = _overlay_file(tmp_path)
+    seen: list[list[str]] = []
+
+    def run(command, *, cwd, env, timeout=30.0, text=True):
+        seen.append(list(command))
+        return subprocess.CompletedProcess(list(command), 0, "", "")
+
+    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
+    receipt = guarded_execution.provision_requirement_overlays(
+        _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
+    )
+    assert receipt is not None and receipt["state"] == "cached"
+    assert len(seen) == 1 and "--offline" in seen[0]
+    assert (
+        guarded_execution.provision_requirement_overlays(
+            _overlay_envelope(overlay), [], cwd=tmp_path, env={}
+        )
+        is None
+    )
+
+
+def test_requirement_overlay_provisioning_fails_closed_with_uv_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.proof_queue_pkg import guarded_execution
+
+    overlay = _overlay_file(tmp_path)
+
+    def run(command, *, cwd, env, timeout=30.0, text=True):
+        return subprocess.CompletedProcess(
+            list(command), 1, "", "No solution found when resolving dependencies"
+        )
+
+    monkeypatch.setattr(guarded_execution.command_identity, "_run_captured", run)
+    with pytest.raises(ValueError, match="cannot be provisioned.*No solution found"):
+        guarded_execution.provision_requirement_overlays(
+            _overlay_envelope(overlay), [overlay], cwd=tmp_path, env={}
+        )
+    envelope = _overlay_envelope(overlay)
+    python = envelope["python"]
+    assert isinstance(python, dict)
+    python["prefix"] = ["uv", "run"]
+    with pytest.raises(ValueError, match="offline uv prefix"):
+        guarded_execution.provision_requirement_overlays(
+            envelope, [overlay], cwd=tmp_path, env={}
+        )
