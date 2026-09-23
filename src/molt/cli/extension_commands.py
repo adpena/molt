@@ -1028,23 +1028,28 @@ def extension_build(
                 cmd.extend(
                     _source_extension_deterministic_path_args(
                         compiler_command=unit_cc_cmd,
+                        # Declared nested-first (the order is canonical): the
+                        # object directory lives in the output root, the output
+                        # and build roots may live in the project, a project
+                        # may hold its own interpreter environment, and any of
+                        # them may live in the Molt checkout.
                         roots=(
-                            (project_root, ".molt/source"),
+                            (build_tmp, ".molt/objects"),
+                            (output_root, ".molt/output"),
                             (
                                 loaded_source_plan.build_root
                                 if loaded_source_plan is not None
                                 else None,
                                 ".molt/build",
                             ),
-                            (output_root, ".molt/output"),
-                            (build_tmp, ".molt/objects"),
-                            (molt_root, ".molt/repo"),
                             (wasi_sysroot, ".molt/wasi-sysroot"),
-                            (Path(sys.prefix), ".molt/python"),
                             (
                                 Path(unit_cc_cmd[0]).resolve().parent,
                                 ".molt/toolchain",
                             ),
+                            (Path(sys.prefix), ".molt/python"),
+                            (project_root, ".molt/source"),
+                            (molt_root, ".molt/repo"),
                         ),
                     )
                 )
@@ -1485,25 +1490,29 @@ def extension_build(
             manifest_payload["callable_exports"] = callable_exports
         if not support_files:
             manifest_payload.pop("support_files", None)
+        # Declared nested-first (the order is canonical, see
+        # _ordered_location_roots): objects inside the output root, output and
+        # build roots inside the project, tools inside an interpreter
+        # environment, a project or environment inside the Molt checkout.
         wheel_identity_roots: list[tuple[Path | None, str]] = [
-            (project_root, "@source"),
+            (build_tmp, "@object-root"),
+            (output_root, "@output"),
             (
                 loaded_source_plan.build_root
                 if loaded_source_plan is not None
                 else None,
                 "@build",
             ),
-            (output_root, "@output"),
-            (build_tmp, "@object-root"),
-            (molt_root, "@molt"),
             (wasi_sysroot, "@wasi-sysroot"),
+            *(
+                (Path(command[0]).resolve().parent, "@toolchain")
+                for command in effective_tool_commands.values()
+                if command
+            ),
             (Path(sys.prefix), "@python"),
+            (project_root, "@source"),
+            (molt_root, "@molt"),
         ]
-        for command in effective_tool_commands.values():
-            if command:
-                wheel_identity_roots.append(
-                    (Path(command[0]).resolve().parent, "@toolchain")
-                )
         wheel_manifest_payload = _canonical_extension_manifest_for_wheel(
             manifest_payload,
             location_roots=tuple(wheel_identity_roots),

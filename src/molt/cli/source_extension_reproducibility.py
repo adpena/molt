@@ -142,13 +142,24 @@ def _require_location_neutral(value: Any, *, authority: str) -> None:
 def _ordered_location_roots(
     roots: Sequence[tuple[PurePath | None, str]],
 ) -> tuple[tuple[PurePath, str], ...]:
-    # A producer location may appear in build metadata under more than one
-    # spelling of the same directory: the lexical path the tool was handed
-    # (an installer's version alias junction, a relative segment) and the
-    # resolved real path. Both spellings map to the same token, so the
-    # canonical metadata is neutral however the producer spelled the root.
-    # A virtual root (a PurePosixPath such as the Meson install prefix) names
-    # no directory on this machine and is matched exactly as spelled.
+    """The location roots in their declared, canonical order.
+
+    The declared order is the neutralization order: where two roots contain
+    the same path the earlier one wins, so a caller declares every root that
+    can sit inside another before that container. The order is therefore one
+    function of the roles and never of the host layout: the same roots yield
+    the same path-map arguments and the same canonical metadata on every
+    machine. A layout that nests a root inside an earlier-declared one is
+    refused rather than reordered, because reordering would make the recorded
+    command depend on where this host happened to put its directories.
+
+    A producer location may appear in build metadata under more than one
+    spelling of the same directory: the lexical path the tool was handed (an
+    installer's version alias junction, a relative segment) and the resolved
+    real path. Both spellings map to the same token. A virtual root (a
+    PurePosixPath such as the Meson install prefix) names no directory on this
+    machine and is matched exactly as spelled.
+    """
     deduped: list[tuple[PurePath, str]] = []
     seen: set[str] = set()
     for path, replacement in roots:
@@ -164,20 +175,16 @@ def _ordered_location_roots(
             if key not in seen:
                 seen.add(key)
                 deduped.append((candidate, replacement))
-
-    def ancestor_count(candidate: PurePath) -> int:
-        return sum(
-            candidate != other and candidate.is_relative_to(other)
-            for other, _replacement in deduped
-        )
-
-    return tuple(
-        item
-        for _index, item in sorted(
-            enumerate(deduped),
-            key=lambda indexed: (-ancestor_count(indexed[1][0]), indexed[0]),
-        )
-    )
+    for later, (candidate, replacement) in enumerate(deduped):
+        for earlier, earlier_replacement in deduped[:later]:
+            if candidate != earlier and candidate.is_relative_to(earlier):
+                raise ValueError(
+                    "location roots are not in canonical order: "
+                    f"{replacement} ({candidate}) lies inside the earlier "
+                    f"{earlier_replacement} ({earlier}); declare the nested "
+                    "root before its container"
+                )
+    return tuple(deduped)
 
 
 def _source_extension_deterministic_path_args(

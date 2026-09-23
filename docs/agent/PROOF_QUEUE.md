@@ -234,7 +234,11 @@ default their build and output roots to it (`molt extension produce-set`
 without `--build-root`, `tools/pact_witness_acceptance.py` without
 `--out-dir`), so a named lane's registered argv carries no repository-relative
 output path and a proof's own outputs never register as input mutations of the
-watched checkout; source custody stays broad by construction.
+watched checkout; source custody stays broad by construction. A defaulted
+build root is the producer's own (keyed by package and seal variant under
+`pact_seal_build/`, exclusive while the seal's publication lock is held): a
+prior production's tree is replaced before the build and removed after
+publication, while a caller-supplied `--build-root` must be absent or empty.
 
 Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
 `config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.

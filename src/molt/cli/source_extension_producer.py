@@ -543,7 +543,7 @@ def _run_locked_source_extension_producer(
     module_set: str,
     python_version: str,
     source: str,
-    build_root: str,
+    build_root: str | None,
     target: str,
     abi_tier: str,
     json_output: bool,
@@ -567,8 +567,9 @@ def _run_locked_source_extension_producer(
         python_version,
         "--source",
         source,
-        "--build-root",
-        build_root,
+        # A producer-owned default root is recomputed by the locked producer
+        # (same scratch root, same seal variant); only a caller's root travels.
+        *(() if build_root is None else ("--build-root", build_root)),
         "--target",
         target,
         "--abi-tier",
@@ -1826,21 +1827,18 @@ def _producer_location_roots(
     metadata_payload: Mapping[str, Any],
     config_tools: Sequence[_SourceBuildConfigTool],
 ) -> tuple[tuple[PurePath, str], ...]:
-    roots: list[tuple[PurePath, str]] = [
-        (source_root, "@source"),
-        (build_root, "@build"),
-        (transaction_root, "@transaction"),
-        (_REPO_ROOT, "@molt"),
-        (Path(sys.prefix), "@python-env"),
-        (Path(sys.base_prefix), "@python-base"),
-    ]
-    for scheme, token in (
-        ("include", "@python-include"),
-        ("platinclude", "@python-platform-include"),
-    ):
-        raw_path = sysconfig.get_path(scheme)
-        if raw_path:
-            roots.append((Path(raw_path), token))
+    """The producer's location roots in their canonical, declared order.
+
+    The order is the neutralization order (see ``_ordered_location_roots``):
+    every root that can sit inside another is declared before its container.
+    Molt's ABI include directories and an interpreter's include and scripts
+    directories live inside an environment; an environment, the source, the
+    build and the transaction roots may live inside the Molt checkout; a
+    toolchain's bin directory, its compiler builtins archive and the WASI
+    sysroot live inside the toolchain prefix. The recorded metadata is one
+    function of these roles, never of where this host keeps them.
+    """
+    roots: list[tuple[PurePath, str]] = []
     abi = metadata_payload.get("abi")
     raw_include_dirs = abi.get("include_dirs") if isinstance(abi, Mapping) else None
     if isinstance(raw_include_dirs, list):
@@ -1849,11 +1847,57 @@ def _producer_location_roots(
             for index, raw_path in enumerate(raw_include_dirs)
             if isinstance(raw_path, str) and raw_path
         )
+    for scheme, token in (
+        ("include", "@python-include"),
+        ("platinclude", "@python-platform-include"),
+    ):
+        raw_path = sysconfig.get_path(scheme)
+        if raw_path:
+            roots.append((Path(raw_path), token))
+    config_by_parent: dict[Path, list[str]] = {}
+    for tool in config_tools:
+        config_by_parent.setdefault(tool.path.resolve().parent, []).append(tool.name)
+    if len(config_by_parent) == 1:
+        roots.append((next(iter(config_by_parent)), "@python-scripts"))
+    else:
+        config_roles = sorted(
+            (
+                "-".join(sorted(name.replace("_", "-") for name in names)),
+                parent,
+            )
+            for parent, names in config_by_parent.items()
+        )
+        roots.extend((parent, f"@config-{role}-bin") for role, parent in config_roles)
+    roots.extend(
+        (
+            (Path(sys.prefix), "@python-env"),
+            (Path(sys.base_prefix), "@python-base"),
+            (source_root, "@source"),
+            (build_root, "@build"),
+            (transaction_root, "@transaction"),
+        )
+    )
+    toolchain_prefixes: list[tuple[PurePath, str]] = []
     toolchain = metadata_payload.get("toolchain")
     if isinstance(toolchain, Mapping):
-        wasi_sysroot = toolchain.get("wasi_sysroot")
-        if isinstance(wasi_sysroot, str) and wasi_sysroot:
-            roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+        tools = toolchain.get("tools")
+        if isinstance(tools, Mapping):
+            tool_paths: dict[str, Path] = {}
+            for role, tool in sorted(tools.items()):
+                if not isinstance(tool, Mapping):
+                    continue
+                raw_path = tool.get("path")
+                if isinstance(raw_path, str) and raw_path:
+                    tool_paths[str(role)] = Path(raw_path).expanduser().resolve().parent
+            tool_parents = set(tool_paths.values())
+            if len(tool_parents) == 1:
+                parent = next(iter(tool_parents))
+                roots.append((parent, "@llvm-bin"))
+                toolchain_prefixes.append((parent.parent, "@llvm-prefix"))
+            else:
+                for role, parent in tool_paths.items():
+                    roots.append((parent, f"@llvm-{role}-bin"))
+                    toolchain_prefixes.append((parent.parent, f"@llvm-{role}-prefix"))
         archives = toolchain.get("link_probe_archives")
         compiler_builtins = (
             archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
@@ -1867,36 +1911,11 @@ def _producer_location_roots(
             builtins_path = Path(compiler_builtins_path)
             roots.append((builtins_path, "@compiler-builtins"))
             roots.append((builtins_path.parent, "@rust-target-libdir"))
-        tools = toolchain.get("tools")
-        if isinstance(tools, Mapping):
-            tool_paths: dict[str, Path] = {}
-            for role, tool in sorted(tools.items()):
-                if not isinstance(tool, Mapping):
-                    continue
-                raw_path = tool.get("path")
-                if isinstance(raw_path, str) and raw_path:
-                    tool_paths[str(role)] = Path(raw_path).expanduser().resolve().parent
-            tool_parents = set(tool_paths.values())
-            if len(tool_parents) == 1:
-                parent = next(iter(tool_parents))
-                roots.extend(((parent, "@llvm-bin"), (parent.parent, "@llvm-prefix")))
-            else:
-                for role, parent in tool_paths.items():
-                    roots.extend(
-                        (
-                            (parent, f"@llvm-{role}-bin"),
-                            (parent.parent, f"@llvm-{role}-prefix"),
-                        )
-                    )
-    config_by_parent: dict[Path, list[str]] = {}
-    for tool in config_tools:
-        config_by_parent.setdefault(tool.path.resolve().parent, []).append(tool.name)
-    if len(config_by_parent) == 1:
-        roots.append((next(iter(config_by_parent)), "@python-scripts"))
-    else:
-        for parent, names in sorted(config_by_parent.items()):
-            role = "-".join(sorted(name.replace("_", "-") for name in names))
-            roots.append((parent, f"@config-{role}-bin"))
+        wasi_sysroot = toolchain.get("wasi_sysroot")
+        if isinstance(wasi_sysroot, str) and wasi_sysroot:
+            roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+    roots.extend(toolchain_prefixes)
+    roots.append((_REPO_ROOT, "@molt"))
     roots.append((PurePosixPath(MESON_INSTALL_PREFIX), "@install-prefix"))
     # Deduplicate by real directory but keep the spelling the producer was
     # handed: the canonicalizer neutralizes both the lexical and the resolved
@@ -2193,12 +2212,23 @@ def _retire_stale_incumbent(destination: Path, *, reason: str) -> Path:
     return retired
 
 
-def default_seal_build_root(package: str) -> Path:
-    """The build root of a seal production when none is given.
+def default_seal_build_root(
+    package: str,
+    *,
+    module_set: str,
+    python_version: str,
+    abi_tier: str,
+    target: str,
+) -> Path:
+    """The producer-owned Meson build root of a seal production.
 
     Under the proof queue this is the run's own scratch root; a direct run
     uses the checkout custody root's tmp. Neither is under the watched source
-    checkout, so a production never mutates the inputs it is proven from.
+    checkout, so a production never mutates the inputs it is proven from. The
+    root is keyed by the seal variant it builds, so it is exclusively the
+    producer's while it holds that seal's publication lock: a prior
+    production's tree (kept when that production failed, for diagnosis) is
+    replaced before the build and the tree is removed after publication.
     """
     scratch = os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
     base = (
@@ -2206,7 +2236,8 @@ def default_seal_build_root(package: str) -> Path:
         if scratch
         else checkout_custody(_REPO_ROOT).custody_root / "tmp"
     )
-    return (base / "pact_seal_build" / package).resolve()
+    variant = f"{module_set}-{python_version}-{abi_tier}-{target}"
+    return (base / "pact_seal_build" / package / variant).resolve()
 
 
 def _recover_and_prune_producer_transactions(
@@ -2315,8 +2346,15 @@ def produce_source_extension_set(
     json_output: bool = False,
 ) -> int:
     source_root = Path(source).expanduser().resolve()
+    owned_build_root = build_root is None
     resolved_build_root = (
-        default_seal_build_root(package)
+        default_seal_build_root(
+            package,
+            module_set=module_set,
+            python_version=python_version,
+            abi_tier=abi_tier,
+            target=target,
+        )
         if build_root is None
         else Path(build_root).expanduser().resolve()
     )
@@ -2382,7 +2420,7 @@ def produce_source_extension_set(
                 module_set=module_set,
                 python_version=python_version,
                 source=str(source_root),
-                build_root=str(resolved_build_root),
+                build_root=None if owned_build_root else str(resolved_build_root),
                 target=target,
                 abi_tier=abi_tier,
                 expected_identity_sha256=expected_identity_sha256,
@@ -2490,6 +2528,10 @@ def produce_source_extension_set(
                 f"authority: expected {extension_set.required_config_tools!r}, "
                 f"got {actual_config_tools!r}"
             )
+        if owned_build_root and resolved_build_root.exists():
+            # The producer owns its default build root (this seal's publication
+            # lock is held): a prior production's tree is replaced, never mixed.
+            _remove_file_or_tree(resolved_build_root)
         _require_fresh_build_root(resolved_build_root)
 
         transaction_root = Path(
@@ -2845,5 +2887,8 @@ def produce_source_extension_set(
         if published and transaction_root is not None and transaction_root.exists():
             with contextlib.suppress(OSError):
                 _remove_file_or_tree(transaction_root)
+        if published and owned_build_root and resolved_build_root.exists():
+            with contextlib.suppress(OSError):
+                _remove_file_or_tree(resolved_build_root)
         if producer_lock is not None:
             _release_file_lock(producer_lock)
