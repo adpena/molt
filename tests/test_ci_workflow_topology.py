@@ -718,11 +718,13 @@ def test_pre_commit_hooks_are_read_only_by_default() -> None:
 
     assert "- id: ruff" in pre_commit_text
     assert "repo: https://github.com/astral-sh/ruff-pre-commit" not in pre_commit_text
-    assert "uv run ruff check" in pre_commit_text
+    # The hooks pass staged paths explicitly; only --force-exclude makes ruff
+    # honour pyproject's extend-exclude (generated modules) for explicit paths.
+    assert "uv run ruff check --force-exclude" in pre_commit_text
     assert f"--python {default_python}" not in pre_commit_text
     assert "--fix" not in pre_commit_text
     assert "- id: ruff-format" in pre_commit_text
-    assert "uv run ruff format --check" in pre_commit_text
+    assert "uv run ruff format --check --force-exclude" in pre_commit_text
     assert "uv run ty check src" in pre_commit_text
     assert "tools/secret_guard.py --staged" in pre_commit_text
     assert "- id: end-of-file-fixer" not in pre_commit_text
