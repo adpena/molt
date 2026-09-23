@@ -118,7 +118,8 @@ def test_location_canonicalization_is_path_boundary_aware(tmp_path: Path) -> Non
     )
 
     assert canonical["selected"] == "@build/module.py"
-    assert canonical["sibling"] == (sibling / "module.py").as_posix()
+    # A path outside every root keeps its own spelling: only rooted spans move.
+    assert canonical["sibling"] == str(sibling / "module.py")
 
 
 def test_location_canonicalization_rewrites_quoted_generated_config_path(
@@ -330,3 +331,29 @@ def test_virtual_posix_root_canonicalizes_the_install_prefix() -> None:
     )
     assert canonical == "@install-prefix/Lib/site-packages/numpy/version.py"
     assert _residual_producer_paths([canonical]) == []
+
+
+def test_location_canonicalization_rewrites_only_path_spans(tmp_path: Path) -> None:
+    # Installed Python sources travel through location canonicalization: an
+    # escape sequence is not a path separator, and a path literal keeps the
+    # escapes that follow it (the old whole-text replacement turned every
+    # sealed "\\n" into "/n").
+    backslash = chr(92)
+    build = tmp_path / "build"
+    raw = str(build)
+    escaped = raw.replace(backslash, backslash * 2)
+    source = (
+        "greeting = 'hello" + backslash + "n'\n"
+        "raw_path = r'" + raw + backslash + "sub" + backslash + "f.c'\n"
+        "literal = '" + escaped + backslash * 2 + "sub" + backslash + "n'\n"
+        "json = '\"" + escaped + backslash * 2 + "sub" + backslash * 2 + "\"'\n"
+    )
+
+    canonical = _canonicalize_locations(source, ((build, "@build"),))
+
+    assert canonical == (
+        "greeting = 'hello" + backslash + "n'\n"
+        "raw_path = r'@build/sub/f.c'\n"
+        "literal = '@build/sub" + backslash + "n'\n"
+        "json = '\"@build/sub/\"'\n"
+    )

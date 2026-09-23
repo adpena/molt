@@ -67,9 +67,12 @@ def _filesystem_root_pattern(root: PurePath) -> re.Pattern[str]:
         while components and not components[0]:
             components.pop(0)
         prefix = r"(?<!:)//+"
-    body = "/+".join(re.escape(component) for component in components)
+    # A root may be spelled with forward slashes, single backslashes (raw
+    # text) or escaped backslashes (a JSON or Python string literal); every
+    # spelling names the same directory.
+    body = r"(?:/+|\\+)".join(re.escape(component) for component in components)
     return re.compile(
-        prefix + body + r"""(?:(?P<separator>/+)|(?=$|[=;,\s'"\)\]\}]))""",
+        prefix + body + r"""(?:(?P<separator>/+|\\+)|(?=$|[=;,\s'"\)\]\}]))""",
         re.IGNORECASE if root.drive else 0,
     )
 
@@ -217,21 +220,90 @@ def _canonicalize_location_string(
     )
 
 
+_PATH_SPAN_DELIMITERS = frozenset(" \t\r\n'\"()[]{};,<>|")
+_SEPARATOR_STYLE_SLASH = "/"
+_SEPARATOR_STYLE_RAW = "raw-backslash"
+_SEPARATOR_STYLE_ESCAPED = "escaped-backslash"
+
+
+def _path_span_end(text: str, start: int, separator_style: str) -> tuple[str, int]:
+    """Read the path that continues after a matched root.
+
+    Returns the continuation with its separators spelled ``/`` and the index
+    where the span ends. Separators keep the style the root was spelled in:
+    a forward slash, a raw backslash, or an escaped backslash pair (a JSON or
+    Python string literal), so a lone backslash inside an escaped-style span
+    starts an escape sequence and ends the path rather than joining it.
+    """
+    tail: list[str] = []
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in _PATH_SPAN_DELIMITERS:
+            break
+        if char == "/":
+            tail.append("/")
+            while index < length and text[index] == "/":
+                index += 1
+            continue
+        if char == "\\":
+            run_end = index
+            while run_end < length and text[run_end] == "\\":
+                run_end += 1
+            run = run_end - index
+            if separator_style == _SEPARATOR_STYLE_SLASH or (
+                separator_style == _SEPARATOR_STYLE_ESCAPED and run % 2
+            ):
+                break
+            tail.append("/")
+            index = run_end
+            continue
+        tail.append(char)
+        index += 1
+    return "".join(tail), index
+
+
+def _separator_style(separator: str) -> str:
+    if "/" in separator:
+        return _SEPARATOR_STYLE_SLASH
+    return _SEPARATOR_STYLE_ESCAPED if len(separator) >= 2 else _SEPARATOR_STYLE_RAW
+
+
 def _canonicalize_location_string_ordered(
     value: str, ordered_roots: Sequence[tuple[PurePath, str]]
 ) -> str:
-    canonical = value.replace("\\", "/")
+    """Rewrite every path span rooted at a location root to its token.
+
+    Only the root and the path continuing from it change; the rest of the
+    text (escape sequences in a Python or JSON literal, compile flags) is
+    preserved byte for byte, so canonicalizing an installed Python source
+    never alters its meaning.
+    """
+    canonical = value
     for root, token in ordered_roots:
         pattern = _filesystem_root_pattern(root)
-
-        def replace(match: re.Match[str]) -> str:
+        pieces: list[str] = []
+        position = 0
+        for match in pattern.finditer(canonical):
+            if match.start() < position:
+                continue
             if _inside_url_token(
                 canonical, match.start()
             ) or not _root_occurrence_is_path(canonical, match.start()):
-                return match.group(0)
-            return token + ("/" if match.group("separator") else "")
-
-        canonical = pattern.sub(replace, canonical)
+                continue
+            pieces.append(canonical[position : match.start()])
+            separator = match.group("separator")
+            if not separator:
+                pieces.append(token)
+                position = match.end()
+                continue
+            tail, position = _path_span_end(
+                canonical, match.end(), _separator_style(separator)
+            )
+            pieces.append(f"{token}/{tail}")
+        pieces.append(canonical[position:])
+        canonical = "".join(pieces)
     return canonical
 
 
