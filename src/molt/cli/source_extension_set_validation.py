@@ -28,6 +28,7 @@ from molt.cli.source_extension_reproducibility import _require_location_neutral
 from molt.cli.source_extension_set_identity import (
     SOURCE_EXTENSION_SET_SCHEMA_VERSION,
     _require_expected_source_extension_set_identity,
+    _source_extension_set_identity,
 )
 from molt.cli.source_extension_set_registry import (
     SourceExtensionRegistry,
@@ -871,6 +872,55 @@ class ValidatedSourceExtensionSetSeal:
     @property
     def payload_root(self) -> Path:
         return self.seal.payload_root
+
+
+def inspect_source_extension_set_seal(
+    root: Path,
+    extension_set: SourceExtensionSet,
+    *,
+    variant: SourceExtensionVariant,
+    registry: SourceExtensionRegistry | None = None,
+) -> ValidatedSourceExtensionSetSeal:
+    """Verify the seal, exact package-set schema and bytes; report its identity.
+
+    The structural contract without the registry's identity requirement: the
+    producer uses it to tell a canonical seal that the registry has moved
+    away from (replaced only by an explicit compare-and-swap that names it)
+    from stale debris (retired with its bytes kept as evidence).
+    """
+
+    selected = load_source_extension_registry() if registry is None else registry
+    registered = require_registered_source_extension_set(
+        extension_set,
+        registry=selected,
+    )
+    seal = verify_source_package_seal(root)
+    manifest_path = seal.payload_root / "extension_set_manifest.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SourceExtensionSetValidationError(
+            f"cannot read source-extension set manifest {manifest_path}: {exc}"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise SourceExtensionSetValidationError(
+            f"source-extension set manifest is not an object: {manifest_path}"
+        )
+    validate_source_extension_set_publish_root(
+        publish_root=seal.payload_root,
+        extension_set=registered,
+        variant=variant,
+        set_manifest=payload,
+    )
+    inventory = {entry.relative_path: entry.sha256 for entry in seal.files}
+    identity = _source_extension_set_identity(
+        seal.payload_root, inventory_sha256=inventory
+    )
+    return ValidatedSourceExtensionSetSeal(
+        seal=seal,
+        set_manifest=payload,
+        canonical_identity=identity,
+    )
 
 
 def validate_source_extension_set_seal(
