@@ -103,6 +103,7 @@ def run_wasm_ld_with_custodied_inputs(
             wasm_facts_scanner,
             Path(temp_dir.name),
             facts_metrics,
+            evidence_root=output.parent / "wasm-link-evidence",
         )
         output_facts = facts_provider(output_data)
         output_callable_layout = api["_callable_layout_from_wasm_facts"](output_facts)
