@@ -183,8 +183,15 @@ def publish_runtime_wasm_generation(
             manifest,
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         )
-        generation = read_runtime_wasm_generation(
+        # Self-validation is transaction-local: it proves the members THIS
+        # publication committed against the identities it was given, through
+        # the same validation the reader applies to a manifest payload. It
+        # never re-reads the shared manifest: a concurrent publisher may
+        # already have replaced it (last writer wins by contract), and that
+        # replacement is not a defect of this publication.
+        generation = _validate_generation_payload(
             manifest,
+            payload,
             expected_shared_identity=shared_identity,
             expected_reloc_identity=reloc_identity,
         )
@@ -265,11 +272,33 @@ def read_runtime_wasm_generation(
 ) -> RuntimeWasmGeneration | None:
     """Validate the atomically selected immutable pair against trusted identities."""
 
-    if expected_shared_identity.pair_digest != expected_reloc_identity.pair_digest:
-        return None
     try:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    return _validate_generation_payload(
+        manifest,
+        payload,
+        expected_shared_identity=expected_shared_identity,
+        expected_reloc_identity=expected_reloc_identity,
+    )
+
+
+def _validate_generation_payload(
+    manifest: Path,
+    payload: object,
+    *,
+    expected_shared_identity: RuntimeBuildIdentity,
+    expected_reloc_identity: RuntimeBuildIdentity,
+) -> RuntimeWasmGeneration | None:
+    """Validate one manifest payload's immutable pair against trusted identities.
+
+    ``manifest`` is the path the member records resolve against; the payload is
+    validated exactly as given, whether it was just read from that manifest or
+    just written to it by the publishing transaction.
+    """
+
+    if expected_shared_identity.pair_digest != expected_reloc_identity.pair_digest:
         return None
     if (
         not isinstance(payload, dict)
