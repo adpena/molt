@@ -14,6 +14,7 @@ import pytest
 
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
+from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from tests.cli.process_guard import run_cli_test_process
@@ -404,6 +405,52 @@ def test_release_reloc_member_preserves_section_index_metadata(
         "final_artifact": False,
         "preserve_debug": True,
     }
+
+
+def test_shared_member_publication_renames_the_full_split_abi_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(b"\0asm\x01\0\0\0")
+    seen: dict[str, object] = {}
+
+    def fake_transform(path: Path, **kwargs: object) -> object:
+        assert path == runtime
+        seen.update(kwargs)
+        return SimpleNamespace(
+            input_bytes=8,
+            output_bytes=8,
+            scanned_bytes=8,
+            written_bytes=0,
+            max_buffer_bytes=8,
+            changed=False,
+        )
+
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD, "transform_wasm_publication_file", fake_transform
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_BUILD,
+        "_record_runtime_wasm_build_phase",
+        lambda *_args, **_kwargs: None,
+    )
+    member = SimpleNamespace(
+        runtime_wasm=runtime,
+        reloc=False,
+        json_output=True,
+        spec=SimpleNamespace(cargo_profile="release-output"),
+        # The app's required subset must not shape the shared export names.
+        required_exports=frozenset({"PyLong_FromLong"}),
+        kind="shared",
+    )
+
+    assert RUNTIME_WASM_BUILD._RuntimeWasmMemberBuild.finalize_publication(member)
+    rename_map = seen["rename_map"]
+    assert rename_map == wasm_split_runtime_export_rename_map(None)
+    assert rename_map["PyLong_FromLong"] == "molt_PyLong_FromLong"
+    assert rename_map["PyType_Ready"] == "molt_PyType_Ready"
+    assert seen["final_artifact"] is True
+    assert seen["preserve_debug"] is False
 
 
 def test_shared_runtime_publication_still_uses_final_artifact_strip(
