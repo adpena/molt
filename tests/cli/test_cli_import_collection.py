@@ -20110,12 +20110,17 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
     }
 
+    first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        **common_kwargs, phase_starts=first_phase_starts
     )
     assert first_err is None
     assert first is not None
     assert len(link_calls) == 1
+    # The link is its own diagnostics phase, started after the cache write and
+    # closed by the publish marker, so its wall time is never charged to
+    # backend_cache_write.
+    assert 0.0 < first_phase_starts["wasm_link"] <= first_phase_starts["wasm_publish"]
     first_cmd = link_calls[0]
     assert first_cmd[:4] == [
         sys.executable,
@@ -20142,12 +20147,15 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "--preserve-debug-sections",
     ]
 
+    second_phase_starts: dict[str, float] = {}
     second, second_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        **common_kwargs, phase_starts=second_phase_starts
     )
     assert second_err is None
     assert second is not None
     assert len(link_calls) == 1
+    # A skipped relink runs no link, so it claims no link phase.
+    assert "wasm_link" not in second_phase_starts
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(

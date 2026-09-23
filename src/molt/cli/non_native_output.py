@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Collection, TypedDict
@@ -688,6 +689,7 @@ def _prepare_non_native_build_result(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan | None = None,
     artifacts_root: Path | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    phase_starts: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
@@ -1042,6 +1044,12 @@ def _prepare_non_native_build_result(
                     )
                     output_arg_index = link_run_cmd.index("--output") + 1
                     link_run_cmd[output_arg_index] = str(linked_tmp_output)
+                # The link is its own top-level build phase: without this
+                # marker its whole wall time (wasm-ld, post-link passes,
+                # wasm-opt, split-runtime processing) was charged to the last
+                # phase started before it, backend_cache_write.
+                if phase_starts is not None and "wasm_link" not in phase_starts:
+                    phase_starts["wasm_link"] = time.perf_counter()
                 try:
                     link_process = _run_completed_command(
                         link_run_cmd,
@@ -1095,6 +1103,8 @@ def _prepare_non_native_build_result(
                                 )
                         with contextlib.suppress(OSError):
                             link_timings_path.unlink()
+                if phase_starts is not None and "wasm_publish" not in phase_starts:
+                    phase_starts["wasm_publish"] = time.perf_counter()
                 link_fingerprint_warning = _write_link_fingerprint_if_needed(
                     link_skipped=False,
                     link_fingerprint=link_fingerprint,
