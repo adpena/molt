@@ -66,6 +66,7 @@ from molt.cli.source_extension_link_requirements import (
 )
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.wasm_artifact import read_wasm_function_exports, read_wasm_imports
+from molt.wasm_linking_symbols import read_wasm_linking_symbols
 
 
 def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:
@@ -839,27 +840,43 @@ def _molt_runtime_namespace_symbol(symbol: str) -> bool:
     return symbol.startswith(("molt_", "__molt"))
 
 
-def _wasm_relocatable_import_symbols(
+_WASM_IMPORT_KIND_MEMORY = 2
+
+
+def _wasm_relocatable_external_symbols(
     *,
     package: str,
     artifact_path: Path,
     artifact_kind: str,
     context: str,
 ) -> tuple[tuple[str, ...] | None, list[str]]:
+    """The symbols a relocatable WASM object needs from outside itself.
+
+    A relocatable (``wasm-ld -r``) object imports the functions, globals and
+    tables it references, but a reference to external data (``PyExc_*``, a
+    type object, ``errno``) is a relocation against an undefined symbol in
+    the object's linking section, never an import; the linear memory import
+    is the object's own memory, not a symbol. The union of both views is the
+    object's external requirement, the same set ``llvm-nm`` reports as
+    undefined for the objects it was linked from.
+    """
     if artifact_kind != "wasm_relocatable_object":
         return None, []
     try:
-        return (
-            tuple(
-                sorted(
-                    {
-                        wasm_import.name
-                        for wasm_import in read_wasm_imports(artifact_path)
-                    }
-                )
-            ),
-            [],
+        symbols = {
+            wasm_import.name
+            for wasm_import in read_wasm_imports(artifact_path)
+            if wasm_import.kind != _WASM_IMPORT_KIND_MEMORY
+        }
+        table = read_wasm_linking_symbols(artifact_path)
+        symbols.update(table.undefined_functions)
+        symbols.update(table.undefined_data)
+        symbols.update(
+            symbol.name
+            for symbol in table.symbols
+            if symbol.name and not symbol.is_defined
         )
+        return tuple(sorted(symbols)), []
     except (OSError, UnicodeDecodeError, ValueError, IndexError) as exc:
         return None, [
             f"{package}: cannot validate {context} for {artifact_path.name}: {exc}"
@@ -954,7 +971,16 @@ def _object_closure_c_api_symbol_board(
     manifest: Mapping[str, Any],
     *,
     external_symbols: Collection[str] | None = None,
+    package_defined_symbols: Collection[str] = (),
 ) -> tuple[tuple[_ExternalNativeCapiSymbol, ...] | None, list[str]]:
+    """Classify the closure's C-API symbols.
+
+    ``package_defined_symbols`` are the symbols the package's OTHER sealed
+    artifacts define. A statically linked package becomes one WASM module, so
+    a secondary extension (numpy's ``_umath_linalg``) resolves the package's
+    own C-API (``npy_*`` from npymath, embedded once by ``_multiarray_umath``)
+    at the final link: such a symbol is package-native, not missing.
+    """
     required_symbols = set(_manifest_object_closure_required_c_api_symbols(manifest))
     undefined_symbols = set(
         external_symbols
@@ -1008,6 +1034,13 @@ def _object_closure_c_api_symbol_board(
             and symbol not in undefined_symbols
         ):
             status = "source_compile_only"
+        if (
+            status in {"missing", "source_compile_only"}
+            and primitive_class == "numpy_c_api"
+            and symbol in undefined_symbols
+            and symbol in package_defined_symbols
+        ):
+            status = "package_native"
         sources: set[str] = set()
         if symbol in required_symbols:
             sources.add("required_c_api_symbols")
@@ -1046,42 +1079,42 @@ def _validate_wasm_relocatable_undefined_symbol_custody(
     artifact_path: Path,
     manifest: Mapping[str, Any],
     artifact_kind: str,
-    binary_import_symbols: Sequence[str] | None = None,
+    binary_external_symbols: Sequence[str] | None = None,
 ) -> list[str]:
     if artifact_kind != "wasm_relocatable_object":
         return []
-    if binary_import_symbols is None:
-        binary_import_symbols, import_errors = _wasm_relocatable_import_symbols(
+    if binary_external_symbols is None:
+        binary_external_symbols, symbol_errors = _wasm_relocatable_external_symbols(
             package=package,
             artifact_path=artifact_path,
             artifact_kind=artifact_kind,
             context="object_closure.undefined_symbols",
         )
-        if import_errors:
-            return import_errors
-    assert binary_import_symbols is not None
+        if symbol_errors:
+            return symbol_errors
+    assert binary_external_symbols is not None
     sidecar_symbols = _manifest_object_closure_undefined_symbols(manifest)
     external_sidecar_symbols = _manifest_object_closure_external_undefined_symbols(
         manifest
     )
     missing_from_sidecar = [
-        symbol for symbol in binary_import_symbols if symbol not in sidecar_symbols
+        symbol for symbol in binary_external_symbols if symbol not in sidecar_symbols
     ]
     stale_in_sidecar = [
         symbol
         for symbol in external_sidecar_symbols
-        if symbol not in binary_import_symbols
+        if symbol not in binary_external_symbols
     ]
     errors: list[str] = []
     if missing_from_sidecar:
         errors.append(
-            f"{package}: {artifact_path.name} imports symbols absent from "
+            f"{package}: {artifact_path.name} requires symbols absent from "
             "object_closure.undefined_symbols: " + ", ".join(missing_from_sidecar)
         )
     if stale_in_sidecar:
         errors.append(
-            f"{package}: object_closure.undefined_symbols names symbols absent "
-            f"from {artifact_path.name} imports: " + ", ".join(stale_in_sidecar)
+            f"{package}: object_closure.undefined_symbols names symbols "
+            f"{artifact_path.name} does not require: " + ", ".join(stale_in_sidecar)
         )
     return errors
 
@@ -1187,6 +1220,38 @@ def _validate_static_archive_object_closure(
     return errors
 
 
+def _package_sibling_defined_symbols(
+    *,
+    external_module_roots: Sequence[Path],
+    admitted_packages: Collection[str],
+) -> dict[str, dict[Path, frozenset[str]]]:
+    """Per package, each native artifact's closure-defined symbols.
+
+    The index lets an artifact's validation see what its package siblings
+    define (package-native resolution at the final static link) without
+    ordering the artifacts.
+    """
+    index: dict[str, dict[Path, frozenset[str]]] = {}
+    for package in sorted(admitted_packages):
+        for root in external_module_roots:
+            package_dir = _external_package_dir(root.resolve(), package)
+            if package_dir is None:
+                continue
+            for artifact_path in _iter_external_package_native_artifacts(package_dir):
+                _manifest_path, manifest, manifest_errors = (
+                    _load_external_artifact_manifest(
+                        artifact_path=artifact_path,
+                        package_dir=package_dir,
+                    )
+                )
+                if manifest_errors or manifest is None:
+                    continue
+                index.setdefault(package, {})[artifact_path.resolve()] = frozenset(
+                    _manifest_object_closure_defined_symbols(manifest)
+                )
+    return index
+
+
 def _validate_external_package_native_artifact(
     *,
     package: str,
@@ -1195,6 +1260,7 @@ def _validate_external_package_native_artifact(
     manifest_path: Path,
     manifest: Mapping[str, Any],
     expected_target_triple: str,
+    package_defined_symbols: Collection[str] = (),
 ) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
     errors: list[str] = []
     module_name = _external_extension_module_name(
@@ -1326,21 +1392,22 @@ def _validate_external_package_native_artifact(
             support_file_sha256=manifest_support_file_sha256,
         )
     )
-    wasm_import_symbols, wasm_import_errors = _wasm_relocatable_import_symbols(
+    wasm_external_symbols, wasm_symbol_errors = _wasm_relocatable_external_symbols(
         package=package,
         artifact_path=artifact_path,
         artifact_kind=artifact_kind,
-        context="native artifact WASM imports",
+        context="native artifact external symbols",
     )
-    errors.extend(wasm_import_errors)
+    errors.extend(wasm_symbol_errors)
     abi_symbols, abi_symbol_errors = _object_closure_abi_symbol_board(
         manifest,
-        external_symbols=wasm_import_symbols,
+        external_symbols=wasm_external_symbols,
     )
     errors.extend(f"{package}: {error}" for error in abi_symbol_errors)
     c_api_symbols, c_api_symbol_errors = _object_closure_c_api_symbol_board(
         manifest,
-        external_symbols=wasm_import_symbols,
+        external_symbols=wasm_external_symbols,
+        package_defined_symbols=package_defined_symbols,
     )
     errors.extend(f"{package}: {error}" for error in c_api_symbol_errors)
     errors.extend(
@@ -1349,7 +1416,7 @@ def _validate_external_package_native_artifact(
             artifact_path=artifact_path,
             manifest=manifest,
             artifact_kind=artifact_kind,
-            binary_import_symbols=wasm_import_symbols,
+            binary_external_symbols=wasm_external_symbols,
         )
     )
     errors.extend(
@@ -1705,6 +1772,10 @@ def _resolve_external_package_native_artifact_plan(
     }
     mismatched_capsule_providers: dict[str, set[str]] = {}
     requested_target_triple = _external_artifact_requested_target_triple(target)
+    sibling_index = _package_sibling_defined_symbols(
+        external_module_roots=external_module_roots,
+        admitted_packages=admitted_packages,
+    )
     for package in sorted(admitted_packages):
         for root in external_module_roots:
             package_dir = _external_package_dir(root.resolve(), package)
@@ -1773,6 +1844,15 @@ def _resolve_external_package_native_artifact_plan(
                     manifest_path=manifest_path,
                     manifest=manifest,
                     expected_target_triple=requested_target_triple,
+                    package_defined_symbols=frozenset().union(
+                        *(
+                            defined
+                            for sibling, defined in sibling_index.get(
+                                package, {}
+                            ).items()
+                            if sibling != artifact_path.resolve()
+                        )
+                    ),
                 )
                 errors.extend(artifact_errors)
                 if artifact is None:
