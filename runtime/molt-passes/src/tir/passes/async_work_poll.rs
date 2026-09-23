@@ -156,6 +156,88 @@ fn assert_synthetic_edge_needs_no_payload(func: &TirFunction, label: i64, site: 
     );
 }
 
+/// Where every SSA value is defined: a parameter or block argument (its
+/// block, no op index) or an op result (its block and op index).
+fn value_definitions(func: &TirFunction) -> HashMap<ValueId, (BlockId, Option<usize>)> {
+    let mut definitions = HashMap::new();
+    for (&block_id, block) in &func.blocks {
+        for arg in &block.args {
+            definitions.insert(arg.id, (block_id, None));
+        }
+        for (index, op) in block.ops.iter().enumerate() {
+            for &result in &op.results {
+                definitions.insert(result, (block_id, Some(index)));
+            }
+        }
+    }
+    definitions
+}
+
+/// Whether `value` is defined before the insertion point `(block, op_index)`.
+fn value_available_at(
+    value: ValueId,
+    block: BlockId,
+    op_index: usize,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+    definitions: &HashMap<ValueId, (BlockId, Option<usize>)>,
+) -> bool {
+    match definitions.get(&value) {
+        None => false,
+        Some((definer, None)) => {
+            *definer == block || crate::tir::dominators::dominates(*definer, block, idoms)
+        }
+        Some((definer, Some(index))) => {
+            if *definer == block {
+                *index < op_index
+            } else {
+                crate::tir::dominators::dominates(*definer, block, idoms)
+            }
+        }
+    }
+}
+
+/// The SSA-authored exception edge to `label` whose payload is available at
+/// the insertion point, cloned for a synthesized poll.
+///
+/// A handler's block arguments are the values the frontend captured at the
+/// region boundary, so every `CheckException` to that handler carries the
+/// same payload and any of them whose operands are defined before the site
+/// is a faithful template. The frontend coalesces consecutive checks, so a
+/// call that needs its own poll may sit before a later call or may-raise op
+/// that the surviving check services; the payload is still the region's.
+fn payload_edge_template(
+    func: &TirFunction,
+    label: i64,
+    block: BlockId,
+    op_index: usize,
+    idoms: &HashMap<BlockId, Option<BlockId>>,
+    definitions: &HashMap<ValueId, (BlockId, Option<usize>)>,
+) -> Option<TirOp> {
+    let mut candidates: Vec<&TirOp> =
+        func.blocks
+            .values()
+            .flat_map(|candidate_block| candidate_block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::CheckException
+                    && check_label(op) == Some(label)
+                    && !op.operands.is_empty()
+                    && op.operands.iter().all(|&value| {
+                        value_available_at(value, block, op_index, idoms, definitions)
+                    })
+            })
+            .collect();
+    candidates.sort_by_key(|op| op.operands.clone());
+    let template = candidates.first()?;
+    Some(TirOp {
+        dialect: template.dialect,
+        opcode: OpCode::CheckException,
+        operands: template.operands.clone(),
+        results: vec![],
+        attrs: template.attrs.clone(),
+        source_span: None,
+    })
+}
+
 /// Resolve a reachable insertion boundary. The outer `Option` is reachability;
 /// the inner `Option` is depth zero versus a labeled lexical handler.
 fn reachable_lexical_handler(
@@ -223,6 +305,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let loops = am.get::<LoopForest>(func).clone();
     let region_facts = am.get::<ExceptionRegions>(func).clone();
     let predecessors = crate::tir::dominators::build_pred_map(func);
+    let idoms = crate::tir::dominators::compute_idoms(func, &predecessors);
+    let definitions = value_definitions(func);
     let const_ints = const_int_values(func);
     let value_types = func.value_types.clone();
     let mut latches = BTreeSet::new();
@@ -337,12 +421,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 continue;
             }
             let mut check = if let Some(label) = target {
-                assert_synthetic_edge_needs_no_payload(
-                    func,
-                    label,
-                    &format!("post-call {block_id} op#{index}"),
-                );
-                check_exception(label)
+                match payload_edge_template(func, label, block_id, index + 1, &idoms, &definitions)
+                {
+                    Some(template) => template,
+                    None => {
+                        assert_synthetic_edge_needs_no_payload(
+                            func,
+                            label,
+                            &format!("post-call {block_id} op#{index}"),
+                        );
+                        check_exception(label)
+                    }
+                }
             } else {
                 function_exit_check
                     .clone()
@@ -367,8 +457,18 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
 
         let mut check = if let Some(label) = target {
-            assert_synthetic_edge_needs_no_payload(func, label, &format!("loop latch {latch}"));
-            check_exception(label)
+            let latch_end = func.blocks[&latch].ops.len();
+            match payload_edge_template(func, label, latch, latch_end, &idoms, &definitions) {
+                Some(template) => template,
+                None => {
+                    assert_synthetic_edge_needs_no_payload(
+                        func,
+                        label,
+                        &format!("loop latch {latch}"),
+                    );
+                    check_exception(label)
+                }
+            }
         } else {
             function_exit_check
                 .clone()
@@ -469,6 +569,110 @@ mod tests {
             2,
             "the canonical wire spelling must preserve both generated sites"
         );
+    }
+
+    #[test]
+    fn a_call_before_a_coalesced_payload_check_gets_a_cloned_payload_edge() {
+        // Frontend shape: `try: a(); b()` with the check coalesced after b().
+        // a() needs its own poll; its edge to the payload-bearing handler is
+        // the SSA-authored one, cloned with the region's captured payload.
+        let mut func = TirFunction::new(
+            "coalesced_payload".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 70);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let mut start = labeled_op(OpCode::TryStart, 70);
+        start.operands.push(ValueId(0));
+        let mut first = op(OpCode::Call);
+        first.operands.push(ValueId(0));
+        let mut second = op(OpCode::Call);
+        second.operands.push(ValueId(0));
+        let mut authored = check(70);
+        authored.operands.push(ValueId(0));
+        func.blocks.get_mut(&entry).unwrap().ops = vec![start, first, second, authored];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func, &mut AnalysisManager::new());
+        assert_eq!(stats.ops_added, 1, "the first call needs its own poll");
+        assert_eq!(
+            stats.attrs_changed, 1,
+            "the second call reuses the authored edge"
+        );
+        let ops = &func.blocks[&entry].ops;
+        assert_eq!(ops.len(), 5);
+        let cloned = &ops[2];
+        assert_eq!(cloned.opcode, OpCode::CheckException);
+        assert!(cloned.is_async_work_poll());
+        assert_eq!(
+            cloned.operands,
+            [ValueId(0)],
+            "payload is the region's captured value"
+        );
+        assert_eq!(check_label(cloned), Some(70));
+        assert!(ops[4].is_async_work_poll());
+        crate::tir::verify::verify_function(&func)
+            .expect("cloned payload edge must remain well formed");
+        let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
+        assert_eq!(
+            simple
+                .iter()
+                .filter(|op| op.kind == "async_work_poll")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "preserve the SSA-authored payload-bearing CheckException")]
+    fn a_payload_edge_whose_payload_is_not_yet_defined_is_not_synthesized() {
+        // The only authored edge carries a value produced after the site; no
+        // faithful template exists, so the pass still fails closed.
+        let mut func = TirFunction::new("late_payload".into(), vec![], TirType::None);
+        let entry = func.entry_block;
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 70);
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let late = func.fresh_value();
+        func.value_types.insert(late, TirType::DynBox);
+        let first = op(OpCode::Call);
+        let mut second = op(OpCode::Call);
+        second.results.push(late);
+        let mut authored = check(70);
+        authored.operands.push(late);
+        func.blocks.get_mut(&entry).unwrap().ops =
+            vec![labeled_op(OpCode::TryStart, 70), first, second, authored];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        run(&mut func, &mut AnalysisManager::new());
     }
 
     #[test]
