@@ -259,3 +259,30 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
         {"PATH": ambient}, ["python", "uv"], cwd=tmp_path
     )
     assert prefixes == {} and untouched["PATH"] == ambient
+
+
+def test_named_lane_entry_routes_dedicated_lanes_through_their_aperture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `named-lane pact.witness.acceptance` must produce the same run as the
+    # dedicated `pact-witness-acceptance` command: the acceptance tool fails
+    # closed without the provenance pins that spec carries.
+    seen: list[str] = []
+
+    def acceptance(args: argparse.Namespace) -> int:
+        seen.append(args.lane_id)
+        return 0
+
+    monkeypatch.setitem(
+        pact._DEDICATED_NAMED_LANE_HANDLERS, "pact.witness.acceptance", acceptance
+    )
+    args = argparse.Namespace(lane_id="pact.witness.acceptance", timeout=None)
+    assert pact._cmd_named_lane(args) == 0
+    assert seen == ["pact.witness.acceptance"]
+    assert set(pact._DEDICATED_NAMED_LANE_HANDLERS) == {
+        "pact.witness.acceptance",
+        "pact.witness.oracle",
+    }
+    spec = pact._pact_witness_acceptance_spec()
+    assert spec["logical_id"] == "pact-witness-acceptance"
+    assert "MOLT_WITNESS_EXPECTED_GIT_HEAD" in spec["env_overrides"]
