@@ -27,7 +27,6 @@ authority_inputs = [
   "config/reproducibility_corpus.toml",
   "config/scientific_stack_versions.toml",
   "config/source_extension_package_sets.toml",
-  "config/proof_requirements/pact_witness.txt",
   "config/llvm_toolchain_releases.toml",
   "formal/lean/lean-toolchain",
   "rust-toolchain.toml",
@@ -2908,20 +2907,22 @@ gates = [
 [[named_lane]]
 id = "pact.witness.acceptance"
 description = "Pact Kernel A witness acceptance: build field_solve.py, execute the artifact, write candidate_outputs.npz, run check_parity.py."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_acceptance.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node"]
 resource_family = "wasm-browser"
 contention_key = "wasm:pact-witness"
 timeout_seconds = 1800
+derived_environments = ["uv-source-build-environment"]
 
 [[named_lane]]
 id = "pact.witness.oracle"
 description = "Pact Kernel A fixture/reference regeneration and check_parity.py oracle proof."
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "--offline", "--with-requirements", "config/proof_requirements/pact_witness.txt", "python", "tools/pact_witness_oracle.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_oracle.py"]
 toolchains = ["python", "uv"]
 resource_family = "wasm-browser"
 contention_key = "wasm:pact-witness"
 timeout_seconds = 900
+derived_environments = ["uv-source-build-environment"]
 
 [[named_lane]]
 id = "pact.seal.numpy.produce"

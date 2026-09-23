@@ -14,7 +14,10 @@ import sys
 import time
 from typing import Any
 
+from molt.cli.source_build_environment import relaunch_in_locked_environment
+from molt.dx import proof_scratch_root
 from molt.scientific_stack_versions import (
+    PACT_WITNESS_DEPENDENCY_GROUP,
     attest_numpy_witness_seal,
     resolve_scientific_stack,
     scientific_witness_seal_root,
@@ -45,12 +48,8 @@ KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
 
 
 def _owned_tmp_root() -> Path:
-    """Where this acceptance run may write: the proof queue's per-run scratch
-    root when it provides one, else the checkout's tmp for direct runs."""
-    scratch = os.environ.get("MOLT_PROOF_SCRATCH_ROOT", "").strip()
-    if scratch:
-        return Path(scratch).expanduser().resolve()
-    return (ROOT / "tmp").resolve()
+    """Where this acceptance run may write (never the watched checkout)."""
+    return proof_scratch_root(ROOT)
 
 
 def _default_out_dir() -> Path:
@@ -873,6 +872,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Owned tmp artifact root for build/, run/, and candidate_outputs.npz.",
     )
     args = parser.parse_args(argv)
+
+    # The reference oracle's numerics run inside the attested locked
+    # environment of the pact-witness dependency group (numpy/scipy pinned to
+    # the selected stack); everything below executes there.
+    relaunched = relaunch_in_locked_environment(
+        ROOT,
+        PACT_WITNESS_DEPENDENCY_GROUP,
+        [str(Path(__file__).resolve()), *(sys.argv[1:] if argv is None else argv)],
+    )
+    if relaunched is not None:
+        return relaunched
 
     _assert_build_provenance()
     _attest_effective_numpy_seal()

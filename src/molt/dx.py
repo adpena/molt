@@ -2065,3 +2065,18 @@ class DxProject:
                 split.extend(split_item(item, f"{name}[{idx}]"))
             return split
         raise DxConfigError(f"Missing [tool.molt.dx.commands].{name}")
+
+
+def proof_scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Where a tool run from ``repo_root`` may write its outputs.
+
+    The proof queue gives every guarded run one fresh scratch root in
+    ``MOLT_PROOF_SCRATCH_ROOT``; a direct run uses the checkout custody root's
+    ``tmp``. Neither is under the source checkout, so a tool's outputs never
+    register as mutations of the inputs it is proven from.
+    """
+    source = os.environ if env is None else env
+    scratch = str(source.get(PROOF_SCRATCH_ROOT_ENV, "")).strip()
+    if scratch:
+        return Path(scratch).expanduser().resolve()
+    return (checkout_custody(repo_root, env).custody_root / "tmp").resolve()

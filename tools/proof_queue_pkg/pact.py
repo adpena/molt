@@ -114,8 +114,6 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
 
 _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
 
-_PACT_WITNESS_REQUIREMENTS = "config/proof_requirements/pact_witness.txt"
-
 _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
     "MOLT_MODULE_ROOTS",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
@@ -231,7 +229,8 @@ def _pact_witness_acceptance_spec(
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
             "config/scientific_stack_versions.toml",
-            _PACT_WITNESS_REQUIREMENTS,
+            "pyproject.toml",
+            "uv.lock",
             *wasm_loader_asset_scope_paths(),
         ],
         "env_overrides": env_overrides,
@@ -263,7 +262,8 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> dict[str, object]
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "tools/pact_witness_oracle.py",
-            _PACT_WITNESS_REQUIREMENTS,
+            "pyproject.toml",
+            "uv.lock",
         ],
         "env_overrides": {},
         "timeout": timeout if timeout is not None else 900.0,

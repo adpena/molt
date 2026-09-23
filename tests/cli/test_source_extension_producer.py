@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt.cli import entrypoint_dispatch, entrypoint_parser
+from molt import dx
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_extension_producer as producer
 from molt.cli import source_extension_set_validation as set_validation
@@ -1496,7 +1497,9 @@ def test_locked_console_tool_path_is_cross_platform_and_ordered(
     expected: str,
 ) -> None:
     assert (
-        producer._locked_console_tool_path(scripts, inherited, separator=separator)
+        build_environment.locked_console_tool_path(
+            scripts, inherited, separator=separator
+        )
         == expected
     )
 
@@ -1504,7 +1507,9 @@ def test_locked_console_tool_path_is_cross_platform_and_ordered(
 def test_locked_console_tool_path_handles_absent_host_path(tmp_path: Path) -> None:
     scripts = tmp_path / "environment/bin"
     scripts.mkdir(parents=True)
-    assert producer._locked_console_tool_path(scripts, None) == str(scripts.resolve())
+    assert build_environment.locked_console_tool_path(scripts, None) == str(
+        scripts.resolve()
+    )
 
 
 def test_producer_never_accepts_ambient_environment_or_locks_before_reexec(
@@ -2492,7 +2497,7 @@ def test_stale_incumbent_is_retired_beside_the_canonical_location(
 def test_default_seal_build_root_is_owned_per_seal_variant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(producer.PROOF_SCRATCH_ROOT_ENV, str(tmp_path / "scratch"))
+    monkeypatch.setenv(dx.PROOF_SCRATCH_ROOT_ENV, str(tmp_path / "scratch"))
     root = producer.default_seal_build_root(
         "numpy",
         module_set="pact-witness",
