@@ -122,10 +122,17 @@ def make_rust_wasm_facts_provider(
                 metrics["wasm_facts_scan_calls"] += 1.0
                 metrics["wasm_facts_input_bytes"] += float(len(data))
                 metrics["wasm_facts_response_chars"] += float(len(process.stdout))
-            facts = _decode_wasm_facts_response(
-                process,
-                operation=f"Rust WASM facts scan for {artifact.name}",
-            )
+            try:
+                facts = _decode_wasm_facts_response(
+                    process,
+                    operation=f"Rust WASM facts scan for {artifact.name}",
+                )
+            except ValueError as exc:
+                # The rejected bytes are the evidence: keep them beside the
+                # scan's own name so the failure can be reproduced offline.
+                evidence = artifact.with_name(artifact.name + ".rejected")
+                artifact.replace(evidence)
+                raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
             try:
                 if (
                     api["_file_stat_identity"](resolved_scanner.stat())
