@@ -42,18 +42,46 @@ def test_path_map_order_uses_semantic_authority_not_host_path_length(
     assert _flag_replacements(second) == [".molt/source", ".molt/build"]
 
 
-def test_path_map_order_places_descendant_before_declared_ancestor(
+def test_path_map_refuses_ancestor_declared_before_descendant(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "output"
     objects = output / "objects"
 
-    arguments = _source_extension_deterministic_path_args(
-        compiler_command=("clang",),
-        roots=((output, ".molt/output"), (objects, ".molt/objects")),
-    )
+    with pytest.raises(ValueError, match=r"not in canonical order.*\.molt/objects"):
+        _source_extension_deterministic_path_args(
+            compiler_command=("clang",),
+            roots=((output, ".molt/output"), (objects, ".molt/objects")),
+        )
 
-    assert _flag_replacements(arguments) == [".molt/objects", ".molt/output"]
+
+def test_path_map_order_is_the_declared_order_on_every_host_layout(
+    tmp_path: Path,
+) -> None:
+    # The same roles must record the same path-map arguments whether or not
+    # this host keeps the build root inside the checkout: the order is the
+    # declared order, never a function of which roots happen to nest.
+    repo = tmp_path / "checkout"
+    source = tmp_path / "package-source"
+    nested_build = repo / "tmp" / "build"
+    external_build = tmp_path / "scratch" / "build"
+    roles = (".molt/objects", ".molt/build", ".molt/source", ".molt/repo")
+
+    def arguments(build: Path) -> list[str]:
+        return _flag_replacements(
+            _source_extension_deterministic_path_args(
+                compiler_command=("clang",),
+                roots=(
+                    (build / "objects", ".molt/objects"),
+                    (build, ".molt/build"),
+                    (source, ".molt/source"),
+                    (repo, ".molt/repo"),
+                ),
+            )
+        )
+
+    assert arguments(nested_build) == list(roles)
+    assert arguments(external_build) == list(roles)
 
 
 def test_equal_root_alias_uses_first_declared_semantic_role(tmp_path: Path) -> None:

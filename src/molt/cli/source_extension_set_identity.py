@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from molt.cli.source_extension_manifest_codec import (
@@ -67,6 +67,18 @@ def _extension_content_projection(manifest: Mapping[str, Any]) -> dict[str, Any]
             manifest, item, "symbol_command"
         )
         projected["dependencies"] = _manifest_dependencies(manifest, item)
+        if projected["dependencies"] != sorted(
+            projected["dependencies"],
+            key=lambda dependency: (
+                dependency["sha256"],
+                PurePosixPath(dependency["path"]).name,
+                dependency["path"],
+            ),
+        ):
+            raise ValueError(
+                f"extension identity object[{index}] dependencies are not in "
+                "canonical content order"
+            )
         for field in _OBJECT_SEQUENCE_FIELDS:
             if field in item or f"{field}_ref" in item:
                 projected[field] = _manifest_sequence(manifest, item, field)

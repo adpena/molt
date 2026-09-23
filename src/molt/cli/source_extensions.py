@@ -1798,6 +1798,9 @@ def _source_extension_object_fact(
                 sha256=_sha256_file(dependency),
             )
         )
+    # Content order, never host-path order: the closure's identity must be the
+    # same wherever this host keeps the source, build and toolchain trees.
+    dependencies.sort(key=lambda fact: (fact.sha256, fact.path.name))
     return (
         _SourceExtensionObjectFact(
             source_path=source_path.resolve(),
