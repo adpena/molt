@@ -105,7 +105,7 @@ from molt.cli.source_extension_set_registry import (
 from molt.cli.source_extension_set_validation import (
     _source_extension_tool_role_contract,
     validate_source_extension_set_publish_root,
-    validate_source_extension_set_seal,
+    inspect_source_extension_set_seal,
 )
 from molt.cli.source_extension_publication import (
     SourceExtensionPublicationCustody,
@@ -2133,27 +2133,67 @@ def _materialize_generated_inputs(
     return tuple(sorted(missing))
 
 
-def _incumbent_seal_defect(
+def _incumbent_seal_state(
     destination: Path,
     *,
     extension_set: SourceExtensionSet,
     variant: SourceExtensionVariant,
     registry: SourceExtensionRegistry | None,
-) -> str | None:
-    """Why the directory at the canonical location is not a canonical seal, or None.
+) -> tuple[str | None, str | None]:
+    """``(defect, identity)`` of the directory at the canonical location.
 
-    A canonical seal passes the complete current contract the consumers apply:
-    bit-exact seal verification, the exact package-set schema (including the
-    build-environment custody schema), and the registered identity. Anything
-    else at that location (an earlier schema, a partial write, foreign content)
-    is stale debris that compare-and-swap cannot name.
+    A canonical seal passes the structural contract the consumers apply:
+    bit-exact seal verification and the exact package-set schema (including
+    the build-environment custody schema); its canonical identity is then a
+    fact of its bytes. Anything else at that location (an earlier schema, a
+    partial write, foreign content) is stale debris that compare-and-swap
+    cannot name, reported as the defect.
     """
     try:
-        validate_source_extension_set_seal(
+        inspected = inspect_source_extension_set_seal(
             destination, extension_set, variant=variant, registry=registry
         )
     except (SourcePackageSealError, ValueError, OSError) as exc:
-        return f"{type(exc).__name__}: {exc}"
+        return f"{type(exc).__name__}: {exc}", None
+    return None, str(inspected.canonical_identity["canonical_sha256"])
+
+
+def _incumbent_replacement_error(
+    *,
+    destination: Path,
+    incumbent_identity: str,
+    registered_identity: str,
+    expected_identity_sha256: str | None,
+    expected_candidate_identity_sha256: str | None,
+) -> str | None:
+    """Why a canonical incumbent may not be replaced by this invocation.
+
+    Replacing a canonical seal is always an explicit compare-and-swap: the
+    invocation names the incumbent it expects to replace and the candidate
+    identity the registry now expects, so publication proves the complete
+    transition before any mutation. The registry moving away from the
+    incumbent does not retire it.
+    """
+    if expected_identity_sha256 is None or expected_candidate_identity_sha256 is None:
+        if incumbent_identity == registered_identity:
+            return (
+                "canonical extension seal already exists; replacement requires "
+                "both --expected-identity-sha256 and "
+                "--expected-candidate-identity-sha256 so publication proves "
+                "the complete compare-and-swap transition before mutation"
+            )
+        return (
+            f"canonical extension seal at {destination} has identity "
+            f"{incumbent_identity} while the registry expects "
+            f"{registered_identity}; replace it explicitly with "
+            f"--expected-identity-sha256 {incumbent_identity} "
+            f"--expected-candidate-identity-sha256 {registered_identity}"
+        )
+    if expected_identity_sha256 != incumbent_identity:
+        return (
+            "--expected-identity-sha256 does not name the canonical incumbent: "
+            f"expected {expected_identity_sha256}, incumbent is {incumbent_identity}"
+        )
     return None
 
 
@@ -2422,15 +2462,15 @@ def produce_source_extension_set(
         _recover_and_prune_producer_transactions(
             destination, publication_custody=publication_custody
         )
-        incumbent_defect = (
-            _incumbent_seal_defect(
+        incumbent_defect, incumbent_identity_sha256 = (
+            _incumbent_seal_state(
                 destination,
                 extension_set=extension_set,
                 variant=variant,
                 registry=registry,
             )
             if destination.exists()
-            else None
+            else (None, None)
         )
         if incumbent_defect is not None:
             if expected_identity_sha256 is not None:
@@ -2442,16 +2482,17 @@ def produce_source_extension_set(
                 destination, reason=incumbent_defect
             )
         if destination.exists():
-            if (
-                expected_identity_sha256 is None
-                or expected_candidate_identity_sha256 is None
-            ):
-                raise SourceExtensionProducerError(
-                    "canonical extension seal already exists; replacement requires "
-                    "both --expected-identity-sha256 and "
-                    "--expected-candidate-identity-sha256 so publication proves "
-                    "the complete compare-and-swap transition before mutation"
-                )
+            assert incumbent_identity_sha256 is not None
+            replacement_error = _incumbent_replacement_error(
+                destination=destination,
+                incumbent_identity=incumbent_identity_sha256,
+                registered_identity=registered_candidate_identity_sha256,
+                expected_identity_sha256=expected_identity_sha256,
+                expected_candidate_identity_sha256=(expected_candidate_identity_sha256),
+            )
+            if replacement_error is not None:
+                raise SourceExtensionProducerError(replacement_error)
+            assert expected_identity_sha256 is not None
             incumbent_seal = verify_source_package_seal(destination)
             incumbent_identity = _require_expected_source_extension_set_identity(
                 incumbent_seal.payload_root,
