@@ -36,7 +36,7 @@ meson_setup_args = [
 cpython = "3.12"
 abi_tier = "cpython-abi"
 target_triple = "wasm32-wasip1"
-expected_identity_sha256 = "09cd6d4123ff649f41842a10a91b5c62f310e4af8e1f0518982cbe531fa3dc4d"
+expected_identity_sha256 = "8cd2e854b1911b490e629aadd637487e0a08520836c0b8a270345644db94887d"
 
 [[packages.sets.extensions]]
 module = "numpy._core._multiarray_umath"
@@ -92,7 +92,7 @@ meson_setup_args = [
 cpython = "3.12"
 abi_tier = "cpython-abi"
 target_triple = "wasm32-wasip1"
-expected_identity_sha256 = "0defffe29b8793eb3483a6bd7081abdd8d213bc41a3a184e433534b2dea3ae93"
+expected_identity_sha256 = "a4fdc334f80539169d8ab0986759611a350de5fa3eea0ae447efddae11ababc7"
 
 [[packages.sets.extensions]]
 module = "scipy.ndimage._nd_image"
