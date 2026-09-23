@@ -327,10 +327,7 @@ def _named_spec_env_overrides(
     return env_overrides
 
 
-def _uv_active_python_command(
-    *args: str,
-    with_requirements: str | None = None,
-) -> list[str]:
+def _uv_active_python_command(*args: str) -> list[str]:
     command = [
         "uv",
         "run",
@@ -342,8 +339,6 @@ def _uv_active_python_command(
         "--no-sync",
         "--no-config",
     ]
-    if with_requirements is not None:
-        command.extend(["--offline", "--with-requirements", with_requirements])
     command.append("python")
     command.extend(args)
     return command

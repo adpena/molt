@@ -200,7 +200,6 @@ _UV_OPTION_SEMANTICS: dict[str, tuple[str, str]] = {
     "--project": ("value", "project-directory"),
     "--python": ("value", "python-selection"),
     "-p": ("value", "python-selection"),
-    "--with-requirements": ("value", "requirements-file"),
     # These can inject source, configuration, or network state that is not
     # represented by the admitted project snapshot.  Reject them structurally
     # rather than growing exception-shaped partial custody.
@@ -642,54 +641,14 @@ def _path_inside(root: Path, raw: str, *, base: Path, label: str) -> Path:
     return resolved
 
 
-_HASHED_REQUIREMENT = re.compile(
-    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?=="
-    r"(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?"
-    r"(?:\.post[0-9]+)?(?:\.dev[0-9]+)?"
-    r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?"
-    r"(?:\s+--hash=sha256:[0-9a-fA-F]{64})+$"
-)
-
-
-def _validate_requirements_file(path: Path) -> None:
-    """Admit only offline, hash-locked package requirements."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"requirements custody cannot read {path}") from exc
-    logical: list[str] = []
-    pending = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        pending = f"{pending} {line}".strip()
-        if pending.endswith("\\"):
-            pending = pending[:-1].rstrip()
-            continue
-        logical.append(pending)
-        pending = ""
-    if pending:
-        raise ValueError(f"requirements file {path} ends in a continuation")
-    if not logical:
-        raise ValueError(f"requirements file {path} has no locked requirements")
-    for line in logical:
-        if not _HASHED_REQUIREMENT.fullmatch(line):
-            raise ValueError(
-                "proof requirements must be exact name==version entries with one "
-                f"or more sha256 hashes; rejected {line!r} in {path}"
-            )
-
-
-def _execution_source_paths(
-    envelope: Mapping[str, object], *, cwd: Path
-) -> tuple[Path, list[Path]]:
+def _execution_source_paths(envelope: Mapping[str, object], *, cwd: Path) -> Path:
+    """The effective source directory a uv envelope executes in (inside cwd)."""
     python = envelope.get("python")
     if not isinstance(python, Mapping) or python.get("kind") not in {
         "uv",
         "uv-console-script",
     }:
-        return cwd.resolve(strict=True), []
+        return cwd.resolve(strict=True)
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
         raise ValueError("uv command envelope has no prefix")
@@ -711,17 +670,7 @@ def _execution_source_paths(
                 "uv --project must equal the effective command cwd so one source "
                 "snapshot owns every consumed project input"
             )
-    overlay_inputs = [
-        _path_inside(cwd, raw, base=effective, label="uv --with-requirements")
-        for raw in _uv_option_values(prefix, "--with-requirements")
-    ]
-    if overlay_inputs and "--offline" not in prefix:
-        raise ValueError("uv --with-requirements proofs require --offline custody")
-    for overlay in overlay_inputs:
-        if not overlay.is_file():
-            raise ValueError(f"requirements authority is not a file: {overlay}")
-        _validate_requirements_file(overlay)
-    return effective, overlay_inputs
+    return effective
 
 
 def _require_external_execution_outputs(
@@ -743,22 +692,21 @@ def _require_external_execution_outputs(
 
 def _canonical_uv_prefix(
     envelope: Mapping[str, object], *, cwd: Path
-) -> tuple[list[str], Path, list[Path]]:
+) -> tuple[list[str], Path]:
     python = envelope.get("python")
     if not isinstance(python, Mapping) or python.get("kind") not in {
         "uv",
         "uv-console-script",
     }:
-        return [], cwd.resolve(strict=True), []
+        return [], cwd.resolve(strict=True)
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
         raise ValueError("uv command envelope has no prefix")
     exact_prefix = [str(value) for value in prefix]
-    effective, overlays = _execution_source_paths(envelope, cwd=cwd)
+    effective = _execution_source_paths(envelope, cwd=cwd)
     replacements = {
         "--directory": [effective] if _uv_option_values(prefix, "--directory") else [],
         "--project": [effective] if _uv_option_values(prefix, "--project") else [],
-        "--with-requirements": overlays,
     }
     for option, paths in replacements.items():
         indices = _uv_option_value_indices(prefix, option)
@@ -769,7 +717,7 @@ def _canonical_uv_prefix(
             exact_prefix[index] = (
                 f"{option}={path}" if original.startswith(f"{option}=") else str(path)
             )
-    return exact_prefix, effective, overlays
+    return exact_prefix, effective
 
 
 def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:

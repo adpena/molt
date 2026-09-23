@@ -19,7 +19,6 @@
     "config/reproducibility_corpus.toml",
     "config/scientific_stack_versions.toml",
     "config/source_extension_package_sets.toml",
-    "config/proof_requirements/pact_witness.txt",
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
@@ -129,7 +128,7 @@
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py"
   ],
-  "authority_sha256": "6b7a7bb39de6c9c81d4a0325c5c3f5fad6dbcbfd8b16d9b550500e009027d390",
+  "authority_sha256": "fb80b7fc9e8454471c9af4c668ca155a475de63262200fb8a28b5dfe83b5b99e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",

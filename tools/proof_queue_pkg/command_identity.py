@@ -150,9 +150,7 @@ def _exact_command(
         "uv",
         "uv-console-script",
     }:
-        prefix, _effective, _overlays = admission._canonical_uv_prefix(
-            envelope, cwd=cwd
-        )
+        prefix, _effective = admission._canonical_uv_prefix(envelope, cwd=cwd)
         raw_prefix = python.get("prefix")
         assert isinstance(raw_prefix, list)
         argv = [*prefix, *argv[len(raw_prefix) :]]

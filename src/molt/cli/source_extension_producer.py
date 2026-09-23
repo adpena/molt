@@ -23,7 +23,7 @@ from packaging.version import InvalidVersion
 
 from molt.cli import extension_commands
 from molt.cli import source_extension_cython as _source_extension_cython
-from molt.dx import PROOF_SCRATCH_ROOT_ENV, checkout_custody
+from molt.dx import proof_scratch_root
 from molt.cli.atomic_io import (
     _atomic_copy_file,
     _atomic_write_bytes,
@@ -55,6 +55,7 @@ from molt.cli.source_build_environment import (
     active_source_build_requirements,
     canonical_source_marker_environment,
     _installed_distributions,
+    locked_environment_launch_env,
     LockedSourceBuildEnvironment,
     provision_source_build_environment,
     source_build_environment,
@@ -586,15 +587,8 @@ def _run_locked_source_extension_producer(
                 expected_candidate_identity_sha256,
             )
         )
-    child_environment = os.environ.copy()
-    current_src = str((_REPO_ROOT / "src").resolve())
-    child_environment["PYTHONPATH"] = current_src
-    child_environment.pop("PYTHONHOME", None)
-    child_environment["PYTHONNOUSERSITE"] = "1"
-    child_environment["VIRTUAL_ENV"] = str(environment.root)
-    child_environment["PATH"] = _locked_console_tool_path(
-        environment.python_executable.parent.resolve(),
-        child_environment.get("PATH"),
+    child_environment = locked_environment_launch_env(
+        environment, os.environ, repo_root=_REPO_ROOT
     )
     return process_guard.run_completed_command(
         argv,
@@ -602,22 +596,6 @@ def _run_locked_source_extension_producer(
         env=child_environment,
         check=False,
     ).returncode
-
-
-def _locked_console_tool_path(
-    scripts_root: str | Path,
-    inherited_path: str | None,
-    *,
-    separator: str = os.pathsep,
-) -> str:
-    """Put attested environment scripts ahead of intentional host tools.
-
-    The inherited suffix retains system and cross-toolchain discovery (LLVM,
-    Git, Rust, and platform SDKs). Only the locked environment's console-script
-    directory gains precedence; ambient Python environments gain no authority.
-    """
-    locked = str(scripts_root)
-    return separator.join((locked, inherited_path)) if inherited_path else locked
 
 
 def _source_build_config_tools(
@@ -2230,14 +2208,10 @@ def default_seal_build_root(
     production's tree (kept when that production failed, for diagnosis) is
     replaced before the build and the tree is removed after publication.
     """
-    scratch = os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
-    base = (
-        Path(scratch).expanduser()
-        if scratch
-        else checkout_custody(_REPO_ROOT).custody_root / "tmp"
-    )
     variant = f"{module_set}-{python_version}-{abi_tier}-{target}"
-    return (base / "pact_seal_build" / package / variant).resolve()
+    return (
+        proof_scratch_root(_REPO_ROOT) / "pact_seal_build" / package / variant
+    ).resolve()
 
 
 def _recover_and_prune_producer_transactions(

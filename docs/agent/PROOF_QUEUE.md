@@ -200,9 +200,12 @@ rejected before execution. The same recursive parser recognizes
 relative and absolute `tools/guarded_exec.py` plus
 `python -m tools.guarded_exec`, binds the delegated executable and every
 requested toolchain, and rejects a second delegation layer. `uv --with`,
-`--with-editable`, environment files, indexes, and find-links are forbidden;
-the Pact witness lanes use the checked-in, offline, hash-locked
-`config/proof_requirements/pact_witness.txt` authority instead.
+`--with-editable`, `--with-requirements`, environment files, indexes, and
+find-links are forbidden: a `uv run` overlay is an ephemeral environment
+whose interpreter has no stable image to admit. The Pact witness lanes
+instead relaunch into the attested locked environment of the `pact-witness`
+dependency group (a `uv-source-build-environment` derived environment, pins
+bound to `config/scientific_stack_versions.toml`).
 
 Every envelope also carries one constructional process closure. Exact plan and
 guarded typed-delegation commands may launch only their declared, content-bound
@@ -239,17 +242,6 @@ build root is the producer's own (keyed by package and seal variant under
 `pact_seal_build/`, exclusive while the seal's publication lock is held): a
 prior production's tree is replaced before the build and removed after
 publication, while a caller-supplied `--build-root` must be absent or empty.
-
-A lane whose uv prefix carries `--with-requirements <overlay>` runs `--offline`
-by admission: the hash-locked overlay is the immutable package authority and no
-index is consulted at proof time. The queue provisions it before launch rather
-than letting a cold uv cache fail the lane: the exact prefix is probed offline;
-if the cache lacks the overlay's artifacts the same prefix resolves them once
-online (hash-bound, so only the pinned artifacts can be admitted) and the
-offline probe is repeated. The outcome (`cached` or `provisioned`, with each
-overlay's content identity) is receipted under `overlay_provisioning`; an
-overlay that still cannot resolve offline fails the proof closed with uv's
-reason.
 
 Tools that ship as prebuilt release binaries (`wasm-tools`) are pinned in
 `config/tool_releases.toml` by tag-addressed asset URL, byte size and SHA-256.
@@ -291,13 +283,12 @@ RECORD hashes and sizes are verified, and editable source bytes, commit, and
 tree are bound. The deterministic sorted
 file worklist uses the proof-plan worker bound and one streaming read per unique
 resolved identity; prelaunch and postcompletion both read the complete byte
-inventory. `--with-requirements` files must contain only exact, SHA-256-locked
-requirements, run offline, resolve inside the admitted source root, and remain
-byte-identical. `--directory` and `--project` may not escape that root.
+inventory. `--directory` and `--project` may not escape the admitted source
+root.
 
 Endpoint hashes are backed by live kernel mutation custody during the command.
 Windows `ReadDirectoryChangesW` and Linux inotify watch the admitted Git files,
-overlays, runtime roots, package trees, executables, and configuration bytes;
+runtime roots, package trees, executables, and configuration bytes;
 queue overflow or watcher failure is fail-closed. A write, replacement, rename,
 delete, or metadata change remains an event even if the command restores the
 original bytes before completion, so mutate-execute-restore cannot produce
@@ -315,7 +306,7 @@ passed value, never plaintext values; queued logs and notebooks expose override
 names only.
 
 Receipts bind run ID, a fresh execution nonce, row and effective cwd, Git root,
-commit and tree, cleanliness/status digest, overlay inputs, environment,
+commit and tree, cleanliness/status digest, environment,
 toolchains, and executable identities at both prelaunch and postcompletion.
 Stdout and stderr are streamed to byte-hashed artifacts and recognized test
 commands must publish structured result counts. A passed row additionally
@@ -323,7 +314,7 @@ binds the exact terminal memory-guard receipt and clean cleanup outcome into one
 terminal-evidence digest; sampler enforcement must be complete with no transient
 gaps. Stale execution JSON or guard summaries, substituted receipts, child
 signals, or missing counts cannot become evidence. A dirty, unavailable, or changed source;
-changed overlay, editable distribution, toolchain, environment, or executable
+changed editable distribution, toolchain, environment, or executable
 is terminal `non-evidence`, even if the command returned zero. Terminal
 projections read the persisted context and never re-probe an ambient host.
 Command argv, cwd, and envelope are immutable admission columns enforced by the
