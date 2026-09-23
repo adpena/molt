@@ -444,6 +444,26 @@ def provision_tool(
     return discovered
 
 
+def pinned_executable(name: str, repo_root: Path) -> Path | None:
+    """The provisioned pinned release of ``name`` under this checkout's custody.
+
+    Tools that run WASM artifacts (Node) or inspect them prefer the release the
+    manifest pins over whatever the host PATH carries, so a direct run and a
+    proof-queue lane execute the same binary. ``None`` when the manifest pins
+    no such tool or the release is not provisioned (and attested) under the
+    checkout custody toolchain root; callers then fall back to their host
+    discovery, never to a partially matching install.
+    """
+    from molt.dx import checkout_custody
+
+    release = load_tool_releases(repo_root).get(name)
+    if release is None:
+        return None
+    toolchain_root = checkout_custody(repo_root).toolchain_root
+    discovery = discover_tool(release, toolchain_root)
+    return None if discovery is None else discovery.executable
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 

@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import TextIO
 
 TOOLS_ROOT = Path(__file__).resolve().parent
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 if str(SRC_ROOT) not in sys.path:
@@ -26,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.tool_releases import pinned_executable  # noqa: E402
 from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -219,6 +221,15 @@ def resolve_node_binary() -> str:
             )
         _NODE_BIN_CACHE = requested
         return requested
+
+    # The pinned release under custody is the tree's Node when it is
+    # provisioned; the host's binaries are only the fallback.
+    pinned = pinned_executable("node", REPO_ROOT)
+    if pinned is not None:
+        major = _node_major_for_binary(str(pinned))
+        if major is not None and major >= _MIN_NODE_MAJOR:
+            _NODE_BIN_CACHE = str(pinned)
+            return _NODE_BIN_CACHE
 
     candidates: list[str] = []
     seen: set[str] = set()

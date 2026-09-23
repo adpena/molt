@@ -261,3 +261,35 @@ def test_download_that_disagrees_with_the_pin_is_refused(
         )
     assert not (downloads / archive.name).exists()
     assert tool_releases.discover_tool(release, tmp_path / "target-root") is None
+
+
+def test_pinned_executable_prefers_a_provisioned_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No release pinned for the name, or pinned but not provisioned: None, so
+    # callers fall back to host discovery rather than a partial install.
+    assert tool_releases.pinned_executable("no-such-tool", ROOT) is None
+    release = tool_releases.tool_release("node", ROOT)
+    toolchain_root = tmp_path / "toolchains"
+
+    class Custody:
+        pass
+
+    Custody.toolchain_root = toolchain_root
+    monkeypatch.setattr("molt.dx.checkout_custody", lambda root, *a, **k: Custody)
+    assert tool_releases.pinned_executable("node", ROOT) is None
+
+    prefix = tool_releases.tool_prefix(toolchain_root, release)
+    executable = tool_releases.tool_executable(prefix, release)
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"pinned")
+    asset = tool_releases.host_asset(release)
+    (prefix / tool_releases.TOOL_ATTESTATION_FILENAME).write_text(
+        json.dumps(
+            tool_releases._attestation_payload(
+                release, asset, hashlib.sha256(b"pinned").hexdigest()
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert tool_releases.pinned_executable("node", ROOT) == executable
