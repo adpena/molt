@@ -2696,9 +2696,17 @@ def test_real_minimal_cargo_link_has_single_prearm_selection_and_compact_custody
     )
     assert not provision_target.is_relative_to(repo)
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
-    [derived_root] = context["derived_root_custody"]["policy_roots"]
-    assert Path(derived_root["path"]) != persistent_target
-    assert Path(derived_root["path"]).parent.name == record["execution_nonce"]
+    derived_roots = {
+        row["role"]: Path(row["path"])
+        for row in context["derived_root_custody"]["policy_roots"]
+    }
+    assert set(derived_roots) == {
+        supervisor_custody.BUILD_OUTPUT_ROLE,
+        supervisor_custody.SCRATCH_OUTPUT_ROLE,
+    }
+    assert derived_roots[supervisor_custody.BUILD_OUTPUT_ROLE] != persistent_target
+    for derived_root in derived_roots.values():
+        assert derived_root.parent.name == record["execution_nonce"]
     rustc = context["toolchains"]["rustc"]
     assert rustc["link_selection"]["selection_probe_count"] == 1
     assert any(row["role"] == "rust-linker" for row in rustc["process_images"])
@@ -12507,7 +12515,9 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         "python",
         "tools/pact_witness_acceptance.py",
     ]
-    assert "tmp/pact_witness_acceptance_queue" in command
+    # Outputs go to the run's scratch root; the registered argv names no
+    # repository-relative output path.
+    assert not any(value.startswith("tmp/") for value in command)
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
     assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
