@@ -477,13 +477,8 @@ fn path_from_handle(handle: HANDLE) -> Result<PathBuf, String> {
     if count == 0 || count as usize >= buffer.len() {
         return Err(last_error("GetFinalPathNameByHandleW"));
     }
-    let mut value = String::from_utf16_lossy(&buffer[..count as usize]);
-    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
-        value = format!(r"\\{path}");
-    } else if let Some(path) = value.strip_prefix(r"\\?\") {
-        value = path.to_owned();
-    }
-    Ok(PathBuf::from(value))
+    let value = String::from_utf16_lossy(&buffer[..count as usize]);
+    Ok(crate::win32_plain(PathBuf::from(value)))
 }
 
 fn parent_process_id(pid: u32) -> Option<u32> {

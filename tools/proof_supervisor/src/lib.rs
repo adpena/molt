@@ -616,8 +616,31 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
+/// The Win32 spelling of a path: `std::fs::canonicalize` and
+/// `GetFinalPathNameByHandle` yield verbatim (`\\?\`) paths on Windows, while
+/// the process the supervisor launches, the policy it was handed and every
+/// receipt the queue reconciles use the plain drive or UNC spelling. A child
+/// started with a verbatim cwd would derive every path it computes from it
+/// (`os.getcwd()`, `__file__`, custody roots) and no longer match its own
+/// admitted roots.
+pub fn win32_plain(path: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return path;
+    }
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest.to_owned());
+    }
+    path
+}
+
 pub fn normalized_path_key(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
+    let value = win32_plain(path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
     if cfg!(windows) {
         value.to_lowercase()
     } else {
@@ -633,6 +656,7 @@ pub fn path_is_within(path: &Path, root: &Path) -> bool {
 
 fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, String> {
     let canonical = std::fs::canonicalize(path)
+        .map(win32_plain)
         .map_err(|error| format!("cannot resolve {label} {}: {error}", path.display()))?;
     if !canonical.is_file() {
         return Err(format!("{label} is not a file: {}", canonical.display()));
@@ -642,6 +666,7 @@ fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, String> {
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
     let canonical = std::fs::canonicalize(path)
+        .map(win32_plain)
         .map_err(|error| format!("cannot resolve {label} {}: {error}", path.display()))?;
     if !canonical.is_dir() {
         return Err(format!(
@@ -682,6 +707,28 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_paths_and_keys_use_the_plain_win32_spelling() {
+        let cwd = std::env::current_dir().unwrap();
+        let canonical = canonical_directory(&cwd, "test cwd").unwrap();
+        assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(normalized_path_key(&canonical), normalized_path_key(&cwd));
+        if cfg!(windows) {
+            assert_eq!(
+                win32_plain(PathBuf::from(r"\\?\C:\Molt\x")),
+                PathBuf::from(r"C:\Molt\x")
+            );
+            assert_eq!(
+                win32_plain(PathBuf::from(r"\\?\UNC\host\share\x")),
+                PathBuf::from(r"\\host\share\x")
+            );
+            assert_eq!(
+                normalized_path_key(Path::new(r"\\?\C:\Molt\X")),
+                normalized_path_key(Path::new(r"c:/molt/x"))
+            );
+        }
+    }
 
     #[test]
     fn path_containment_has_a_component_boundary() {
