@@ -6,7 +6,6 @@ use crate::tir::function::TirFunction;
 use crate::tir::values::ValueId;
 
 pub(crate) struct MaterialLoopGuard {
-    pub block: BlockId,
     pub condition: ValueId,
     pub continue_on_true: bool,
     /// Blocks dominated by the successful normal guard edge, not merely by
@@ -92,7 +91,6 @@ impl LoopGuardContext {
             success_blocks.sort_unstable_by_key(|bid| bid.0);
         }
         Some(MaterialLoopGuard {
-            block: guard,
             condition: *cond,
             continue_on_true,
             success_blocks,

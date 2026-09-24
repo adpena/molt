@@ -868,12 +868,17 @@ fn counted_paths_preserve_split_comparison_body_latch_and_final_guard() {
     assert_eq!(info.trip_count, 4);
     let region = counted_loop::region_blocks(&info);
     let forest = <LoopForest as Analysis>::compute(&func);
-    assert_eq!(
-        counted_loop::LoopGuardContext::new(&func)
-            .material_guard(&func, header, &forest.bodies[&header])
-            .map(|guard| guard.block),
-        Some(guard)
-    );
+    let material = counted_loop::LoopGuardContext::new(&func)
+        .material_guard(&func, header, &forest.bodies[&header])
+        .unwrap();
+    let Terminator::CondBranch { cond, .. } = &func.blocks[&guard].terminator else {
+        panic!("guard path must end at its exit condition");
+    };
+    assert_eq!(material.condition, *cond);
+    assert!(material.continue_on_true);
+    let mut success_blocks = info.body_path.clone();
+    success_blocks.sort_unstable_by_key(|bid| bid.0);
+    assert_eq!(material.success_blocks, success_blocks);
     let scev = super::super::scev::compute_scev(&func);
     let ranges = super::super::value_range::compute_value_range(&func, &scev);
     assert!(ranges.fits_inline_int47(info.induction_var));
