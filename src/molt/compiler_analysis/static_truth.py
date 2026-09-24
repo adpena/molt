@@ -58,6 +58,35 @@ _PUBLICATION_RELEASE_STABLE_LEAF_KINDS: frozenset[ExpressionKind] = frozenset(
 )
 
 
+def _expression_result_semantic_key(
+    truth: bool | None,
+    value: ScalarValue,
+    value_known: bool,
+    kind: ExpressionKind,
+    evaluation_required: bool,
+    items: tuple[ExpressionSequenceItem, ...] | None,
+    release_may_call: bool,
+    fresh_container: bool,
+    length: int | None,
+    element_result: StaticExpressionResult | None,
+    publication_release_stable: bool,
+) -> tuple[object, ...]:
+    """Scalar portion of the one result identity; graph edges compare separately."""
+    return (
+        truth,
+        literal_identity_key(value) if value_known else None,
+        value_known,
+        kind,
+        evaluation_required,
+        items is None,
+        release_may_call,
+        fresh_container,
+        length,
+        element_result is None,
+        publication_release_stable,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExpressionSequenceItem:
     result: StaticExpressionResult
@@ -117,17 +146,17 @@ class StaticExpressionResult:
         object.__setattr__(
             self, "_publication_release_stable", publication_release_stable
         )
-        key = (
+        key = _expression_result_semantic_key(
             self.truth,
-            literal_identity_key(self.value) if self.value_known else None,
+            self.value,
             self.value_known,
             self.kind,
             self.evaluation_required,
-            self.items is None,
+            self.items,
             self.release_may_call,
             self.fresh_container,
             self.length,
-            self.element_result is None,
+            self.element_result,
             publication_release_stable,
         )
         object.__setattr__(self, "_semantic_key", key)
@@ -660,10 +689,17 @@ def expression_result_without_mutable_contents(
 def join_static_expression_results(
     results: tuple[StaticExpressionResult, ...],
 ) -> StaticExpressionResult:
-    """Join control-flow alternatives in the canonical result algebra."""
+    """Join control-flow alternatives in the canonical result algebra.
 
+    Exact equality and absorption retain the first matching representative in
+    input order. A computed NaN join still declines exact value identity; only
+    the established all-equal path retains an already equal exact NaN fact.
+    """
     if not results:
         return UNKNOWN_EXPRESSION_RESULT
+    first = results[0]
+    if results.count(first) == len(results):
+        return first
     completed: dict[tuple[int, ...], StaticExpressionResult] = {}
     pending = [(results, False)]
     while pending:
@@ -672,7 +708,7 @@ def join_static_expression_results(
         if key in completed:
             continue
         first = current[0]
-        if all(result == first for result in current[1:]):
+        if current.count(first) == len(current):
             completed[key] = first
             continue
         child_results = (
@@ -704,33 +740,64 @@ def join_static_expression_results(
             and _same_scalar_value(result.value, first.value)
             for result in current[1:]
         )
-        completed[key] = StaticExpressionResult(
-            truth=(
-                first.truth
-                if all(result.truth is first.truth for result in current[1:])
-                else None
-            ),
-            value=first.value if exact else None,
-            value_known=exact,
-            kind=kind,
-            evaluation_required=any(result.evaluation_required for result in current),
-            items=(
-                first.items
-                if all(result.items == first.items for result in current[1:])
-                else None
-            ),
-            release_may_call=any(result.release_may_call for result in current),
-            fresh_container=all(result.fresh_container for result in current),
-            length=(
-                first.length
-                if all(result.length == first.length for result in current[1:])
-                else None
-            ),
-            element_result=(None if child_key is None else completed[child_key]),
-            _publication_release_stable=all(
-                bool(result._publication_release_stable) for result in current
-            ),
+        truth = (
+            first.truth
+            if all(result.truth is first.truth for result in current[1:])
+            else None
         )
+        value = first.value if exact else None
+        evaluation_required = any(result.evaluation_required for result in current)
+        items = (
+            first.items
+            if all(result.items == first.items for result in current[1:])
+            else None
+        )
+        release_may_call = any(result.release_may_call for result in current)
+        fresh_container = all(result.fresh_container for result in current)
+        length = (
+            first.length
+            if all(result.length == first.length for result in current[1:])
+            else None
+        )
+        element_result = None if child_key is None else completed[child_key]
+        publication_release_stable = all(
+            bool(result._publication_release_stable) for result in current
+        )
+        semantic_key = _expression_result_semantic_key(
+            truth,
+            value,
+            exact,
+            kind,
+            evaluation_required,
+            items,
+            release_may_call,
+            fresh_container,
+            length,
+            element_result,
+            publication_release_stable,
+        )
+        for candidate in current:
+            if (
+                candidate._semantic_key == semantic_key
+                and candidate.items == items
+                and candidate.element_result == element_result
+            ):
+                completed[key] = candidate
+                break
+        else:
+            completed[key] = StaticExpressionResult(
+                truth=truth,
+                value=value,
+                value_known=exact,
+                kind=kind,
+                evaluation_required=evaluation_required,
+                items=items,
+                release_may_call=release_may_call,
+                fresh_container=fresh_container,
+                length=length,
+                element_result=element_result,
+                _publication_release_stable=publication_release_stable,
+            )
     return completed[tuple(id(result) for result in results)]
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import ctypes
+from dataclasses import fields
 import gc
 import hashlib
 import json
@@ -188,18 +189,8 @@ def _analysis_telemetry(index: object) -> dict[str, int] | None:
     telemetry = getattr(index, "telemetry", None)
     if telemetry is None:
         return None
-    return {
-        "binding_lookups": telemetry.binding_lookups,
-        "join_calls": telemetry.join_calls,
-        "join_node_visits": telemetry.join_node_visits,
-        "join_shared_subtrees_skipped": telemetry.join_shared_subtrees_skipped,
-        "join_chunk_merges": telemetry.join_chunk_merges,
-        "structural_diff_cache_entries": telemetry.structural_diff_cache_entries,
-        "structural_diff_node_visits": telemetry.structural_diff_node_visits,
-        "structural_diff_shared_subtrees_skipped": (
-            telemetry.structural_diff_shared_subtrees_skipped
-        ),
-    }
+    # The dataclass is the telemetry schema; do not maintain a mirrored list.
+    return {item.name: getattr(telemetry, item.name) for item in fields(telemetry)}
 
 
 def _measure_once(
