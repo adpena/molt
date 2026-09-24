@@ -108,15 +108,23 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   original SSA def-use contract explicitly. Values defined before a split
   boundary and read after it travel through one synthetic split frame; loads use
   the canonical `Index`/`index` op, stores use `StoreIndex`/`store_index`, and
-  generated `load_index`-style aliases are invalid. Void functions split into
-  chunks return an explicit continuation status so a terminal cloned
-  exception/cleanup suffix can stop the stub from running later chunks. Live-out
+  generated `load_index`-style aliases are invalid. A single chunk-return
+  protocol owns both the generated ABI and its caller: intermediate payload
+  chunks fall through with a void ABI, the final payload chunk returns the
+  owner's value, and payload-free bodies use value-ABI continuation statuses
+  so a terminal cloned exception/cleanup suffix can stop later chunks. The
+  owner's authored ABI is preserved even when no payload returns survive.
+  Empty owner exits remain empty until machine lowering. Live-out
   frame stores belong on the normal path before the synthetic jump that skips a
   cloned suffix, never after terminal cleanup code.
   The planner indexes borrowed per-name read/definition positions instead of
   retaining a whole live/defined set at every operation. Same-operation reads
   precede writes; refusal leaves both the input contract and occupied symbol
   namespace unchanged.
+  Generated verifier label and region roles own split-boundary and suffix
+  admission. A cloned suffix starts at a balanced region boundary, and every
+  generated label reference resolves inside its chunk. Frame-slot verification
+  uses the allocated frame identity and slot layout, never a name-prefix guess.
   Native preparation splits before the first TIR lift, including whole-program
   linkage-ABI capture before object batching. WASM uses the same splitter before
   TIR and after final rewrites, but preserves its straight-line-only admission.

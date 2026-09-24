@@ -3,13 +3,44 @@ use name_index::SplitNameIndex;
 
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::tir::op_kinds_generated::{
-    simpleir_kind_is_return_terminator, simpleir_kind_uses_function_label_id,
+    ExceptionRegionNestingRole, SimpleIrReturnShape, SimpleIrVerifierRegionRole,
+    kind_to_opcode_table, opcode_exception_region_nesting_role_table,
+    simpleir_kind_is_return_terminator, simpleir_kind_is_verifier_label_definition,
+    simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
+    simpleir_kind_uses_function_label_id, simpleir_return_shape, simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{
     simple_ir_return_has_value, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The private chunk result is a transport protocol, not the owner's ABI.
+/// In particular, a payload-free owner still needs value-returning chunks
+/// when a cloned terminal must stop subsequent chunks.
+#[derive(Clone, Copy)]
+enum ChunkReturnProtocol {
+    Fallthrough,
+    OwnerValue,
+    ContinuationStatus,
+}
+
+impl ChunkReturnProtocol {
+    fn return_abi(self) -> molt_ir::FunctionReturnAbi {
+        match self {
+            Self::Fallthrough => molt_ir::FunctionReturnAbi::Void,
+            Self::OwnerValue | Self::ContinuationStatus => molt_ir::FunctionReturnAbi::Value,
+        }
+    }
+
+    fn result_name_base(self) -> &'static str {
+        match self {
+            Self::Fallthrough => "__molt_split_chunk_discard",
+            Self::OwnerValue => "__molt_split_chunk_return",
+            Self::ContinuationStatus => "__molt_split_chunk_continue",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Megafunction splitting pass
@@ -23,12 +54,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // Safety: never splits inside loops, if-blocks, or try-blocks.
 // ---------------------------------------------------------------------------
 
-/// Default maximum number of ops before a function is split into chunks.
-///
-/// Native frontend module chunking already targets 2000 ops, but lower/midend
-/// rewrites can still inflate a chunk well past that budget. Keep the backend
-/// splitter aligned with that native default so Cranelift does not see giant
-/// `*_molt_module_chunk_*` functions slip through unsplit.
 fn split_param_types_for_names(
     original_params: &[String],
     original_param_types: Option<&Vec<String>>,
@@ -231,7 +256,7 @@ fn split_local_frame_owner(
     if failure_tail[0].kind != "label"
         || failure_tail[0].value != Some(failure_label)
         || failure_tail[1].kind != "trace_exit"
-        || failure_tail[2].kind != "ret_void"
+        || simpleir_return_shape(&failure_tail[2].kind) != SimpleIrReturnShape::Void
     {
         return None;
     }
@@ -291,35 +316,106 @@ pub(super) fn verify_split_generated_ops(func: &FunctionIR) -> Result<(), String
             ));
         }
     }
+    Ok(())
+}
+
+/// The freshly allocated frame identity, not a spelling prefix, identifies
+/// generated accesses. Validate both the slot producer and the actual value
+/// being loaded/stored against the layout used by the emitters.
+pub(super) fn verify_split_frame_ops(
+    func: &FunctionIR,
+    frame_name: &str,
+    frame_slot_for: &BTreeMap<String, usize>,
+) -> Result<(), String> {
     for (idx, op) in func.ops.iter().enumerate() {
-        if op.out.as_deref().is_some_and(|out| {
-            out.starts_with("__molt_split_frame_load_index")
-                || out.starts_with("__molt_split_frame_store_index")
+        let Some(args) = op.args.as_ref() else {
+            continue;
+        };
+        if args.first().map(String::as_str) != Some(frame_name)
+            || !matches!(op.kind.as_str(), "index" | "store_index")
+        {
+            continue;
+        }
+        let value_name = if op.kind == "index" && args.len() == 2 {
+            op.out.as_ref()
+        } else if op.kind == "store_index" && args.len() == 3 {
+            args.get(2)
+        } else {
+            None
+        };
+        let slot = value_name.and_then(|name| frame_slot_for.get(name));
+        let producer = idx.checked_sub(1).and_then(|index| func.ops.get(index));
+        if !producer.is_some_and(|producer| {
+            producer.kind == "const"
+                && producer.out.as_ref() == args.get(1)
+                && slot.is_some_and(|slot| producer.value == Some(*slot as i64))
         }) {
-            let next = func.ops.get(idx + 1).ok_or_else(|| {
-                format!(
-                    "function `{}` op {} split-frame slot const is missing consumer",
-                    func.name, idx
-                )
-            })?;
-            let expected_consumer = if op
-                .out
-                .as_deref()
-                .is_some_and(|out| out.starts_with("__molt_split_frame_load_index"))
-            {
-                "index"
-            } else {
-                "store_index"
-            };
-            if next.kind != expected_consumer {
-                return Err(format!(
-                    "function `{}` op {} split-frame slot const is consumed by `{}` not `{}`",
-                    func.name, idx, next.kind, expected_consumer
-                ));
-            }
+            return Err(format!(
+                "function `{}` op {} has an invalid split-frame slot/value binding",
+                func.name, idx
+            ));
         }
     }
     Ok(())
+}
+
+fn split_control_target(op: &OpIR) -> Option<i64> {
+    simpleir_kind_is_verifier_label_reference(&op.kind)
+        .then_some(op.value)
+        .flatten()
+}
+
+/// One balanced-region scan owns both legal partition boundaries and legal
+/// suffix starts. Reject malformed nesting before any source is cloned. The
+/// generated verifier roles own if/loop structure; generated exception roles
+/// additionally keep a lexical try region within one chunk.
+pub(super) fn split_region_boundaries(ops: &[OpIR]) -> Option<Vec<bool>> {
+    let mut stack: Vec<(&str, bool)> = Vec::new();
+    let mut top_level = Vec::with_capacity(ops.len() + 1);
+    for op in ops {
+        top_level.push(stack.is_empty());
+        let role =
+            simpleir_verifier_region_role(&op.kind).or_else(|| {
+                match kind_to_opcode_table(&op.kind).map(opcode_exception_region_nesting_role_table)
+                {
+                    Some(ExceptionRegionNestingRole::Enter) => {
+                        Some(("try", SimpleIrVerifierRegionRole::Start))
+                    }
+                    Some(ExceptionRegionNestingRole::Exit) => {
+                        Some(("try", SimpleIrVerifierRegionRole::End))
+                    }
+                    _ => None,
+                }
+            });
+        let Some((region, role)) = role else {
+            if simpleir_kind_is_verifier_loop_scoped(&op.kind)
+                && !stack.iter().any(|(region, _)| *region == "loop")
+            {
+                return None;
+            }
+            continue;
+        };
+        match role {
+            SimpleIrVerifierRegionRole::Start => stack.push((region, false)),
+            SimpleIrVerifierRegionRole::Alternate => {
+                let (active, seen) = stack.last_mut()?;
+                if *active != region || *seen {
+                    return None;
+                }
+                *seen = true;
+            }
+            SimpleIrVerifierRegionRole::End => {
+                if stack.pop()?.0 != region {
+                    return None;
+                }
+            }
+        }
+    }
+    if !stack.is_empty() {
+        return None;
+    }
+    top_level.push(true);
+    Some(top_level)
 }
 
 pub(super) fn is_drop_fact_marker_op(op: &OpIR) -> bool {
@@ -330,14 +426,12 @@ pub(super) fn is_drop_fact_marker_op(op: &OpIR) -> bool {
     )
 }
 
-/// Eliminate dead ops within each function of the SimpleIR.
+/// Default maximum number of ops before a function is split into chunks.
 ///
-/// An op is dead when:
-/// 1. It is pure (no side effects).
-/// 2. None of its defined names are referenced by any subsequent op's data
-///    inputs in the same function.
-///
-/// Iterates to fixpoint (max 5 rounds) to catch cascading dead chains.
+/// Native frontend module chunking already targets 2000 ops, but lower/midend
+/// rewrites can still inflate a chunk well past that budget. Keep the backend
+/// splitter aligned with that native default so Cranelift does not see giant
+/// `*_molt_module_chunk_*` functions slip through unsplit.
 const DEFAULT_MAX_FUNCTION_OPS: usize = 2000;
 
 pub(super) fn split_chunk_name(source_function_name: &str, index: usize) -> String {
@@ -404,6 +498,9 @@ pub fn split_large_function(
     let all_ops = local_frame_owner
         .as_ref()
         .map_or(func.ops.as_slice(), |owner| owner.body_ops);
+    let Some(top_level) = split_region_boundaries(all_ops) else {
+        return Err(Box::new(func));
+    };
     let name_index = SplitNameIndex::new(all_ops);
     let parameter_names = func
         .params
@@ -411,24 +508,20 @@ pub fn split_large_function(
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
 
-    // Exception handling ops (check_exception) are protected by the
-    // forbidden-range mechanism below — the splitter never separates a
-    // check_exception from its target label.  This allows safe splitting
-    // of large stdlib functions that contain exception handlers.
+    // Every generated label reference is protected by the same range and
+    // suffix-cloning authority, including exception and ordinary branch edges.
 
     // ---------------------------------------------------------------
     // 1. Find safe split points (indices where depth == 0).
     //    A split point is the index of the *first* op of a new chunk,
     //    i.e. the boundary falls just before that index.
     //
-    //    Additionally, we must not split between a `check_exception`
-    //    and its target `label`/`state_label`, since the function
-    //    compiler expects both to be in the same chunk.
+    //    Each target must remain in the referencing chunk, either retained
+    //    with the original region or brought in as a balanced cloned suffix.
     // ---------------------------------------------------------------
 
-    // Build forbidden ranges: for each label_id referenced by
-    // check_exception, jump, or br_if, find the span covering the
-    // reference(s) and the label definition, and forbid splitting
+    // Build forbidden ranges: for every generated label-reference role,
+    // find the span covering the reference(s) and the label definition, and forbid splitting
     // within that range.
     //
     // This is critical after TIR optimization, which replaces structured
@@ -443,20 +536,20 @@ pub fn split_large_function(
     let mut label_refs: std::collections::BTreeMap<i64, (usize, usize)> =
         std::collections::BTreeMap::new();
     for (idx, op) in all_ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "label" | "state_label" => {
-                if let Some(id) = op.value {
-                    label_positions.insert(id, idx);
-                }
+        if simpleir_kind_is_verifier_label_definition(&op.kind) {
+            let Some(id) = op.value else {
+                return Err(Box::new(func));
+            };
+            if label_positions.insert(id, idx).is_some() {
+                return Err(Box::new(func));
             }
-            "check_exception" | "jump" | "br_if" => {
-                if let Some(id) = op.value {
-                    let entry = label_refs.entry(id).or_insert((idx, idx));
-                    entry.0 = entry.0.min(idx);
-                    entry.1 = entry.1.max(idx);
-                }
-            }
-            _ => {}
+        } else if simpleir_kind_is_verifier_label_reference(&op.kind) {
+            let Some(id) = split_control_target(op) else {
+                return Err(Box::new(func));
+            };
+            let entry = label_refs.entry(id).or_insert((idx, idx));
+            entry.0 = entry.0.min(idx);
+            entry.1 = entry.1.max(idx);
         }
     }
     // Compute forbidden ranges: a split point at index `sp` is forbidden
@@ -464,12 +557,11 @@ pub fn split_large_function(
     let mut label_forbidden_ranges: Vec<(usize, usize, i64, usize)> = Vec::new();
     // A suffix is cloneable only when it has no value-return terminator.
     // One reverse location replaces a full suffix scan for every label.
-    let last_value_return = all_ops.iter().rposition(|op| op.kind == "ret");
+    let last_value_return = all_ops.iter().rposition(simple_ir_return_has_value);
     let cloneable_suffix_labels: BTreeMap<i64, usize> = label_positions
         .iter()
         .filter_map(|(&label_id, &label_idx)| {
-            last_value_return
-                .is_none_or(|last| last < label_idx)
+            (top_level[label_idx] && last_value_return.is_none_or(|last| last < label_idx))
                 .then_some((label_id, label_idx))
         })
         .collect();
@@ -480,33 +572,6 @@ pub fn split_large_function(
             label_forbidden_ranges.push((range_start, range_end, *label_id, label_idx));
         }
     }
-
-    // Also forbid splitting between matched if/end_if pairs.
-    // After TIR optimization, the depth tracker may see depth=0 between
-    // an `if` and its `end_if` because TIR-inserted store_var/load_var
-    // ops reset the apparent nesting. Protecting the full if→end_if span
-    // ensures the function compiler always sees matched pairs.
-    let mut structural_forbidden_ranges: Vec<(usize, usize)> = Vec::new();
-    {
-        let mut if_stack: Vec<usize> = Vec::new();
-        for (idx, op) in all_ops.iter().enumerate() {
-            match op.kind.as_str() {
-                "if" => if_stack.push(idx),
-                "end_if" => {
-                    if let Some(if_idx) = if_stack.pop() {
-                        structural_forbidden_ranges.push((if_idx, idx));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let control_target = |op: &OpIR| -> Option<i64> {
-        matches!(op.kind.as_str(), "check_exception" | "jump" | "br_if")
-            .then_some(op.value)
-            .flatten()
-    };
 
     let suffix_can_clone_into_range =
         |label_id: i64, chunk_start: usize, chunk_end: usize| -> bool {
@@ -529,13 +594,13 @@ pub fn split_large_function(
     let chunk_refs_label = |chunk_start: usize, chunk_end: usize, label_id: i64| -> bool {
         all_ops[chunk_start..chunk_end]
             .iter()
-            .any(|op| control_target(op) == Some(label_id))
+            .any(|op| split_control_target(op) == Some(label_id))
     };
 
     let chunk_has_external_control_without_safe_clone =
         |chunk_start: usize, chunk_end: usize| -> bool {
             for op in &all_ops[chunk_start..chunk_end] {
-                let Some(target_id) = control_target(op) else {
+                let Some(target_id) = split_control_target(op) else {
                     continue;
                 };
                 let Some(&label_idx) = label_positions.get(&target_id) else {
@@ -555,14 +620,6 @@ pub fn split_large_function(
         };
 
     let is_forbidden = |sp: usize, chunk_start: usize| -> bool {
-        for &(start, end) in &structural_forbidden_ranges {
-            // sp is the first index of the new chunk; splitting here means
-            // indices [0..sp) go to one chunk and [sp..) go to the next.
-            // Forbidden if the range straddles the split point.
-            if start < sp && sp <= end {
-                return true;
-            }
-        }
         for &(start, end, label_id, label_idx) in &label_forbidden_ranges {
             if start < sp && sp <= end {
                 if label_idx < sp {
@@ -580,7 +637,6 @@ pub fn split_large_function(
 
     let mut selected: Vec<usize> = Vec::new();
     let mut last_split = 0usize;
-    let mut depth: i32 = 0;
 
     for (idx, op) in all_ops.iter().enumerate() {
         // Split only at top-level statement boundaries. A raw depth==0 op
@@ -589,7 +645,7 @@ pub fn split_large_function(
         // increasing structured-control depth, so splitting at an arbitrary
         // op boundary can sever one logical statement across chunks.
         let is_stmt_boundary = op.kind == "line";
-        if depth == 0
+        if top_level[idx]
             && idx > 0
             && is_stmt_boundary
             && idx - last_split >= max_ops
@@ -597,20 +653,6 @@ pub fn split_large_function(
         {
             selected.push(idx);
             last_split = idx;
-        }
-
-        match op.kind.as_str() {
-            // Openers -- increase nesting depth
-            "if" | "loop_start" | "loop_index_start" | "for_iter_start" | "while_start"
-            | "try_start" | "async_for_start" => {
-                depth += 1;
-            }
-            // Closers -- decrease nesting depth
-            "end_if" | "loop_end" | "loop_index_end" | "for_iter_end" | "while_end" | "try_end"
-            | "async_for_end" => {
-                depth -= 1;
-            }
-            _ => {}
         }
     }
 
@@ -692,8 +734,7 @@ pub fn split_large_function(
 
     struct ChunkPlan {
         name: String,
-        returns_value: bool,
-        returns_control_status: bool,
+        return_protocol: ChunkReturnProtocol,
     }
 
     let mut chunks: Vec<FunctionIR> = Vec::new();
@@ -722,21 +763,18 @@ pub fn split_large_function(
         // Collect label IDs defined in THIS chunk.
         let mut chunk_labels: std::collections::BTreeSet<i64> = chunk_ops
             .iter()
-            .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+            .filter(|op| simpleir_kind_is_verifier_label_definition(&op.kind))
             .filter_map(|op| op.value)
             .collect();
 
         // If the chunk references a shared exception/cleanup tail that starts
         // later in the original function, clone that suffix into the chunk so
-        // local check_exception/jump/br_if targets stay valid after splitting.
+        // every generated label-reference role stays valid after splitting.
         let mut normal_skip_label_for_cloned_suffix = None;
         let suffix_clone_start = chunk_ops
             .iter()
             .filter_map(|op| {
-                if !matches!(op.kind.as_str(), "check_exception" | "jump" | "br_if") {
-                    return None;
-                }
-                let target_id = op.value?;
+                let target_id = split_control_target(op)?;
                 if chunk_labels.contains(&target_id) {
                     return None;
                 }
@@ -764,7 +802,7 @@ pub fn split_large_function(
             });
             chunk_labels = chunk_ops
                 .iter()
-                .filter(|op| matches!(op.kind.as_str(), "label" | "state_label"))
+                .filter(|op| simpleir_kind_is_verifier_label_definition(&op.kind))
                 .filter_map(|op| op.value)
                 .collect();
             if chunk_ops.len() > max_ops.saturating_mul(2) {
@@ -773,7 +811,7 @@ pub fn split_large_function(
         }
 
         if chunk_ops.iter().any(|op| {
-            control_target(op).is_some_and(|target_id| !chunk_labels.contains(&target_id))
+            split_control_target(op).is_some_and(|target_id| !chunk_labels.contains(&target_id))
         }) {
             return Err(Box::new(func));
         }
@@ -788,7 +826,7 @@ pub fn split_large_function(
         }
 
         let chunk_name = chunk_names[i].clone();
-        let (returns_value, returns_control_status) = if body_has_value_returns {
+        let return_protocol = if body_has_value_returns {
             let terminal = if chunk_ops
                 .last()
                 .is_some_and(|op| simpleir_kind_is_return_terminator(op.kind.as_str()))
@@ -829,7 +867,11 @@ pub fn split_large_function(
                 kind: "ret_void".to_string(),
                 ..OpIR::default()
             }));
-            (returns_value, false)
+            if returns_value {
+                ChunkReturnProtocol::OwnerValue
+            } else {
+                ChunkReturnProtocol::Fallthrough
+            }
         } else {
             chunk_ops =
                 split_rewrite_void_terminals_to_status(chunk_ops, &mut occupied_names, false);
@@ -861,7 +903,7 @@ pub fn split_large_function(
                 chunk_ops = prefixed;
             }
             chunk_ops.extend(split_status_return_ops(&mut occupied_names, true));
-            (false, true)
+            ChunkReturnProtocol::ContinuationStatus
         };
         let mut chunk_params = func.params.clone();
         if uses_split_frame {
@@ -870,11 +912,7 @@ pub fn split_large_function(
         let chunk_param_types =
             split_param_types_for_names(&func.params, func.param_types.as_ref(), &chunk_params);
         chunks.push(FunctionIR {
-            return_abi: if returns_value {
-                molt_ir::FunctionReturnAbi::Value
-            } else {
-                molt_ir::FunctionReturnAbi::Void
-            },
+            return_abi: return_protocol.return_abi(),
             name: chunk_name.clone(),
             params: chunk_params,
             ops: chunk_ops,
@@ -886,8 +924,7 @@ pub fn split_large_function(
         });
         plans.push(ChunkPlan {
             name: chunk_name,
-            returns_value,
-            returns_control_status,
+            return_protocol,
         });
     }
 
@@ -928,16 +965,8 @@ pub fn split_large_function(
         if uses_split_frame {
             call_args.push(frame_name.clone());
         }
-        let chunk_result_name = split_frame_name(
-            if plan.returns_control_status {
-                "__molt_split_chunk_continue"
-            } else if plan.returns_value {
-                "__molt_split_chunk_return"
-            } else {
-                "__molt_split_chunk_discard"
-            },
-            &mut occupied_names,
-        );
+        let chunk_result_name =
+            split_frame_name(plan.return_protocol.result_name_base(), &mut occupied_names);
         stub_ops.push(OpIR {
             kind: "call_internal".to_string(),
             s_value: Some(plan.name.clone()),
@@ -951,81 +980,52 @@ pub fn split_large_function(
             value: Some(exception_return_label),
             ..OpIR::default()
         });
-        if plan.returns_control_status {
-            let Some(continue_label) =
-                split_label_id(&mut occupied_labels, &mut next_synthetic_label)
-            else {
-                return Err(Box::new(func));
-            };
-            stub_ops.push(OpIR {
-                kind: "br_if".to_string(),
-                args: Some(vec![chunk_result_name]),
-                value: Some(continue_label),
-                ..OpIR::default()
-            });
-            stub_ops.push(OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            });
-            stub_ops.push(OpIR {
-                kind: "label".to_string(),
-                value: Some(continue_label),
-                ..OpIR::default()
-            });
-            continue;
-        }
-        if plan.returns_value {
-            stub_ops.push(OpIR {
+        match plan.return_protocol {
+            ChunkReturnProtocol::ContinuationStatus => {
+                let Some(continue_label) =
+                    split_label_id(&mut occupied_labels, &mut next_synthetic_label)
+                else {
+                    return Err(Box::new(func));
+                };
+                stub_ops.push(OpIR {
+                    kind: "br_if".to_string(),
+                    args: Some(vec![chunk_result_name]),
+                    value: Some(continue_label),
+                    ..OpIR::default()
+                });
+                stub_ops.push(OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                });
+                stub_ops.push(OpIR {
+                    kind: "label".to_string(),
+                    value: Some(continue_label),
+                    ..OpIR::default()
+                });
+            }
+            ChunkReturnProtocol::OwnerValue => stub_ops.push(OpIR {
                 kind: "ret".to_string(),
                 args: Some(vec![chunk_result_name]),
                 ..OpIR::default()
-            });
-            continue;
+            }),
+            ChunkReturnProtocol::Fallthrough => {}
         }
     }
-    if body_has_value_returns {
-        let missing_return_name =
-            split_frame_name("__molt_split_missing_return", &mut occupied_names);
-        stub_ops.push(OpIR {
-            kind: "const_none".to_string(),
-            out: Some(missing_return_name.clone()),
-            ..OpIR::default()
-        });
-        stub_ops.push(OpIR {
-            kind: "ret".to_string(),
-            args: Some(vec![missing_return_name]),
-            ..OpIR::default()
-        });
-    } else {
-        stub_ops.push(OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        });
-    }
+    // Empty exits preserve the authored owner ABI. Final machine lowering
+    // supplies its carrier, without synthetic payloads in the split IR.
+    stub_ops.push(OpIR {
+        kind: "ret_void".to_string(),
+        ..OpIR::default()
+    });
     stub_ops.push(OpIR {
         kind: "label".to_string(),
         value: Some(exception_return_label),
         ..OpIR::default()
     });
-    if body_has_value_returns {
-        let exception_return_name =
-            split_frame_name("__molt_split_exception_return", &mut occupied_names);
-        stub_ops.push(OpIR {
-            kind: "const_none".to_string(),
-            out: Some(exception_return_name.clone()),
-            ..OpIR::default()
-        });
-        stub_ops.push(OpIR {
-            kind: "ret".to_string(),
-            args: Some(vec![exception_return_name]),
-            ..OpIR::default()
-        });
-    } else {
-        stub_ops.push(OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        });
-    }
+    stub_ops.push(OpIR {
+        kind: "ret_void".to_string(),
+        ..OpIR::default()
+    });
     if execution_context == ExecutionContextPolicy::Local {
         stub_ops = split_insert_local_frame_exits(stub_ops);
     }
@@ -1054,6 +1054,11 @@ pub fn split_large_function(
         }
         if let Err(detail) = verify_split_generated_ops(chunk) {
             panic!("megafunction split produced non-canonical chunk IR: {detail}");
+        }
+        if uses_split_frame
+            && let Err(detail) = verify_split_frame_ops(chunk, &frame_name, &frame_slot_for)
+        {
+            panic!("megafunction split produced invalid frame transport: {detail}");
         }
     }
     if let Err(detail) = verify_split_function_def_use(&stub) {

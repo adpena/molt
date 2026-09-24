@@ -1,5 +1,5 @@
 use super::*;
-use crate::tir::simple_def_use::visit_simple_ir_defined_names;
+use crate::tir::simple_def_use::{simple_ir_return_has_value, visit_simple_ir_defined_names};
 
 fn split_for_test(
     func: FunctionIR,
@@ -255,8 +255,8 @@ fn split_large_function_uses_generated_return_family_and_collision_free_syntheti
         "__molt_split_frame_index",
         "__molt_split_frame_store_index",
         "__molt_split_chunk_return",
-        "__molt_split_missing_return",
-        "__molt_split_exception_return",
+        "__molt_split_chunk_discard",
+        "__molt_split_chunk_continue",
     ]
     .into_iter()
     .map(str::to_string)
@@ -1065,7 +1065,7 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
             .iter()
             .map(|op| op.kind.as_str())
             .collect::<Vec<_>>(),
-        ["label", "const_none", "trace_exit", "ret"]
+        ["label", "trace_exit", "ret_void"]
     );
     assert!(chunks.iter().all(|chunk| {
         chunk.ops.iter().all(|op| {
@@ -1108,20 +1108,131 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
 }
 
 #[test]
-fn split_preserves_value_abi_when_only_empty_returns_survive() {
-    let mut original = checked_local_split_fixture(false);
-    original.return_abi = molt_ir::FunctionReturnAbi::Value;
-    let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
-    original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
-    let (stub, chunks) = split_for_test(original, 3).expect("empty payload value-ABI split");
-    assert_eq!(stub.return_abi, molt_ir::FunctionReturnAbi::Value);
-    assert!(stub.function_signature().unwrap().returns_value);
-    assert_eq!(stub.ops.last().unwrap().kind, "ret_void");
+fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() {
+    use molt_ir::FunctionReturnAbi::{Value, Void};
+
+    for (owner_abi, has_payload) in [(Void, false), (Value, false), (Value, true)] {
+        for (context, roundtrip) in [
+            (ExecutionContextPolicy::Local, false),
+            (ExecutionContextPolicy::Local, true),
+            (ExecutionContextPolicy::Inherited, false),
+            (ExecutionContextPolicy::Inherited, true),
+        ] {
+            let mut original = checked_local_split_fixture(has_payload);
+            original.return_abi = owner_abi;
+            original.execution_context = context;
+            if context == ExecutionContextPolicy::Inherited {
+                original.ops.truncate(original.ops.len() - 3);
+                original.ops.drain(..2);
+                original.ops.retain(|op| op.kind != "trace_exit");
+            }
+            if roundtrip {
+                let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
+                original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
+            }
+            let (stub, chunks) = split_for_test(original, 3)
+                .expect("checked entry must survive both source and SSA roundtrip");
+            assert_eq!(stub.return_abi, owner_abi);
+            assert!(
+                chunks.len() > 1,
+                "exercise intermediate and terminal chunks"
+            );
+            assert_eq!(stub.ops.last().unwrap().kind, "ret_void");
+            assert_eq!(
+                stub.ops
+                    .iter()
+                    .filter(|op| simple_ir_return_has_value(op))
+                    .count(),
+                usize::from(has_payload),
+                "only the original payload may return a value; no synthetic None exits"
+            );
+            let calls = stub
+                .ops
+                .iter()
+                .filter(|op| op.kind == "call_internal")
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), chunks.len());
+            for (index, (chunk, call)) in chunks.iter().zip(calls).enumerate() {
+                assert_eq!(call.s_value.as_deref(), Some(chunk.name.as_str()));
+                let result = call.out.as_ref().expect("chunk call result");
+                let expected_abi = if has_payload && index + 1 != chunks.len() {
+                    Void
+                } else {
+                    Value
+                };
+                assert_eq!(chunk.return_abi, expected_abi);
+                if !has_payload && index + 1 != chunks.len() {
+                    let tail = &chunk.ops[chunk.ops.len() - 2..];
+                    assert_eq!(tail[0].kind, "const_bool");
+                    assert_eq!(tail[0].value, Some(1), "normal fallthrough must continue");
+                    assert_eq!(tail[1].kind, "ret");
+                    assert_eq!(
+                        tail[1].args.as_deref(),
+                        Some(std::slice::from_ref(tail[0].out.as_ref().unwrap()))
+                    );
+                }
+                assert_eq!(
+                    chunk.function_signature().unwrap().returns_value,
+                    expected_abi == Value
+                );
+                let consumers = stub
+                    .ops
+                    .iter()
+                    .filter(|op| op.args.as_ref().is_some_and(|args| args.contains(result)))
+                    .map(|op| op.kind.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    consumers,
+                    if !has_payload {
+                        vec!["br_if"]
+                    } else if expected_abi == Value {
+                        vec!["ret"]
+                    } else {
+                        vec![]
+                    },
+                    "chunk signature and caller must agree on the result protocol"
+                );
+            }
+            crate::validate_simple_ir(&SimpleIR {
+                functions: std::iter::once(stub).chain(chunks).collect(),
+                profile: None,
+            })
+            .expect("owner ABI and private chunk protocol must validate together");
+        }
+    }
+}
+
+#[test]
+fn split_continuation_protocol_avoids_reserved_transport_names() {
+    let reserved = [
+        "__molt_split_frame",
+        "__molt_split_frame_init",
+        "__molt_split_frame_index",
+        "__molt_split_frame_store_index",
+        "__molt_split_chunk_continue",
+        "__molt_split_chunk_discard",
+        "__molt_split_continue_true",
+        "__molt_split_continue_false",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    let mut source = adversarial_named_large_function("continuation_collisions");
+    source.params = reserved.clone();
+    source.ops[3] = make_arith("add", &["first", "__molt_split_frame_index"], "second");
+    let (stub, chunks) = split_for_test(source, 2).expect("status transport must split");
+    for function in std::iter::once(&stub).chain(&chunks) {
+        for op in &function.ops {
+            visit_simple_ir_defined_names(op, |name| {
+                assert!(!reserved.iter().any(|reserved| reserved == name));
+            });
+        }
+        verify_split_function_def_use(function).expect("transport remains collision-free");
+    }
     crate::validate_simple_ir(&SimpleIR {
         functions: std::iter::once(stub).chain(chunks).collect(),
         profile: None,
     })
-    .expect("split retains ABI independently of its no-payload transport strategy");
+    .expect("collision-free status transport must preserve its ABI");
 }
 
 #[test]

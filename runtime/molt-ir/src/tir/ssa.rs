@@ -27,6 +27,9 @@ mod op_lowering;
 mod placement;
 #[path = "ssa/terminators.rs"]
 mod terminators;
+#[cfg(test)]
+#[path = "ssa/undefined_tests.rs"]
+mod undefined_tests;
 #[path = "ssa/variables.rs"]
 mod variables;
 
@@ -110,7 +113,8 @@ struct SsaContext<'a> {
     pending_inline_consts: Vec<super::ops::TirOp>,
     /// Function parameter names (treated as implicit entry-block definitions).
     params: Vec<String>,
-    /// Shared `None` value used for known variables without a reaching def.
+    /// Construction-only placeholder for known variables without a reaching def.
+    /// Materialized at actual uses after branch repair, never eagerly at entry.
     undef_value: Option<ValueId>,
     /// Source-site fact active at each SimpleIR op index, derived once from
     /// frontend `line` markers plus per-op source fields.
@@ -242,7 +246,7 @@ impl<'a> SsaContext<'a> {
 
     fn rename_and_emit(&mut self) {
         let n = self.cfg.blocks.len();
-        let undef_vid = self.fresh_value_typed();
+        let undef_vid = self.fresh_value();
         self.undef_value = Some(undef_vid);
 
         // Build dominator tree children from the *augmented* dominator tree.
@@ -320,16 +324,6 @@ impl<'a> SsaContext<'a> {
             }
 
             // 2. Process ops in this block.
-            if bid == self.cfg.entry {
-                tir_blocks[bid].ops.push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::ConstNone,
-                    operands: vec![],
-                    results: vec![undef_vid],
-                    attrs: AttrDict::new(),
-                    source_span: None,
-                });
-            }
             let op_indices = self.block_info[bid].op_indices.clone();
 
             for &op_idx in &op_indices {
@@ -463,30 +457,9 @@ impl<'a> SsaContext<'a> {
                     });
                     local_stacks.entry(var.clone()).or_default().push(vid);
                 }
-                // Insert a ConstNone "undef" value at the top of this
-                // unreachable block.  Any variable reference that cannot be
-                // resolved from `local_stacks` will fall back to this value
-                // instead of ValueId(0) from ^bb0 (which would violate SSA
-                // dominance since ^bb0 does not dominate unreachable blocks).
-                let undef_vid = self.fresh_value_typed();
-                tir_blocks[bid].ops.push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::ConstNone,
-                    operands: vec![],
-                    results: vec![undef_vid],
-                    attrs: AttrDict::new(),
-                    source_span: None,
-                });
-
-                // Seed local_stacks with the undef value for every known
-                // variable that doesn't already have a definition (from block
-                // args).  This ensures resolve_var never fails and falls back
-                // to ValueId(0).
-                for var in &self.all_vars.clone() {
-                    local_stacks
-                        .entry(var.clone())
-                        .or_insert_with(|| vec![undef_vid]);
-                }
+                // Missing reaching definitions use the same construction-only
+                // placeholder as reachable blocks. Final materialization is
+                // local to each consuming block, including disconnected roots.
 
                 let op_indices = self.block_info[bid].op_indices.clone();
                 for &op_idx in &op_indices {
@@ -515,7 +488,54 @@ impl<'a> SsaContext<'a> {
         }
 
         self.fuse_iter_next_projections(&mut tir_blocks);
+        self.materialize_undefined_uses(&mut tir_blocks, undef_vid);
+        self.undef_value = None;
         self.tir_blocks = tir_blocks;
+    }
+
+    /// Emit None only where a missing reaching definition remains after SSA
+    /// construction. A block-local definition immediately before its first use
+    /// dominates all remaining uses without assuming entry reaches that block.
+    /// This also leaves checked lifecycle entry operations first when no value
+    /// is needed there. Edge arguments are uses in the predecessor, not in the
+    /// receiving block; the canonical terminator visitor includes all of them.
+    fn materialize_undefined_uses(&mut self, blocks: &mut [TirBlock], undef: ValueId) {
+        for block in blocks {
+            let first_use = block.ops.iter().position(|op| op.operands.contains(&undef));
+            let mut terminator_uses_undef = false;
+            block.terminator.for_each_value(|value| {
+                terminator_uses_undef |= value == undef;
+            });
+            let Some(insert_at) =
+                first_use.or_else(|| terminator_uses_undef.then_some(block.ops.len()))
+            else {
+                continue;
+            };
+            let value = self.fresh_value_typed();
+            for op in &mut block.ops[insert_at..] {
+                for operand in &mut op.operands {
+                    if *operand == undef {
+                        *operand = value;
+                    }
+                }
+            }
+            block.terminator.for_each_value_mut(|operand| {
+                if *operand == undef {
+                    *operand = value;
+                }
+            });
+            block.ops.insert(
+                insert_at,
+                TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstNone,
+                    operands: vec![],
+                    results: vec![value],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                },
+            );
+        }
     }
 
     fn into_output(self) -> SsaOutput {
@@ -539,7 +559,7 @@ mod tests {
     use std::collections::HashSet;
 
     /// Helper to create an `OpIR` with just a `kind`.
-    fn op(kind: &str) -> OpIR {
+    pub(super) fn op(kind: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             ..OpIR::default()
@@ -547,7 +567,7 @@ mod tests {
     }
 
     /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
-    fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
+    pub(super) fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             args: Some(args.iter().map(|s| s.to_string()).collect()),
@@ -557,7 +577,7 @@ mod tests {
     }
 
     /// Helper to create an `OpIR` with `kind` and `args`.
-    fn op_args(kind: &str, args: &[&str]) -> OpIR {
+    pub(super) fn op_args(kind: &str, args: &[&str]) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             args: Some(args.iter().map(|s| s.to_string()).collect()),
@@ -566,7 +586,7 @@ mod tests {
     }
 
     /// Helper to create an `OpIR` with `kind` and `value`.
-    fn op_val(kind: &str, value: i64) -> OpIR {
+    pub(super) fn op_val(kind: &str, value: i64) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             value: Some(value),
@@ -575,7 +595,7 @@ mod tests {
     }
 
     /// Helper to create an `OpIR` with `kind`, `out`, and `value`.
-    fn op_val_out(kind: &str, value: i64, out: &str) -> OpIR {
+    pub(super) fn op_val_out(kind: &str, value: i64, out: &str) -> OpIR {
         OpIR {
             kind: kind.to_string(),
             value: Some(value),
@@ -2647,7 +2667,7 @@ mod tests {
             .flat_map(|block| block.ops.iter())
             .find(|op| op.opcode == OpCode::ConstNone)
             .and_then(|op| op.results.first().copied())
-            .expect("SSA should materialize a shared undef None value");
+            .expect("SSA should materialize None at the missing edge");
 
         let has_undef_branch_arg = output.blocks.iter().any(|block| {
             let mut found = false;
@@ -2781,12 +2801,7 @@ mod tests {
         let output = convert_to_ssa(&cfg, &ops);
 
         let entry = &output.blocks[cfg.entry];
-        let undef = entry
-            .ops
-            .iter()
-            .find(|op| op.opcode == OpCode::ConstNone)
-            .and_then(|op| op.results.first().copied())
-            .expect("entry undef must exist");
+        assert!(entry.ops.iter().all(|op| op.opcode != OpCode::ConstNone));
         let seed = entry
             .ops
             .iter()
@@ -2817,10 +2832,12 @@ mod tests {
 
         assert_eq!(delete.operands.len(), 2);
         assert_eq!(delete.operands[0], gone);
-        assert_ne!(
-            delete.operands[1], undef,
-            "old-slot operand must not be the entry undef"
-        );
+        let old_loaded = entry
+            .ops
+            .iter()
+            .find(|op| op.attrs.get("_simple_out") == Some(&AttrValue::Str("old_loaded".into())))
+            .expect("explicit old-slot load");
+        assert_eq!(delete.operands[1], old_loaded.results[0]);
         assert_ne!(
             delete.operands[1], seed,
             "old-slot operand must not collapse to the initial missing store"
