@@ -187,36 +187,9 @@ pub(super) fn emit_dispatch_op(
             emit_dispatch_check_exception(func, op_emitter, plan, locals, op, idx, depth);
             true
         }
-        kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)
-            == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
-        {
-            let ret_local = op
-                .args
-                .as_ref()
-                .and_then(|args| args.first())
-                .and_then(|name| op_emitter.locals().get(name).copied());
-            if let Some(local_idx) = ret_local {
-                func.instruction(&Instruction::LocalGet(local_idx));
-            } else {
-                dispatch_control_panic(
-                    &func_ir.name,
-                    idx,
-                    format_args!("ret target args {:?} are not present", op.args),
-                );
-            }
-            op_emitter.emit_const_anchor_releases(func);
-            func.instruction(&Instruction::Return);
-            true
-        }
-        kind if molt_tir::tir::op_kinds_generated::simpleir_return_shape(kind)
-            == molt_tir::tir::op_kinds_generated::SimpleIrReturnShape::Void =>
-        {
-            func.instruction(&Instruction::I64Const(0));
-            op_emitter.emit_const_anchor_releases(func);
-            func.instruction(&Instruction::Return);
-            true
-        }
         _ => {
+            // Returns use the same payload, boxed-None and ownership emission
+            // as straight-line code. Dispatch owns only the terminating edge.
             op_emitter.emit_ops(
                 func,
                 std::slice::from_ref(op),
@@ -226,7 +199,7 @@ pub(super) fn emit_dispatch_op(
                 &mut scratch.label_depths,
                 idx,
             );
-            false
+            molt_tir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(&op.kind)
         }
     }
 }

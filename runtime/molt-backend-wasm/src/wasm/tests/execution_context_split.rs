@@ -19,7 +19,8 @@ let state;
 function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
   state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
            initialDepth: inherited ? 1 : 0, attempts: [], failEntry,
-           lines: [], polls: 0, exceptionAt, pending: false};
+           lines: [], polls: 0, exceptionAt, pending: false,
+           taskReads: 0, expectsTask: false};
 }
 function ensure(condition, message) {
   assert.ok(condition, state.label + ': ' + message + '; state=' + JSON.stringify(state));
@@ -31,6 +32,11 @@ function instantiate(path) {
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+    obj_get_state(task) {
+      ensure(state.expectsTask && task === 64n, 'unexpected task state read');
+      state.taskReads++;
+      return 0n; // Initial resume state; state_switch maps it to its real body.
+    },
     trace_enter_slot(slot) {
       ensure(state.depth === state.initialDepth && state.enters === 0,
              'unexpected frame entry');
@@ -145,10 +151,13 @@ for (const [name, message] of [
 ]) {
   assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
 }
-for (const test of config.empty_return_modules) {
-  reset('empty value-ABI return ' + test.lane);
-  const empty = instantiate(test.module);
-  assert.equal(empty.molt_main(), boxedNone, state.label);
+for (const test of config.return_modules) {
+  reset('value-ABI return ' + test.lane);
+  const app = instantiate(test.module);
+  state.expectsTask = test.stateful;
+  const result = test.stateful ? app.molt_main(64n) : app.molt_main();
+  assert.equal(result, BigInt(test.expected), state.label);
+  assert.equal(state.taskReads, test.stateful ? 1 : 0, state.label);
   ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
 }
 console.log('split-frame execution: checked/failed entry, actual chunks, normal/exceptional owner, status edges, negative controls passed');
@@ -376,30 +385,55 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         case["module"] = json!(module_path);
         cases.push(case);
     }
-    let mut empty_return_modules = Vec::new();
-    for dispatch in [false, true] {
-        let mut ops = Vec::new();
-        if dispatch {
-            ops.extend(["jump", "label"].map(|kind| OpIR {
-                kind: kind.into(),
-                value: Some(7),
-                ..OpIR::default()
-            }));
+    let mut return_modules = Vec::new();
+    for mode in ["ordinary", "dispatch", "stateful"] {
+        for payload in [false, true] {
+            let mut ops = Vec::new();
+            if mode == "dispatch" {
+                ops.extend(["jump", "label"].map(|kind| OpIR {
+                    kind: kind.into(),
+                    value: Some(7),
+                    ..OpIR::default()
+                }));
+            } else if mode == "stateful" {
+                ops.push(wasm_test_op("state_switch", None, vec![]));
+            }
+            if payload {
+                ops.push(OpIR {
+                    kind: "const_bool".into(),
+                    value: Some(1),
+                    out: Some("result".into()),
+                    ..OpIR::default()
+                });
+                ops.push(wasm_test_op("ret", None, vec!["result"]));
+            } else {
+                ops.push(wasm_test_op("ret_void", None, vec![]));
+            }
+            let params = if mode == "stateful" {
+                vec!["task"]
+            } else {
+                vec![]
+            };
+            let function = wasm_test_function("molt_main", params, None, ops);
+            assert_eq!(function.return_abi, molt_ir::FunctionReturnAbi::Value);
+            let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+                functions: vec![function],
+                profile: None,
+            });
+            let (pages, entries) = wasm_import_minimums(&output.wasm);
+            memory_pages = memory_pages.max(pages);
+            table_entries = table_entries.max(entries);
+            let lane = format!("{}-{}", mode, if payload { "payload" } else { "empty" });
+            let module = temp.join(format!("return_{lane}.wasm"));
+            fs::write(&module, output.wasm).expect("write return ABI module");
+            let expected = if payload {
+                molt_codegen_abi::box_bool_bits(1)
+            } else {
+                molt_codegen_abi::box_none_bits()
+            };
+            return_modules
+                .push(json!({"lane": lane, "module": module, "expected": expected.to_string(), "stateful": mode == "stateful"}));
         }
-        ops.push(wasm_test_op("ret_void", None, vec![]));
-        let function = wasm_test_function("molt_main", vec![], None, ops);
-        assert_eq!(function.return_abi, molt_ir::FunctionReturnAbi::Value);
-        let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
-            functions: vec![function],
-            profile: None,
-        });
-        let (pages, entries) = wasm_import_minimums(&output.wasm);
-        memory_pages = memory_pages.max(pages);
-        table_entries = table_entries.max(entries);
-        let lane = if dispatch { "dispatch" } else { "ordinary" };
-        let module = temp.join(format!("empty_return_{lane}.wasm"));
-        fs::write(&module, output.wasm).expect("write empty-return ABI module");
-        empty_return_modules.push(json!({"lane": lane, "module": module}));
     }
     let negative = malformed_frame_module();
     wasmparser::Validator::new()
@@ -418,7 +452,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
             "cases": cases,
-            "empty_return_modules": empty_return_modules,
+            "return_modules": return_modules,
         }))
         .unwrap(),
     )

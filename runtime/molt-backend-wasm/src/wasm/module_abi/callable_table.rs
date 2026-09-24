@@ -578,8 +578,14 @@ mod tests {
                 let mut body = ir.functions[0].clone();
                 body.name = target.to_string();
                 body.params = (0..arity).map(|index| format!("arg{index}")).collect();
+                body.return_abi = if returns_value {
+                    molt_ir::FunctionReturnAbi::Value
+                } else {
+                    molt_ir::FunctionReturnAbi::Void
+                };
                 body.ops = vec![OpIR {
-                    kind: if returns_value { "ret" } else { "ret_void" }.to_string(),
+                    // A missing payload must not redefine the physical ABI.
+                    kind: "ret_void".to_string(),
                     ..OpIR::default()
                 }];
                 ir.functions.push(body);
