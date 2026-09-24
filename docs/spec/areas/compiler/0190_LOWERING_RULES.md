@@ -575,6 +575,9 @@ synthetic signature instructions or a scan of optimized returns. Empty returns
 in a value ABI lower to boxed `None` at the machine boundary, keeping
 `trace_exit` adjacent to its return in the IR. A Python `None` type is not a void
 calling convention. See `SIMPLE_IR_JSON_SCHEMA.md` for the transport contract.
+WASM straight-line, jumpful and stateful SimpleIR paths share the return emitter;
+dispatch selects control edges, not a separate payload or ownership convention.
+In particular, an empty value-ABI return is boxed `None`, never raw integer zero.
 An empty extern declaration is not a body proving a `None` result: its value
 ABI has an unknown boxed semantic result, and lowering keeps the declaration
 free of synthetic executable signature operations.
