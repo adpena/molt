@@ -248,6 +248,124 @@ fn split_large_function_still_splits_regular_large_functions() {
 }
 
 #[test]
+fn split_statement_budgets_include_terminal_work_and_transport_prefixes() {
+    for budget in [3usize, 8] {
+        for prefix_padding in 0..4 {
+            for terminal_work in 1..=budget + 1 {
+                let mut ops = vec![
+                    OpIR {
+                        kind: "jump".into(),
+                        value: Some(42),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".into(),
+                        value: Some(42),
+                        ..OpIR::default()
+                    },
+                ];
+                for index in 0..prefix_padding {
+                    ops.push(make_const_int(&format!("prefix_{index}"), 0));
+                }
+                for line in 1..=6 {
+                    ops.push(OpIR {
+                        kind: "line".into(),
+                        value: Some(line),
+                        ..OpIR::default()
+                    });
+                    ops.push(make_const_int(&format!("statement_{line}"), line));
+                }
+                ops.push(OpIR {
+                    kind: "line".into(),
+                    value: Some(7),
+                    ..OpIR::default()
+                });
+                for index in 0..terminal_work {
+                    ops.push(make_const_int(&format!("terminal_{index}"), 0));
+                }
+                for (index, op) in ops.iter_mut().enumerate() {
+                    op.source_op_idx = Some(index as i64);
+                }
+                let source_count = ops.len();
+                ops.push(make_op("ret_void"));
+                let source = FunctionIR {
+                    name: "statement_budget".into(),
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
+                    execution_context: ExecutionContextPolicy::Inherited,
+                    ops,
+                    ..FunctionIR::default()
+                };
+                let (_, chunks) = split_for_test(source, budget).unwrap_or_else(|_| {
+                    panic!(
+                        "legal complete statements must split: budget={budget} prefix={prefix_padding} terminal={terminal_work}"
+                    )
+                });
+                let observed: Vec<i64> = chunks
+                    .iter()
+                    .flat_map(|chunk| chunk.ops.iter().filter_map(|op| op.source_op_idx))
+                    .collect();
+                assert_eq!(observed, (0..source_count as i64).collect::<Vec<_>>());
+                for chunk in &chunks {
+                    let source_ops: Vec<_> = chunk
+                        .ops
+                        .iter()
+                        .filter(|op| op.source_op_idx.is_some())
+                        .collect();
+                    assert!(source_ops.len() <= budget * 2);
+                    if source_ops.first().unwrap().source_op_idx != Some(0) {
+                        assert_eq!(source_ops[0].kind, "line");
+                    }
+                }
+                let terminal_chunk = chunks
+                    .iter()
+                    .find(|chunk| {
+                        chunk
+                            .ops
+                            .iter()
+                            .any(|op| op.kind == "line" && op.value == Some(7))
+                    })
+                    .unwrap();
+                assert_eq!(
+                    terminal_chunk
+                        .ops
+                        .iter()
+                        .filter(|op| {
+                            op.out
+                                .as_deref()
+                                .is_some_and(|name| name.starts_with("terminal_"))
+                        })
+                        .count(),
+                    terminal_work,
+                    "a budget must not sever the final statement"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn split_oversized_terminal_statement_refuses_without_fragmenting_it() {
+    let mut source = adversarial_named_large_function("indivisible_terminal");
+    source.ops.pop();
+    for index in 0..6 {
+        source
+            .ops
+            .push(make_const_int(&format!("terminal_{index}"), 0));
+    }
+    source.ops.push(make_op("ret_void"));
+    let mut occupied = BTreeSet::from([source.name.clone()]);
+    let before_names = occupied.clone();
+    let mut before = Vec::new();
+    crate::write_function_ir_contract(&source, &mut before).unwrap();
+    let rejected = split_large_function(source, 3, &mut occupied)
+        .expect_err("one statement larger than the hard budget has no legal internal cut");
+    let mut after = Vec::new();
+    crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+    assert_eq!(after, before);
+    assert_eq!(occupied, before_names);
+}
+
+#[test]
 fn split_large_function_uses_generated_return_family_and_collision_free_synthetics() {
     let reserved_names = vec![
         "__molt_split_frame",

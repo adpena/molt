@@ -211,6 +211,149 @@ fn e2e_range_loop_iv_in_bounds() {
     assert!(vr.proves_index_in_bounds(body, a, iv));
 }
 
+fn ranged_counter(
+    start: i64,
+    stop: i64,
+    step: i64,
+    nsw: bool,
+) -> (TirFunction, BlockId, BlockId, ValueId, ValueId) {
+    let (mut func, body, array, iv) = range_loop_vr(10, stop);
+    let header = func.blocks[&body].terminator.successors()[0];
+    let start_id = func.blocks[&func.entry_block]
+        .terminator
+        .first_edge_args_to(header)
+        .unwrap()[0];
+    let step_id = func.blocks[&body].ops[1].operands[1];
+    for op in &mut func.blocks.get_mut(&func.entry_block).unwrap().ops {
+        if op.results == [start_id] {
+            op.attrs.insert("value".into(), AttrValue::Int(start));
+        }
+        if op.results == [step_id] {
+            op.attrs.insert("value".into(), AttrValue::Int(step));
+        }
+    }
+    func.blocks.get_mut(&header).unwrap().ops[0].opcode =
+        if step > 0 { OpCode::Lt } else { OpCode::Gt };
+    if !nsw {
+        func.blocks.get_mut(&body).unwrap().ops[1]
+            .attrs
+            .remove("no_signed_wrap");
+    }
+    (func, header, body, array, iv)
+}
+
+#[test]
+fn recurrence_sites_keep_failed_guard_body_and_escaping_copy_facts_distinct() {
+    for nsw in [false, true] {
+        for (start, stop, step, global, local) in [
+            (0, 10, 1, IntRange::new(0, 10), IntRange::new(0, 9)),
+            (10, 0, -1, IntRange::new(0, 10), IntRange::new(1, 10)),
+            (1, -1, -1, IntRange::new(-1, 1), IntRange::new(0, 1)),
+        ] {
+            let (mut func, header, body, _, iv) = ranged_counter(start, stop, step, nsw);
+            let zero = func.fresh_value();
+            let alias = func.fresh_value();
+            let body_result = func.fresh_value();
+            let guard_result = func.fresh_value();
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(cint(zero, 0));
+            func.blocks
+                .get_mut(&header)
+                .unwrap()
+                .ops
+                .insert(0, op(OpCode::Add, vec![iv, zero], vec![guard_result]));
+            let body_block = func.blocks.get_mut(&body).unwrap();
+            body_block
+                .ops
+                .insert(0, op(OpCode::Copy, vec![iv], vec![alias]));
+            body_block
+                .ops
+                .insert(1, op(OpCode::Add, vec![alias, zero], vec![body_result]));
+            let vr = compute_value_range(&func, &compute_scev(&func));
+            assert_eq!(vr.range_of(iv), global);
+            assert_eq!(vr.range_at(header, iv), global);
+            assert_eq!(vr.range_at(body, iv), local);
+            assert_eq!(
+                vr.range_of(alias),
+                global,
+                "copy identity must not narrow its source globally"
+            );
+            assert_eq!(vr.range_at(body, alias), local);
+            assert_eq!(
+                vr.range_of(body_result),
+                local,
+                "definition only executes after successful guard"
+            );
+            assert_eq!(vr.range_of(guard_result), global);
+        }
+    }
+}
+
+#[test]
+fn recurrence_exception_exits_do_not_transfer_guard_facts_to_bypasses() {
+    for nsw in [false, true] {
+        for target_kind in 0..3 {
+            let (mut func, header, body, _, iv) = ranged_counter(0, 10, 1, nsw);
+            let target = if target_kind == 0 {
+                let handler = func.fresh_block();
+                let observed = func.fresh_value();
+                func.blocks.insert(
+                    handler,
+                    Blk {
+                        id: handler,
+                        args: vec![],
+                        ops: vec![op(OpCode::Copy, vec![iv], vec![observed])],
+                        terminator: Terminator::Return { values: vec![] },
+                    },
+                );
+                handler
+            } else if target_kind == 1 {
+                body
+            } else {
+                header
+            };
+            func.label_id_map.insert(target.0, 791);
+            let mut poll = op(OpCode::CheckException, vec![], vec![]);
+            poll.attrs.insert("value".into(), AttrValue::Int(791));
+            func.blocks.get_mut(&header).unwrap().ops.insert(0, poll);
+            let vr = compute_value_range(&func, &compute_scev(&func));
+            if target_kind == 0 {
+                assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
+                assert_eq!(vr.range_at(target, iv), IntRange::new(0, 10));
+                assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
+            } else {
+                assert!(
+                    vr.range_of(iv).is_full(),
+                    "exception bypass/reentry cannot license recurrence hull"
+                );
+                assert!(vr.range_at(body, iv).is_full());
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_trip_and_overflowing_final_guards_do_not_invent_body_hulls() {
+    for nsw in [false, true] {
+        let (func, header, body, array, iv) = ranged_counter(0, 0, 1, nsw);
+        let vr = compute_value_range(&func, &compute_scev(&func));
+        assert_eq!(vr.range_of(iv), IntRange::point(0));
+        assert_eq!(vr.range_at(header, iv), IntRange::point(0));
+        assert_eq!(vr.range_at(body, iv), IntRange::point(0));
+        assert!(!vr.proves_index_lt_len_symbolically(body, array, iv));
+
+        let (func, header, body, _, iv) = ranged_counter(i64::MAX - 1, i64::MAX, 2, nsw);
+        let vr = compute_value_range(&func, &compute_scev(&func));
+        assert!(vr.range_of(iv).is_full());
+        assert!(vr.range_at(header, iv).is_full());
+        assert_eq!(vr.range_at(body, iv), IntRange::point(i64::MAX - 1));
+        assert!(!vr.fits_inline_int47(iv));
+    }
+}
+
 #[test]
 fn e2e_range_loop_container_too_small_not_proven() {
     // a has length 3, for i in range(10): i can reach 9 > 2 → NOT in bounds.
@@ -240,7 +383,7 @@ fn e2e_counted_loop_const_bound_proven_without_nsw() {
     let vr = compute_value_range(&func, &scev);
     // SCEV gives no AddRec, but the counted-loop recognizer still proves it.
     assert_eq!(
-        vr.range_of(iv),
+        vr.range_at(body, iv),
         IntRange::new(0, 9),
         "counted-loop recognizer must recover the IV range from the const bound"
     );
@@ -267,7 +410,8 @@ fn counted_loop_fallback_uses_loopforest_without_loop_roles() {
         !scev.is_induction_var(iv),
         "without nsw, SCEV must not be the source of this range"
     );
-    assert_eq!(vr.range_of(iv), IntRange::new(0, 9));
+    assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
+    assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
     assert!(vr.proves_index_in_bounds(body, a, iv));
 }
 
@@ -347,7 +491,11 @@ fn e2e_derived_values_get_proven_ranges() {
     let (func, iv, i_plus_1, i_and_15, i_mod_4, i_shl_30) = range_loop_with_derived(10);
     let scev = compute_scev(&func);
     let vr = compute_value_range(&func, &scev);
-    assert_eq!(vr.range_of(iv), IntRange::new(0, 9), "IV body range");
+    assert_eq!(
+        vr.range_of(iv),
+        IntRange::new(0, 10),
+        "global includes failed guard"
+    );
     // i + 1 ∈ [1, 10] — the `p.y = i + 1` shape.
     assert_eq!(vr.range_of(i_plus_1), IntRange::new(1, 10));
     assert!(vr.fits_inline_int47(i_plus_1));
@@ -425,7 +573,11 @@ fn e2e_floordiv_const_proven_inline() {
     let (func, iv, q) = range_loop_with_floordiv(1000, 3);
     let scev = compute_scev(&func);
     let vr = compute_value_range(&func, &scev);
-    assert_eq!(vr.range_of(iv), IntRange::new(0, 999), "IV body range");
+    assert_eq!(
+        vr.range_of(iv),
+        IntRange::new(0, 1000),
+        "global includes failed guard"
+    );
     assert_eq!(vr.range_of(q), IntRange::new(0, 333), "999 // 3 == 333");
     assert!(
         vr.fits_inline_int47(q),

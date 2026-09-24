@@ -462,6 +462,40 @@ fn range_loop_index_eliminated() {
     assert!(stats.values_changed >= 1);
 }
 
+#[test]
+fn guard_index_keeps_bounds_check_while_success_body_elides_it() {
+    for nsw in [false, true] {
+        let (mut func, header, body, _) = build_range_loop_func(10, 10, false);
+        let mut guard_index = func.blocks[&body].ops[0].clone();
+        guard_index.results = vec![func.fresh_value()];
+        func.blocks
+            .get_mut(&header)
+            .unwrap()
+            .ops
+            .insert(0, guard_index);
+        func.blocks
+            .get_mut(&header)
+            .unwrap()
+            .ops
+            .insert(1, make_op(OpCode::CheckException, vec![], vec![]));
+        if !nsw {
+            func.blocks.get_mut(&body).unwrap().ops[1]
+                .attrs
+                .remove("no_signed_wrap");
+        }
+        run_bce(&mut func);
+        assert!(
+            !func.blocks[&header].ops[0].attrs.contains_key("bce_safe"),
+            "the final guard probes index 10 in a length-10 list"
+        );
+        assert_eq!(
+            func.blocks[&body].ops[0].attrs.get("bce_safe"),
+            Some(&AttrValue::Bool(true)),
+            "success-edge body retains exact [0,9] proof"
+        );
+    }
+}
+
 // ------------------------------------------------------------------
 // Test 8: negative index inside range loop -> NOT marked.
 // ------------------------------------------------------------------

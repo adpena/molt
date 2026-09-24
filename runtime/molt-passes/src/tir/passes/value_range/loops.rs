@@ -1,18 +1,50 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::LoopForestResult;
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
-use crate::tir::numeric_facts::{IntRange, affine_iv_hull};
+use crate::tir::numeric_facts::{IntRange, TripCount, affine_iv_hull, affine_recurrence_range};
 use crate::tir::op_kinds_generated::{
     ValueRangeCondNarrowRule, opcode_value_range_cond_narrow_rule_table,
 };
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
 
+use super::super::counted_loop::LoopGuardContext;
 use super::super::counted_loop::recognize_counted_loop_with_loop_forest;
-use super::super::scev::find_loop_guard;
 use super::ValueRangeResult;
+
+/// One placement authority for both recurrence producers. The header executes
+/// once more than the successful body: its final failed-guard value belongs to
+/// the global hull. Only success-edge-dominated blocks receive the body hull.
+pub(super) fn seed_recurrence_ranges(
+    result: &mut ValueRangeResult,
+    iv: ValueId,
+    start: i64,
+    step: i64,
+    trip: &TripCount,
+    success_blocks: &[BlockId],
+) {
+    let (global, body) = match trip {
+        TripCount::Constant(trips) if *trips >= 0 => {
+            let final_value = start as i128 + *trips as i128 * step as i128;
+            let global = i64::try_from(final_value)
+                .ok()
+                .map(|last| IntRange::new(start.min(last), start.max(last)));
+            (global, affine_iv_hull(start, step, *trips))
+        }
+        TripCount::Constant(_) => (None, None),
+        _ => (affine_recurrence_range(start, step, trip), None),
+    };
+    if let Some(global) = global {
+        result.record_global_range(iv, global);
+    }
+    if let Some(body) = body {
+        for &bid in success_blocks {
+            result.meet_block_range(bid, iv, body);
+        }
+    }
+}
 /// Seed IV ranges from the canonical counted-loop recognizer for any header that
 /// SCEV could not classify as an `AddRec` (the frontend's nsw-less counted-loop
 /// shape). [`counted_loop::recognize_counted_loop`] proves constant `start`,
@@ -21,10 +53,9 @@ use super::ValueRangeResult;
 /// independent of the missing nsw tag and of wrap concerns (a bounded constant
 /// trip count gives an exact closed-form last value).
 ///
-/// We only ASSIGN a fact to an IV that has none (never widen a tighter SCEV/guard
-/// fact), and we range the back-edge update value the same way SCEV's path does,
-/// so a value-keyed consumer (`fits_inline_int47`) sees the phi's loop-carried
-/// incoming proven too.
+/// We only assign a fact to an IV that has none. Both recurrence producers use
+/// the shared global/body placement rule; ordinary site-aware op propagation
+/// derives update ranges from the successful-body operand facts.
 pub(super) fn seed_counted_loop_iv_ranges(
     func: &TirFunction,
     loop_forest: &LoopForestResult,
@@ -40,100 +71,17 @@ pub(super) fn seed_counted_loop_iv_ranges(
         if result.has_global_range(iv_canon) {
             continue;
         }
-        // The IV's exact i128-computed hull over the proven constant trip count.
-        let Some(iv_range) = affine_iv_hull(c.start, c.step, c.trip_count) else {
-            continue;
-        };
-        // Place the IV range as a weak global + a per-body-block fact.
-        result.record_global_range(iv_canon, iv_range);
-        if let Some(body) = loop_forest.bodies.get(&header) {
-            for &b in body {
-                result.meet_block_range(b, iv_canon, iv_range);
-            }
-        }
-        // Range the back-edge update value `iv_next = iv + step` (one step later)
-        // so the IV phi's loop-carried incoming is also proven for value-keyed
-        // consumers (`fits_inline_int47`). `back_args[iv_arg_index]` is the
-        // IV-next value the recognizer validated as `Add(iv, step)`. Its hull is
-        // the recurrence shifted by one step: `{start + step, +, step}`.
-        if let Some(s0_next) = c.start.checked_add(c.step)
-            && let Some(next_range) = affine_iv_hull(s0_next, c.step, c.trip_count)
-        {
-            let next_canon = result.resolve(c.back_args[c.iv_arg_index]);
-            result.meet_global_range(next_canon, next_range);
-        }
+        seed_recurrence_ranges(
+            result,
+            iv_canon,
+            c.start,
+            c.step,
+            &TripCount::Constant(c.trip_count),
+            &c.body_path,
+        );
+        // Updates are ordinary op definitions. Site-aware propagation derives
+        // them from the body hull, rather than a second recurrence formula.
     }
-}
-
-/// The value carried on the loop's back-edge into the header phi `iv` — i.e.
-/// the IV's next-iteration value. `iv` is a header block-argument; this returns
-/// the argument passed at `iv`'s index by the (single) body block whose
-/// terminator branches back to `header`. Returns `None` when the structure is
-/// not the canonical single-latch shape (multiple back-edges with differing
-/// values, or a missing arg), in which case the next-value range is left
-/// unproven (sound: a conservative omission, never a false fact).
-pub(super) fn back_edge_update_value(
-    func: &TirFunction,
-    header: BlockId,
-    iv: ValueId,
-    body: &HashSet<BlockId>,
-) -> Option<ValueId> {
-    // The IV's positional index among the header block arguments.
-    let header_block = func.blocks.get(&header)?;
-    let arg_index = header_block.args.iter().position(|a| a.id == iv)?;
-
-    let mut found: Option<ValueId> = None;
-    for &bid in body {
-        let Some(block) = func.blocks.get(&bid) else {
-            continue;
-        };
-        // Collect every (target, args) edge from this body block.
-        let edges: &[(BlockId, &Vec<ValueId>)] = &match &block.terminator {
-            Terminator::Branch { target, args } => vec![(*target, args)],
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => vec![(*then_block, then_args), (*else_block, else_args)],
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            }
-            | Terminator::StateDispatch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                let mut v: Vec<(BlockId, &Vec<ValueId>)> =
-                    cases.iter().map(|(_, t, a)| (*t, a)).collect();
-                v.push((*default, default_args));
-                v
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => continue,
-        };
-        for (target, args) in edges {
-            if *target != header {
-                continue;
-            }
-            let Some(&val) = args.get(arg_index) else {
-                // A back-edge that does not pass this arg → malformed; refuse.
-                return None;
-            };
-            match found {
-                None => found = Some(val),
-                // Multiple back-edges carrying *different* values → ambiguous;
-                // do not assign a (possibly wrong) range.
-                Some(prev) if prev != val => return None,
-                Some(_) => {}
-            }
-        }
-    }
-    found
 }
 
 /// Narrow the range an induction variable `{s0, +, k}` takes over a loop body
@@ -141,12 +89,13 @@ pub(super) fn back_edge_update_value(
 /// `i < len(c)` facts for the symbolic bound proof.
 ///
 /// The guard's `then` successor must be inside the loop body: only then does
-/// the body execute under the guard-true condition. We narrow `var`'s range in
-/// every body block — sound because, in the canonical single-exit-test loop,
-/// every body block is reached only through the guard-true edge.
+/// the body execute under the guard-true condition. Only blocks dominated by
+/// that normal edge receive the fact. Header/guard prefixes and exception
+/// bypasses retain their global range.
 pub(super) fn narrow_from_header_guards(
     func: &TirFunction,
     loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    guards: &LoopGuardContext,
     result: &mut ValueRangeResult,
 ) {
     // Op definitions for tracing the comparison condition.
@@ -159,38 +108,28 @@ pub(super) fn narrow_from_header_guards(
         }
     }
 
-    for (&header, body) in loop_bodies {
+    let mut headers: Vec<_> = loop_bodies.keys().copied().collect();
+    headers.sort_unstable_by_key(|bid| bid.0);
+    for header in headers {
+        let body = &loop_bodies[&header];
         // Find the loop's exit-test CondBranch (usually one block below the
         // header after lowering).
-        let Some((guard_block, cond)) = find_loop_guard(func, header, body) else {
+        let Some(guard) = guards.material_guard(func, header, body) else {
             continue;
         };
         // The guard-true successor must be inside the loop body for the narrow
-        // to be sound. find_loop_guard guarantees a body/non-body split; verify
+        // to be sound. The shared guard authority guarantees a body/non-body split; verify
         // which side is the body and require the THEN edge to be the body one.
-        let Some(guard_blk) = func.blocks.get(&guard_block) else {
-            continue;
-        };
-        let Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } = &guard_blk.terminator
-        else {
-            continue;
-        };
-        let then_in = body.contains(then_block);
-        let else_in = body.contains(else_block);
         // We only model the standard `cond == true → stay in loop` polarity:
         // the then-edge re-enters the body, the else-edge exits. (If the
         // polarity is inverted, the guard fact under `cond==true` does not hold
         // in the body, so we conservatively skip — never narrow unsoundly.)
         // (`!then_in || else_in` ≡ `!(then_in && !else_in)`: skip unless the
         // then-edge re-enters the body and the else-edge does not.)
-        if !then_in || else_in {
+        if !guard.continue_on_true {
             continue;
         }
-        let Some((opcode, raw_operands)) = def_op.get(&cond) else {
+        let Some((opcode, raw_operands)) = def_op.get(&guard.condition) else {
             continue;
         };
         if raw_operands.len() != 2 {
@@ -206,7 +145,19 @@ pub(super) fn narrow_from_header_guards(
         //   Le(var, n) ⇒ var <= n
         let bound_const = result.const_int_of(bound);
         let narrow_rule = opcode_value_range_cond_narrow_rule_table(*opcode);
-        for &b in body {
+        // A statically failed first guard has no executed body. Do not invent
+        // contradictory numeric/symbolic body facts for that zero-trip path.
+        if let Some(n) = bound_const {
+            let possible = match narrow_rule {
+                ValueRangeCondNarrowRule::LtUpperExclusive => result.range_of(var).lo < n,
+                ValueRangeCondNarrowRule::LeUpperInclusive => result.range_of(var).lo <= n,
+                ValueRangeCondNarrowRule::None => true,
+            };
+            if !possible {
+                continue;
+            }
+        }
+        for &b in &guard.success_blocks {
             match narrow_rule {
                 ValueRangeCondNarrowRule::LtUpperExclusive => {
                     if let Some(n) = bound_const {

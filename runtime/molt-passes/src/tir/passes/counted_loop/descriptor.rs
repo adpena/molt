@@ -9,14 +9,19 @@ use crate::tir::values::ValueId;
 /// takes the constant value `start + k*step` on iteration `k`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountedLoop {
-    /// The loop header block (a pure phi block: `Branch -> cond_block`).
+    /// The loop header block carrying the recurrence arguments.
     pub header: BlockId,
-    /// The block holding the loop-exit comparison + `CondBranch(body, exit)`.
-    /// Equal to `header` only in the legacy 1-arg synthesized shape where the
-    /// comparison lives in the header itself.
+    /// The block holding the exit terminator (the comparison can precede it).
     pub cond_block: BlockId,
-    /// The loop body block (the `CondBranch` successor that loops back).
+    /// The loop body entry (the `CondBranch` successor that loops back).
     pub body: BlockId,
+    /// Normal execution order, including the header and final guard block.
+    pub guard_path: Vec<BlockId>,
+    /// Normal execution order, including the body entry and back-edge latch.
+    pub body_path: Vec<BlockId>,
+    /// Exception edges can truncate the recurrence but cannot reenter it.
+    /// Range facts remain valid; full unrolling needs stronger eligibility.
+    pub has_side_exits: bool,
     /// The exit block (the `CondBranch` successor that does not loop back).
     pub exit: BlockId,
     /// The unique reachable preheader (non-back-edge predecessor of `header`).
@@ -29,7 +34,7 @@ pub struct CountedLoop {
     pub start: i64,
     /// Step per iteration (non-zero compile-time constant).
     pub step: i64,
-    /// Trip count (number of iterations; always `> 0`).
+    /// Trip count (number of successful body iterations; always `>= 0`).
     pub trip_count: i64,
     /// The exit-edge argument list on the cond block's `CondBranch` (the values
     /// forwarded to `exit`). May reference header args (loop-carried values) or
