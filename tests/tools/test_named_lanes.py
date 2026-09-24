@@ -296,6 +296,35 @@ def test_obsolete_dynamic_environment_field_is_rejected() -> None:
     assert any("unknown named lane fields" in error for error in plan.validate())
 
 
+@pytest.mark.parametrize("lifetime", ["terminal-success", True, None])
+def test_python_named_recipe_cannot_discard_deferred_cargo_outputs(lifetime) -> None:
+    lane = PLAN.named_lane("pact.witness.oracle")
+    changed = replace(lane, data={**lane.data, "cargo_output_lifetime": lifetime})
+    plan = replace(
+        PLAN,
+        named_lanes=tuple(
+            changed if item.id == lane.id else item for item in PLAN.named_lanes
+        ),
+    )
+    assert any("must retain Cargo outputs" in error for error in plan.validate())
+
+
+def test_disposable_named_override_is_refused_before_environment_provision(
+    monkeypatch,
+) -> None:
+    spec = pact._named_lane_spec("pact.witness.oracle")
+    spec["prepared_named_lane"] = "pact.witness.oracle"
+    monkeypatch.setattr(
+        pact,
+        "source_build_environment",
+        lambda *args, **kwargs: pytest.fail("provisioned rejected output consumer"),
+    )
+    with pytest.raises(ValueError, match="explicit Cargo"):
+        pact._run_named_spec(
+            argparse.Namespace(cargo_output_lifetime="terminal-success"), spec
+        )
+
+
 @pytest.mark.parametrize("lane_id", LANE_IDS)
 def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_id: str

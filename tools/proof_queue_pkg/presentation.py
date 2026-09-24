@@ -13,8 +13,9 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
         "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
         '--id focused-cargo-proof --reason "why this proves the Rust contract" '
-        '--scope runtime/molt-runtime/src/cpython_abi_hooks.rs --note "change: moved the Rust authority; test: proving the focused invariant" --timeout 900 -- '
-        "test -p molt-runtime exact_test_name --lib\n"
+        "--cargo-output-lifetime terminal-success "
+        '--scope runtime/molt-cpython-abi/src --note "change: moved the Rust authority; test: proving the complete C-API crate shard" --timeout 900 -- '
+        "test -p molt-cpython-abi --lib\n"
         "uv run --active --project . --python 3.12 python tools/proof_queue.py exec "
         '--id focused-proof --reason "why this proves the changed contract" '
         '--resource-family python --contention-key python:focused --note "change: moved the shared authority; test: proving the focused invariant" --timeout 240 -- '
@@ -57,11 +58,12 @@ def _cmd_cargo_template(args: argparse.Namespace) -> int:
     print(
         "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo \\\n"
         "  --id runtime-focused-proof \\\n"
+        "  --cargo-output-lifetime terminal-success \\\n"
         '  --reason "Prove the changed Rust runtime contract." \\\n'
-        "  --scope runtime/molt-runtime/src/cpython_abi_hooks.rs \\\n"
+        "  --scope runtime/molt-cpython-abi/src \\\n"
         '  --note "change: moved static-link Py_mod_exec diagnostics into the C-API authority" \\\n'
         "  --timeout 900 \\\n"
         "  --detach \\\n"
-        "  -- test -p molt-runtime exact_test_name --lib"
+        "  -- test -p molt-cpython-abi --lib"
     )
     return 0

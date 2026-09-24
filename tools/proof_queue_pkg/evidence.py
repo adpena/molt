@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from molt.exact_json import canonical_json_bytes, loads_exact
 from tools.proof_queue_pkg import (
     cargo_cache_custody,
+    cargo_output_layout,
     command_admission,
     diagnostic_engine,
     state,
@@ -270,6 +271,18 @@ def _cargo_generation_terminal(
     if len(generations) != 1 or not isinstance(lifecycle, dict):
         raise ValueError("Cargo proof has no unique terminal generation custody")
     provenance = generations[0]
+    lifetime = command_admission.validated_cargo_output_lifetime(
+        context["command_envelope"]
+    )
+    if provenance.get("cargo_output_lifetime", "retain") != lifetime:
+        raise ValueError("Cargo generation lifetime differs from immutable admission")
+    if not cargo_output_layout.same_root(
+        provenance.get("cargo_output_root"),
+        context["command_envelope"].get("cargo_output_root"),
+    ):
+        raise ValueError(
+            "Cargo generation output root differs from immutable admission"
+        )
     terminal = cargo_cache_custody.validate_terminal_receipt(
         result_root=Path(str(row["log_path"])).parent,
         projection=lifecycle,

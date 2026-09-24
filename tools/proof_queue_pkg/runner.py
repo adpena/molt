@@ -28,6 +28,8 @@ from tools.proof_queue_pkg import (
     command_identity,
     cargo_cache_custody,
     cargo_output_environment,
+    cargo_output_lifecycle,
+    cargo_output_layout,
     execution_custody,
     execution_environment as environment_authority,
     execution_receipt_details,
@@ -229,6 +231,22 @@ def _record_cargo_generation_terminal(
     ):
         raise ValueError("Cargo generation owner differs from execution identity")
     context = dict(receipt_context or {})
+    envelope = context.get("command_envelope")
+    lifetime = (
+        command_admission.validated_cargo_output_lifetime(envelope)
+        if isinstance(envelope, Mapping)
+        else "retain"
+    )
+    if provenance.get("cargo_output_lifetime", "retain") != lifetime:
+        raise ValueError("Cargo generation output lifetime differs from parent receipt")
+    output_root = (
+        envelope.get("cargo_output_root") if isinstance(envelope, Mapping) else None
+    )
+    if not cargo_output_layout.same_root(
+        provenance.get("cargo_output_root"), output_root
+    ):
+        raise ValueError("Cargo generation output root differs from parent receipt")
+    cargo_output_layout.validate_root(output_root)
     process_supervisor = None
     if process_cleanup_safe:
         derived = context.get("derived_root_custody")
@@ -240,6 +258,8 @@ def _record_cargo_generation_terminal(
         process_supervisor = context.get("process_supervisor")
     terminal = {
         "schema": cargo_cache_custody.TERMINAL_RECEIPT_SCHEMA,
+        "cargo_output_lifetime": lifetime,
+        **({"cargo_output_root": output_root} if output_root is not None else {}),
         "run_id": run_id,
         "execution_nonce_sha256": nonce_hash,
         "input_sha256": provenance.get("input_sha256"),
@@ -800,6 +820,10 @@ def _validated_execution_context(
                 )
             cargo_cache_custody.validate_prelaunch(
                 derived,
+                cargo_output_root=envelope.get("cargo_output_root"),
+                cargo_output_lifetime=command_admission.validated_cargo_output_lifetime(
+                    envelope
+                ),
                 cas_root=execution_path.parent / "custody-cas",
                 command=policy_command,
                 outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
@@ -810,6 +834,29 @@ def _validated_execution_context(
                 source_root=str(source_snapshot.get("root")),
                 source_snapshot=source_snapshot,
                 source_content=source_content.get("prelaunch"),
+            )
+    if envelope.get("cargo_output_root") is not None:
+        output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope,
+            result_root=execution_path.parent,
+            source_root=Path(str(source_custody.get("row_cwd"))),
+        )
+        output_layout.validate(
+            protected_roots=[
+                Path(item.path).parent
+                for item in toolchain_capture.frozen_files(full_toolchains)
+            ]
+        )
+        if policy_environment.get(supervisor_custody.PROOF_SCRATCH_ROOT_ENV) != str(
+            output_layout.scratch(execution_nonce)
+        ):
+            raise ValueError("proof scratch differs from admitted Cargo output layout")
+        provision = supervisor.get("provision_telemetry")
+        if not isinstance(provision, Mapping) or provision.get(
+            "build_target_dir"
+        ) != str(output_layout.supervisor_target):
+            raise ValueError(
+                "supervisor build output differs from admitted Cargo output layout"
             )
     verified_supervisor = _COMMANDS.run(
         [
@@ -1039,9 +1086,21 @@ def _queue_one(
     edge_kind: str = state.DEFAULT_EDGE_KIND,
     edge_note: str | None = None,
     policy_error: str | None = None,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
 ) -> tuple[int, str | None]:
     if not command:
         raise SystemExit("proof command is empty")
+    if cargo_output_lifetime != "retain" or cargo_output_root is not None:
+        try:
+            command_admission.envelope_for_command(
+                command,
+                cargo_output_lifetime=cargo_output_lifetime,
+                cargo_output_root=cargo_output_root,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2, None
     secret_error = environment_authority.command_secret_policy_error(command)
     env_error = policy._proof_env_policy_error(env_overrides)
     if secret_error is not None or env_error is not None:
@@ -1086,6 +1145,8 @@ def _queue_one(
         logical_id=logical_id,
         reason=reason,
         command=command,
+        cargo_output_lifetime=cargo_output_lifetime,
+        cargo_output_root=cargo_output_root,
         cwd=repo_root,
         resource_family=resource_family,
         contention_key=contention_key,
@@ -1361,9 +1422,23 @@ def _run_one(
     existing_run_id: str | None = None,
     existing_log_path: Path | None = None,
     existing_summary_json: Path | None = None,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
 ) -> int:
     if not command:
         raise SystemExit("proof command is empty")
+    if existing_run_id is None and (
+        cargo_output_lifetime != "retain" or cargo_output_root is not None
+    ):
+        try:
+            command_admission.envelope_for_command(
+                command,
+                cargo_output_lifetime=cargo_output_lifetime,
+                cargo_output_root=cargo_output_root,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     secret_error = environment_authority.command_secret_policy_error(command)
     env_error = policy._proof_env_policy_error(env_overrides)
     if secret_error is not None or env_error is not None:
@@ -1407,6 +1482,13 @@ def _run_one(
     log_path = existing_log_path or logs_root / f"{run_id}.log"
     summary_json = existing_summary_json or logs_root / f"{run_id}.memory_guard.json"
     inserted_run = existing_run_id is None
+    try:
+        cargo_output_lifecycle.resume_declared_successes(db)
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(
+            f"Cargo output recovery could not inspect pending finalizations: {exc}",
+            file=sys.stderr,
+        )
     if existing_run_id is None:
         scheduling._insert_run(
             conn,
@@ -1414,6 +1496,8 @@ def _run_one(
             logical_id=logical_id,
             reason=reason,
             command=command,
+            cargo_output_lifetime=cargo_output_lifetime,
+            cargo_output_root=cargo_output_root,
             cwd=repo_root,
             resource_family=resource_family,
             contention_key=contention_key,
@@ -1477,23 +1561,40 @@ def _run_one(
     capacity_admission = None
     try:
         session_id = state._proof_session_id(resource_family, contention_key)
-        admitted_envelope = command_admission.envelope_for_command(command)
+        admitted_row = state._row_by_run_id(conn, run_id)
+        if admitted_row is None:
+            raise ValueError("admitted proof run disappeared before launch")
+        admitted_envelope = loads_exact(admitted_row["command_envelope_json"])
+        if not isinstance(admitted_envelope, dict):
+            raise ValueError("admitted command envelope must be an object")
+        command_admission.validate_envelope(admitted_envelope, command)
         requested_toolchains = admitted_envelope.get("toolchains")
         if not _is_string_list(requested_toolchains):
             raise ValueError("admitted command has malformed toolchain names")
         uses_cargo = "cargo" in requested_toolchains
+        output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+            admitted_envelope,
+            result_root=logs_root,
+            source_root=repo_root
+            if admitted_envelope.get("cargo_output_root") is not None
+            else None,
+        )
+        output_layout.validate_environment({**os.environ, **env_overrides})
         if uses_cargo:
             # The queue owns Cargo and derived output below the result root.
             # Reject before environment provisioning, capture, or child launch.
             capacity_admission = disk_capacity.require_build_capacity(
-                (logs_root,), env={**os.environ, **env_overrides}
+                output_layout.capacity_paths()
+                if output_layout.declaration is not None
+                else (logs_root,),
+                env={**os.environ, **env_overrides},
             ).as_dict()
         env = development_artifact_env(
             repo_root,
             os.environ,
             session_prefix=f"proof-{resource_family}",
             session_id=session_id,
-            create_dirs=uses_cargo,
+            create_dirs=uses_cargo and output_layout.declaration is None,
         )
         if not uses_cargo:
             # A non-Cargo proof owns no Cargo artifact lane.  The native proof
@@ -1501,13 +1602,20 @@ def _run_one(
             # repo-local session target here only dirties admitted source.
             env.pop("CARGO_TARGET_DIR", None)
         proof_tmp = (logs_root / "tmp").resolve()
+        payload_tmp = (
+            output_layout.temporary
+            if output_layout.declaration is not None
+            else proof_tmp
+        )
+        if output_layout.declaration is not None:
+            custody_cas._durable_makedirs(payload_tmp)
         env.update(
             {
                 "MOLT_MEMORY_GUARD_STATE_ROOT": str(proof_tmp / "memory_guard"),
-                "PYTHONPYCACHEPREFIX": str(proof_tmp / "pycache"),
-                "TEMP": str(proof_tmp),
-                "TMP": str(proof_tmp),
-                "TMPDIR": str(proof_tmp),
+                "PYTHONPYCACHEPREFIX": str(payload_tmp / "pycache"),
+                "TEMP": str(payload_tmp),
+                "TMP": str(payload_tmp),
+                "TMPDIR": str(payload_tmp),
             }
         )
         bind_repo_src_pythonpath(repo_root, env)
@@ -1750,6 +1858,19 @@ def _run_one(
         elapsed_s=elapsed,
         receipt_context_json=json.dumps(receipt_context, sort_keys=True),
     )
+    disposition_failed = False
+    try:
+        disposition = cargo_output_lifecycle.finalize_declared_success(db, run_id)
+        if disposition is not None:
+            print(
+                f"Cargo output disposition: {json.dumps(disposition, sort_keys=True)}"
+            )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        disposition_failed = True
+        detail = f"Cargo output finalization failed (persisted proof result unchanged): {type(exc).__name__}: {exc}"
+        print(detail, file=sys.stderr)
+        with log_path.open("a", encoding="utf-8") as terminal_log:
+            print(detail, file=terminal_log)
     if state._notes_for_run_ids(conn, [run_id]).get(run_id):
         evidence._try_write_marimo_notebook(
             args,
@@ -1761,4 +1882,8 @@ def _run_one(
     rc_text = "?" if rc is None else str(rc)
     print(f"{status} {run_id} rc={rc_text} elapsed={elapsed:.1f}s")
     print(f"log: {log_path}")
-    return rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE
+    return (
+        2
+        if disposition_failed
+        else (rc if rc is not None else custody.PROOF_QUEUE_STALE_EXIT_CODE)
+    )

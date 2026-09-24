@@ -12,6 +12,7 @@ from typing import Literal, Mapping, Sequence
 from molt.exact_json import canonical_json_bytes
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
+from tools.proof_queue_pkg import cargo_output_layout
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -554,6 +555,7 @@ _CARGO_LEAF_SUBCOMMANDS = frozenset(
 )
 _CARGO_QUERY_FLAGS = frozenset({"--help", "-h", "--version", "-V"})
 ProofKind = Literal["build", "test-execution", "query", "command"]
+CargoOutputLifetime = Literal["retain", "terminal-success"]
 
 
 _CARGO_OPTIONS_WITH_VALUES = frozenset(
@@ -1421,15 +1423,118 @@ def _envelope_for_command(
     }
 
 
-def envelope_for_command(command: Sequence[str]) -> dict[str, object]:
+def parse_cargo_output_lifetime(value: object) -> CargoOutputLifetime:
+    if isinstance(value, str):
+        if value == "retain":
+            return "retain"
+        if value == "terminal-success":
+            return "terminal-success"
+    raise ValueError("cargo_output_lifetime must be retain or terminal-success")
+
+
+def validated_cargo_output_lifetime(
+    envelope: Mapping[str, object],
+) -> CargoOutputLifetime:
+    """Validate the explicit output-disposition declaration, never infer one."""
+    if not isinstance(envelope, Mapping):
+        raise ValueError("Cargo output lifetime requires a command envelope object")
+    lifetime = parse_cargo_output_lifetime(
+        envelope.get("cargo_output_lifetime", "retain")
+    )
+    if lifetime == "terminal-success":
+        delegated = envelope.get("delegated")
+        cargo = delegated if isinstance(delegated, dict) else envelope
+        argv = cargo.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(value, str) for value in argv)
+            or _basename(argv[0]) not in {"cargo", "cargo.exe"}
+        ):
+            raise ValueError(
+                "terminal-success requires an explicit Cargo check or test execution"
+            )
+        invocation = parse_cargo_invocation(argv)
+        if (
+            invocation.is_cargo_query
+            or invocation.flags & {"--no-run", "--unit-graph", "--build-plan"}
+            or not (
+                invocation.subcommand == "check"
+                or (
+                    invocation.subcommand == "test"
+                    and invocation.proof_kind == "test-execution"
+                )
+            )
+        ):
+            raise ValueError(
+                "terminal-success requires Cargo check or actual test execution, not a query or deferred output consumer"
+            )
+    return lifetime
+
+
+def _bind_output_root_declaration(
+    envelope: dict[str, object], declaration: Mapping[str, object]
+) -> None:
+    delegated = envelope.get("delegated")
+    cargo = delegated if isinstance(delegated, Mapping) else envelope
+    argv = cargo.get("argv")
+    if not isinstance(argv, list):
+        raise ValueError("Cargo output placement requires parsed Cargo argv")
+    invocation = parse_cargo_invocation(argv)
+    if (
+        invocation.subcommand
+        not in {"check", "test", "build", "bench", "doc", "rustdoc", "rustc", "run"}
+        or invocation.is_cargo_query
+    ):
+        raise ValueError(
+            "Cargo output placement requires a parsed Cargo build or execution command"
+        )
+    if any(
+        name in {"--target-dir", "--artifact-dir"}
+        for name, _value in invocation.option_values
+    ):
+        raise ValueError("Cargo output command option bypasses declared placement")
+    envelope["cargo_output_root"] = dict(declaration)
+
+
+def envelope_for_command(
+    command: Sequence[str],
+    *,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
+) -> dict[str, object]:
     """Derive the sole executable, toolchain, and child-process authority."""
-    return _envelope_for_command(command, typed_delegation=False)
+    envelope = _envelope_for_command(command, typed_delegation=False)
+    # Absent means retain for existing immutable envelopes and receipts.
+    if cargo_output_lifetime != "retain":
+        envelope["cargo_output_lifetime"] = cargo_output_lifetime
+    validated_cargo_output_lifetime(envelope)
+    if cargo_output_root is not None:
+        _bind_output_root_declaration(
+            envelope, cargo_output_layout.declare_root(cargo_output_root)
+        )
+    return envelope
 
 
-def admission_envelope(command: Sequence[str]) -> dict[str, object]:
+def admission_envelope(
+    command: Sequence[str],
+    *,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
+) -> dict[str, object]:
     """Persist rejected argv without fabricating any executable authority."""
+    # A disposition declaration is authority, not a rejected-command receipt.
+    # Validate it before either scheduling insertion path can persist a row.
+    if cargo_output_lifetime != "retain" or cargo_output_root is not None:
+        return envelope_for_command(
+            command,
+            cargo_output_lifetime=cargo_output_lifetime,
+            cargo_output_root=cargo_output_root,
+        )
     try:
-        return envelope_for_command(command)
+        return envelope_for_command(
+            command, cargo_output_lifetime=cargo_output_lifetime
+        )
     except ValueError as exc:
         return {
             "schema": ENVELOPE_SCHEMA,
@@ -1447,7 +1552,11 @@ def admission_envelope(command: Sequence[str]) -> dict[str, object]:
 
 
 def validate_envelope(envelope: Mapping[str, object], command: Sequence[str]) -> None:
-    expected = envelope_for_command(command)
+    lifetime = validated_cargo_output_lifetime(envelope)
+    root = cargo_output_layout.declared_root(envelope.get("cargo_output_root"))
+    expected = envelope_for_command(command, cargo_output_lifetime=lifetime)
+    if root is not None:
+        _bind_output_root_declaration(expected, root)
     try:
         matches = canonical_json_bytes(dict(envelope)) == canonical_json_bytes(expected)
     except (TypeError, ValueError) as exc:
