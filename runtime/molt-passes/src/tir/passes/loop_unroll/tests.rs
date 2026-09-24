@@ -812,6 +812,239 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
     }
 }
 
+/// Preserve the operation order while giving an exception observation its own
+/// transfer boundary, as target preparation + SimpleIR CFG construction do.
+fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> BlockId {
+    let tail = func.fresh_block();
+    let source = func.blocks.get_mut(&block).unwrap();
+    let ops = source.ops.split_off(at);
+    let terminator = std::mem::replace(
+        &mut source.terminator,
+        Terminator::Branch {
+            target: tail,
+            args: vec![],
+        },
+    );
+    source.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CheckException,
+        operands: vec![],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    func.blocks.insert(
+        tail,
+        TirBlock {
+            id: tail,
+            args: vec![],
+            ops,
+            terminator,
+        },
+    );
+    tail
+}
+
+#[test]
+fn counted_paths_preserve_split_comparison_body_latch_and_final_guard() {
+    let MultiArgLoop {
+        mut func,
+        header,
+        cond,
+        body,
+        ..
+    } = build_multiarg_counted_loop(0, 4, 1);
+    let mut guard = cond;
+    for _ in 0..10 {
+        let at = func.blocks[&guard].ops.len();
+        guard = split_with_observation(&mut func, guard, at);
+    }
+    let update = split_with_observation(&mut func, body, 1);
+    let latch = split_with_observation(&mut func, update, 1);
+    let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
+    assert_eq!(info.cond_block, guard);
+    assert_eq!(info.guard_path.len(), 12);
+    assert_eq!(info.body_path, vec![body, update, latch]);
+    assert_eq!(info.trip_count, 4);
+    let region = counted_loop::region_blocks(&info);
+    let forest = <LoopForest as Analysis>::compute(&func);
+    assert_eq!(
+        counted_loop::LoopGuardContext::new(&func)
+            .material_guard(&func, header, &forest.bodies[&header])
+            .map(|guard| guard.block),
+        Some(guard)
+    );
+    let scev = super::super::scev::compute_scev(&func);
+    let ranges = super::super::value_range::compute_value_range(&func, &scev);
+    assert!(ranges.fits_inline_int47(info.induction_var));
+    assert!(ranges.fits_inline_int47(info.back_args[info.iv_arg_index]));
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert!(stats.ops_added > 0);
+    assert!(region.iter().all(|bid| !func.blocks.contains_key(bid)));
+    let polls = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::CheckException)
+        .count();
+    assert_eq!(
+        polls,
+        10 * 5 + 2 * 4,
+        "final failed guard still observes exceptions"
+    );
+    crate::tir::verify::verify_function(&func).unwrap();
+}
+
+#[test]
+fn counted_paths_recover_terminal_guard_across_observations() {
+    let MultiArgLoop {
+        mut func,
+        header,
+        cond,
+        body,
+        ..
+    } = build_multiarg_counted_loop(0, 4, 1);
+    let guard = split_with_observation(&mut func, cond, 2);
+    let latch = split_with_observation(&mut func, body, 2);
+    func.blocks.get_mut(&guard).unwrap().terminator = Terminator::Branch {
+        target: body,
+        args: vec![],
+    };
+    func.loop_cond_blocks.insert(header, guard);
+    func.loop_break_kinds
+        .insert(header, crate::tir::blocks::LoopBreakKind::BreakIfFalse);
+    let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
+    assert_eq!(info.guard_path, vec![header, cond, guard]);
+    assert_eq!(info.body_path, vec![body, latch]);
+    assert!(!info.has_material_exit);
+    let scev = super::super::scev::compute_scev(&func);
+    let ranges = super::super::value_range::compute_value_range(&func, &scev);
+    assert!(ranges.fits_inline_int47(info.induction_var));
+    assert_eq!(
+        run(&mut func, &TargetInfo::native_release_fast()).ops_added,
+        0
+    );
+}
+
+#[test]
+fn counted_side_exit_ranges_do_not_authorize_final_carried_state_rewrite() {
+    let MultiArgLoop {
+        mut func,
+        header,
+        body,
+        ..
+    } = build_multiarg_counted_loop(0, 4, 1);
+    split_with_observation(&mut func, body, 1);
+    let handler = func.fresh_block();
+    let iv = func.blocks[&header].args[0].id;
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![iv] },
+        },
+    );
+    func.label_id_map.insert(handler.0, 991);
+    func.blocks
+        .get_mut(&body)
+        .unwrap()
+        .ops
+        .last_mut()
+        .unwrap()
+        .attrs
+        .insert("value".into(), AttrValue::Int(991));
+    let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
+    assert!(info.has_side_exits);
+    let scev = super::super::scev::compute_scev(&func);
+    let ranges = super::super::value_range::compute_value_range(&func, &scev);
+    assert!(ranges.fits_inline_int47(iv));
+    assert_eq!(
+        run(&mut func, &TargetInfo::native_release_fast()).ops_added,
+        0
+    );
+    assert!(matches!(&func.blocks[&handler].terminator,
+        Terminator::Return { values } if values == &[iv]));
+    // Turning the same exit into handler reentry invalidates the recurrence.
+    func.blocks.get_mut(&handler).unwrap().terminator = Terminator::Branch {
+        target: body,
+        args: vec![],
+    };
+    assert!(counted_loop::recognize_counted_loop(&func, header).is_none());
+}
+
+#[test]
+fn counted_paths_reject_side_entry_and_unmodeled_argument_transport() {
+    for side_entry in [false, true] {
+        let MultiArgLoop {
+            mut func,
+            header,
+            cond,
+            body,
+            ..
+        } = build_multiarg_counted_loop(0, 4, 1);
+        let guard = split_with_observation(&mut func, cond, 2);
+        if side_entry {
+            func.label_id_map.insert(body.0, 992);
+            let mut observation = func.blocks[&cond].ops.last().unwrap().clone();
+            observation
+                .attrs
+                .insert("value".into(), AttrValue::Int(992));
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(observation);
+        } else {
+            let arg = func.fresh_value();
+            let iv = func.blocks[&header].args[0].id;
+            func.blocks.get_mut(&guard).unwrap().args.push(TirValue {
+                id: arg,
+                ty: TirType::I64,
+            });
+            func.blocks.get_mut(&cond).unwrap().terminator = Terminator::Branch {
+                target: guard,
+                args: vec![iv],
+            };
+        }
+        assert!(counted_loop::recognize_counted_loop(&func, header).is_none());
+        assert_eq!(
+            run(&mut func, &TargetInfo::native_release_fast()).ops_added,
+            0
+        );
+    }
+}
+
+#[test]
+fn counted_unroll_checks_final_guard_domain_without_intermediate_overflow() {
+    let MultiArgLoop {
+        mut func, header, ..
+    } = build_multiarg_counted_loop(i64::MAX - 1, i64::MAX, 2);
+    assert!(counted_loop::recognize_counted_loop(&func, header).is_some());
+    assert_eq!(
+        run(&mut func, &TargetInfo::native_release_fast()).ops_added,
+        0
+    );
+    let MultiArgLoop {
+        mut func, header, ..
+    } = build_multiarg_counted_loop(i64::MIN, 0, i64::MAX);
+    assert_eq!(
+        counted_loop::recognize_counted_loop(&func, header)
+            .unwrap()
+            .trip_count,
+        2
+    );
+    assert!(run(&mut func, &TargetInfo::native_release_fast()).ops_added > 0);
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| op.opcode == OpCode::ConstInt && attr_int(op, "value") == Some(i64::MAX - 1))
+    );
+    crate::tir::verify::verify_function(&func).unwrap();
+}
+
 /// The recognizer + transform fully unroll the real multi-arg-header shape,
 /// threading the accumulator through each iteration and forwarding its final
 /// value to the exit. `for i in range(0,4): total += i` (total = 0+1+2+3).

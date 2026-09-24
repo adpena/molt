@@ -1,5 +1,7 @@
 mod name_index;
+mod partition;
 use name_index::SplitNameIndex;
+use partition::split_boundaries;
 
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::tir::op_kinds_generated::{
@@ -635,50 +637,21 @@ pub fn split_large_function(
         chunk_has_external_control_without_safe_clone(chunk_start, sp)
     };
 
-    let mut selected: Vec<usize> = Vec::new();
-    let mut last_split = 0usize;
-
-    for (idx, op) in all_ops.iter().enumerate() {
+    let statement_boundaries = all_ops.iter().enumerate().filter_map(|(idx, op)| {
         // Split only at top-level statement boundaries. A raw depth==0 op
         // index is not sufficient: large class statements emit thousands of
         // ops (method FuncNew, CLASS_DEF, export, annotation wiring) without
         // increasing structured-control depth, so splitting at an arbitrary
         // op boundary can sever one logical statement across chunks.
-        let is_stmt_boundary = op.kind == "line";
-        if top_level[idx]
-            && idx > 0
-            && is_stmt_boundary
-            && idx - last_split >= max_ops
-            && !is_forbidden(idx, last_split)
-        {
-            selected.push(idx);
-            last_split = idx;
-        }
-    }
-
-    // If no selected splits, the function is too deeply nested to split.
-    if selected.is_empty() {
+        (top_level[idx] && idx > 0 && op.kind == "line").then_some(idx)
+    });
+    // One planner owns complete-statement packing and the hard source-op
+    // limit. Control admission remains this function's shared authority.
+    let Some(boundaries) =
+        split_boundaries(all_ops.len(), max_ops, statement_boundaries, is_forbidden)
+    else {
         return Err(Box::new(func));
-    }
-
-    // ---------------------------------------------------------------
-    // 3. Partition ops into chunks at the selected split points.
-    // ---------------------------------------------------------------
-    let mut boundaries: Vec<usize> = Vec::new();
-    boundaries.push(0);
-    boundaries.extend_from_slice(&selected);
-    boundaries.push(all_ops.len());
-
-    // Validate: ensure no chunk exceeds max_ops. If any chunk is oversized,
-    // the function has a deeply nested region that can't be split cleanly.
-    for window in boundaries.windows(2) {
-        let chunk_size = window[1] - window[0];
-        if chunk_size > max_ops.saturating_mul(2) {
-            // Allow up to 2x max_ops for the final chunk — beyond that,
-            // return Err to fall back to single-module compilation.
-            return Err(Box::new(func));
-        }
-    }
+    };
 
     let chunk_names = (0..boundaries.len() - 1)
         .map(|index| split_chunk_name(&func.name, index))

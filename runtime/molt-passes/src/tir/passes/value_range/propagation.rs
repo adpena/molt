@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::blocks::BlockId;
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::IntRange;
@@ -10,15 +10,17 @@ use super::super::value_identity::copy_value_source;
 use super::ValueRangeResult;
 use super::transfer::transfer_op_range;
 /// Forward transfer-function sweep: compute a sound loop-invariant range for
-/// every op-defined integer value from its operands' ranges, to a fixpoint.
+/// every op-defined integer value from its operands' definition-site ranges.
 ///
 /// ## Why this is sound and terminating
 ///
 /// The sweep is strictly *monotone-additive*: it only ever ASSIGNS a range to a
 /// value that currently has **none** (`global_range` miss ⇒ implicitly
 /// `FULL_I64`). Once a value gains a range it is never revisited. Each iteration
-/// therefore strictly shrinks the set of un-ranged op results, so the fixpoint
-/// is reached in at most `#values` iterations. Crucially, it **never re-derives
+/// therefore strictly shrinks the set of un-ranged op results, so additive
+/// closure is reached in at most `#values` iterations. Existing coarse facts
+/// are not refined; this is not a precision-maximizing lattice fixpoint.
+/// Crucially, it **never re-derives
 /// a phi / block-argument's range** (phis are not ops) and **never widens** an
 /// existing fact, so:
 ///
@@ -45,13 +47,16 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
         }
     }
 
-    // Iterate to a fixpoint, assigning a range only to results that have none.
+    // Iterate to additive closure, assigning a range only to results that have none.
     // Bound the iteration count defensively by the op count (the additive
     // monotonicity already guarantees termination; this is a hard ceiling).
     let max_iters = func.blocks.values().map(|b| b.ops.len()).sum::<usize>() + 1;
+    let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable_by_key(|bid| bid.0);
     for _ in 0..max_iters {
         let mut changed = false;
-        for block in func.blocks.values() {
+        for bid in &blocks {
+            let block = &func.blocks[bid];
             for op in &block.ops {
                 // Single-result integer ops only. (Value-identity copies — plain
                 // or tagged — are already threaded by `resolve` through
@@ -64,7 +69,7 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
                 if result.has_global_range(res) {
                     continue; // already ranged (constant / IV / earlier sweep).
                 }
-                let Some(range) = transfer_op_range(op, result) else {
+                let Some(range) = transfer_op_range(op, block.id, result) else {
                     continue;
                 };
                 if range.is_full() {
@@ -126,11 +131,10 @@ fn is_phi_independent_bound(r: IntRange) -> bool {
 /// inline window and even i64, requiring a heap BigInt; a false inline proof is
 /// a silent truncation miscompile (the worst bug class).
 ///
-/// This pass sidesteps the circularity WITHOUT a bespoke dependency analysis, by
-/// exploiting an invariant the forward sweep ([`propagate_op_ranges`]) already
-/// guarantees: **it never assigns a range to a phi**, so every op-result range
-/// in `global_range` at this point was computed treating *all* phis as FULL
-/// (unknown). Consequently, any incoming value whose current range is a genuine
+/// This pass sidesteps circularity by reading the frozen `independent` snapshot,
+/// propagated before any recurrence or guard facts were installed. Its integer
+/// header phis remain FULL (unknown). Consequently, any incoming value whose
+/// independent range is a genuine
 /// **bounded interior** range ([`is_phi_independent_bound`]) is phi-INDEPENDENT
 /// by construction — its bound was derived without assuming anything about any
 /// phi. That is exactly the licensing condition:
@@ -170,6 +174,7 @@ fn is_phi_independent_bound(r: IntRange) -> bool {
 pub(super) fn narrow_loop_header_phis(
     func: &TirFunction,
     loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    independent: &ValueRangeResult,
     result: &mut ValueRangeResult,
 ) -> bool {
     // Only header phis are candidates: a loop-header block argument is the
@@ -189,61 +194,43 @@ pub(super) fn narrow_loop_header_phis(
     // defeat every narrow. Shares the `executable_reachable_blocks` oracle with
     // the raw-i64-safe phi propagation (`propagate_raw_i64_safe_values`).
     let reachable = dominators::executable_reachable_blocks(func);
+    let labels = dominators::exception_label_to_block(func);
+    let mut invalid_headers = HashSet::new();
     let mut incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
     for block in func.blocks.values() {
         if !reachable.contains(&block.id) {
             continue;
         }
         let mut add = |target: BlockId, args: &[ValueId]| {
+            if loop_bodies.contains_key(&target)
+                && func
+                    .blocks
+                    .get(&target)
+                    .is_none_or(|block| block.args.len() != args.len())
+            {
+                invalid_headers.insert(target);
+            }
             for (index, &arg) in args.iter().enumerate() {
                 incomings.entry((target, index)).or_default().push(arg);
             }
         };
-        match &block.terminator {
-            Terminator::Branch { target, args } => add(*target, args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                add(*then_block, then_args);
-                add(*else_block, else_args);
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, target, args) in cases {
-                    add(*target, args);
-                }
-                add(*default, default_args);
-            }
-            Terminator::StateDispatch {
-                cases,
-                default,
-                default_args,
-            } => {
-                for (_, target, args) in cases {
-                    add(*target, args);
-                }
-                add(*default, default_args);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
-        }
+        block.terminator.for_each_edge(&mut add);
+        // Implicit edges have no phi payload; ignoring one would turn partial
+        // normal predecessors into an unjustified all-incomings proof.
+        invalid_headers.extend(dominators::exception_successors(block, &labels));
     }
 
-    // Decide narrowings against the FROZEN FULL-phi sweep state (read-only over
-    // `result`), then apply them in one batch. Computing every narrowing from
+    // Decide narrowings against the FROZEN FULL-phi sweep state (`independent`),
+    // then apply them to `result` in one batch. Computing every narrowing from
     // the same pre-narrow snapshot is what makes the rule a single round (no
     // phi's narrowed range can leak into another phi's decision this round).
     let mut narrowings: Vec<(ValueId, IntRange)> = Vec::new();
     let mut headers: Vec<BlockId> = loop_bodies.keys().copied().collect();
     headers.sort_unstable_by_key(|b| b.0); // deterministic order.
     for header in headers {
+        if invalid_headers.contains(&header) {
+            continue;
+        }
         let Some(header_block) = func.blocks.get(&header) else {
             continue;
         };
@@ -269,7 +256,7 @@ pub(super) fn narrow_loop_header_phis(
             let mut joined: Option<IntRange> = None;
             let mut all_independent = true;
             for &src in srcs {
-                let r = result.range_of(src); // resolves copies; FULL if unknown.
+                let r = independent.range_of(src); // No recurrence/guard assumptions.
                 if !is_phi_independent_bound(r) {
                     all_independent = false;
                     break;

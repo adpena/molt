@@ -358,7 +358,7 @@ fn raw_i64_safe_value_seed(
                 let count_in_range = op
                     .operands
                     .get(1)
-                    .map(|&count| vr.range_of(count).proves_i64_shift_count())
+                    .map(|&count| vr.range_at(block.id, count).proves_i64_shift_count())
                     .unwrap_or(false);
                 if count_in_range {
                     for &result in &op.results {

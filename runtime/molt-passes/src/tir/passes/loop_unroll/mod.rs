@@ -40,14 +40,12 @@
 //!    count, single reachable preheader and back-edge, constant step with
 //!    polarity matching the comparison).
 //! 2. Trip count `<=` the cost model's unroll trip cap (`TargetInfo`, default 8).
-//! 3. The cloned region (cond-block ops + body ops) `<=` the cost model's unroll
+//! 3. The cloned region (all guard-path and body-path ops) `<=` the cost model's unroll
 //!    body cap (default 20 ops; prevents code bloat).
 //! 4. No real exception **handler** region in the function
 //!    ([`TirFunction::has_exception_handlers`]). A bare `CheckException`
-//!    observation op in the body is NOT a hazard: each unrolled clone retains
-//!    the same handler label, which points at the function-exit handler block
-//!    OUTSIDE the loop — so every clone correctly propagates a raised exception
-//!    straight to the caller, exactly as the rolled loop would. A `try:` block
+//!    observation op is retained. Exception side exits are admitted only when
+//!    they cannot observe the normal exit's final-value substitution. A `try:` block
 //!    *inside* the loop body (`TryStart`/`TryEnd`) makes `has_exception_handlers`
 //!    true and is correctly refused.
 //! 5. No nested loop inside the region.
@@ -102,7 +100,7 @@ fn region_value_escapes(func: &TirFunction, loop_info: &CountedLoop) -> bool {
     // Values defined inside the region's cond block or body (op results). Header
     // block-args are handled by the threading and intentionally excluded here.
     let mut region_defs: HashSet<ValueId> = HashSet::new();
-    for &bid in &[loop_info.cond_block, loop_info.body] {
+    for &bid in &region {
         if let Some(block) = func.blocks.get(&bid) {
             for op in &block.ops {
                 for r in &op.results {
@@ -137,6 +135,40 @@ fn region_value_escapes(func: &TirFunction, loop_info: &CountedLoop) -> bool {
     }
     false
 }
+
+/// Cloned exception observations keep their targets. Unlike the normal exit,
+/// an early exception must never observe the final iteration's carried values.
+/// Region-result escapes are checked separately by `region_value_escapes`.
+fn side_exits_observe_carried_state(func: &TirFunction, c: &CountedLoop) -> bool {
+    if !c.has_side_exits {
+        return false;
+    }
+    let region = counted_loop::region_blocks(c);
+    let carried: HashSet<_> = func.blocks[&c.header]
+        .args
+        .iter()
+        .map(|arg| arg.id)
+        .collect();
+    let labels = crate::tir::dominators::exception_label_to_block(func);
+    for &bid in &region {
+        for target in crate::tir::dominators::exception_successors(&func.blocks[&bid], &labels) {
+            if !func.blocks[&target].args.is_empty() {
+                return true;
+            }
+        }
+    }
+    func.blocks.iter().any(|(bid, block)| {
+        !region.contains(bid)
+            && (block
+                .ops
+                .iter()
+                .flat_map(|op| &op.operands)
+                .any(|v| carried.contains(v))
+                || terminator_value_refs(&block.terminator)
+                    .iter()
+                    .any(|v| carried.contains(v)))
+    })
+}
 /// Detect counted loops eligible for full unrolling. Each loop header is run
 /// through the canonical [`counted_loop`] recognizer; loops that pass the
 /// cost-model caps and the escape/handler checks are returned.
@@ -157,30 +189,30 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         else {
             continue;
         };
-        if !loop_info.has_material_exit {
+        if !loop_info.has_material_exit || side_exits_observe_carried_state(func, &loop_info) {
             continue;
         }
 
         // Cost model: trip count within the full-unroll cap.
-        if loop_info.trip_count > tti.unroll_max_trip() {
+        if loop_info.trip_count <= 0 || loop_info.trip_count > tti.unroll_max_trip() {
+            continue;
+        }
+        // A finite mathematical trip count does not imply that the failed-
+        // guard value fits the i64 constants emitted by this transformation.
+        if i64::try_from(
+            loop_info.start as i128 + loop_info.trip_count as i128 * loop_info.step as i128,
+        )
+        .is_err()
+        {
             continue;
         }
 
-        // Cost model: cloned region size (cond-block ops + body ops) within the
+        // Cost model: complete cloned region size within the
         // anti-bloat body cap.
-        let cond_ops = func
-            .blocks
-            .get(&loop_info.cond_block)
-            .map(|b| b.ops.len())
-            .unwrap_or(0);
-        let body_ops = func
-            .blocks
-            .get(&loop_info.body)
-            .map(|b| b.ops.len())
-            .unwrap_or(0);
-        // When cond_block == header (legacy shape) the header ops ARE the cond
-        // ops; counting them once is correct.
-        let region_ops = cond_ops + body_ops;
+        let region_ops: usize = counted_loop::region_blocks(&loop_info)
+            .iter()
+            .map(|bid| func.blocks[bid].ops.len())
+            .sum();
         if region_ops > tti.unroll_max_body() {
             continue;
         }
@@ -248,17 +280,18 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         return;
     }
 
-    // Region ops to clone per iteration, in execution order: cond-block ops then
-    // body ops. When cond_block == header (legacy shape) the header *is* the
-    // cond block; its ops are the cond ops and we must not double-count the body.
-    let cond_ops: Vec<TirOp> = match func.blocks.get(&c.cond_block) {
-        Some(b) => b.ops.clone(),
-        None => return,
-    };
-    let body_ops: Vec<TirOp> = match func.blocks.get(&c.body) {
-        Some(b) => b.ops.clone(),
-        None => return,
-    };
+    // The descriptor supplies execution order, including interposed transfer
+    // boundaries. No block's operations may disappear during region retirement.
+    let cond_ops: Vec<TirOp> = c
+        .guard_path
+        .iter()
+        .flat_map(|bid| func.blocks[bid].ops.iter().cloned())
+        .collect();
+    let body_ops: Vec<TirOp> = c
+        .body_path
+        .iter()
+        .flat_map(|bid| func.blocks[bid].ops.iter().cloned())
+        .collect();
 
     // Preheader's args to the header give the initial loop-carried values.
     let preheader_args: Vec<ValueId> = match func.blocks.get(&c.preheader) {
@@ -283,7 +316,8 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         let mut remap: HashMap<ValueId, ValueId> = HashMap::new();
 
         // IV slot: materialise start + k*step as a fresh ConstInt.
-        let iter_value = c.start + k * c.step;
+        let iter_value = i64::try_from(c.start as i128 + k as i128 * c.step as i128)
+            .expect("admitted counted-loop iteration must fit i64");
         let iter_const_id = func.fresh_value();
         let mut const_attrs = AttrDict::new();
         const_attrs.insert("value".into(), AttrValue::Int(iter_value));
@@ -342,7 +376,8 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
 
     // Final loop-carried state after the last iteration. The IV's post-loop
     // value is start + trip_count*step (the value that fails the comparison).
-    let final_iv_value = c.start + c.trip_count * c.step;
+    let final_iv_value = i64::try_from(c.start as i128 + c.trip_count as i128 * c.step as i128)
+        .expect("admitted counted-loop final guard must fit i64");
     let final_iv_const = func.fresh_value();
     {
         let mut attrs = AttrDict::new();
@@ -360,6 +395,36 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
     // the IV slot to the post-loop constant.
     current_carried[c.iv_arg_index] = final_iv_const;
 
+    // The final failed guard is still executed in the rolled loop. Preserve
+    // its observations and definitions, including polls separated into blocks.
+    let mut final_remap: HashMap<ValueId, ValueId> = header_arg_ids
+        .iter()
+        .copied()
+        .zip(current_carried.iter().copied())
+        .collect();
+    for op in &cond_ops {
+        let operands = op
+            .operands
+            .iter()
+            .map(|v| final_remap.get(v).copied().unwrap_or(*v))
+            .collect();
+        let results: Vec<ValueId> = op
+            .results
+            .iter()
+            .map(|&value| {
+                let fresh = func.fresh_value();
+                final_remap.insert(value, fresh);
+                fresh
+            })
+            .collect();
+        let mut cloned = op.clone();
+        cloned.operands = operands;
+        cloned.results = results;
+        stats.ops_added += 1;
+        stats.values_changed += cloned.results.len();
+        landing_ops.push(cloned);
+    }
+
     // Substitute the exit-edge arguments. Each exit arg references either:
     //   * a header arg (a loop-carried value, possibly the IV) — directly or via
     //     a Copy chain — which we map to its final value, or
@@ -374,7 +439,11 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         .iter()
         .map(|&v| {
             let root = resolve_copy(&copy_of, v);
-            final_by_header.get(&root).copied().unwrap_or(v)
+            final_remap
+                .get(&root)
+                .or_else(|| final_remap.get(&v))
+                .copied()
+                .unwrap_or(v)
         })
         .collect();
 
@@ -418,15 +487,8 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         func.entry_block = landing;
     }
 
-    // Retire the region blocks (header, cond block, body) and the header's loop
-    // metadata. When cond_block == header the set collapses to {header, body}.
-    let header_ops_count = header_block.ops.len();
-    let cond_ops_count = if c.cond_block == c.header {
-        0
-    } else {
-        cond_ops.len()
-    };
-    let body_ops_count = body_ops.len();
+    // Retire the complete normal-path region and its loop metadata.
+    let region_ops_count = cond_ops.len() + body_ops.len();
 
     // The structural `LoopEnd` marker that paired with this header is now
     // orphaned: with the loop unrolled away there is no `LoopHeader` for it to
@@ -481,5 +543,5 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         }
     }
 
-    stats.ops_removed += header_ops_count + cond_ops_count + body_ops_count;
+    stats.ops_removed += region_ops_count;
 }

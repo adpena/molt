@@ -153,6 +153,67 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
     }
 }
 
+#[test]
+fn throw_proof_does_not_use_success_body_range_for_failed_guards() {
+    for (opcode, start, stop) in [(OpCode::FloorDiv, 10, 0), (OpCode::Shr, 1, -1)] {
+        let mut func = TirFunction::new(
+            "guard_throw".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let region = build_single_loop(&mut func);
+        let seed = func.blocks[&region.preheader]
+            .terminator
+            .first_edge_args_to(region.header)
+            .unwrap()[0];
+        let bound = func.fresh_value();
+        let step = func.fresh_value();
+        let one = func.fresh_value();
+        let next = func.fresh_value();
+        let result = func.fresh_value();
+        let condition = func.blocks[&region.header].ops[0].results[0];
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops[0] = make_const_int(start, seed);
+        entry.ops.extend([
+            make_const_int(stop, bound),
+            make_const_int(-1, step),
+            make_const_int(1, one),
+        ]);
+        let probe = make_binop(opcode, one, region.loop_arg, result);
+        func.blocks.get_mut(&region.header).unwrap().ops = vec![
+            probe.clone(),
+            make_binop(OpCode::Gt, region.loop_arg, bound, condition),
+        ];
+        let body = func.blocks.get_mut(&region.body).unwrap();
+        body.ops = vec![make_binop(OpCode::Add, region.loop_arg, step, next)];
+        body.terminator = Terminator::Branch {
+            target: region.header,
+            args: vec![next],
+        };
+        let vr = crate::representation_facts::value_range_for(&func);
+        let types =
+            std::collections::HashMap::from([(one, TirType::I64), (region.loop_arg, TirType::I64)]);
+        assert!(
+            !throw_condition_disproven(&probe, &vr, &types),
+            "failed guard must retain division-zero/negative-shift exception"
+        );
+        let local = vr.range_at(region.body, region.loop_arg);
+        if opcode == OpCode::FloorDiv {
+            assert!(local.proves_nonzero());
+        } else {
+            assert!(local.proves_i64_shift_count());
+        }
+        run(&mut func, &mut AnalysisManager::new());
+        assert!(
+            func.blocks[&region.header]
+                .ops
+                .iter()
+                .any(|op| op.results == [result])
+        );
+    }
+}
+
 /// Build:  entry -> preheader -> loop_header -> loop_body -> loop_header
 ///                                         \ exit
 /// with a+b computed inside the loop body.

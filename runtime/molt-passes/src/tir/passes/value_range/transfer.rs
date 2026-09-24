@@ -1,3 +1,4 @@
+use crate::tir::blocks::BlockId;
 use crate::tir::numeric_facts::IntRange;
 use crate::tir::op_kinds_generated::{
     ValueRangeTransferRule, opcode_value_range_transfer_rule_table,
@@ -13,12 +14,16 @@ use super::ValueRangeResult;
 /// A false (too-tight) range feeds `fits_inline_int47` → `RawI64Safe` promotion,
 /// so an unsound bound is a silent BigInt-truncation miscompile. When in doubt,
 /// return `FULL_I64`.
-pub(super) fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> {
+pub(super) fn transfer_op_range(
+    op: &TirOp,
+    block: BlockId,
+    result: &ValueRangeResult,
+) -> Option<IntRange> {
     // Operand range / constant helpers (resolve through plain copies).
     let r = |i: usize| -> IntRange {
         op.operands
             .get(i)
-            .map(|&v| result.range_of(v))
+            .map(|&v| result.range_at(block, v))
             .unwrap_or(IntRange::FULL_I64)
     };
     let c = |i: usize| -> Option<i64> { op.operands.get(i).and_then(|&v| result.const_int_of(v)) };

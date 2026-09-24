@@ -13,10 +13,12 @@
 mod descriptor;
 mod facts;
 mod gate;
+mod paths;
 mod recognize;
 mod region;
 
 pub use descriptor::CountedLoop;
+pub(crate) use paths::LoopGuardContext;
 pub use recognize::recognize_counted_loop;
 pub(crate) use recognize::recognize_counted_loop_with_loop_forest;
 pub use region::region_blocks;

@@ -15,6 +15,7 @@ use super::index::{DefIndex, LoopContext, collect_header_incoming};
 pub(super) struct ScevBuilder<'a> {
     func: &'a TirFunction,
     pub(super) loops: &'a LoopContext,
+    pub(super) guards: super::super::counted_loop::LoopGuardContext,
     defs: &'a DefIndex,
     /// header → its IV header-arg value (the recurrence "phi"), once recognized.
     pub(super) iv_of_header: HashMap<BlockId, ValueId>,
@@ -29,6 +30,7 @@ impl<'a> ScevBuilder<'a> {
         Self {
             func,
             loops,
+            guards: super::super::counted_loop::LoopGuardContext::new(func),
             defs,
             iv_of_header: HashMap::new(),
             memo: HashMap::new(),

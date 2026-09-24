@@ -525,6 +525,11 @@ one frame attempt. An IR-positioned module entry cannot be hoisted ahead of the
 code/global binding that it requires. Partitioning must keep the checked entry
 and its failure cleanup with the frame owner; inherited chunks neither enter
 nor exit that frame.
+Chunk budgeting counts complete statements, including the terminal statement,
+and retains the last legal cut before extending a chunk past its target. SSA
+transport prefixes must not strand an oversized tail when a legal earlier cut
+exists. Every selected cut reuses the same control-target and cleanup-live-in
+admission; an indivisible region exceeding the hard limit refuses atomically.
 
 SSA materializes missing reaching definitions only at surviving uses after edge
 repair. One local `None` definition dominates the consuming block's operations
@@ -537,6 +542,21 @@ SSA dominance, liveness and block-argument placement consume the same augmented
 exception/resume graph rather than independently reconstructing its successors.
 One source liveness solution seeds implicit-edge environments and pruned phi
 placement; argument seeding does not recompute unchanged source defs/uses.
+
+Counted-loop recognition follows ordered guard and body paths through executable
+exception observations. The same descriptor owns recurrence facts, unroll cost,
+operation cloning and region retirement; it is not a fixed three-block shape.
+Unrolling preserves the final failed guard and refuses substitutions that would
+change carried values observed on a side exit.
+
+Integer range facts distinguish global value bounds from program-point bounds.
+A loop IV's global hull includes its final failed-guard value; a true-guard body
+hull is valid only where the continuing edge is proved. Pre-guard operations,
+exception observers and bypass paths cannot inherit a body-only bound. Derived
+values consume operand ranges at their defining site; bounds elimination and
+raw arithmetic admission consume facts valid at the actual use. Speculation
+must prove the destination site as well. This applies equally to bounds,
+zero-divisor, shift-count and integer-representation safety on all backends.
 
 The function's explicit `return_abi` owns the linkage result independently of
 return payloads and inferred semantic types. Python functions, pollers, and

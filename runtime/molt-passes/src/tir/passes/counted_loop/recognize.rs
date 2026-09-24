@@ -1,6 +1,8 @@
+use std::collections::HashSet;
+
 use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
 use crate::tir::blocks::{BlockId, Terminator};
-use crate::tir::dominators::{self, CfgEdgePolicy};
+use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::ordered_comparison_trip_count;
 use crate::tir::op_kinds_generated::{
@@ -12,6 +14,7 @@ use super::super::value_identity::{build_copy_map, resolve_copy};
 use super::descriptor::CountedLoop;
 use super::facts::{branch_args_to, build_const_int_map, find_def, loop_forest_contains_header};
 use super::gate::{CmpPolarity, LoopGate, loop_gate};
+use super::paths::{loop_body_path, loop_guard_path};
 
 /// Recognize a counted loop rooted at `header`, or refuse with `None`.
 ///
@@ -44,36 +47,24 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     trace!("BEGIN recognition");
     let header_block = func.blocks.get(&header)?;
 
-    // The header must be a pure phi block whose sole successor is the cond
-    // block: `Branch -> cond_block`. In the legacy synthesized shape the header
-    // is the cond block and ends in the CondBranch directly.
-    let (cond_block_id, cond_block) = match &header_block.terminator {
-        Terminator::Branch { target, args } if args.is_empty() => {
-            let cb = func.blocks.get(target)?;
-            (*target, cb)
-        }
-        Terminator::CondBranch { .. } => (header, header_block),
-        Terminator::Branch { .. }
-        | Terminator::Switch { .. }
-        | Terminator::StateDispatch { .. }
-        | Terminator::Return { .. }
-        | Terminator::Unreachable => {
-            trace!("header terminator not Branch/CondBranch");
-            return None;
-        }
-    };
+    let natural_body = loop_forest.bodies.get(&header)?;
+    // Prefer a material guard. Only terminal structured loops need the
+    // frontend's non-material break boundary as a fallback.
+    let guard_path = loop_guard_path(func, header, natural_body, None).or_else(|| {
+        func.loop_break_kinds.get(&header)?;
+        loop_guard_path(
+            func,
+            header,
+            natural_body,
+            func.loop_cond_blocks.get(&header).copied(),
+        )
+    })?;
+    let cond_block_id = *guard_path.last()?;
     trace!("cond_block = {:?}", cond_block_id);
 
-    // When the cond block is a separate block, it must not be a loop header
-    // itself (which would mean we walked into a nested loop).
-    if cond_block_id != header && loop_forest_contains_header(loop_forest, cond_block_id) {
-        return None;
-    }
-    // Cross-check against the frontend-recorded cond block when present: if the
-    // metadata names a different block, our structural pick is suspect; refuse
-    // rather than risk picking the wrong comparison.
+    // Metadata may name an earlier comparison block split from its terminator.
     if let Some(&meta_cond) = func.loop_cond_blocks.get(&header)
-        && meta_cond != cond_block_id
+        && !guard_path.contains(&meta_cond)
     {
         trace!(
             "meta cond {:?} != structural cond {:?}",
@@ -86,7 +77,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     // terminal structured loop can have no material post-loop block. In that
     // shape the CFG has only the continue edge, while `loop_cond_blocks` and
     // `loop_break_kinds` still preserve the SimpleIR loop-break condition.
-    let Some(gate) = loop_gate(func, header, cond_block_id, cond_block) else {
+    let Some(gate) = loop_gate(func, header, &guard_path, natural_body) else {
         trace!("cond block is not a counted-loop gate");
         return None;
     };
@@ -99,24 +90,56 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         has_material_exit,
     } = gate;
 
-    // No nested loop: the body must not itself be a loop header.
-    if loop_forest_contains_header(loop_forest, body_id) {
-        trace!("body {:?} is a nested loop header", body_id);
+    let body_path = loop_body_path(func, header, body_id, natural_body)?;
+    let latch = *body_path.last()?;
+    let region: HashSet<_> = guard_path.iter().chain(&body_path).copied().collect();
+    // Every executable in-loop route must be represented once. This rejects
+    // handler reentry, bypasses and nested loops instead of assigning them the
+    // normal path's recurrence. External exception exits only truncate it.
+    if region.len() != guard_path.len() + body_path.len() || &region != natural_body {
         return None;
+    }
+    let reachable = dominators::executable_reachable_blocks(func);
+    let preds = dominators::build_pred_map(func);
+    let labels = dominators::exception_label_to_block(func);
+    let mut has_side_exits = false;
+    for &bid in &region {
+        let block = func.blocks.get(&bid)?;
+        if bid != header
+            && (!block.args.is_empty()
+                || loop_forest_contains_header(loop_forest, bid)
+                || preds
+                    .get(&bid)?
+                    .iter()
+                    .any(|p| reachable.contains(p) && !region.contains(p)))
+        {
+            return None;
+        }
+        if let Terminator::Branch { target, args } = &block.terminator
+            && *target != header
+            && !args.is_empty()
+        {
+            return None;
+        }
+        for target in dominators::exception_successors(block, &labels) {
+            if region.contains(&target) {
+                return None;
+            }
+            has_side_exits = true;
+        }
     }
 
     let const_map = build_const_int_map(func);
     let copy_of = build_copy_map(func);
 
     // The comparison defines `cmp_cond`. It must be Lt/Le/Gt/Ge(iv_view, stop).
-    let Some(cmp_op) = cond_block
-        .ops
-        .iter()
-        .find(|op| op.results.first() == Some(&cmp_cond))
-    else {
+    let Some((cmp_block, cmp_op)) = find_def(func, cmp_cond) else {
         trace!("no op defines the cond {:?}", cmp_cond);
         return None;
     };
+    if !guard_path.contains(&cmp_block) {
+        return None;
+    }
     let cmp_role = opcode_counted_loop_comparison_role_table(cmp_op.opcode);
     if !cmp_role.is_ordered() {
         trace!("cond op is {:?}, not a comparison", cmp_op.opcode);
@@ -148,9 +171,9 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         return None;
     };
 
-    // The body must end with the back-edge `Branch -> header(back_args)` with
+    // The latch must end with the back-edge `Branch -> header(back_args)` with
     // one arg per header block-arg.
-    let body_block = func.blocks.get(&body_id)?;
+    let body_block = func.blocks.get(&latch)?;
     let back_args = match &body_block.terminator {
         Terminator::Branch { target, args }
             if *target == header && args.len() == header_block.args.len() =>
@@ -166,10 +189,13 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     // The back-edge value for the IV slot must be `Add(iv_view, step_const)`,
     // resolving copies on the back-edge value and on the Add's IV operand.
     let iv_next_root = resolve_copy(&copy_of, back_args[iv_arg_index]);
-    let Some((_def_block, inc_op)) = find_def(func, iv_next_root) else {
+    let Some((def_block, inc_op)) = find_def(func, iv_next_root) else {
         trace!("no def for IV-next {:?}", iv_next_root);
         return None;
     };
+    if !body_path.contains(&def_block) {
+        return None;
+    }
     if inc_op.opcode != OpCode::Add || inc_op.operands.len() != 2 {
         trace!("IV-next def is {:?}, not a binary Add", inc_op.opcode);
         return None;
@@ -197,9 +223,14 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     }
 
     // Exactly one reachable preheader and one back-edge. Dead structural blocks
-    // still branching to the header are excluded via terminator-only
-    // reachability so they are not miscounted as a second preheader.
-    let reachable = dominators::reachable_blocks_with(func, CfgEdgePolicy::TerminatorOnly);
+    // still branching to the header are excluded via executable reachability.
+    // An implicit entry to the header has no recurrence argument payload.
+    if preds.get(&header)?.iter().any(|pred| {
+        reachable.contains(pred)
+            && dominators::exception_successors(&func.blocks[pred], &labels).contains(&header)
+    }) {
+        return None;
+    }
     let mut preheader: Option<BlockId> = None;
     let mut preheader_count = 0usize;
     let mut backedge_count = 0usize;
@@ -211,7 +242,18 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         let Some(pred_args) = branch_args_to(&pred_block.terminator, header) else {
             continue;
         };
-        if pred_id == body_id {
+        // A degenerate conditional can target the header twice with different
+        // payloads. A predecessor count alone is not a unique initial state.
+        let mut conflicting_payload = false;
+        pred_block.terminator.for_each_edge(|target, args| {
+            if target == header && args != pred_args {
+                conflicting_payload = true;
+            }
+        });
+        if conflicting_payload {
+            return None;
+        }
+        if pred_id == latch {
             backedge_count += 1;
             continue;
         }
@@ -241,7 +283,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         "RECOGNIZED: iv_idx={} start={} stop={} step={} trip={}",
         iv_arg_index, start, stop, step, trip_count
     );
-    if trip_count <= 0 {
+    if trip_count < 0 {
         return None;
     }
 
@@ -249,6 +291,9 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         header,
         cond_block: cond_block_id,
         body: body_id,
+        guard_path,
+        body_path,
+        has_side_exits,
         exit: exit_id,
         preheader,
         iv_arg_index,

@@ -194,6 +194,7 @@ fn lower_block(
 ) -> LirBlock {
     let mut ops = lower_block_ops(
         block.ops.as_slice(),
+        block.id,
         type_map,
         allocator,
         repr,
@@ -210,24 +211,26 @@ fn lower_block(
 
 fn lower_block_ops(
     ops: &[TirOp],
+    block: crate::tir::blocks::BlockId,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: LirReprSource<'_>,
     inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> Vec<LirOp> {
     ops.iter()
-        .map(|op| lower_op(op, type_map, allocator, repr, inline_proof))
+        .map(|op| lower_op(op, block, type_map, allocator, repr, inline_proof))
         .collect()
 }
 
 fn lower_op(
     op: &TirOp,
+    block: crate::tir::blocks::BlockId,
     type_map: &HashMap<ValueId, TirType>,
     allocator: &mut ValueIdAllocator,
     repr: LirReprSource<'_>,
     inline_proof: Option<&crate::tir::ValueRangeResult>,
 ) -> LirOp {
-    if lowers_to_checked_i64_arithmetic(op, type_map, repr, inline_proof) {
+    if lowers_to_checked_i64_arithmetic(op, block, type_map, repr, inline_proof) {
         return lower_checked_i64_arithmetic(op, type_map, allocator, repr);
     }
     // Divisor-zero safety for the raw-i64 division family. The WASM I64 lane
@@ -240,7 +243,8 @@ fn lower_op(
     // decided HERE, where the value-range proof lives, not in the emitter.
     if opcode_requires_i64_zero_divisor_guard_table(op.opcode) && op.operands.len() >= 2 {
         let divisor = op.operands[1];
-        let divisor_nonzero = inline_proof.is_some_and(|vr| vr.range_of(divisor).proves_nonzero());
+        let divisor_nonzero =
+            inline_proof.is_some_and(|vr| vr.range_at(block, divisor).proves_nonzero());
         if !divisor_nonzero {
             let mut tir_op = op.clone();
             tir_op
@@ -272,7 +276,9 @@ fn lower_op(
             .iter()
             .any(|id| matches!(map.get(id), Some(Repr::RawI64Safe | Repr::RawI64FullDeopt)))
     {
-        let proven = |id: &ValueId| inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id));
+        let proven = |id: &ValueId| {
+            inline_proof.is_some_and(|vr| vr.range_at(block, *id).fits_inline_int47())
+        };
         let all_proven = op.operands.iter().all(proven) && op.results.iter().all(proven);
         if !all_proven {
             let mut tir_op = op.clone();
@@ -312,6 +318,7 @@ fn lower_op(
 
 fn lowers_to_checked_i64_arithmetic(
     op: &TirOp,
+    block: crate::tir::blocks::BlockId,
     type_map: &HashMap<ValueId, TirType>,
     repr: LirReprSource<'_>,
     inline_proof: Option<&crate::tir::ValueRangeResult>,
@@ -345,7 +352,8 @@ fn lowers_to_checked_i64_arithmetic(
                 return false;
             };
             let proven_repr = |id: &ValueId| matches!(map.get(id), Some(Repr::RawI64Safe));
-            let proven_inline = |id: &ValueId| inline_proof.fits_inline_int47(*id);
+            let proven_inline =
+                |id: &ValueId| inline_proof.range_at(block, *id).fits_inline_int47();
             op.operands.iter().all(proven_repr)
                 && proven_repr(&op.results[0])
                 && op.operands.iter().all(proven_inline)
@@ -771,6 +779,111 @@ mod tests {
             results,
             attrs,
             source_span: None,
+        }
+    }
+
+    #[test]
+    fn final_guard_division_is_boxed_but_success_body_keeps_raw_division() {
+        for nsw in [false, true] {
+            let mut func = TirFunction::new(
+                "guard_division".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let header = func.fresh_block();
+            let body = func.fresh_block();
+            let exit = func.fresh_block();
+            let start = func.fresh_value();
+            let zero = func.fresh_value();
+            let step = func.fresh_value();
+            let one = func.fresh_value();
+            let iv = func.fresh_value();
+            let condition = func.fresh_value();
+            let next = func.fresh_value();
+            let guard_result = func.fresh_value();
+            let body_result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            for (result, value) in [(start, 10), (zero, 0), (step, -1), (one, 1)] {
+                let mut op = make_op(OpCode::ConstInt, vec![], vec![result]);
+                op.attrs.insert("value".into(), AttrValue::Int(value));
+                entry.ops.push(op);
+            }
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![start],
+            };
+            func.blocks.insert(
+                header,
+                TirBlock {
+                    id: header,
+                    args: vec![TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    }],
+                    ops: vec![
+                        make_op(OpCode::FloorDiv, vec![one, iv], vec![guard_result]),
+                        make_op(OpCode::CheckException, vec![], vec![]),
+                        make_op(OpCode::Gt, vec![iv, zero], vec![condition]),
+                    ],
+                    terminator: Terminator::CondBranch {
+                        cond: condition,
+                        then_block: body,
+                        then_args: vec![],
+                        else_block: exit,
+                        else_args: vec![],
+                    },
+                },
+            );
+            let mut increment = make_op(OpCode::Add, vec![iv, step], vec![next]);
+            if nsw {
+                increment
+                    .attrs
+                    .insert("no_signed_wrap".into(), AttrValue::Bool(true));
+            }
+            func.blocks.insert(
+                body,
+                TirBlock {
+                    id: body,
+                    args: vec![],
+                    ops: vec![
+                        make_op(OpCode::FloorDiv, vec![one, iv], vec![body_result]),
+                        increment,
+                    ],
+                    terminator: Terminator::Branch {
+                        target: header,
+                        args: vec![next],
+                    },
+                },
+            );
+            func.blocks.insert(
+                exit,
+                TirBlock {
+                    id: exit,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            func.loop_roles.insert(header, LoopRole::LoopHeader);
+            let ranges = crate::representation_plan::value_range_for(&func);
+            assert_eq!(
+                ranges.range_of(iv),
+                crate::tir::numeric_facts::IntRange::new(0, 10)
+            );
+            assert_eq!(
+                ranges.range_at(body, iv),
+                crate::tir::numeric_facts::IntRange::new(1, 10)
+            );
+            let lir = lower_function_to_lir(&func);
+            let guard_op = &lir.blocks[&header].ops[0];
+            let body_op = &lir.blocks[&body].ops[0];
+            assert_eq!(
+                guard_op.tir_op.attrs.get("lir.boxed_dispatch"),
+                Some(&AttrValue::Bool(true))
+            );
+            assert!(!body_op.tir_op.attrs.contains_key("lir.boxed_dispatch"));
+            assert_eq!(body_op.result_values[0].repr, LirRepr::I64);
         }
     }
 
