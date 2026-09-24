@@ -526,6 +526,12 @@ code/global binding that it requires. Partitioning must keep the checked entry
 and its failure cleanup with the frame owner; inherited chunks neither enter
 nor exit that frame.
 
+SSA materializes missing reaching definitions only at surviving uses after edge
+repair. One local `None` definition dominates the consuming block's operations
+and outgoing edge arguments, including disconnected roots. An unused SSA
+placeholder must not emit instructions before checked entry or escape into
+published operands or type facts.
+
 The function's explicit `return_abi` owns the linkage result independently of
 return payloads and inferred semantic types. Python functions, pollers, and
 callable helpers have a value ABI even if optimization removes every value
@@ -535,6 +541,9 @@ synthetic signature instructions or a scan of optimized returns. Empty returns
 in a value ABI lower to boxed `None` at the machine boundary, keeping
 `trace_exit` adjacent to its return in the IR. A Python `None` type is not a void
 calling convention. See `SIMPLE_IR_JSON_SCHEMA.md` for the transport contract.
+An empty extern declaration is not a body proving a `None` result: its value
+ABI has an unknown boxed semantic result, and lowering keeps the declaration
+free of synthetic executable signature operations.
 
 Luau coroutine wrappers retire their exact execution-context lookup on terminal
 completion, failure or explicit close through the shared frame authority.

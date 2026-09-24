@@ -78,6 +78,11 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     molt_ir::ir_schema::validate_function_op_shapes(ir).unwrap_or_else(|error| {
         panic!("invalid SimpleIR operation shape before lowering: {error}")
     });
+    // A declaration has no executable body to rewrite or infer from. Preserve
+    // its explicit ABI through assembly without inventing signature operations.
+    if ir.is_extern {
+        return lower_prepared_function(ir);
+    }
     if std::env::var("MOLT_TRACE_SIMPLE_IMPORT").as_deref() == Ok("1") {
         for op in &ir.ops {
             if op.kind.contains("import") {
@@ -347,7 +352,14 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     function
         .value_types
         .extend(exact.iter().map(|(&value, ty)| (value, ty.clone())));
-    function.return_type = infer_return_type(function.blocks.values(), &exact);
+    function.return_type = if ir.is_extern {
+        match ir.return_abi {
+            molt_ir::FunctionReturnAbi::Value => TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Void => TirType::None,
+        }
+    } else {
+        infer_return_type(function.blocks.values(), &exact)
+    };
     function
 }
 

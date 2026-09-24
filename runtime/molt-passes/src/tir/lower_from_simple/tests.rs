@@ -22,6 +22,29 @@ fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
 }
 
 #[test]
+fn extern_declarations_keep_authored_return_contract_without_a_body() {
+    for (return_abi, expected_type) in [
+        (molt_ir::FunctionReturnAbi::Value, TirType::DynBox),
+        (molt_ir::FunctionReturnAbi::Void, TirType::None),
+    ] {
+        let mut ir = make_func("extern_declaration", &["argument"], vec![]);
+        ir.is_extern = true;
+        ir.return_abi = return_abi;
+        let tir = lower_to_tir(&ir);
+        assert_eq!(tir.return_abi, return_abi);
+        assert_eq!(tir.return_type, expected_type);
+        assert_eq!(tir.param_names, ir.params);
+        assert_eq!(tir.param_types, vec![TirType::DynBox]);
+        assert!(
+            tir.blocks.is_empty(),
+            "declaration must not acquire a synthetic body"
+        );
+        assert!(tir.value_types.is_empty());
+        assert!(ir.ops.is_empty());
+    }
+}
+
+#[test]
 fn lower_functions_to_tir_module_skips_externs_and_aligns_idx() {
     // [non-extern "a", extern "ext", non-extern "b"] → module has {a, b}
     // (extern skipped), idx_map aligns module position → original index.
@@ -215,11 +238,11 @@ fn trivial_function_lowering() {
 
     // Entry block should have 2 ops (const + add; ret is structural).
     let entry = &tir.blocks[&tir.entry_block];
-    // 3 ops: ConstNone (SSA undef sentinel) + ConstInt + Add; ret is structural.
+    // Only the authored ConstInt and Add; no unused SSA undef materialization.
     assert_eq!(
         entry.ops.len(),
-        3,
-        "entry should have undef sentinel, const, and add ops"
+        2,
+        "entry should have only const and add ops"
     );
 
     // Terminator should be Return.
