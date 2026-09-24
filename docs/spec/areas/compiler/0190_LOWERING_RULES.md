@@ -237,6 +237,27 @@ that replacement, both per-member and homogeneous element projections, and
 their reference-release safety. Loop convergence includes loss of owner custody before
 publishing facts for subsequent iterations.
 
+Persistent binding storage carries ordinary and preserve-owner mutation frontiers
+derived only from `expression_result_without_mutable_contents`, including both
+per-member and homogeneous mutable descendants. Radix branches summarize those
+chunk masks; mutation visits candidate storage rather than sweeping all bindings.
+These are raw-result susceptibility facts, not cached cleanliness: namespace taint
+domains can grow after an older state was interned, so epoch/domain cleanliness
+is resolved at the point of use. Raw stored owner tokens are likewise distinct
+from public unknown ownership on dirty bindings.
+
+Point writes, multi-slot writes, tainting, and mutable-content expiry use one
+batch publisher. Each changed chunk and affected existing radix ancestor is
+copied at most once per batch; joins construct chunks through the same frontier
+authority. Ordered write-history payloads remain independent of structural
+sharing, including same-shaped stores and owner-only transitions.
+`slot_updated_between` retains those events; semantic fixpoint equality never
+substitutes for owner-custody comparison.
+Default multi-slot batches compare each input with the preceding staged write
+to that slot, so an A-to-B-to-A sequence preserves both effective writes while
+publishing A. Explicit `record_writes` also retains same-shaped writes. This
+staging exists only within one publication call, never across taint-domain growth.
+
 `PythonCallSiteFact` separates evaluated callee/argument effects, invocation
 effects and post-invocation cleanup. A known normal-result kind does not imply
 a callback-free invocation. `callee_elision_safe` is the authorization for

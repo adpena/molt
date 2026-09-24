@@ -14,7 +14,7 @@ import hashlib
 import struct
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from threading import Event, RLock
 from typing import Final, Literal, Sequence, cast
@@ -199,6 +199,8 @@ class _BindingChunk:
     clean_epochs: tuple[int, ...]
     active_mask: int
     clean_mask: int
+    mutation_mask: int = 0
+    owner_mutation_mask: int = 0
 
 
 _EMPTY_BINDING_CHUNK: Final = _BindingChunk(
@@ -212,11 +214,58 @@ _EMPTY_BINDING_CHUNK: Final = _BindingChunk(
 )
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _BindingBranch:
+    """Persistent radix children with raw-result mutation frontiers."""
+
+    children: tuple[_BindingChunk | _BindingBranch, ...] = ()
+    mutation_mask: int = 0
+    owner_mutation_mask: int = 0
+    chunk_count: int = 0
+
+
+_EMPTY_BINDING_BRANCH: Final = _BindingBranch()
+
+
+def _binding_branch(
+    children: tuple[_BindingChunk | _BindingBranch, ...],
+    level: int,
+    previous: _BindingBranch = _EMPTY_BINDING_BRANCH,
+) -> _BindingBranch:
+    filler: _BindingChunk | _BindingBranch = (
+        _EMPTY_BINDING_CHUNK if level == 0 else _EMPTY_BINDING_BRANCH
+    )
+    count = len(children)
+    while count and children[count - 1] is filler:
+        count -= 1
+    children = children[:count]
+    if not children:
+        return _EMPTY_BINDING_BRANCH
+    if len(children) == len(previous.children) and all(
+        child is old for child, old in zip(children, previous.children, strict=True)
+    ):
+        return previous
+    ordinary = preserved = 0
+    for offset, child in enumerate(children):
+        if child.mutation_mask:
+            ordinary |= 1 << offset
+        if child.owner_mutation_mask:
+            preserved |= 1 << offset
+    last = cast(_BindingBranch, children[-1]) if level else None
+    extent = ((len(children) - 1) << (level * _BINDING_TREE_SHIFT)) + (
+        last.chunk_count if last is not None else 1
+    )
+    return _BindingBranch(children, ordinary, preserved, extent)
+
+
 @dataclass(frozen=True, slots=True)
 class _BindingEnvironment:
-    root: tuple[object, ...] = ()
-    chunk_count: int = 0
+    root: _BindingBranch = _EMPTY_BINDING_BRANCH
     depth: int = 1
+
+    @property
+    def chunk_count(self) -> int:
+        return self.root.chunk_count
 
 
 _EMPTY_BINDING_ENVIRONMENT: Final = _BindingEnvironment()
@@ -224,12 +273,20 @@ _EMPTY_BINDING_ENVIRONMENT: Final = _BindingEnvironment()
 
 @dataclass(frozen=True, slots=True)
 class _BindingResolution:
-    """One canonical value/static/clean result for a binding lookup."""
+    """Raw storage payload, including custody; public projection is explicit."""
 
     identities: IdentityMask
     static_value: PythonStaticValue
     result: StaticExpressionResult
     clean: bool
+    owner_token: int = 0
+
+    def public(self) -> _BindingResolution:
+        if self.clean:
+            return self
+        return _BindingResolution(
+            self.identities | OTHER_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, False, 0
+        )
 
 
 _UNBOUND_BINDING_RESOLUTION: Final = _BindingResolution(
@@ -298,6 +355,12 @@ class _StatePool:
         self.join_node_visits = 0
         self.join_shared_subtrees_skipped = 0
         self.join_chunk_merges = 0
+        self.binding_chunk_copies = 0
+        self.binding_branch_copies = 0
+        self.binding_resolution_calls = 0
+        self.mutation_frontier_node_visits = 0
+        self.mutation_frontier_chunk_visits = 0
+        self.mutation_frontier_slot_visits = 0
 
     def set_taint_domain(self, slots: int) -> None:
         if slots & self._taint_domain_mask != self._taint_domain_mask:
@@ -310,64 +373,50 @@ class _StatePool:
             return _EMPTY_BINDING_CHUNK
         node = environment.root
         for level in range(environment.depth - 1, -1, -1):
-            offset = (chunk_index >> (level * _BINDING_TREE_SHIFT)) & (
-                _BINDING_TREE_MASK
-            )
-            if offset >= len(node):
+            offset = (chunk_index >> (level * _BINDING_TREE_SHIFT)) & _BINDING_TREE_MASK
+            if offset >= len(node.children):
                 return _EMPTY_BINDING_CHUNK
-            child = node[offset]
+            child = node.children[offset]
             if level == 0:
                 return cast(_BindingChunk, child)
-            node = cast(tuple[object, ...], child)
+            node = cast(_BindingBranch, child)
         return _EMPTY_BINDING_CHUNK
 
-    def _binding_resolution(
-        self,
-        state_id: int,
-        slot: int,
-        memo: dict[int, _BindingResolution] | None = None,
-    ) -> _BindingResolution:
-        if memo is None:
-            memo = {}
-        cached = memo.get(state_id)
-        if cached is not None:
-            return cached
+    def _binding_resolution(self, state_id: int, slot: int) -> _BindingResolution:
         environment = self._binding_environments[state_id]
-        chunk = self._chunk_at(environment, slot >> _BINDING_CHUNK_SHIFT)
-        chunk_offset = slot & _BINDING_CHUNK_MASK
-        slot_bit = 1 << chunk_offset
-        present = bool((chunk.active_mask | chunk.clean_mask) & slot_bit)
-        if present:
-            clean = self._slot_is_clean(
-                present=True,
-                stored_clean=bool(chunk.clean_mask & slot_bit),
-                in_taint_domain=self.slot_in_taint_domain(slot),
-                state_epoch=self._states[state_id].taint_epoch,
-                clean_epoch=chunk.clean_epochs[chunk_offset],
+        return self._resolve_chunk_binding(
+            self._chunk_at(environment, slot >> _BINDING_CHUNK_SHIFT),
+            slot,
+            self._states[state_id].taint_epoch,
+        )
+
+    def _resolve_chunk_binding(
+        self, chunk: _BindingChunk, slot: int, state_epoch: int
+    ) -> _BindingResolution:
+        # The taint domain can grow after an immutable state was interned.
+        # Only storage is persistent: never memoize (state, slot) projections.
+        self.binding_resolution_calls += 1
+        offset = slot & _BINDING_CHUNK_MASK
+        bit = 1 << offset
+        present = bool((chunk.active_mask | chunk.clean_mask) & bit)
+        clean = self._slot_is_clean(
+            present=present,
+            stored_clean=bool(chunk.clean_mask & bit),
+            in_taint_domain=self.slot_in_taint_domain(slot),
+            state_epoch=state_epoch,
+            clean_epoch=chunk.clean_epochs[offset],
+        )
+        if not present:
+            return _BindingResolution(
+                UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, clean
             )
-            resolution = _BindingResolution(
-                chunk.identities[chunk_offset],
-                chunk.static_values[chunk_offset],
-                chunk.results[chunk_offset],
-                clean,
-            )
-        else:
-            # An absent slot is pristine until its namespace has actually
-            # crossed a callback boundary. Absence is not itself dirty state.
-            resolution = _BindingResolution(
-                UNBOUND_IDENTITY,
-                None,
-                UNKNOWN_EXPRESSION_RESULT,
-                self._slot_is_clean(
-                    present=False,
-                    stored_clean=False,
-                    in_taint_domain=self.slot_in_taint_domain(slot),
-                    state_epoch=self._states[state_id].taint_epoch,
-                    clean_epoch=0,
-                ),
-            )
-        memo[state_id] = resolution
-        return resolution
+        return _BindingResolution(
+            chunk.identities[offset],
+            chunk.static_values[offset],
+            chunk.results[offset],
+            clean,
+            chunk.owner_tokens[offset],
+        )
 
     @staticmethod
     def _slot_is_clean(
@@ -386,108 +435,193 @@ class _StatePool:
             return False
         return not in_taint_domain or clean_epoch == state_epoch
 
-    @classmethod
-    def _updated_environment(
-        cls,
-        environment: _BindingEnvironment,
-        slot: int,
-        identity: IdentityMask,
-        static_value: PythonStaticValue,
-        result: StaticExpressionResult,
-        owner_token: int,
-        clean: bool,
-        clean_epoch: int,
-    ) -> _BindingEnvironment:
-        chunk_index = slot >> _BINDING_CHUNK_SHIFT
-        previous = cls._chunk_at(environment, chunk_index)
-        identities = list(previous.identities)
-        identities[slot & _BINDING_CHUNK_MASK] = identity
-        static_values = list(previous.static_values)
-        static_values[slot & _BINDING_CHUNK_MASK] = static_value
-        results = list(previous.results)
-        results[slot & _BINDING_CHUNK_MASK] = result
-        owner_tokens = list(previous.owner_tokens)
-        owner_tokens[slot & _BINDING_CHUNK_MASK] = owner_token
-        clean_epochs = list(previous.clean_epochs)
-        clean_epochs[slot & _BINDING_CHUNK_MASK] = clean_epoch
-        slot_bit = 1 << (slot & _BINDING_CHUNK_MASK)
-        active_mask = previous.active_mask
-        clean_mask = previous.clean_mask
-        if (
-            identity == UNBOUND_IDENTITY
-            and static_value is None
-            and result == UNKNOWN_EXPRESSION_RESULT
-        ):
-            active_mask &= ~slot_bit
-        else:
-            active_mask |= slot_bit
-        if clean:
-            clean_mask |= slot_bit
-        else:
-            clean_mask &= ~slot_bit
-        updated_chunk = _BindingChunk(
-            tuple(identities),
-            tuple(static_values),
-            tuple(results),
-            tuple(owner_tokens),
-            tuple(clean_epochs),
+    def _make_chunk(
+        self,
+        identities: tuple[IdentityMask, ...],
+        static_values: tuple[PythonStaticValue, ...],
+        results: tuple[StaticExpressionResult, ...],
+        owner_tokens: tuple[int, ...],
+        clean_epochs: tuple[int, ...],
+        active_mask: int,
+        clean_mask: int,
+        previous: _BindingChunk = _EMPTY_BINDING_CHUNK,
+    ) -> _BindingChunk:
+        """Construct storage and both frontiers from the canonical expiry."""
+        if not (active_mask or clean_mask):
+            return _EMPTY_BINDING_CHUNK
+        payload = (
+            identities,
+            static_values,
+            results,
+            owner_tokens,
+            clean_epochs,
             active_mask,
             clean_mask,
         )
-
-        def update_node(node: tuple[object, ...], level: int) -> tuple[object, ...]:
-            offset = (chunk_index >> (level * _BINDING_TREE_SHIFT)) & (
-                _BINDING_TREE_MASK
-            )
-            children = list(node)
-            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
-            if offset >= len(children):
-                children.extend((filler,) * (offset + 1 - len(children)))
-            if level == 0:
-                children[offset] = updated_chunk
-            else:
-                children[offset] = update_node(
-                    cast(tuple[object, ...], children[offset]), level - 1
-                )
-            while children and children[-1] == filler:
-                children.pop()
-            return tuple(children)
-
-        root = environment.root
-        depth = environment.depth
-        while chunk_index >= _BINDING_TREE_SIZE**depth:
-            root = (root,)
-            depth += 1
-        root = update_node(root, depth - 1)
-        chunk_count = max(environment.chunk_count, chunk_index + 1)
-        if not (active_mask or clean_mask) and chunk_index + 1 == chunk_count:
-            while (
-                chunk_count
-                and not cls._chunk_at(
-                    _BindingEnvironment(root, chunk_count, depth), chunk_count - 1
-                ).active_mask
-                and not cls._chunk_at(
-                    _BindingEnvironment(root, chunk_count, depth), chunk_count - 1
-                ).clean_mask
+        if payload == (
+            previous.identities,
+            previous.static_values,
+            previous.results,
+            previous.owner_tokens,
+            previous.clean_epochs,
+            previous.active_mask,
+            previous.clean_mask,
+        ):
+            return previous
+        candidates = active_mask & clean_mask
+        ordinary = previous.mutation_mask & candidates
+        preserved = previous.owner_mutation_mask & candidates
+        remaining = candidates
+        while remaining:
+            bit = remaining & -remaining
+            remaining ^= bit
+            offset = bit.bit_length() - 1
+            result = results[offset]
+            if (
+                previous.active_mask & previous.clean_mask & bit
+                and result is previous.results[offset]
             ):
-                chunk_count -= 1
-        return _BindingEnvironment(
-            root,
-            chunk_count,
-            depth,
-        )
+                continue
+            ordinary &= ~bit
+            preserved &= ~bit
+            if expression_result_without_mutable_contents(result) != result:
+                ordinary |= bit
+            if (
+                expression_result_without_mutable_contents(result, preserve_owner=True)
+                != result
+            ):
+                preserved |= bit
+        self.binding_chunk_copies += 1
+        return _BindingChunk(*payload, ordinary, preserved)
+
+    @staticmethod
+    def _root_at_depth(environment: _BindingEnvironment, depth: int) -> _BindingBranch:
+        root = environment.root
+        for level in range(environment.depth, depth):
+            root = (
+                _binding_branch((root,), level)
+                if root.children
+                else _EMPTY_BINDING_BRANCH
+            )
+        return root
+
+    def _publish_environment(
+        self,
+        environment: _BindingEnvironment,
+        updates: Sequence[
+            tuple[
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+            ]
+        ],
+        clean_epoch: int,
+    ) -> _BindingEnvironment:
+        """Publish one batch: each touched chunk and old ancestor copied once.
+
+        History keeps ordered effective updates, including all recorded writes.
+        Storage groups by chunk with final-write-wins within the supplied batch.
+        """
+        grouped: dict[
+            int,
+            dict[
+                int,
+                tuple[
+                    IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+                ],
+            ],
+        ] = {}
+        for slot, identity, static_value, result, owner_token, clean in updates:
+            if slot < 0:
+                raise ValueError("binding slots must be nonnegative")
+            grouped.setdefault(slot >> _BINDING_CHUNK_SHIFT, {})[
+                slot & _BINDING_CHUNK_MASK
+            ] = (identity, static_value, result, owner_token, clean)
+        if not grouped:
+            return environment
+        chunks: dict[int, _BindingChunk] = {}
+        for chunk_index in sorted(grouped):
+            previous = self._chunk_at(environment, chunk_index)
+            identities = list(previous.identities)
+            static_values = list(previous.static_values)
+            results = list(previous.results)
+            owners = list(previous.owner_tokens)
+            epochs = list(previous.clean_epochs)
+            active_mask, clean_mask = previous.active_mask, previous.clean_mask
+            for offset, (identity, static_value, result, owner, clean) in sorted(
+                grouped[chunk_index].items()
+            ):
+                identities[offset] = identity
+                static_values[offset] = static_value
+                results[offset] = result
+                owners[offset] = owner
+                epochs[offset] = clean_epoch
+                bit = 1 << offset
+                if (
+                    identity == UNBOUND_IDENTITY
+                    and static_value is None
+                    and result == UNKNOWN_EXPRESSION_RESULT
+                ):
+                    active_mask &= ~bit
+                else:
+                    active_mask |= bit
+                clean_mask = clean_mask | bit if clean else clean_mask & ~bit
+            updated = self._make_chunk(
+                tuple(identities),
+                tuple(static_values),
+                tuple(results),
+                tuple(owners),
+                tuple(epochs),
+                active_mask,
+                clean_mask,
+                previous,
+            )
+            if updated is not previous:
+                chunks[chunk_index] = updated
+        if not chunks:
+            return environment
+        depth = environment.depth
+        while max(chunks) >= _BINDING_TREE_SIZE**depth:
+            depth += 1
+        root = self._root_at_depth(environment, depth)
+
+        def rebuild(
+            node: _BindingBranch, level: int, indices: list[int]
+        ) -> _BindingBranch:
+            by_offset: dict[int, list[int]] = {}
+            for index in indices:
+                offset = (index >> (level * _BINDING_TREE_SHIFT)) & _BINDING_TREE_MASK
+                by_offset.setdefault(offset, []).append(index)
+            children = list(node.children)
+            filler: _BindingChunk | _BindingBranch = (
+                _EMPTY_BINDING_CHUNK if level == 0 else _EMPTY_BINDING_BRANCH
+            )
+            required = max(by_offset) + 1
+            if required > len(children):
+                children.extend((filler,) * (required - len(children)))
+            for offset, branch_indices in sorted(by_offset.items()):
+                children[offset] = (
+                    chunks[branch_indices[0]]
+                    if level == 0
+                    else rebuild(
+                        cast(_BindingBranch, children[offset]),
+                        level - 1,
+                        branch_indices,
+                    )
+                )
+            updated = _binding_branch(tuple(children), level, node)
+            if updated is not node:
+                self.binding_branch_copies += 1
+            return updated
+
+        return _BindingEnvironment(rebuild(root, depth - 1, sorted(chunks)), depth)
 
     def _joined_environment(
         self, parents: tuple[int, ...], taint_epoch: int
     ) -> _BindingEnvironment:
         environments = tuple(self._binding_environments[parent] for parent in parents)
         depth = max((environment.depth for environment in environments), default=1)
-        roots: list[tuple[object, ...]] = []
-        for environment in environments:
-            root = environment.root
-            for _level in range(environment.depth, depth):
-                root = (root,) if root else ()
-            roots.append(root)
+        roots = tuple(
+            self._root_at_depth(environment, depth) for environment in environments
+        )
         parent_epochs = tuple(self._states[parent].taint_epoch for parent in parents)
 
         def merge_chunks(
@@ -613,7 +747,7 @@ class _StatePool:
                         clean_mask |= slot_bit
                 if not (active_mask or clean_mask):
                     return _EMPTY_BINDING_CHUNK
-                return _BindingChunk(
+                return self._make_chunk(
                     tuple(identities),
                     tuple(static_values),
                     tuple(results),
@@ -621,6 +755,7 @@ class _StatePool:
                     tuple(clean_epochs),
                     active_mask,
                     clean_mask,
+                    first,
                 )
             remaining = candidate_mask
             while remaining:
@@ -684,7 +819,7 @@ class _StatePool:
                     clean_mask |= slot_bit
             if not (active_mask or clean_mask):
                 return _EMPTY_BINDING_CHUNK
-            return _BindingChunk(
+            return self._make_chunk(
                 tuple(identities),
                 tuple(static_values),
                 tuple(results),
@@ -692,24 +827,28 @@ class _StatePool:
                 tuple(clean_epochs),
                 active_mask,
                 clean_mask,
+                first,
             )
 
         def merge_nodes(
-            nodes: tuple[tuple[object, ...], ...],
+            nodes: tuple[_BindingBranch, ...],
             level: int,
             chunk_prefix: int,
-        ) -> tuple[object, ...]:
+        ) -> _BindingBranch:
             self.join_node_visits += 1
             first = nodes[0]
             if all(node is first for node in nodes[1:]):
                 self.join_shared_subtrees_skipped += 1
                 return first
-            child_count = max((len(node) for node in nodes), default=0)
-            children: list[object] = []
-            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
+            child_count = max((len(node.children) for node in nodes), default=0)
+            children: list[_BindingChunk | _BindingBranch] = []
+            filler: _BindingChunk | _BindingBranch = (
+                _EMPTY_BINDING_CHUNK if level == 0 else _EMPTY_BINDING_BRANCH
+            )
             for offset in range(child_count):
                 branch = tuple(
-                    node[offset] if offset < len(node) else filler for node in nodes
+                    node.children[offset] if offset < len(node.children) else filler
+                    for node in nodes
                 )
                 child_prefix = chunk_prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if level == 0:
@@ -718,64 +857,47 @@ class _StatePool:
                     )
                 else:
                     child = merge_nodes(
-                        cast(tuple[tuple[object, ...], ...], branch),
+                        cast(tuple[_BindingBranch, ...], branch),
                         level - 1,
                         child_prefix,
                     )
                 children.append(child)
-            while children and children[-1] is filler:
-                children.pop()
-            return tuple(children)
+            return _binding_branch(tuple(children), level, first)
 
         root = merge_nodes(tuple(roots), depth - 1, 0)
-        return _BindingEnvironment(
-            root,
-            max((environment.chunk_count for environment in environments), default=0),
-            depth,
-        )
+        return _BindingEnvironment(root, depth)
 
     def intern(self, state: _BindingState) -> int:
         known = self._ids.get(state)
         if known is not None:
             return known
-        index = len(self._states)
-        self._states.append(state)
         if not state.parents:
             environment = _EMPTY_BINDING_ENVIRONMENT
         elif len(state.parents) == 1:
             environment = self._binding_environments[state.parents[0]]
         else:
             environment = self._joined_environment(state.parents, state.taint_epoch)
+        updates: list[
+            tuple[
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+            ]
+        ] = []
         if state.updated_slot >= 0:
             assert state.updated_clean is not None
-            environment = self._updated_environment(
-                environment,
-                state.updated_slot,
-                state.updated_value,
-                state.updated_static_value,
-                state.updated_result,
-                state.updated_owner_token,
-                state.updated_clean,
-                state.taint_epoch,
+            updates.append(
+                (
+                    state.updated_slot,
+                    state.updated_value,
+                    state.updated_static_value,
+                    state.updated_result,
+                    state.updated_owner_token,
+                    state.updated_clean,
+                )
             )
-        for (
-            slot,
-            value,
-            static_value,
-            result,
-            owner_token,
-            clean,
-        ) in state.updated_bindings:
-            environment = self._updated_environment(
-                environment,
-                slot,
-                value,
-                static_value,
-                result,
-                owner_token,
-                clean,
-                state.taint_epoch,
-            )
+        updates.extend(state.updated_bindings)
+        environment = self._publish_environment(environment, updates, state.taint_epoch)
+        index = len(self._states)
+        self._states.append(state)
         self._binding_environments.append(environment)
         self._ids[state] = index
         return index
@@ -786,13 +908,13 @@ class _StatePool:
     def _binding_details(
         self, state_id: int, slot: int
     ) -> tuple[IdentityMask, PythonStaticValue, StaticExpressionResult, bool]:
-        resolution = self._binding_resolution(state_id, slot)
-        value = resolution.identities
-        if not resolution.clean:
-            value |= OTHER_IDENTITY
-        static_value = resolution.static_value if resolution.clean else None
-        result = resolution.result if resolution.clean else UNKNOWN_EXPRESSION_RESULT
-        return value, static_value, result, resolution.clean
+        resolution = self._binding_resolution(state_id, slot).public()
+        return (
+            resolution.identities,
+            resolution.static_value,
+            resolution.result,
+            resolution.clean,
+        )
 
     def binding(self, state_id: int, slot: int) -> IdentityMask:
         self.binding_lookups += 1
@@ -806,11 +928,7 @@ class _StatePool:
 
     def owner_token(self, state_id: int, slot: int) -> int:
         resolution = self._binding_resolution(state_id, slot)
-        if not resolution.clean:
-            return 0
-        environment = self._binding_environments[state_id]
-        chunk = self._chunk_at(environment, slot >> _BINDING_CHUNK_SHIFT)
-        return chunk.owner_tokens[slot & _BINDING_CHUNK_MASK]
+        return resolution.owner_token if resolution.clean else 0
 
     def set_binding(
         self,
@@ -836,29 +954,48 @@ class _StatePool:
     ) -> int:
         updates: list[
             tuple[
-                int,
-                IdentityMask,
-                PythonStaticValue,
-                StaticExpressionResult,
-                int,
-                bool,
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
             ]
         ] = []
+        # This map exists only during this call. It transports preceding writes,
+        # never cached projections of an immutable state across domain growth.
+        staged: dict[int, _BindingResolution] = {}
         for slot, value, static_value, result, owner_token in bindings:
-            current_value, current_static_value, current_result, clean = (
-                self._binding_details(state_id, slot)
-            )
-            current_owner_token = self.owner_token(state_id, slot)
-            if (
-                current_value == value
-                and current_static_value == static_value
-                and current_result == result
-                and current_owner_token == owner_token
-                and clean
-                and not record_writes
-            ):
-                continue
+            if slot < 0:
+                raise ValueError("binding slots must be nonnegative")
+            if not record_writes:
+                current = staged.get(slot)
+                if current is None:
+                    current = self._binding_resolution(state_id, slot).public()
+                    staged[slot] = current
+                if (
+                    current.identities == value
+                    and current.static_value == static_value
+                    and current.result == result
+                    and current.owner_token == owner_token
+                    and current.clean
+                ):
+                    continue
+                staged[slot] = _BindingResolution(
+                    value, static_value, result, True, owner_token
+                )
             updates.append((slot, value, static_value, result, owner_token, True))
+        return self._publish_updates(state_id, updates)
+
+    def _publish_updates(
+        self,
+        state_id: int,
+        updates: Sequence[
+            tuple[
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+            ]
+        ],
+    ) -> int:
+        """Preserve ordered history independently of storage path sharing."""
+        # -1 encodes "no point write" in _BindingState, so reject it before
+        # selecting the single-write history representation.
+        if any(slot < 0 for slot, *_payload in updates):
+            raise ValueError("binding slots must be nonnegative")
         if not updates:
             return state_id
         state = self._states[state_id]
@@ -888,30 +1025,68 @@ class _StatePool:
             )
         )
 
+    def _mutation_chunks(
+        self, environment: _BindingEnvironment
+    ) -> Iterator[tuple[int, _BindingChunk]]:
+        pending = [(environment.root, environment.depth - 1, 0)]
+        while pending:
+            node, level, prefix = pending.pop()
+            self.mutation_frontier_node_visits += 1
+            frontier = node.mutation_mask | node.owner_mutation_mask
+            if not frontier:
+                continue
+            if level == 0:
+                while frontier:
+                    bit = frontier & -frontier
+                    frontier ^= bit
+                    offset = bit.bit_length() - 1
+                    self.mutation_frontier_chunk_visits += 1
+                    yield prefix | offset, cast(_BindingChunk, node.children[offset])
+            else:
+                # Stack traversal is ascending by chunk, independent of batch order.
+                for offset in range(len(node.children) - 1, -1, -1):
+                    if frontier & (1 << offset):
+                        pending.append(
+                            (
+                                cast(_BindingBranch, node.children[offset]),
+                                level - 1,
+                                prefix | (offset << (level * _BINDING_TREE_SHIFT)),
+                            )
+                        )
+
     def invalidate_mutable_contents(
         self, state_id: int, *, except_slots: frozenset[int] = frozenset()
     ) -> int:
-        """Expire mutable contents, retaining only exempt owners' outer shape."""
-
+        """Expire only susceptible storage, resolving live cleanliness once."""
         environment = self._binding_environments[state_id]
-        updates: list[
-            tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
-        ] = []
-        for chunk_index in range(environment.chunk_count):
-            chunk = self._chunk_at(environment, chunk_index)
-            remaining = chunk.active_mask
-            while remaining:
-                slot_bit = remaining & -remaining
-                remaining ^= slot_bit
-                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (
-                    slot_bit.bit_length() - 1
+        state_epoch = self._states[state_id].taint_epoch
+        exemptions: dict[int, int] = {}
+        for slot in except_slots:
+            if slot >= 0:
+                chunk_index = slot >> _BINDING_CHUNK_SHIFT
+                exemptions[chunk_index] = exemptions.get(chunk_index, 0) | (
+                    1 << (slot & _BINDING_CHUNK_MASK)
                 )
-                resolution = self._binding_resolution(state_id, slot)
+        updates: list[
+            tuple[
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+            ]
+        ] = []
+        for chunk_index, chunk in self._mutation_chunks(environment):
+            exempt = exemptions.get(chunk_index, 0)
+            remaining = (chunk.mutation_mask & ~exempt) | (
+                chunk.owner_mutation_mask & exempt
+            )
+            while remaining:
+                bit = remaining & -remaining
+                remaining ^= bit
+                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (bit.bit_length() - 1)
+                self.mutation_frontier_slot_visits += 1
+                resolution = self._resolve_chunk_binding(chunk, slot, state_epoch)
                 if not resolution.clean:
                     continue
                 widened = expression_result_without_mutable_contents(
-                    resolution.result,
-                    preserve_owner=slot in except_slots,
+                    resolution.result, preserve_owner=bool(exempt & bit)
                 )
                 if widened != resolution.result:
                     updates.append(
@@ -920,84 +1095,96 @@ class _StatePool:
                             resolution.identities,
                             resolution.static_value,
                             widened,
-                            self.owner_token(state_id, slot),
+                            resolution.owner_token,
+                            True,
                         )
                     )
-        return self.set_bindings(state_id, updates) if updates else state_id
+        return self._publish_updates(state_id, updates)
 
-    def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
-        """Return public-identity changes via persistent-trie structural diff."""
-
-        previous_environment = self._binding_environments[previous]
-        current_environment = self._binding_environments[current]
-        depth = max(previous_environment.depth, current_environment.depth)
-
-        def root_at_depth(
-            environment: _BindingEnvironment,
-        ) -> tuple[object, ...]:
-            root = environment.root
-            for _level in range(environment.depth, depth):
-                root = (root,) if root else ()
-            return root
-
-        changed: set[int] = set()
+    def _changed_chunks(
+        self, previous: int, current: int, *, visit_shared: bool = False
+    ) -> Iterator[tuple[int, _BindingChunk, _BindingChunk]]:
+        before = self._binding_environments[previous]
+        after = self._binding_environments[current]
+        depth = max(before.depth, after.depth)
         pending = [
             (
-                root_at_depth(previous_environment),
-                root_at_depth(current_environment),
+                self._root_at_depth(before, depth),
+                self._root_at_depth(after, depth),
                 depth - 1,
                 0,
             )
         ]
         while pending:
-            previous_node, current_node, level, chunk_prefix = pending.pop()
+            left, right, level, prefix = pending.pop()
             self.structural_diff_node_visits += 1
-            if previous_node is current_node:
+            if left is right and (not visit_shared or not left.children):
                 self.structural_diff_shared_skips += 1
                 continue
-            child_count = max(len(previous_node), len(current_node))
-            filler: object = _EMPTY_BINDING_CHUNK if level == 0 else ()
-            for offset in range(child_count):
-                previous_child = (
-                    previous_node[offset] if offset < len(previous_node) else filler
+            count = max(len(left.children), len(right.children))
+            filler: _BindingChunk | _BindingBranch = (
+                _EMPTY_BINDING_CHUNK if level == 0 else _EMPTY_BINDING_BRANCH
+            )
+            offsets = range(count) if level == 0 else range(count - 1, -1, -1)
+            for offset in offsets:
+                left_child = (
+                    left.children[offset] if offset < len(left.children) else filler
                 )
-                current_child = (
-                    current_node[offset] if offset < len(current_node) else filler
+                right_child = (
+                    right.children[offset] if offset < len(right.children) else filler
                 )
-                if previous_child is current_child:
+                if left_child is right_child and (
+                    not visit_shared or left_child is filler
+                ):
                     self.structural_diff_shared_skips += 1
                     continue
-                child_prefix = chunk_prefix | (offset << (level * _BINDING_TREE_SHIFT))
+                child_prefix = prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if level:
                     pending.append(
                         (
-                            cast(tuple[object, ...], previous_child),
-                            cast(tuple[object, ...], current_child),
+                            cast(_BindingBranch, left_child),
+                            cast(_BindingBranch, right_child),
                             level - 1,
                             child_prefix,
                         )
                     )
-                    continue
-                previous_chunk = cast(_BindingChunk, previous_child)
-                current_chunk = cast(_BindingChunk, current_child)
-                candidate_mask = (
-                    previous_chunk.active_mask
-                    | previous_chunk.clean_mask
-                    | current_chunk.active_mask
-                    | current_chunk.clean_mask
-                )
-                while candidate_mask:
-                    slot_bit = candidate_mask & -candidate_mask
-                    candidate_mask ^= slot_bit
-                    slot = (child_prefix << _BINDING_CHUNK_SHIFT) | (
-                        slot_bit.bit_length() - 1
+                else:
+                    yield (
+                        child_prefix,
+                        cast(_BindingChunk, left_child),
+                        cast(_BindingChunk, right_child),
                     )
-                    if (
-                        self._binding_details(previous, slot)[:3]
-                        != self._binding_details(current, slot)[:3]
-                    ):
-                        changed.add(slot)
-        return tuple(sorted(changed))
+
+    def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
+        """Project differences on structurally changed storage only.
+
+        Shared storage with a different namespace epoch is intentionally skipped.
+        equivalent() checks the live taint domain, including absent slots;
+        history carries namespace exposure through its separate epoch events.
+        """
+        changed: list[int] = []
+        previous_epoch = self._states[previous].taint_epoch
+        current_epoch = self._states[current].taint_epoch
+        for chunk_index, left, right in self._changed_chunks(previous, current):
+            remaining = (
+                left.active_mask
+                | left.clean_mask
+                | right.active_mask
+                | right.clean_mask
+            )
+            while remaining:
+                bit = remaining & -remaining
+                remaining ^= bit
+                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (bit.bit_length() - 1)
+                old = self._resolve_chunk_binding(left, slot, previous_epoch).public()
+                new = self._resolve_chunk_binding(right, slot, current_epoch).public()
+                if (old.identities, old.static_value, old.result) != (
+                    new.identities,
+                    new.static_value,
+                    new.result,
+                ):
+                    changed.append(slot)
+        return tuple(changed)
 
     def transition_binding_events(
         self, previous: int, current: int
@@ -1069,31 +1256,29 @@ class _StatePool:
         if slots & self._taint_domain_mask:
             state_id = self.taint_module_bindings(state_id)
             slots &= ~self._taint_domain_mask
+        updates: list[
+            tuple[
+                int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool
+            ]
+        ] = []
         remaining = slots
         while remaining:
-            slot_bit = remaining & -remaining
-            slot = slot_bit.bit_length() - 1
-            remaining ^= slot_bit
+            bit = remaining & -remaining
+            remaining ^= bit
+            slot = bit.bit_length() - 1
             resolution = self._binding_resolution(state_id, slot)
-            if not resolution.clean:
-                continue
-            state = self._states[state_id]
-            state_id = self.intern(
-                _BindingState(
-                    parents=(state_id,),
-                    updated_slot=slot,
-                    updated_value=resolution.identities,
-                    updated_static_value=resolution.static_value,
-                    updated_result=resolution.result,
-                    updated_clean=False,
-                    taint_epoch=state.taint_epoch,
-                    maybe_invalidated_members=state.maybe_invalidated_members,
-                    definitely_invalidated_members=(
-                        state.definitely_invalidated_members
-                    ),
+            if resolution.clean:
+                updates.append(
+                    (
+                        slot,
+                        resolution.identities,
+                        resolution.static_value,
+                        resolution.result,
+                        0,
+                        False,
+                    )
                 )
-            )
-        return state_id
+        return self._publish_updates(state_id, updates)
 
     def invalidate_members(
         self, state_id: int, members: MemberMask, *, definite: bool = False
@@ -1219,14 +1404,14 @@ class _StatePool:
         return True
 
     def owner_tokens_equal(self, left_id: int, right_id: int) -> bool:
-        """Compare custody only, separately from semantic loop-state equality."""
-
-        left_environment = self._binding_environments[left_id]
-        right_environment = self._binding_environments[right_id]
-        chunk_count = max(left_environment.chunk_count, right_environment.chunk_count)
-        for chunk_index in range(chunk_count):
-            left = self._chunk_at(left_environment, chunk_index)
-            right = self._chunk_at(right_environment, chunk_index)
+        """Compare custody separately, including epoch changes on shared storage."""
+        if left_id == right_id:
+            return True
+        left_epoch = self._states[left_id].taint_epoch
+        right_epoch = self._states[right_id].taint_epoch
+        for chunk_index, left, right in self._changed_chunks(
+            left_id, right_id, visit_shared=left_epoch != right_epoch
+        ):
             remaining = (
                 left.active_mask
                 | left.clean_mask
@@ -1234,12 +1419,17 @@ class _StatePool:
                 | right.clean_mask
             )
             while remaining:
-                slot_bit = remaining & -remaining
-                remaining ^= slot_bit
-                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (
-                    slot_bit.bit_length() - 1
-                )
-                if self.owner_token(left_id, slot) != self.owner_token(right_id, slot):
+                bit = remaining & -remaining
+                remaining ^= bit
+                offset = bit.bit_length() - 1
+                if not (left.owner_tokens[offset] or right.owner_tokens[offset]):
+                    continue
+                slot = (chunk_index << _BINDING_CHUNK_SHIFT) | offset
+                old = self._resolve_chunk_binding(left, slot, left_epoch)
+                new = self._resolve_chunk_binding(right, slot, right_epoch)
+                if (old.owner_token if old.clean else 0) != (
+                    new.owner_token if new.clean else 0
+                ):
                     return False
         return True
 
@@ -1955,7 +2145,11 @@ class _Analyzer:
         )
 
     def _read_name_resolution(
-        self, state_id: int, scope: _Scope, name: str
+        self,
+        state_id: int,
+        scope: _Scope,
+        name: str,
+        storage: _BindingResolution | None,
     ) -> _BindingResolution:
         if scope.namespace_can_call(
             name, namespace_tainted=self.states.get(state_id).taint_epoch != 0
@@ -1969,12 +2163,7 @@ class _Analyzer:
                 UNKNOWN_EXPRESSION_RESULT,
                 False,
             )
-        slot = self._slot_for_name(scope, name)
-        own = (
-            _BindingResolution(*self.states._binding_details(state_id, slot))
-            if slot is not None
-            else _UNBOUND_BINDING_RESOLUTION
-        )
+        own = storage.public() if storage is not None else _UNBOUND_BINDING_RESOLUTION
         if (
             scope.kind == "annotation"
             and name not in scope.locals
@@ -2000,7 +2189,7 @@ class _Analyzer:
             # the enclosing class or an identically named closure cell.
             global_slot = self._module_slot(name)
             fallback = (
-                _BindingResolution(*self.states._binding_details(state_id, global_slot))
+                self.states._binding_resolution(state_id, global_slot).public()
                 if global_slot is not None
                 else _UNBOUND_BINDING_RESOLUTION
             )
@@ -2026,12 +2215,19 @@ class _Analyzer:
 
     def _resolve_name(
         self, state_id: int, scope: _Scope, name: str
-    ) -> tuple[IdentityMask, PythonStaticValue, StaticExpressionResult, bool, bool]:
-        """One source-point lookup owns value, cleanliness and storage facts."""
+    ) -> tuple[
+        IdentityMask, PythonStaticValue, StaticExpressionResult, bool, bool, int
+    ]:
+        """One source-point lookup owns value, cleanliness and storage custody."""
         slot = self._slot_for_name(scope, name)
+        storage = (
+            self.states._binding_resolution(state_id, slot)
+            if slot is not None
+            else None
+        )
         activation_lookup = self._name_uses_activation_namespace(state_id, scope, name)
         self.states.binding_lookups += 1
-        resolution = self._read_name_resolution(state_id, scope, name)
+        resolution = self._read_name_resolution(state_id, scope, name, storage)
         value = resolution.identities
         static_value = resolution.static_value
         result = resolution.result
@@ -2075,6 +2271,9 @@ class _Analyzer:
             else UNKNOWN_EXPRESSION_RESULT,
             invalidated,
             bound,
+            storage.owner_token
+            if storage is not None and storage.clean and not invalidated
+            else 0,
         )
 
     def _record_state(self, state_id: int) -> None:
@@ -2432,6 +2631,11 @@ class _Analyzer:
             receiver_rebound = False
             if isinstance(receiver_node, ast.Name):
                 candidate_slot = self._slot_for_name(scope, receiver_node.id)
+                current_receiver = (
+                    self.states._binding_resolution(state_id, candidate_slot).public()
+                    if candidate_slot is not None
+                    else _UNBOUND_BINDING_RESOLUTION
+                )
                 receiver_rebound = candidate_slot is not None and (
                     self.states.slot_updated_between(
                         callee_state_id, state_id, candidate_slot
@@ -2439,13 +2643,8 @@ class _Analyzer:
                 )
                 if (
                     candidate_slot is not None
-                    and (
-                        current_owner_token := self.states.owner_token(
-                            state_id, candidate_slot
-                        )
-                    )
-                    != 0
-                    and current_owner_token >= argument_owner_token_floor
+                    and current_receiver.owner_token != 0
+                    and current_receiver.owner_token >= argument_owner_token_floor
                 ):
                     # The evaluated bound method owns the pre-argument receiver.
                     # The evaluated argument transfer proves that the slot's
@@ -2457,7 +2656,7 @@ class _Analyzer:
                     and not receiver_rebound
                     and not prior_effects & receiver_boundary
                 ):
-                    current_result = self.states.result(state_id, candidate_slot)
+                    current_result = current_receiver.result
                     if current_result.kind == receiver_result.kind:
                         receiver_result = current_result
                         receiver_slot = candidate_slot
@@ -2490,13 +2689,17 @@ class _Analyzer:
                 object_write_content_exempt_slots=receiver_write_exempt_slots,
             )
             if method_shape.receiver_after is not None and receiver_slot is not None:
+                current_receiver = self.states._binding_resolution(
+                    state_id, receiver_slot
+                ).public()
+                self.states.binding_lookups += 1
                 state_id = self.states.set_binding(
                     state_id,
                     receiver_slot,
-                    self.states.binding(state_id, receiver_slot),
-                    self.states.static_value(state_id, receiver_slot),
+                    current_receiver.identities,
+                    current_receiver.static_value,
                     method_shape.receiver_after,
-                    self.states.owner_token(state_id, receiver_slot),
+                    current_receiver.owner_token,
                 )
             return _CallSemantics(
                 result,
@@ -2709,10 +2912,8 @@ class _Analyzer:
                 result_override,
                 binding_invalidated,
                 binding_is_bound,
+                owner_token,
             ) = self._resolve_name(state_id, scope, node.id)
-            slot = self._slot_for_name(scope, node.id)
-            if slot is not None and not binding_invalidated:
-                owner_token = self.states.owner_token(state_id, slot)
             if identities & UNBOUND_IDENTITY or binding_invalidated:
                 effects |= RAISES
         elif isinstance(node, ast.Attribute):
@@ -3546,8 +3747,10 @@ class _Analyzer:
         ] = []
         releases_previous = False
         for slot, value, static_value, result, owner_token in bindings:
-            previous = self.states.binding(state_id, slot)
-            previous_result = self.states.result(state_id, slot)
+            previous_binding = self.states._binding_resolution(state_id, slot).public()
+            self.states.binding_lookups += 1
+            previous = previous_binding.identities
+            previous_result = previous_binding.result
             previous_has_value = bool(previous & ~UNBOUND_IDENTITY)
             # Rooted identities and exact result shapes are independent safety
             # proofs. Callback cleanup is required only when both are unknown.
@@ -3560,7 +3763,7 @@ class _Analyzer:
                 else expression_result_for_publication(result)
             )
             if may_write:
-                previous_static_value = self.states.static_value(state_id, slot)
+                previous_static_value = previous_binding.static_value
                 static_value, result = _join_binding_payloads(
                     (
                         (previous, previous_static_value, previous_result),
@@ -3796,8 +3999,8 @@ class _Analyzer:
         self, target: ast.AST, state_id: int, scope: _Scope
     ) -> tuple[int, EffectMask]:
         if isinstance(target, ast.Name):
-            identities, _value, _result, invalidated, bound = self._resolve_name(
-                state_id, scope, target.id
+            identities, _value, _result, invalidated, bound, _owner = (
+                self._resolve_name(state_id, scope, target.id)
             )
             updated, effects = self._write_name(
                 state_id, scope, target.id, UNBOUND_IDENTITY
