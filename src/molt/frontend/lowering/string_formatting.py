@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 import string as _py_string
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from molt.frontend._types import (
     FormatField,
@@ -22,17 +22,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class StringFormattingMixin(_MixinBase):
+class StringFormattingMixin(GeneratorMixinBase):
     @staticmethod
     def _try_extract_const_str(node: ast.expr) -> str | None:
         """Recursively extract a constant string from an AST node.

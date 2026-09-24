@@ -8,9 +8,9 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 172 |
-| Local path rules | 35 | 40 |
-| Unique local commands | 73 | 90 |
+| Hashed executable authority inputs | 1 | 171 |
+| Local path rules | 35 | 43 |
+| Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -20,7 +20,7 @@ Every selected family expands to stable command IDs. Each command binds an exact
 Proof-family selection parents and GitHub admission edges are distinct authorities. A family may depend on another family only when it consumes that family's data or control result. Independent admissions depend only on the changed-path classifier, so a selected sibling failure cannot mask their execution; the Proof Plan Verdict remains the sole conjunction.
 
 The canonical executor admits dependency-ready commands in manifest order, bounds global fanout at 4, and enforces these per-resource limits:
-Installed Python custody uses 4 bounded hash workers over deterministic coarse file batches; prelaunch and postcompletion both read the complete admitted byte inventory.
+Installed Python custody uses 12 bounded hash workers over deterministic coarse file batches; prelaunch and postcompletion both read the complete admitted byte inventory.
 
 | Resource | Max parallel commands |
 |---|---:|
@@ -96,7 +96,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `python` | `executable` | — | `^Python 3\.12\.` | `.` | `3.12` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
-| `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 2 |
+| `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 1 |
 | `cargo` | `executable` | — | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
@@ -112,8 +112,12 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `quint` | `executable` | — | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
 | `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
+| `llvm-ar` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-ranlib` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-nm` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-strip` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `wasm-tools` | `executable` | — | `^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.253.0` | 1 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.259.0` | 2 |
 
 ## Cargo execution contracts
 
@@ -280,6 +284,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
+| `import-symbol-gate` | 2 | 2 | no |
+| `phase-exit-manifest` | 6 | 2 | no |
+| `public-contract` | 10 | 2 | no |
 
 ## Selection contract
 

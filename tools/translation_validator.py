@@ -509,10 +509,7 @@ class TranslationValidator:
         return CheckResult(
             check=check,
             passed=False,
-            detail=(
-                f"{len(violations)} Repr downgrade(s) or family drift: "
-                f"{details}"
-            ),
+            detail=(f"{len(violations)} Repr downgrade(s) or family drift: {details}"),
         )
 
     # ------------------------------------------------------------------

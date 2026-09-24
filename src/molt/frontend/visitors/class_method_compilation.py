@@ -9,8 +9,9 @@ layout, namespace, and dataclass construction authority.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal, cast
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
@@ -35,16 +36,8 @@ from molt.frontend.sema import (
     stateful_function_frame_plan,
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class ClassMethodCompilationMixin(_MixinBase):
+class ClassMethodCompilationMixin(GeneratorMixinBase):
     def _emit_class_function_definition(
         self, scope: _ClassNsScope, item: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
@@ -259,9 +252,7 @@ class ClassMethodCompilationMixin(_MixinBase):
         ):
             previous = self.classes[class_node.name]["methods"].get(item.name)
             if previous is not None and previous["descriptor"] == "property":
-                return "property_update", cast(
-                    Literal["setter", "deleter"], decorator.attr
-                )
+                return "property_update", decorator.attr
         return "decorated", None
 
     def _compile_class_generator_method(

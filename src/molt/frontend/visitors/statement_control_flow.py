@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import ast
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     ActiveException,
@@ -23,14 +24,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 def _with_module_provenance_loop_flow(
@@ -47,7 +40,7 @@ def _with_module_provenance_loop_flow(
     return wrapped
 
 
-class ControlFlowStatementVisitorMixin(_MixinBase):
+class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
     def _clear_exact_bindings(self, names: set[str]) -> None:
         for name in names:
             self.exact_locals.pop(name, None)

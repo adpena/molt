@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
 from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -38,7 +39,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 PROBES = {
     "hello": 'print("hello startup")\n',
-    "small_compute": 'total = 0\nfor value in range(1_000_000):\n    total += value\nprint(total)\n',
+    "small_compute": "total = 0\nfor value in range(1_000_000):\n    total += value\nprint(total)\n",
 }
 TRACE_RE = re.compile(r"\[molt runtime_init\] \+(\d+)us \(d(\d+)us\) (\S+)")
 PHASE_MARKER = "MOLT_STARTUP_PHASES="
@@ -66,7 +67,9 @@ def _stats(samples_ms: list[float]) -> dict[str, Any]:
     }
 
 
-def _measure(command: list[str], *, env: dict[str, str], samples: int, timeout: float, label: str) -> dict[str, Any]:
+def _measure(
+    command: list[str], *, env: dict[str, str], samples: int, timeout: float, label: str
+) -> dict[str, Any]:
     del label
     values: list[float] = []
     records: list[dict[str, Any]] = []
@@ -84,16 +87,23 @@ def _measure(command: list[str], *, env: dict[str, str], samples: int, timeout: 
             check=False,
         )
         elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
-        records.append({
-            "index": index,
-            "returncode": result.returncode,
-            "elapsed_ms": round(elapsed_ms, 3),
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        })
+        records.append(
+            {
+                "index": index,
+                "returncode": result.returncode,
+                "elapsed_ms": round(elapsed_ms, 3),
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        )
         if result.returncode == 0:
             values.append(elapsed_ms)
-    return {"ok": len(values) == samples, "command": command, "stats": _stats(values), "records": records}
+    return {
+        "ok": len(values) == samples,
+        "command": command,
+        "stats": _stats(values),
+        "records": records,
+    }
 
 
 def _runtime_phases(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -101,8 +111,13 @@ def _runtime_phases(records: list[dict[str, Any]]) -> dict[str, Any]:
     for record in records:
         for match in TRACE_RE.finditer(str(record.get("stderr", ""))):
             phases.setdefault(match.group(3), []).append(int(match.group(2)) / 1000.0)
-    medians = {name: round(statistics.median(values), 4) for name, values in phases.items()}
-    return {"phase_median_ms": medians, "total_median_ms": round(sum(medians.values()), 4) if medians else None}
+    medians = {
+        name: round(statistics.median(values), 4) for name, values in phases.items()
+    }
+    return {
+        "phase_median_ms": medians,
+        "total_median_ms": round(sum(medians.values()), 4) if medians else None,
+    }
 
 
 def _parse_node_phases(stderr: str) -> dict[str, Any] | None:
@@ -118,14 +133,22 @@ def _phase_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         phase = _parse_node_phases(str(record.get("stderr", "")))
         if not phase:
             continue
-        samples.setdefault("preload_to_exit_ms", []).append(float(phase["preload_to_exit_ms"]))
+        samples.setdefault("preload_to_exit_ms", []).append(
+            float(phase["preload_to_exit_ms"])
+        )
         if phase.get("first_stdout_ms") is not None:
-            samples.setdefault("first_stdout_ms", []).append(float(phase["first_stdout_ms"]))
+            samples.setdefault("first_stdout_ms", []).append(
+                float(phase["first_stdout_ms"])
+            )
         for read in phase.get("reads", []):
             if str(read.get("path", "")).endswith(".wasm"):
-                samples.setdefault(f"read:{Path(str(read['path'])).name}", []).append(float(read["duration_ms"]))
+                samples.setdefault(f"read:{Path(str(read['path'])).name}", []).append(
+                    float(read["duration_ms"])
+                )
         for item in phase.get("instantiations", []):
-            samples.setdefault(f"instantiate:{Path(str(item.get('source', '<bytes>'))).name}", []).append(float(item["duration_ms"]))
+            samples.setdefault(
+                f"instantiate:{Path(str(item.get('source', '<bytes>'))).name}", []
+            ).append(float(item["duration_ms"]))
     return {name: _stats(values) for name, values in sorted(samples.items())}
 
 
@@ -133,9 +156,20 @@ def _artifact(path: Path) -> dict[str, Any]:
     return {"path": str(path), "bytes": path.stat().st_size, "sha256": _sha256(path)}
 
 
-def _build(case: output_audit.MatrixCase, script: Path, out_dir: Path, env: dict[str, str], timeout: float):
+def _build(
+    case: output_audit.MatrixCase,
+    script: Path,
+    out_dir: Path,
+    env: dict[str, str],
+    timeout: float,
+):
     result = output_audit._build_molt_artifact(
-        case=case, script=script, out_dir=out_dir, env=env, timeout=timeout, extra_molt_args=[]
+        case=case,
+        script=script,
+        out_dir=out_dir,
+        env=env,
+        timeout=timeout,
+        extra_molt_args=[],
     )
     if result.returncode != 0:
         raise RuntimeError(f"build failed for {case.id}: {result.stderr}")
@@ -163,13 +197,29 @@ def _cpython_env(env: dict[str, str]) -> dict[str, str]:
     return isolated
 
 
-def _measure_probe(name: str, script: Path, *, env: dict[str, str], samples: int, timeout: float, build_timeout: float) -> dict[str, Any]:
+def _measure_probe(
+    name: str,
+    script: Path,
+    *,
+    env: dict[str, str],
+    samples: int,
+    timeout: float,
+    build_timeout: float,
+) -> dict[str, Any]:
     probe_root = TMP / name
-    baseline_python = Path(os.environ.get("MOLT_STARTUP_PYTHON", DEFAULT_BASELINE_PYTHON))
+    baseline_python = Path(
+        os.environ.get("MOLT_STARTUP_PYTHON", DEFAULT_BASELINE_PYTHON)
+    )
     if not baseline_python.exists():
         baseline_python = Path(sys.executable)
     baseline_env = _cpython_env(env)
-    cpython = _measure([str(baseline_python), "-I", str(script)], env=baseline_env, samples=samples, timeout=timeout, label=f"{name} cpython")
+    cpython = _measure(
+        [str(baseline_python), "-I", str(script)],
+        env=baseline_env,
+        samples=samples,
+        timeout=timeout,
+        label=f"{name} cpython",
+    )
     cpython["importtime"] = _measure(
         [str(baseline_python), "-I", "-X", "importtime", str(script)],
         env=baseline_env,
@@ -179,29 +229,70 @@ def _measure_probe(name: str, script: Path, *, env: dict[str, str], samples: int
     )
     row: dict[str, Any] = {"probe": name, "source": str(script), "cpython": cpython}
     try:
-        native = _build(output_audit.MatrixCase("native", "release", "auto", stdlib_profile="micro"), script, probe_root / "native", env, build_timeout)
-        wasm = _build(output_audit.MatrixCase("wasm", "release", "auto", stdlib_profile="micro", linked=True, require_linked=True), script, probe_root / "wasm", env, build_timeout)
+        native = _build(
+            output_audit.MatrixCase(
+                "native", "release", "auto", stdlib_profile="micro"
+            ),
+            script,
+            probe_root / "native",
+            env,
+            build_timeout,
+        )
+        wasm = _build(
+            output_audit.MatrixCase(
+                "wasm",
+                "release",
+                "auto",
+                stdlib_profile="micro",
+                linked=True,
+                require_linked=True,
+            ),
+            script,
+            probe_root / "wasm",
+            env,
+            build_timeout,
+        )
     except Exception as exc:
         row["build_blocker"] = {"type": type(exc).__name__, "message": str(exc)}
         return row
     trace_env = dict(env)
     trace_env["MOLT_TRACE_RUNTIME_INIT"] = "1"
-    native_run = _measure([str(native.artifact)], env=trace_env, samples=samples, timeout=timeout, label=f"{name} native")
+    native_run = _measure(
+        [str(native.artifact)],
+        env=trace_env,
+        samples=samples,
+        timeout=timeout,
+        label=f"{name} native",
+    )
     native_run["runtime_init"] = _runtime_phases(native_run["records"])
-    wasm_linked = _measure(_node_command(wasm.artifact), env=env, samples=samples, timeout=timeout, label=f"{name} wasm-linked")
+    wasm_linked = _measure(
+        _node_command(wasm.artifact),
+        env=env,
+        samples=samples,
+        timeout=timeout,
+        label=f"{name} wasm-linked",
+    )
     wasm_linked["phases"] = _phase_stats(wasm_linked["records"])
-    row.update({
-        "native": {"build_command": native.command, "artifact": _artifact(native.artifact), "run": native_run},
-        "wasm": {
-            "build_command": wasm.command,
-            "linked_artifact": _artifact(wasm.artifact),
-            "linked": wasm_linked,
-        },
-    })
+    row.update(
+        {
+            "native": {
+                "build_command": native.command,
+                "artifact": _artifact(native.artifact),
+                "run": native_run,
+            },
+            "wasm": {
+                "build_command": wasm.command,
+                "linked_artifact": _artifact(wasm.artifact),
+                "linked": wasm_linked,
+            },
+        }
+    )
     return row
 
 
-def _budget_status(report: dict[str, Any], budget_path: Path, strict: bool) -> dict[str, Any]:
+def _budget_status(
+    report: dict[str, Any], budget_path: Path, strict: bool
+) -> dict[str, Any]:
     policy = json.loads(budget_path.read_text(encoding="utf-8"))
     hello = next(row for row in report["probes"] if row["probe"] == "hello")
     values = {
@@ -214,24 +305,49 @@ def _budget_status(report: dict[str, Any], budget_path: Path, strict: bool) -> d
         measured = values.get(name)
         limit = rule.get("max_ms")
         passed = measured is not None and (limit is None or measured <= limit)
-        checks.append({"name": name, "measured_ms": measured, "max_ms": limit, "passed": passed, "mode": rule["mode"]})
-    failed = [item for item in checks if not item["passed"] and (strict or item["mode"] == "strict")]
-    return {"policy": str(budget_path), "strict_requested": strict, "checks": checks, "ok": not failed}
+        checks.append(
+            {
+                "name": name,
+                "measured_ms": measured,
+                "max_ms": limit,
+                "passed": passed,
+                "mode": rule["mode"],
+            }
+        )
+    failed = [
+        item
+        for item in checks
+        if not item["passed"] and (strict or item["mode"] == "strict")
+    ]
+    return {
+        "policy": str(budget_path),
+        "strict_requested": strict,
+        "checks": checks,
+        "ok": not failed,
+    }
 
 
 def _attestation(report: dict[str, Any], samples: int) -> dict[str, Any]:
     medians_present = len(report["probes"]) == len(PROBES) and all(
         row.get("cpython", {}).get("stats", {}).get("median_ms") is not None
-        and row.get("native", {}).get("run", {}).get("stats", {}).get("median_ms") is not None
-        and row.get("wasm", {}).get("linked", {}).get("stats", {}).get("median_ms") is not None
+        and row.get("native", {}).get("run", {}).get("stats", {}).get("median_ms")
+        is not None
+        and row.get("wasm", {}).get("linked", {}).get("stats", {}).get("median_ms")
+        is not None
         for row in report["probes"]
     )
     return {
-        "grade": "A12-release-median-baseline" if medians_present and samples >= 3 else "refused",
-        "release_profile": True, "sample_count": samples, "median_required": True,
+        "grade": "A12-release-median-baseline"
+        if medians_present and samples >= 3
+        else "refused",
+        "release_profile": True,
+        "sample_count": samples,
+        "median_required": True,
         "serial_execution": True,
         "accepted": medians_present and samples >= 3,
-        "reasons": [] if medians_present and samples >= 3 else ["complete release medians unavailable"],
+        "reasons": []
+        if medians_present and samples >= 3
+        else ["complete release medians unavailable"],
         "variant_ii": "required only for a claimed before/after startup improvement",
     }
 
@@ -257,11 +373,35 @@ def main() -> int:
         path.write_text(source, encoding="utf-8")
         scripts[name] = path
     node = shutil.which("node")
-    node_boot = _measure([node, "-e", ""], env=env, samples=args.samples, timeout=args.timeout, label="node boot") if node else {"ok": False, "skipped": "node unavailable"}
+    node_boot = (
+        _measure(
+            [node, "-e", ""],
+            env=env,
+            samples=args.samples,
+            timeout=args.timeout,
+            label="node boot",
+        )
+        if node
+        else {"ok": False, "skipped": "node unavailable"}
+    )
     report: dict[str, Any] = {
-        "schema_version": 1, "claim": "STARTUP-BASELINE", "recorded_at": _stamp(),
-        "methodology": {"build_profile": "release", "samples": args.samples, "statistic": "median", "same_machine": True, "serial": True},
-        "machine": {"platform": platform.platform(), "machine": platform.machine(), "processor": platform.processor(), "python": sys.version, "node": node},
+        "schema_version": 1,
+        "claim": "STARTUP-BASELINE",
+        "recorded_at": _stamp(),
+        "methodology": {
+            "build_profile": "release",
+            "samples": args.samples,
+            "statistic": "median",
+            "same_machine": True,
+            "serial": True,
+        },
+        "machine": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+            "python": sys.version,
+            "node": node,
+        },
         "node_boot": node_boot,
         "probes": [],
     }
@@ -289,12 +429,23 @@ def main() -> int:
     report["budget"] = (
         _budget_status(report, args.budget, args.strict)
         if complete_hello
-        else {"policy": str(args.budget), "ok": False, "skipped": "hello release outputs unavailable"}
+        else {
+            "policy": str(args.budget),
+            "ok": False,
+            "skipped": "hello release outputs unavailable",
+        }
     )
     report["ok"] = report["attestation"]["accepted"] and report["budget"]["ok"]
     output = args.output or RESULTS / f"startup_baseline_{report['recorded_at']}.json"
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"ok": report["ok"], "output": str(output), "claim": report["claim"]}, sort_keys=True))
+    output.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        json.dumps(
+            {"ok": report["ok"], "output": str(output), "claim": report["claim"]},
+            sort_keys=True,
+        )
+    )
     return 0 if report["ok"] else 1
 
 

@@ -26,16 +26,18 @@ from fastapi import FastAPI
 
 app = FastAPI()
 
+
 class In(BaseModel):
     user_id: int
     limit: int = 50
 
+
 class Out(BaseModel):
     items: list[dict]
 
+
 @app.get("/items", response_model=Out)
-async def items(inp: In):
-    ...
+async def items(inp: In): ...
 ```
 
 ### Molt target shape
@@ -45,18 +47,20 @@ from molt_schema import model
 
 app = App()
 
+
 @model
 class In:
     user_id: int
     limit: int = 50
 
+
 @model
 class Out:
     items: list[Item]
 
+
 @app.get("/items")
-async def items(ctx, inp: In) -> Out:
-    ...
+async def items(ctx, inp: In) -> Out: ...
 ```
 
 **Molt behavior**
@@ -73,12 +77,12 @@ async def items(ctx, inp: In) -> Out:
 ```python
 from fastapi import Depends
 
-def get_db():
-    ...
+
+def get_db(): ...
+
 
 @app.get("/x")
-async def x(db=Depends(get_db)):
-    ...
+async def x(db=Depends(get_db)): ...
 ```
 
 ### Molt mapping (recommended)

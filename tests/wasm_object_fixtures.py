@@ -27,14 +27,22 @@ def wasm_exporting_i64_unary_symbols(
     *,
     imports: tuple[str, ...] = (),
     memory_imports: tuple[str, ...] = (),
+    undefined_data_symbols: tuple[str, ...] = (),
+    defined_data_symbols: tuple[str, ...] = (),
 ) -> bytes:
     """Build a valid relocatable module with canonical linking-symbol custody."""
     if not symbols:
         raise ValueError("at least one exported symbol is required")
     if any(not symbol for symbol in symbols) or len(set(symbols)) != len(symbols):
         raise ValueError("exported symbols must be non-empty and unique")
-    if any(not name for name in (*imports, *memory_imports)):
+    if any(not name for name in (*imports, *memory_imports, *undefined_data_symbols)):
         raise ValueError("import names must be non-empty")
+    if any(not name for name in defined_data_symbols) or len(
+        set(defined_data_symbols)
+    ) != len(defined_data_symbols):
+        raise ValueError("defined data symbols must be non-empty and unique")
+    if set(defined_data_symbols) & set((*symbols, *imports, *undefined_data_symbols)):
+        raise ValueError("defined data symbols must not overlap other symbols")
 
     def uleb(value: int) -> bytes:
         if value < 0:
@@ -128,10 +136,22 @@ def wasm_exporting_i64_unary_symbols(
         b"\x00" + uleb(0x50) + uleb(index) + wasm_string(import_name)
         for index, import_name in enumerate(imports)
     )
+    linking_entries.extend(
+        b"\x01" + uleb(0x10) + wasm_string(name) for name in undefined_data_symbols
+    )
+    linking_entries.extend(
+        b"\x01" + uleb(0) + wasm_string(name) + uleb(0) + uleb(index) + uleb(1)
+        for index, name in enumerate(defined_data_symbols)
+    )
     linking_symbol_table = uleb(len(linking_entries)) + b"".join(linking_entries)
     linking_payload = (
         wasm_string("linking")
         + uleb(2)
+        + (
+            section(5, uleb(1) + wasm_string(".data.fixture") + uleb(0) + uleb(0))
+            if defined_data_symbols
+            else b""
+        )
         + b"\x08"
         + uleb(len(linking_symbol_table))
         + linking_symbol_table
@@ -142,6 +162,21 @@ def wasm_exporting_i64_unary_symbols(
         + section(1, type_section)
         + import_section
         + section(3, function_section)
+        + (
+            section(5, b"\x01\x00\x01")
+            if defined_data_symbols and not memory_imports
+            else b""
+        )
         + section(7, export_section)
         + section(10, code_section)
+        + (
+            section(
+                11,
+                b"\x01\x00\x41\x00\x0b"
+                + uleb(len(defined_data_symbols))
+                + bytes(len(defined_data_symbols)),
+            )
+            if defined_data_symbols
+            else b""
+        )
     )

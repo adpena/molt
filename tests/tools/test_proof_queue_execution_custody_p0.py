@@ -33,7 +33,7 @@ def test_python_payload_cannot_replace_private_audit_enforcement(
         "assert blocked"
     )
     policy = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "forbidden",
         "allowed": [],
     }
@@ -92,8 +92,7 @@ def test_source_watch_records_create_execute_delete_transient(
     receipt = monitor.receipt()
     assert receipt["stable"] is False
     assert any(
-        Path(str(event["path"])).name == "transient.py"
-        for event in receipt["events"]
+        Path(str(event["path"])).name == "transient.py" for event in receipt["events"]
     )
 
 

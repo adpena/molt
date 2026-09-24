@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import ast
 import sys
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
@@ -29,16 +30,8 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class RuntimeReferenceMixin(_MixinBase):
+class RuntimeReferenceMixin(GeneratorMixinBase):
     def _builtin_exception_is_available(self, name: str) -> bool:
         """Target-gated builtin exception namespace authority.
 

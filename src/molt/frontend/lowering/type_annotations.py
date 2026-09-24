@@ -8,8 +8,9 @@ application, container/dict/bytearray hint propagation, and runtime type guards.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     _ClassNsScope,
@@ -20,20 +21,12 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
 
 _ANNOTATION_NAMESPACE_CAPTURE = ".molt.annotation_namespace"
 _ANNOTATION_EXEC_MAP_CAPTURE = ".molt.annotation_exec_map"
 
 
-class TypeAnnotationMixin(_MixinBase):
+class TypeAnnotationMixin(GeneratorMixinBase):
     def _apply_explicit_hint(self, name: str, value: MoltValue) -> None:
         hint = self.explicit_type_hints.get(name)
         if hint is None:

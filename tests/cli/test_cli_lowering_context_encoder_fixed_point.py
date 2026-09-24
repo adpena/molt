@@ -48,7 +48,9 @@ MoltValue = importlib.import_module("molt.frontend").MoltValue
 
 def _enc(value: object) -> str:
     """Encode exactly as the frontend caches do (sorted, compact, IR default)."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=CK._json_ir_default)
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=CK._json_ir_default
+    )
 
 
 def _round_trip(value: object) -> object:
@@ -149,6 +151,8 @@ def test_encoder_is_injective_for_distinct_values() -> None:
         ({1, 2}, (1, 2)),  # a set and a tuple of the same members are NOT the same
     ]
     for left, right in distinct_pairs:
-        assert _enc(left) != _enc(right), f"encoder collapsed distinct values: {left!r} == {right!r}"
+        assert _enc(left) != _enc(right), (
+            f"encoder collapsed distinct values: {left!r} == {right!r}"
+        )
         # And the collapse must not appear after a round-trip either.
         assert _enc(_round_trip(left)) != _enc(_round_trip(right))

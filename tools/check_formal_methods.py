@@ -494,11 +494,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    run_all = not (
-        args.lean_only
-        or args.quint_only
-        or args.inventory_only
-    )
+    run_all = not (args.lean_only or args.quint_only or args.inventory_only)
     results: list[CheckResult] = []
 
     # Always check inventory

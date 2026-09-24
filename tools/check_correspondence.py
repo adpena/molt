@@ -426,9 +426,7 @@ def check_type_system() -> CategoryResult:
         python_ok = python_name in py_type_tags if python_name else True
         details = [f"Rust TirType::{rust_name}" if rust_name else "no Rust mapping"]
         details.append(
-            f"Python tag {python_name!r}"
-            if python_name
-            else "compiler-internal type"
+            f"Python tag {python_name!r}" if python_name else "compiler-internal type"
         )
         result.items.append(
             CheckItem(f"Ty.{ty}", rust_ok and python_ok, ", ".join(details))
@@ -655,7 +653,9 @@ def check_luau_identity_lowering() -> CategoryResult:
         )
     ]
     rust_cells = [
-        {"Direct": "direct", "Reject": "reject", "Constant(false)": "constant_false"}[token]
+        {"Direct": "direct", "Reject": "reject", "Constant(false)": "constant_false"}[
+            token
+        ]
         for token in re.findall(
             r"Direct|Reject|Constant\(false\)", rust_match.group("matrix")
         )
@@ -689,11 +689,13 @@ def check_luau_identity_lowering() -> CategoryResult:
         in lean_text,
         "Rust same-SSA dominance matrix": "same-SSA identity must dominate provenance"
         in rust_tests,
-        "Lean is -> rawequal": bool(re.search(r"\|\s*\.is\s*=>\s*\.rawequal", emit_text)),
+        "Lean is -> rawequal": bool(
+            re.search(r"\|\s*\.is\s*=>\s*\.rawequal", emit_text)
+        ),
         "Lean is_not -> not_rawequal": bool(
             re.search(r"\|\s*\.is_not\s*=>\s*\.not_rawequal", emit_text)
         ),
-        "Rust Direct -> molt_rawequal": "format!(\"molt_rawequal({lhs}, {rhs})\")"
+        "Rust Direct -> molt_rawequal": 'format!("molt_rawequal({lhs}, {rhs})")'
         in rust_helpers,
         "Rust captures trusted rawequal": "local molt_rawequal = rawequal"
         in rust_pipeline,

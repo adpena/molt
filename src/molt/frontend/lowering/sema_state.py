@@ -8,23 +8,15 @@ walk-time module state.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.sema import (
     SemaResult,
     analyze_module,
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class SemaStateMixin(_MixinBase):
+class SemaStateMixin(GeneratorMixinBase):
     def _module_stable_funcs(self, node: ast.Module) -> set[str]:
         counts, funcs, dynamic = self._collect_module_assignments(node)
         if dynamic:

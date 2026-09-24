@@ -14,10 +14,12 @@ import time
 from typing import Mapping, Sequence, TypedDict, cast
 
 from molt import cargo_workspace
+from molt.dx import PROOF_SCRATCH_ROOT_ENV
 from molt.exact_json import ExactJsonError, encode_exact, loads_exact, read_exact
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
+from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
 
 
@@ -304,13 +306,20 @@ def _supervisor_fixed_images(
     return "root-command", [images[key] for key in sorted(images)]
 
 
+BUILD_OUTPUT_ROLE = "build-output"
+SCRATCH_OUTPUT_ROLE = "scratch-output"
+
+
 def _supervisor_derived_roots(
     *, descendants: object, env: Mapping[str, str]
 ) -> list[dict[str, str]]:
     if descendants == "forbidden":
         return []
     roots: list[dict[str, str]] = []
-    for role, name in (("build-output", "CARGO_TARGET_DIR"),):
+    for role, name in (
+        (BUILD_OUTPUT_ROLE, "CARGO_TARGET_DIR"),
+        (SCRATCH_OUTPUT_ROLE, PROOF_SCRATCH_ROOT_ENV),
+    ):
         raw = env.get(name)
         if not raw:
             continue
@@ -415,7 +424,8 @@ def _supervisor_policy(
         "root_role": root_role,
         "fixed_images": fixed_images,
         "derived_roots": _supervisor_derived_roots(
-            descendants=descendants, env=execution_env
+            descendants=descendants,
+            env=execution_env,
         ),
     }
 
@@ -699,31 +709,38 @@ def _publish_live_custody_receipt(
     receipt: Mapping[str, object], *, cas_root: Path
 ) -> dict[str, object]:
     events = receipt.get("events")
+    apparatus_events = receipt.get("apparatus_events")
     errors = receipt.get("errors")
     lifecycle = receipt.get("lifecycle")
     state = receipt.get("state")
-    if not isinstance(events, list) or not isinstance(errors, list):
+    if (
+        not isinstance(events, list)
+        or not isinstance(apparatus_events, list)
+        or not isinstance(errors, list)
+        or not isinstance(lifecycle, list)
+    ):
         raise ValueError("live custody receipt event authority is malformed")
     artifact_payload = {
         "schema": custody_cas.ARTIFACT_SCHEMA,
         "kind": "live-input-custody-events",
         "events": events,
+        "apparatus_events": apparatus_events,
         "errors": errors,
     }
     artifact = custody_cas.put_json(cas_root, artifact_payload).as_dict()
-    material = {
-        "events": events,
-        "errors": errors,
-        "state": state,
-        "lifecycle": lifecycle,
-    }
-    if receipt.get("identity_sha256") != _canonical_payload_sha256(material):
+    if receipt.get("identity_sha256") != execution_custody.live_custody_identity_sha256(
+        events=events,
+        apparatus_events=apparatus_events,
+        errors=errors,
+        state=state,
+        lifecycle=lifecycle,
+    ):
         raise ValueError("live custody receipt identity is inconsistent")
     return {
         **{
             key: value
             for key, value in receipt.items()
-            if key not in {"events", "errors"}
+            if key not in {"events", "apparatus_events", "errors"}
         },
         "event_artifact": artifact,
         "event_count": len(events),

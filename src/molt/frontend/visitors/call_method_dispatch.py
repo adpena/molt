@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import ast
-from typing import (
-    TYPE_CHECKING,
-)
 
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
@@ -20,17 +17,10 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallMethodDispatchMixin(_MixinBase):
+class CallMethodDispatchMixin(GeneratorMixinBase):
     def _class_resolves_default_object_new(
         self, class_name: str, class_info: ClassInfo
     ) -> bool:

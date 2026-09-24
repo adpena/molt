@@ -125,13 +125,6 @@ class _ModuleSourceCatalog:
         return self.lease_for(module_name, module_path).worker_payload()
 
 
-def _stat_ctime_ns(stat: os.stat_result) -> int:
-    ctime_ns = getattr(stat, "st_ctime_ns", None)
-    if isinstance(ctime_ns, int):
-        return ctime_ns
-    return int(stat.st_ctime * 1_000_000_000)
-
-
 def _stat_device(stat: os.stat_result) -> int:
     return int(getattr(stat, "st_dev", 0) or 0)
 
@@ -342,7 +335,7 @@ def _source_content_sha256(
         path_str = os.fspath(path.resolve())
     except OSError:
         path_str = os.fspath(path)
-    ctime_ns = _stat_ctime_ns(path_stat)
+    ctime_ns = path_stat.st_ctime_ns
     inode = int(getattr(path_stat, "st_ino", 0) or 0)
     device = _stat_device(path_stat)
     if not _source_hash_stat_identity_is_strong(

@@ -26,11 +26,7 @@ class WasiSysrootLayout:
     version_file: Path | None
 
     def content_roots(self) -> tuple[tuple[str, Path], ...]:
-        version = (
-            ()
-            if self.version_file is None
-            else (("VERSION", self.version_file),)
-        )
+        version = () if self.version_file is None else (("VERSION", self.version_file),)
         return (*self.include_roots, *self.library_roots, *version)
 
 

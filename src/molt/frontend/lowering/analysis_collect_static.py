@@ -16,6 +16,7 @@ from typing import (
     Sequence,
 )
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_effects_generated import (
     NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
     WRITES_OBJECT_STATE,
@@ -55,15 +56,9 @@ def _static_conditional_children(
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
-class AnalysisCollectStaticMixin(_MixinBase):
+class AnalysisCollectStaticMixin(GeneratorMixinBase):
     _lexical_dependency_cache: PythonDependencyAuthority | None = None
     _lexical_dependency_index: PythonBindingIndex | None = None
 

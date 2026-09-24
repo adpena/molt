@@ -8,8 +8,9 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     CFGGraph,
@@ -23,16 +24,8 @@ from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class MidendPipelineMixin(_MixinBase):
+class MidendPipelineMixin(GeneratorMixinBase):
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
         self._refresh_midend_env_config_if_needed()
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes

@@ -201,6 +201,13 @@ containment, pre-entry image admission, and descendant accounting remain active.
 Other platforms advertise their own requirements rather than inheriting a
 Windows setting. Do not replace this contract with a host environment tweak.
 
+Executable and derived-root identities use canonical native paths at live
+filesystem boundaries. Safe Windows prefix simplification must preserve device
+namespaces, trailing-dot/space semantics, and native code units. Identity keys
+and component containment do not infer case or Unicode equivalence; the
+filesystem supplies canonical spelling. Evidence recording, sorting, and replay
+use those recorded identities without consulting the current filesystem.
+
 The native supervisor is itself a debugger. Its kernel tests must own that
 debugger boundary, not run inside another recursive debugger: nested debuggers
 can hide descendant events from the outer supervisor while job accounting still
@@ -585,9 +592,13 @@ rejected before execution. The same recursive parser recognizes
 relative and absolute `tools/guarded_exec.py` plus
 `python -m tools.guarded_exec`, binds the delegated executable and every
 requested toolchain, and rejects a second delegation layer. `uv --with`,
-`--with-editable`, environment files, indexes, and find-links are forbidden;
-the Pact witness lanes use the checked-in, offline, hash-locked
-`config/proof_requirements/pact_witness.txt` authority instead.
+`--with-editable`, `--with-requirements`, environment files, indexes, and
+find-links are forbidden: a `uv run` overlay is an ephemeral environment
+whose interpreter has no stable image to admit. Pact witness preparation
+provisions the typed locked environment of the `pact-witness` dependency group
+before proof custody, with pins bound to `config/scientific_stack_versions.toml`.
+The proof starts directly from that inventoried interpreter; it does not
+provision or relaunch an environment inside the guarded execution.
 
 Every envelope also carries one constructional process closure. Exact plan and
 guarded typed-delegation commands may launch only their declared, content-bound
@@ -598,6 +609,32 @@ in the receipt. A non-exact native launcher has no pre-spawn authority and fails
 at launch, requiring the guarded typed command family—even a version command
 may be a shim that starts the resolved tool. This is one shared rule for every
 launcher family, not a per-command allowlist.
+
+Named Python lanes use the same prepared, typed environment inventory as
+source-extension proofs. The registered payload and arguments are bound to
+the exact interpreter, and its recursive input and toolchain closure is captured
+before launch. A directory name or an environment manifest alone grants no
+permission to start a new child image. Undeclared executables fail before spawn
+with the refusal retained in the receipt.
+
+Every proof run also receives one fresh, custody-external scratch root in
+`MOLT_PROOF_SCRATCH_ROOT` (a run-owned derived root beside the run's Cargo
+target, role `scratch-output`, empty at launch and receipted). Witness outputs
+may use that root without becoming watched source inputs. Source-extension
+production still requires explicit package/version, Python, source, and fresh
+build-root selection through its typed preparation boundary. Scratch allocation
+does not authorize replacing a prior build tree or weakening source custody.
+
+Tools that ship as prebuilt release binaries (`wasm-tools`, `sccache`, `node`)
+are pinned in `config/tool_releases.toml` by version-addressed asset URL,
+byte size and SHA-256, each under a declared provenance (a GitHub release
+record or an official `SHASUMS256.txt` checksum manifest).
+A toolchain policy that cites that manifest as setup evidence makes the queue
+provision the host asset under `<toolchain root>/toolchains/<name>-<version>`
+(digest-verified, attested, idempotent) and place its `bin` first on the lane's
+PATH before toolchains are located, so the version policy always meets the
+pinned release rather than an ambient install; the CI workflow pin is gated
+against the same manifest.
 
 Toolchains whose selected launcher starts a distinct executable declare bounded
 `process_image_probes` in `tools/proof_plan.toml`. Before source custody arms,
@@ -668,13 +705,12 @@ RECORD hashes and sizes are verified, and editable source bytes, commit, and
 tree are bound. The deterministic sorted
 file worklist uses the proof-plan worker bound and one streaming read per unique
 resolved identity; prelaunch and postcompletion both read the complete byte
-inventory. `--with-requirements` files must contain only exact, SHA-256-locked
-requirements, run offline, resolve inside the admitted source root, and remain
-byte-identical. `--directory` and `--project` may not escape that root.
+inventory. `--directory` and `--project` may not escape the admitted source
+root.
 
 Endpoint hashes are backed by live kernel mutation custody during the command.
 Windows `ReadDirectoryChangesW` and Linux inotify watch the admitted Git files,
-overlays, runtime roots, package trees, executables, and configuration bytes;
+runtime roots, package trees, executables, and configuration bytes;
 queue overflow or watcher failure is fail-closed. A write, replacement, rename,
 delete, or metadata change remains an event even if the command restores the
 original bytes before completion, so mutate-execute-restore cannot produce
@@ -692,7 +728,7 @@ passed value, never plaintext values; queued logs and notebooks expose override
 names only.
 
 Receipts bind run ID, a fresh execution nonce, row and effective cwd, Git root,
-commit and tree, cleanliness/status digest, overlay inputs, environment,
+commit and tree, cleanliness/status digest, environment,
 toolchains, and executable identities at both prelaunch and postcompletion.
 Stdout and stderr are streamed to byte-hashed artifacts and recognized test
 commands must publish structured result counts. A passed row additionally
@@ -700,7 +736,7 @@ binds the exact terminal memory-guard receipt and clean cleanup outcome into one
 terminal-evidence digest; sampler enforcement must be complete with no transient
 gaps. Stale execution JSON or guard summaries, substituted receipts, child
 signals, or missing counts cannot become evidence. A dirty, unavailable, or changed source;
-changed overlay, editable distribution, toolchain, environment, or executable
+changed editable distribution, toolchain, environment, or executable
 is terminal `non-evidence`, even if the command returned zero. Terminal
 projections read the persisted context and never re-probe an ambient host.
 Command argv, cwd, and envelope are immutable admission columns enforced by the
@@ -889,6 +925,11 @@ cache, a broad selector, or a stale generated file.
   output is a structural DX defect, not background noise.
 - If a proof lane is already active, monitor it instead of stacking another
   Cargo/WASM proof unless the new command is independent and cheap.
+- The native proof supervisor is provisioned for its run through the existing
+  Cargo custody path. Source digests and a rustc version string alone do not
+  prove a reusable build: configuration, wrappers, linkers, environment and
+  build-script inputs also matter. Do not adopt a shared supervisor binary
+  until the complete input identity is proven by the owning Cargo authority.
 
 ## TOML DSL
 

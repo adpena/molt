@@ -197,7 +197,6 @@ _UV_OPTION_SEMANTICS: dict[str, tuple[str, str]] = {
     "--project": ("value", "project-directory"),
     "--python": ("value", "python-selection"),
     "-p": ("value", "python-selection"),
-    "--with-requirements": ("value", "requirements-file"),
     # These can inject source, configuration, or network state that is not
     # represented by the admitted project snapshot.  Reject them structurally
     # rather than growing exception-shaped partial custody.
@@ -360,6 +359,19 @@ def _proof_command_registry() -> dict[str, object]:
                     f"proof plan executable {basename!r} has ambiguous toolchain policies"
                 )
             policy_executables[basename] = policy.name
+    named: dict[tuple[str, ...], dict[str, object]] = {}
+    named_entrypoints: dict[tuple[str, str], list[str]] = {}
+    for lane in plan.named_lanes:
+        argv = tuple(lane.argv)
+        named[argv] = {
+            "id": lane.id,
+            "toolchains": tuple(lane.toolchains),
+        }
+        entrypoint = _command_entrypoint(argv)
+        if entrypoint is not None:
+            entrypoints.setdefault(entrypoint, []).append(lane.id)
+            entrypoint_variants.setdefault(entrypoint, set()).add(argv)
+            named_entrypoints.setdefault(entrypoint, []).append(lane.id)
     for command in plan.commands:
         argv = tuple(str(value) for value in command.argv)
         declared = tuple(command.toolchains)
@@ -386,6 +398,8 @@ def _proof_command_registry() -> dict[str, object]:
                 console_tools.setdefault(payload_name, set()).update(command.toolchains)
     return {
         "exact": exact,
+        "named": named,
+        "named_entrypoints": named_entrypoints,
         "console_tools": {
             name: tuple(sorted(toolchains))
             for name, toolchains in sorted(console_tools.items())
@@ -434,8 +448,41 @@ def _command_registration(
                 f"proof-plan commands {command_ids!r} have no toolchain authority"
             )
         return "proof-plan", toolchains, [str(command_id) for command_id in command_ids]
+    named = registry["named"]
+    assert isinstance(named, dict)
+    lane_match = named.get(tuple(str(value) for value in argv))
+    if isinstance(lane_match, dict):
+        declared = lane_match["toolchains"]
+        assert isinstance(declared, tuple)
+        toolchains = _toolchain_dependency_closure([str(name) for name in declared])
+        if not toolchains:
+            raise ValueError(
+                f"named lane {lane_match['id']!r} has no toolchain authority"
+            )
+        return "named-lane", toolchains, [str(lane_match["id"])]
+
+    if typed_python is not None and typed_python.get("family") == "prepared-named-lane":
+        lane_id = str(typed_python["lane_id"])
+        plan = registry["plan"]
+        assert isinstance(plan, proof_plan.ProofPlan)
+        return (
+            "named-lane",
+            _toolchain_dependency_closure(plan.named_lane(lane_id).toolchains),
+            [lane_id],
+        )
 
     entrypoint = _command_entrypoint(argv)
+    named_entrypoints = registry["named_entrypoints"]
+    assert isinstance(named_entrypoints, dict)
+    lane_near_matches = named_entrypoints.get(entrypoint)
+    if isinstance(lane_near_matches, list):
+        # A program registered as a named lane spawns processes by design; an
+        # argv that differs from every registered lane must not silently
+        # degrade into a leaf with children forbidden.
+        raise ValueError(
+            "named-lane entrypoint argv must match its registered command exactly; "
+            f"near-match would discard the toolchain closure of {lane_near_matches!r}"
+        )
     registered_entrypoints = registry["entrypoints"]
     assert isinstance(registered_entrypoints, dict)
     near_matches = registered_entrypoints.get(entrypoint)
@@ -794,54 +841,14 @@ def _path_inside(root: Path, raw: str, *, base: Path, label: str) -> Path:
     return resolved
 
 
-_HASHED_REQUIREMENT = re.compile(
-    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_.,-]+\])?=="
-    r"(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?"
-    r"(?:\.post[0-9]+)?(?:\.dev[0-9]+)?"
-    r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?"
-    r"(?:\s+--hash=sha256:[0-9a-fA-F]{64})+$"
-)
-
-
-def _validate_requirements_file(path: Path) -> None:
-    """Admit only offline, hash-locked package requirements."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"requirements custody cannot read {path}") from exc
-    logical: list[str] = []
-    pending = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        pending = f"{pending} {line}".strip()
-        if pending.endswith("\\"):
-            pending = pending[:-1].rstrip()
-            continue
-        logical.append(pending)
-        pending = ""
-    if pending:
-        raise ValueError(f"requirements file {path} ends in a continuation")
-    if not logical:
-        raise ValueError(f"requirements file {path} has no locked requirements")
-    for line in logical:
-        if not _HASHED_REQUIREMENT.fullmatch(line):
-            raise ValueError(
-                "proof requirements must be exact name==version entries with one "
-                f"or more sha256 hashes; rejected {line!r} in {path}"
-            )
-
-
-def _execution_source_paths(
-    envelope: Mapping[str, object], *, cwd: Path
-) -> tuple[Path, list[Path]]:
+def _execution_source_paths(envelope: Mapping[str, object], *, cwd: Path) -> Path:
+    """The effective source directory a uv envelope executes in (inside cwd)."""
     python = envelope.get("python")
     if not isinstance(python, Mapping) or python.get("kind") not in {
         "uv",
         "uv-console-script",
     }:
-        return cwd.resolve(strict=True), []
+        return cwd.resolve(strict=True)
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
         raise ValueError("uv command envelope has no prefix")
@@ -863,17 +870,7 @@ def _execution_source_paths(
                 "uv --project must equal the effective command cwd so one source "
                 "snapshot owns every consumed project input"
             )
-    overlay_inputs = [
-        _path_inside(cwd, raw, base=effective, label="uv --with-requirements")
-        for raw in _uv_option_values(prefix, "--with-requirements")
-    ]
-    if overlay_inputs and "--offline" not in prefix:
-        raise ValueError("uv --with-requirements proofs require --offline custody")
-    for overlay in overlay_inputs:
-        if not overlay.is_file():
-            raise ValueError(f"requirements authority is not a file: {overlay}")
-        _validate_requirements_file(overlay)
-    return effective, overlay_inputs
+    return effective
 
 
 def _require_external_execution_outputs(
@@ -895,22 +892,21 @@ def _require_external_execution_outputs(
 
 def _canonical_uv_prefix(
     envelope: Mapping[str, object], *, cwd: Path
-) -> tuple[list[str], Path, list[Path]]:
+) -> tuple[list[str], Path]:
     python = envelope.get("python")
     if not isinstance(python, Mapping) or python.get("kind") not in {
         "uv",
         "uv-console-script",
     }:
-        return [], cwd.resolve(strict=True), []
+        return [], cwd.resolve(strict=True)
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
         raise ValueError("uv command envelope has no prefix")
     exact_prefix = [str(value) for value in prefix]
-    effective, overlays = _execution_source_paths(envelope, cwd=cwd)
+    effective = _execution_source_paths(envelope, cwd=cwd)
     replacements = {
         "--directory": [effective] if _uv_option_values(prefix, "--directory") else [],
         "--project": [effective] if _uv_option_values(prefix, "--project") else [],
-        "--with-requirements": overlays,
     }
     for option, paths in replacements.items():
         indices = _uv_option_value_indices(prefix, option)
@@ -921,7 +917,7 @@ def _canonical_uv_prefix(
             exact_prefix[index] = (
                 f"{option}={path}" if original.startswith(f"{option}=") else str(path)
             )
-    return exact_prefix, effective, overlays
+    return exact_prefix, effective
 
 
 def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
@@ -1021,12 +1017,90 @@ def _python_invocation_argv(
     raise ValueError(f"unknown proof Python envelope kind {kind!r}")
 
 
+def _registered_named_python_invocation(lane: proof_plan.NamedLane) -> PythonInvocation:
+    argv = list(lane.argv)
+    if _basename(argv[0]) in {"uv", "uv.exe"}:
+        _prefix, argv = _uv_prefix_and_payload(argv)
+    if not _PYTHON_COMMAND.fullmatch(_basename(argv[0])):
+        raise ValueError(f"named lane {lane.id!r} has no Python payload")
+    return parse_python_invocation(argv)
+
+
+def prepared_named_lane_command(lane_id: str, executable: Path) -> list[str]:
+    """Bind the registered payload, without changing arguments, to prepared Python."""
+    lane = proof_plan.ProofPlan.load().named_lane(lane_id)
+    invocation = _registered_named_python_invocation(lane)
+    if invocation.mode != "script" or invocation.interpreter_options:
+        raise ValueError(f"named lane {lane_id!r} is not a plain Python script")
+    assert invocation.target is not None
+    return [str(executable), "-P", invocation.target, *invocation.arguments]
+
+
+def _locked_python_environment_root(executable: str) -> Path:
+    from molt.cli.source_build_environment import (
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        _source_build_custody_root,
+    )
+    from molt.dx import _reject_onedrive
+
+    selected = Path(executable)
+    if not selected.is_absolute() or not selected.is_file():
+        raise ValueError(
+            "prepared proof requires an absolute available locked interpreter"
+        )
+    selected = Path(os.path.abspath(selected))
+    environment_root = selected.parent.parent
+    if (
+        selected.parent.name != ("Scripts" if os.name == "nt" else "bin")
+        or re.fullmatch(r"[0-9a-f]{64}", environment_root.name) is None
+        or environment_root.parent.resolve()
+        != _source_build_custody_root(_REPO_ROOT).resolve()
+        or not (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).is_file()
+    ):
+        raise ValueError(
+            "prepared proof requires a content-addressed locked source-build interpreter"
+        )
+    _reject_onedrive(selected, "prepared proof interpreter")
+    _reject_onedrive(
+        selected.resolve(strict=True), "prepared proof interpreter content"
+    )
+    return environment_root
+
+
 def _typed_python_command_family(
     argv: Sequence[str],
     python: Mapping[str, object],
     invocation: PythonInvocation,
 ) -> dict[str, object] | None:
-    """Admit the registered producer through the shared CLI and target authorities."""
+    """Admit prepared payloads through their existing plan/CLI authorities."""
+    if python.get("kind") == "direct" and invocation.mode == "script":
+        for lane in proof_plan.ProofPlan.load().named_lanes:
+            if _command_entrypoint(lane.argv) != (
+                "python-script",
+                _normalized_entrypoint_target(str(invocation.target)),
+            ):
+                continue
+            registered = _registered_named_python_invocation(lane)
+            if registered.mode != "script" or _normalized_entrypoint_target(
+                str(registered.target)
+            ) != _normalized_entrypoint_target(str(invocation.target)):
+                continue
+            if invocation.arguments != registered.arguments:
+                raise ValueError(
+                    "named-lane argv must match its registered command exactly"
+                )
+            if (
+                invocation.interpreter_options != ("-P",)
+                or registered.interpreter_options
+            ):
+                raise ValueError(
+                    "prepared named lane requires a direct locked interpreter with -P"
+                )
+            return {
+                "family": "prepared-named-lane",
+                "lane_id": lane.id,
+                "environment_root": str(_locked_python_environment_root(str(argv[0]))),
+            }
     if (
         invocation.mode != "module"
         or invocation.target not in {"molt", "molt.cli"}
@@ -1037,10 +1111,6 @@ def _typed_python_command_family(
         raise ValueError(
             "source-extension producer proof requires a direct locked interpreter with -P"
         )
-    from molt.cli.source_build_environment import (
-        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-        _source_build_custody_root,
-    )
     from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
     from molt.cli.source_extension_set_registry import (
         SourceExtensionVariant,
@@ -1083,27 +1153,7 @@ def _typed_python_command_family(
         raise ValueError(
             "source-extension expected candidate identity differs from the registered target cell"
         )
-    selected = Path(str(argv[0]))
-    if not selected.is_absolute() or not selected.is_file():
-        raise ValueError(
-            "source-extension producer requires an absolute available locked interpreter"
-        )
-    selected = Path(os.path.abspath(selected))
-    environment_root = selected.parent.parent
-    if (
-        selected.parent.name != ("Scripts" if os.name == "nt" else "bin")
-        or re.fullmatch(r"[0-9a-f]{64}", environment_root.name) is None
-        or environment_root.parent.resolve()
-        != _source_build_custody_root(_REPO_ROOT).resolve()
-        or not (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).is_file()
-    ):
-        raise ValueError(
-            "source-extension producer requires a content-addressed locked source-build interpreter"
-        )
-    _reject_onedrive(selected, "source-extension interpreter")
-    _reject_onedrive(
-        selected.resolve(strict=True), "source-extension interpreter content"
-    )
+    environment_root = _locked_python_environment_root(str(argv[0]))
     for label, value in (
         ("source", producer.source),
         ("build-root", producer.build_root),
@@ -1318,9 +1368,9 @@ def _envelope_for_command(
         for name in delegated["toolchains"]:  # type: ignore[union-attr]
             if name not in toolchains:
                 toolchains.append(str(name))
-    if registration_kind == "proof-plan":
+    if registration_kind in {"proof-plan", "named-lane"}:
         process_closure = {
-            "kind": "proof-plan",
+            "kind": registration_kind,
             "descendants": "declared-toolchains",
             "toolchains": list(toolchains),
         }

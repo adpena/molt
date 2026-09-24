@@ -22,6 +22,7 @@ Exit codes:
 Designed to be called from the witness acceptance build path (fail before the
 run) and standalone in CI.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -130,12 +131,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not all_hits and not section_hits:
         names = ", ".join(p.name for p in args.wasm)
-        print(f"artifact_poison_gate: PASS — no stub markers in {names} "
-              f"({len(markers)} markers checked)")
+        print(
+            f"artifact_poison_gate: PASS — no stub markers in {names} "
+            f"({len(markers)} markers checked)"
+        )
         return 0
 
-    print("artifact_poison_gate: FAIL — a built artifact ships a stub capability "
-          "(configured != effective, M34):", file=sys.stderr)
+    print(
+        "artifact_poison_gate: FAIL — a built artifact ships a stub capability "
+        "(configured != effective, M34):",
+        file=sys.stderr,
+    )
     for hit in all_hits:
         print(f"\n  POISON: {hit.marker_id}", file=sys.stderr)
         print(f"    artifact:   {hit.artifact}", file=sys.stderr)
@@ -152,8 +158,11 @@ def main(argv: list[str] | None = None) -> int:
             "    fix:        route the artifact through the canonical wasm publication strip",
             file=sys.stderr,
         )
-    print("\nA resolving-config check is NOT enough; the stub is in the BUILT wasm. "
-          "Do not mark the capability done until this gate passes.", file=sys.stderr)
+    print(
+        "\nA resolving-config check is NOT enough; the stub is in the BUILT wasm. "
+        "Do not mark the capability done until this gate passes.",
+        file=sys.stderr,
+    )
     return 2
 
 

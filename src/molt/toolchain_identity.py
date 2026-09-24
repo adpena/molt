@@ -14,6 +14,7 @@ import re
 import shlex
 import stat
 import subprocess
+from typing import BinaryIO
 
 from molt.file_hashing import content_change_time_ns, content_change_time_ns_from_fd
 
@@ -422,6 +423,21 @@ def _stable_file_content(
         return lexical, identity.path, identity.size, identity.sha256, header
 
 
+_DIGEST_CHUNK_BYTES = 256 * 1024
+
+
+def _sha256_stream(stream: BinaryIO) -> str:
+    """SHA-256 of an open binary handle, read in bounded chunks."""
+
+    digest = hashlib.sha256()
+    while True:
+        chunk = stream.read(_DIGEST_CHUNK_BYTES)
+        if not chunk:
+            break
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
 def stable_file_sha256(path: Path, *, label: str) -> str:
     """Hash a regular file while proving its pathname and open handle stayed stable."""
 
@@ -579,11 +595,7 @@ def _stable_regular_file_snapshot(
 
     try:
         with open_stable_regular_file(path, label=label) as opened:
-            digest = (
-                hashlib.file_digest(opened.stream, "sha256").hexdigest()
-                if hash_content
-                else None
-            )
+            digest = _sha256_stream(opened.stream) if hash_content else None
     except OSError as exc:
         operation = "hashed" if hash_content else "verified"
         lexical = path.expanduser().absolute()

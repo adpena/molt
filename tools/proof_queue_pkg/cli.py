@@ -508,6 +508,22 @@ def _build_parser() -> argparse.ArgumentParser:
         pact_handler="_cmd_source_extension_produce",
     )
 
+    named_lane_p = sub.add_parser(
+        "named-lane",
+        help="submit a queue-owned named lane registered in tools/proof_plan.toml",
+    )
+    named_lane_p.add_argument(
+        "lane_id", help="named lane id, e.g. pact.seal.numpy.produce"
+    )
+    _add_named_lane_args(
+        named_lane_p,
+        note_help="append submission context to the named lane run",
+    )
+    named_lane_p.set_defaults(
+        func=_dispatch_pact_command,
+        pact_handler="_cmd_named_lane",
+    )
+
     pact_oracle_p = sub.add_parser(
         "pact-witness-oracle",
         help="run the queued Pact Kernel A fixture/reference parity oracle",

@@ -8,7 +8,7 @@ file.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from molt.frontend._types import (
     MoltOp,
@@ -17,17 +17,10 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import AUGASSIGN_OP_KIND
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class AssignmentStatementVisitorMixin(_MixinBase):
+class AssignmentStatementVisitorMixin(GeneratorMixinBase):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.target, ast.Name) and self._class_ns_stack:
             self._emit_class_annotated_assignment(node, self._class_ns_stack[-1])

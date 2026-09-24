@@ -10,20 +10,12 @@ module-local wrappers: their identity is shared and globals follows the caller.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import MoltOp, MoltValue
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class ModuleGlobalsMixin(_MixinBase):
+class ModuleGlobalsMixin(GeneratorMixinBase):
     def _get_or_emit_module_cache(self, module_name: str) -> MoltValue:
         """Return a MoltValue for *module_name* from MODULE_CACHE_GET.
 

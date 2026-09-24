@@ -20,7 +20,9 @@ from molt.llvm_toolchain import LlvmToolchainConfigError, mlir_toolchain_environ
 
 
 def _mlir_backend_executable_name(*, os_name: str | None = None) -> str:
-    return "molt-backend-mlir.exe" if (os_name or os.name) == "nt" else "molt-backend-mlir"
+    return (
+        "molt-backend-mlir.exe" if (os_name or os.name) == "nt" else "molt-backend-mlir"
+    )
 
 
 def _find_mlir_backend_binary(project_root: Path) -> Path | None:

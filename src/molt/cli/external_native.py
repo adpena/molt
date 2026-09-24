@@ -53,6 +53,8 @@ from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.cli.extension_scan_surface import _load_c_api_scan_surface
 from molt.cli.source_extensions import (
+    _SourceExtensionArtifactSymbolInspection,
+    _inspect_source_extension_artifact_symbols,
     source_extension_manifest_errors_are_missing_sources,
     source_extension_manifest_required_capsule_imports,
     validate_source_extension_artifact_object_closure,
@@ -721,6 +723,23 @@ def _manifest_object_closure_undefined_symbols(
     return _manifest_str_tuple(object_closure, "undefined_symbols")
 
 
+def _wasm_relocatable_external_symbols(
+    inspection: _SourceExtensionArtifactSymbolInspection,
+) -> tuple[str, ...] | None:
+    """Project requirements from the same bytes used for closure validation."""
+    if inspection.wasm_imports is None:
+        return None
+    return tuple(
+        sorted(
+            {
+                *inspection.undefined_symbols,
+                *(item.name for item in inspection.wasm_imports if item.kind != 2),
+            }
+            - inspection.defined_symbols
+        )
+    )
+
+
 def _molt_root_for_external_native_scan() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -788,8 +807,14 @@ def _object_closure_abi_symbol_board(
     manifest: Mapping[str, Any],
     *,
     external_link_classes: Mapping[str, str],
+    external_symbols: Collection[str] | None = None,
+    package_defined_symbols: Collection[str] = (),
 ) -> tuple[tuple[_ExternalNativeAbiSymbol, ...], list[str]]:
-    undefined_symbols = set(_manifest_object_closure_undefined_symbols(manifest))
+    undefined_symbols = set(
+        _manifest_object_closure_undefined_symbols(manifest)
+        if external_symbols is None
+        else external_symbols
+    )
     non_c_api_symbols = sorted(
         symbol for symbol in undefined_symbols if not is_c_api_symbol(symbol)
     )
@@ -840,6 +865,11 @@ def _object_closure_abi_symbol_board(
                 f"object_closure undefined ABI symbol {symbol!r} is generated "
                 "runtime-backed but missing from object_closure.runtime_symbols"
             )
+        elif symbol in package_defined_symbols and not _molt_runtime_namespace_symbol(
+            symbol
+        ):
+            status = "package_native"
+            primitive_class = "native_package_symbol"
         else:
             status = "missing"
             primitive_class = "unknown_abi_symbol"
@@ -862,9 +892,22 @@ def _object_closure_abi_symbol_board(
 
 def _object_closure_c_api_symbol_board(
     manifest: Mapping[str, Any],
+    *,
+    external_symbols: Collection[str] | None = None,
+    package_defined_symbols: Collection[str] = (),
 ) -> tuple[tuple[_ExternalNativeCapiSymbol, ...] | None, list[str]]:
+    """Classify the closure's C-API symbols.
+
+    ``package_defined_symbols`` are exact same-variant sibling definitions.
+    They may fill a missing package-owned C-API symbol, but never replace the
+    canonical runtime, CPython ABI, source-only, or fail-fast authority.
+    """
     required_symbols = set(_manifest_object_closure_required_c_api_symbols(manifest))
-    undefined_symbols = set(_manifest_object_closure_undefined_symbols(manifest))
+    undefined_symbols = set(
+        _manifest_object_closure_undefined_symbols(manifest)
+        if external_symbols is None
+        else external_symbols
+    )
     c_api_symbols = sorted(
         {
             symbol
@@ -910,6 +953,13 @@ def _object_closure_c_api_symbol_board(
             and symbol not in undefined_symbols
         ):
             status = "source_compile_only"
+        if (
+            status == "missing"
+            and symbol in undefined_symbols
+            and symbol in package_defined_symbols
+            and not is_cpython_abi_link_symbol(symbol)
+        ):
+            status = "package_native"
         sources: set[str] = set()
         if symbol in required_symbols:
             sources.add("required_c_api_symbols")
@@ -950,6 +1000,10 @@ def _validate_external_package_native_artifact(
     manifest_snapshot: _ExternalArtifactManifestSnapshot,
     expected_target_triple: str,
     expected_target_python: TargetPythonVersion,
+    package_defined_symbols: Collection[str] = (),
+    package_function_signatures: Mapping[str, tuple[tuple[str, ...], str]]
+    | None = None,
+    inspection: _SourceExtensionArtifactSymbolInspection,
 ) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
     manifest_path = manifest_snapshot.path
     manifest = manifest_snapshot.payload
@@ -1011,7 +1065,11 @@ def _validate_external_package_native_artifact(
         "extension_sha256",
         errors,
     ).lower()
-    actual_extension_sha = _sha256_file(artifact_path).lower()
+    actual_extension_sha = inspection.artifact_digest
+    if actual_extension_sha is None:
+        return None, [
+            f"{package}: native artifact inspection has no content digest: {artifact_path}"
+        ]
     if expected_extension_sha and expected_extension_sha != actual_extension_sha:
         errors.append(
             f"{package}: extension_sha256 mismatch for {artifact_path.name}: "
@@ -1099,9 +1157,10 @@ def _validate_external_package_native_artifact(
             support_file_sha256=manifest_support_file_sha256,
         )
     )
+    binary_required_symbols = _wasm_relocatable_external_symbols(inspection)
     if artifact_kind == "wasm_relocatable_object":
         external_link_classes = dict(WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES)
-        if _archive_provider_candidate_symbols(manifest):
+        if _archive_provider_candidate_symbols(manifest) - set(package_defined_symbols):
             external_link_classes = {
                 **wasm_external_link_provider_symbol_classes(target_triple),
                 **external_link_classes,
@@ -1109,6 +1168,8 @@ def _validate_external_package_native_artifact(
         abi_symbols, abi_symbol_errors = _object_closure_abi_symbol_board(
             manifest,
             external_link_classes=external_link_classes,
+            external_symbols=binary_required_symbols,
+            package_defined_symbols=package_defined_symbols,
         )
         errors.extend(f"{package}: {error}" for error in abi_symbol_errors)
     else:
@@ -1120,6 +1181,8 @@ def _validate_external_package_native_artifact(
         external_link_classes = {}
     c_api_symbols, c_api_symbol_errors = _object_closure_c_api_symbol_board(
         manifest,
+        external_symbols=binary_required_symbols,
+        package_defined_symbols=package_defined_symbols,
     )
     errors.extend(f"{package}: {error}" for error in c_api_symbol_errors)
     direct_symbols = (
@@ -1143,6 +1206,8 @@ def _validate_external_package_native_artifact(
                 manifest=manifest,
                 required_function_exports=direct_symbols,
                 external_link_provider_classes=external_link_classes,
+                package_function_signatures=package_function_signatures,
+                inspection=inspection,
                 validated_closure=validated_object_closure,
             )
         )
@@ -1377,10 +1442,11 @@ def _missing_capsule_requirements(
     }
 
 
-def _close_external_native_capsule_provider_artifacts(
+def _close_external_native_provider_artifacts(
     artifacts: Sequence[_ExternalPackageNativeArtifact],
     provider_candidates: Sequence[_ExternalPackageNativeArtifact],
     mismatched_capsule_providers: Mapping[str, Collection[str]],
+    symbol_dependencies: Mapping[tuple[str, Path], Collection[Path]],
 ) -> tuple[tuple[_ExternalPackageNativeArtifact, ...] | None, list[str]]:
     selected = list(artifacts)
     selected_keys = {(artifact.package, artifact.path) for artifact in selected}
@@ -1394,9 +1460,18 @@ def _close_external_native_capsule_provider_artifacts(
         if provider_errors:
             return None, provider_errors
         missing = _missing_capsule_requirements(selected)
-        if not missing:
-            return tuple(selected), []
         to_add: dict[tuple[str, Path], _ExternalPackageNativeArtifact] = {}
+        for consumer in selected:
+            for path in symbol_dependencies.get((consumer.package, consumer.path), ()):
+                key = (consumer.package, path)
+                if key not in selected_keys:
+                    if key not in remaining:
+                        return None, [
+                            f"package symbol provider {path} has no validated artifact"
+                        ]
+                    to_add[key] = remaining[key]
+        if not missing and not to_add:
+            return tuple(selected), []
         errors: list[str] = []
         for capsule, consumers in missing.items():
             consumer_modules = ", ".join(consumer.module for consumer in consumers)
@@ -1468,6 +1543,168 @@ def _close_external_native_capsule_provider_artifacts(
             remaining.pop(key, None)
 
 
+@dataclass(frozen=True)
+class _ExternalNativeArtifactCandidate:
+    package: str
+    package_dir: Path
+    path: Path
+    manifest: _ExternalArtifactManifestSnapshot
+    inspection: _SourceExtensionArtifactSymbolInspection
+
+    def variant(self) -> tuple[object, ...]:
+        payload = self.manifest.payload
+        return (
+            self.package,
+            self.package_dir,
+            str(payload.get("target_triple", "")).strip().lower(),
+            *(
+                str(payload.get(field, "")).strip()
+                for field in (
+                    "target_python",
+                    "abi_tier",
+                    "abi_tag",
+                    "platform_tag",
+                    "runtime_linkage",
+                    "artifact_kind",
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _ExternalNativeSymbolProvider:
+    candidate: _ExternalNativeArtifactCandidate
+    wasm_definition_kinds: tuple[str, ...] | None
+    function_signature: tuple[tuple[str, ...], str] | None
+
+
+def _package_symbol_provider_edges(
+    candidates: Sequence[_ExternalNativeArtifactCandidate],
+) -> tuple[
+    dict[Path, dict[str, _ExternalNativeSymbolProvider]],
+    list[str],
+]:
+    """Resolve one exact same-variant owner per symbol from captured binary facts.
+
+    These are provisional edges, not admission: the plan is returned only after
+    every candidate passes ordinary full manifest/byte/closure validation.
+    This permits cycles without accepting an unvalidated provider or rescanning.
+    """
+    index: dict[tuple[object, ...], dict[str, list[_ExternalNativeSymbolProvider]]] = {}
+    for candidate in candidates:
+        if candidate.manifest.payload.get("runtime_linkage") != "static_link":
+            continue
+        if candidate.inspection.artifact_digest != candidate.manifest.payload.get(
+            "extension_sha256"
+        ):
+            continue
+        symbols = index.setdefault(candidate.variant(), {})
+        interface = candidate.inspection.wasm_interface
+        definition_kinds: dict[str, list[str]] = {}
+        signatures: dict[str, tuple[tuple[str, ...], str]] = {}
+        if interface is not None:
+            for symbol in interface.linking_symbols.symbols:
+                if symbol.is_externally_linkable:
+                    definition_kinds.setdefault(symbol.name, []).append(symbol.kind)
+            signatures = {
+                name: (params, result)
+                for name, params, result in interface.function_definition_signatures
+            }
+        for name in candidate.inspection.defined_symbols:
+            symbols.setdefault(name, []).append(
+                _ExternalNativeSymbolProvider(
+                    candidate,
+                    tuple(definition_kinds.get(name, ()))
+                    if interface is not None
+                    else None,
+                    signatures.get(name),
+                )
+            )
+    edges: dict[Path, dict[str, _ExternalNativeSymbolProvider]] = {}
+    errors: list[str] = []
+    for candidate in candidates:
+        selected: dict[str, _ExternalNativeSymbolProvider] = {}
+        symbols = index.get(candidate.variant(), {})
+        requirements = (
+            _wasm_relocatable_external_symbols(candidate.inspection)
+            if candidate.inspection.wasm_imports is not None
+            else candidate.inspection.undefined_symbols
+        )
+        interface = candidate.inspection.wasm_interface
+        c_api_surface = None
+        required_kinds: dict[str, set[str]] = {}
+        if interface is not None:
+            for symbol in interface.linking_symbols.symbols:
+                if not symbol.is_defined:
+                    required_kinds.setdefault(symbol.name, set()).add(symbol.kind)
+            for item in interface.imports:
+                if item.kind == 0:
+                    required_kinds.setdefault(item.name, set()).add("function")
+        for name in requirements or ():
+            providers = {
+                provider.candidate.path: provider
+                for provider in symbols.get(name, ())
+                if provider.candidate.path != candidate.path
+            }
+            if not providers:
+                continue
+            if interface is not None:
+                reserved = (
+                    name in WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
+                    or name in _wasm_runtime_backed_abi_symbols()
+                    or _molt_runtime_namespace_symbol(name)
+                    or is_cpython_abi_link_symbol(name)
+                )
+                if not reserved and is_c_api_symbol(name):
+                    if c_api_surface is None:
+                        molt_root = _molt_root_for_external_native_scan()
+                        c_api_surface, header_path, load_error = (
+                            _load_c_api_scan_surface(
+                                molt_root,
+                                header_path=_c_api_scan_header_for_manifest(
+                                    candidate.manifest.payload, molt_root=molt_root
+                                ),
+                            )
+                        )
+                        if c_api_surface is None:
+                            errors.append(
+                                f"{candidate.package}: cannot load package symbol authority {header_path}: {load_error}"
+                            )
+                            continue
+                    reserved = c_api_surface.status_for(name) != "missing"
+                if reserved:
+                    errors.append(
+                        f"{candidate.package}: package symbol {name!r} collides with "
+                        "canonical runtime/link/C-API authority"
+                    )
+                    continue
+            if len(providers) != 1:
+                errors.append(
+                    f"{candidate.package}: package symbol {name!r} has ambiguous providers: "
+                    + ", ".join(str(path) for path in sorted(providers))
+                )
+                continue
+            provider = next(iter(providers.values()))
+            if interface is not None:
+                definitions = provider.wasm_definition_kinds or ()
+                provided_kinds = set(definitions)
+                needed = required_kinds.get(name, set())
+                if (
+                    len(definitions) != 1
+                    or len(needed) != 1
+                    or needed != provided_kinds
+                    or not needed <= {"function", "data"}
+                ):
+                    errors.append(
+                        f"{candidate.package}: package symbol {name!r} kind mismatch: "
+                        f"consumer={sorted(needed)!r}, provider={sorted(provided_kinds)!r}"
+                    )
+                    continue
+            selected[name] = provider
+        edges[candidate.path] = selected
+    return edges, errors
+
+
 def _resolve_external_package_native_artifact_plan(
     *,
     external_module_roots: Sequence[Path],
@@ -1488,6 +1725,8 @@ def _resolve_external_package_native_artifact_plan(
         return None, errors
     required = frozenset(required_modules) if required_modules is not None else None
     provider_candidates: list[_ExternalPackageNativeArtifact] = []
+    candidates: list[_ExternalNativeArtifactCandidate] = []
+    symbol_dependencies: dict[tuple[str, Path], frozenset[Path]] = {}
     required_package_roots = (
         {
             package
@@ -1513,7 +1752,8 @@ def _resolve_external_package_native_artifact_plan(
             package_dir = _external_package_dir(root.resolve(), package)
             if package_dir is None:
                 continue
-            for artifact_path in _iter_external_package_native_artifacts(package_dir):
+            artifact_paths = _iter_external_package_native_artifacts(package_dir)
+            for artifact_path in artifact_paths:
                 if requested_target_triple is None:
                     try:
                         requested_target_triple = (
@@ -1621,58 +1861,99 @@ def _resolve_external_package_native_artifact_plan(
                             f"{artifact_target_python}"
                         )
                     continue
-                artifact, artifact_errors = _validate_external_package_native_artifact(
-                    package=package,
-                    package_dir=package_dir,
-                    artifact_path=artifact_path,
-                    manifest_snapshot=manifest_snapshot,
-                    expected_target_triple=requested_target_triple,
-                    expected_target_python=target_python,
-                )
-                errors.extend(artifact_errors)
-                if artifact is None:
-                    continue
-                module_key = (package, artifact.module)
-                identity = (
-                    artifact.path,
-                    artifact.extension_sha256,
-                    artifact.manifest_sha256,
-                )
-                previous = provider_identities.get(module_key)
-                if previous is not None:
-                    if previous[0] != identity[0] and previous[1:] != identity[1:]:
-                        errors.append(
-                            f"{package}: conflicting native artifact providers for "
-                            f"{artifact.module!r}: {previous[0]} "
-                            f"(artifact={previous[1]}, manifest={previous[2]}) vs "
-                            f"{identity[0]} (artifact={identity[1]}, "
-                            f"manifest={identity[2]}). Module-root order is not "
-                            "provider authority; publish one canonical package seal."
-                        )
-                    continue
-                provider_identities[module_key] = identity
-                provider_candidates.append(artifact)
-                provider_names = (
-                    artifact.module,
-                    *artifact.python_exports,
-                    *(
-                        f"{export.module}.{export.name}"
-                        for export in artifact.callable_exports
-                    ),
-                )
-                if package in package_root_providers:
-                    package_root_providers[package].update(provider_names)
-                if (
-                    required is not None
-                    and not _external_native_artifact_module_required(
-                        package=package,
-                        module_name=artifact.module,
-                        required_modules=required,
+                try:
+                    inspection = _inspect_source_extension_artifact_symbols(
+                        artifact_path,
+                        target_triple=artifact_target_triple,
+                        aggregate_linker_closure=True,
                     )
-                    and not required.intersection(provider_names)
-                ):
+                except (OSError, ValueError, RuntimeError) as exc:
+                    errors.append(f"{package}: cannot inspect {artifact_path}: {exc}")
                     continue
-                artifacts.append(artifact)
+                if inspection is None or inspection.artifact_digest is None:
+                    errors.append(
+                        f"{package}: cannot inspect native artifact {artifact_path}"
+                    )
+                    continue
+                candidates.append(
+                    _ExternalNativeArtifactCandidate(
+                        package,
+                        package_dir,
+                        artifact_path,
+                        manifest_snapshot,
+                        inspection,
+                    )
+                )
+    symbol_edges, symbol_errors = _package_symbol_provider_edges(candidates)
+    errors.extend(symbol_errors)
+    for candidate in candidates:
+        assert requested_target_triple is not None
+        package = candidate.package
+        package_dir = candidate.package_dir
+        artifact_path = candidate.path
+        manifest_snapshot = candidate.manifest
+        selected_providers = symbol_edges[artifact_path]
+        package_defined_symbols = frozenset(selected_providers)
+        package_function_signatures = {
+            name: provider.function_signature
+            for name, provider in selected_providers.items()
+            if provider.function_signature is not None
+        }
+        symbol_dependencies[(package, artifact_path)] = frozenset(
+            provider.candidate.path for provider in selected_providers.values()
+        )
+        artifact, artifact_errors = _validate_external_package_native_artifact(
+            package=package,
+            package_dir=package_dir,
+            artifact_path=artifact_path,
+            manifest_snapshot=manifest_snapshot,
+            inspection=candidate.inspection,
+            package_function_signatures=package_function_signatures,
+            expected_target_triple=requested_target_triple,
+            expected_target_python=target_python,
+            package_defined_symbols=package_defined_symbols,
+        )
+        errors.extend(artifact_errors)
+        if artifact is None:
+            continue
+        module_key = (package, artifact.module)
+        identity = (
+            artifact.path,
+            artifact.extension_sha256,
+            artifact.manifest_sha256,
+        )
+        previous = provider_identities.get(module_key)
+        if previous is not None:
+            if previous[0] != identity[0] and previous[1:] != identity[1:]:
+                errors.append(
+                    f"{package}: conflicting native artifact providers for "
+                    f"{artifact.module!r}: {previous[0]} "
+                    f"(artifact={previous[1]}, manifest={previous[2]}) vs "
+                    f"{identity[0]} (artifact={identity[1]}, "
+                    f"manifest={identity[2]}). Module-root order is not "
+                    "provider authority; publish one canonical package seal."
+                )
+            continue
+        provider_identities[module_key] = identity
+        provider_candidates.append(artifact)
+        provider_names = (
+            artifact.module,
+            *artifact.python_exports,
+            *(f"{export.module}.{export.name}" for export in artifact.callable_exports),
+        )
+        if package in package_root_providers:
+            package_root_providers[package].update(provider_names)
+        if (
+            required is not None
+            and not _external_native_artifact_module_required(
+                package=package,
+                module_name=artifact.module,
+                required_modules=required,
+            )
+            and not required.intersection(provider_names)
+        ):
+            continue
+        artifacts.append(artifact)
     for package, providers in sorted(package_root_providers.items()):
         if any(
             _external_native_provider_reaches_required(
@@ -1695,12 +1976,11 @@ def _resolve_external_package_native_artifact_plan(
         )
     if errors:
         return None, errors
-    closed_artifacts, capsule_errors = (
-        _close_external_native_capsule_provider_artifacts(
-            artifacts,
-            provider_candidates,
-            mismatched_capsule_providers,
-        )
+    closed_artifacts, capsule_errors = _close_external_native_provider_artifacts(
+        artifacts,
+        provider_candidates,
+        mismatched_capsule_providers,
+        symbol_dependencies,
     )
     if capsule_errors:
         return None, capsule_errors

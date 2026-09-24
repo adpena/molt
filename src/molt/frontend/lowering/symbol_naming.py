@@ -7,18 +7,10 @@ serialization lowering.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class SymbolNamingMixin(_MixinBase):
+class SymbolNamingMixin(GeneratorMixinBase):
     @staticmethod
     def _sanitize_module_name(name: str) -> str:
         out: list[str] = []

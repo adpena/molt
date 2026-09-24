@@ -9,9 +9,9 @@ references resolve through the SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_source_keys import python_pattern_irrefutable_reason
 from typing import (
-    TYPE_CHECKING,
     Callable,
 )
 
@@ -23,16 +23,8 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class PatternMatchMixin(_MixinBase):
+class PatternMatchMixin(GeneratorMixinBase):
     def _emit_match_cell(self, initial: bool) -> MoltValue:
         initial_val = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="CONST_BOOL", args=[initial], result=initial_val))

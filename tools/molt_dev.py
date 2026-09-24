@@ -623,9 +623,7 @@ def verify_toolchain(
             # may be a detached worktree/clone without tools/. Fall back to the
             # probed repo's copy only if the driver's is somehow absent.
             safe_run = _resolve_safe_run(git.repo)
-            out_fd, out_name = tempfile.mkstemp(
-                prefix="molt_dev_probe_", suffix=".out"
-            )
+            out_fd, out_name = tempfile.mkstemp(prefix="molt_dev_probe_", suffix=".out")
             os.close(out_fd)
             out_path = Path(out_name)
             try:

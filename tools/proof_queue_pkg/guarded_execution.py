@@ -46,6 +46,7 @@ from tools.proof_queue_pkg import (  # noqa: E402
     execution_environment as environment,
     execution_receipt_details,
     process_image_capture,
+    state,
     supervisor_custody as supervisor,
     toolchain_capture,
 )
@@ -121,6 +122,109 @@ def _supervisor_build_environment(
     return build_env
 
 
+LLVM_RELEASE_MANIFEST = "config/llvm_toolchain_releases.toml"
+
+
+def llvm_family_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
+    """Toolchain policies whose setup evidence is the LLVM release manifest."""
+    names: set[str] = set()
+    for policy in plan.toolchain_policies:
+        evidence = policy.data.get("setup_evidence")
+        if isinstance(evidence, list) and any(
+            isinstance(item, str) and item.startswith(LLVM_RELEASE_MANIFEST + "::")
+            for item in evidence
+        ):
+            names.add(policy.name)
+    return frozenset(names)
+
+
+TOOL_RELEASES_MANIFEST = "config/tool_releases.toml"
+
+
+def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
+    """Toolchain policies whose setup evidence is the pinned tool-release manifest."""
+    names: set[str] = set()
+    for policy in plan.toolchain_policies:
+        evidence = policy.data.get("setup_evidence")
+        if isinstance(evidence, list) and any(
+            isinstance(item, str) and item.startswith(TOOL_RELEASES_MANIFEST + "::")
+            for item in evidence
+        ):
+            names.add(policy.name)
+    return frozenset(names)
+
+
+def prefer_tool_release_prefixes(
+    env: Mapping[str, str], toolchains: object, *, cwd: Path
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Provision each declared pinned tool release and put its bin first on PATH.
+
+    A lane that declares a tool the manifest pins (wasm-tools today) must run
+    exactly that release, never whatever the ambient PATH happens to carry.
+    The release is provisioned under the checkout custody toolchain root
+    (idempotent, digest-verified, fail-closed) before toolchains are located,
+    so the version policy sees the pinned binary first.
+    """
+    resolved = dict(env)
+    declared = (
+        {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
+    )
+    names = sorted(declared & tool_release_toolchains(proof_plan.ProofPlan.load()))
+    if not names:
+        return resolved, {}
+    from molt import tool_releases
+    from molt.dx import checkout_custody
+
+    toolchain_root = checkout_custody(Path(cwd), dict(resolved)).toolchain_root
+    prefixes: dict[str, str] = {}
+    for name in names:
+        release = tool_releases.tool_release(name, state.ROOT)
+        discovery = tool_releases.provision_tool(release, toolchain_root)
+        prefixes[name] = str(discovery.prefix)
+        bin_dir = str(discovery.executable.parent.resolve())
+        entries = [
+            entry
+            for entry in resolved.get("PATH", "").split(os.pathsep)
+            if entry and os.path.normcase(entry) != os.path.normcase(bin_dir)
+        ]
+        resolved["PATH"] = os.pathsep.join([bin_dir, *entries])
+    return resolved, prefixes
+
+
+def prefer_canonical_llvm_prefix(
+    env: Mapping[str, str], toolchains: object, *, cwd: Path
+) -> tuple[dict[str, str], str | None]:
+    """Put the pinned LLVM SDK ahead of the ambient PATH for LLVM-family lanes.
+
+    Declared toolchains are located through the execution PATH, so an ambient
+    system LLVM (a different point release) used to shadow the canonical SDK
+    that molt.llvm_toolchain discovers under the checkout custody root and the
+    proof then failed closed on the version policy. The discovery authority is
+    the same one `molt doctor` reports; when it finds no SDK the environment is
+    left untouched and the policy check still fails closed.
+    """
+    resolved = dict(env)
+    declared = (
+        {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
+    )
+    if not declared & llvm_family_toolchains(proof_plan.ProofPlan.load()):
+        return resolved, None
+    from molt.llvm_toolchain import discover_llvm_toolchain
+
+    discovery = discover_llvm_toolchain(Path(cwd), environ=dict(resolved))
+    if discovery is None:
+        return resolved, None
+    bin_dir = str((Path(discovery.prefix) / "bin").resolve())
+    entries = [entry for entry in resolved.get("PATH", "").split(os.pathsep) if entry]
+    if not entries or os.path.normcase(entries[0]) != os.path.normcase(bin_dir):
+        entries = [
+            bin_dir,
+            *[e for e in entries if os.path.normcase(e) != os.path.normcase(bin_dir)],
+        ]
+    resolved["PATH"] = os.pathsep.join(entries)
+    return resolved, str(discovery.prefix)
+
+
 def execute_guarded_request(request_path: Path) -> int:
     """Run identity, preflight, proof, and completion custody under one guard."""
     request = read_exact(
@@ -164,7 +268,7 @@ def execute_guarded_request(request_path: Path) -> int:
     command = [str(value) for value in command]
     admission.validate_envelope(envelope, command)
     execution_custody.require_enforceable_process_closure(envelope)
-    effective_cwd, overlay_paths = admission._execution_source_paths(envelope, cwd=cwd)
+    effective_cwd = admission._execution_source_paths(envelope, cwd=cwd)
     admission._require_external_execution_outputs(
         result_path=result_path, effective_source=effective_cwd
     )
@@ -198,6 +302,18 @@ def execute_guarded_request(request_path: Path) -> int:
             inherited_env["CARGO_TARGET_DIR"] = str(
                 selection_target.resolve(strict=True)
             )
+        # Output scratch is run-owned and external to source custody.
+        run_scratch = result_path.parent / "derived" / execution_nonce / "scratch"
+        run_scratch.mkdir(parents=True, exist_ok=False)
+        inherited_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(
+            run_scratch.resolve(strict=True)
+        )
+        inherited_env, _llvm_prefix = prefer_canonical_llvm_prefix(
+            inherited_env, envelope.get("toolchains", []), cwd=cwd
+        )
+        inherited_env, _tool_release_prefixes = prefer_tool_release_prefixes(
+            inherited_env, envelope.get("toolchains", []), cwd=cwd
+        )
         canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
             node_hook = (
@@ -294,8 +410,7 @@ def execute_guarded_request(request_path: Path) -> int:
             env=execution_env,
         )
         executable_pre = command_identity._executable_identity(Path(exact[0]))
-        overlay_pre = [command_identity._file_identity(path) for path in overlay_paths]
-        pre_identities = [executable_pre, *overlay_pre]
+        pre_identities = [executable_pre]
         if payload_executable_pre is not None:
             pre_identities.append(payload_executable_pre)
         if guarded_exec_pre is not None:
@@ -306,9 +421,7 @@ def execute_guarded_request(request_path: Path) -> int:
             command_identity._content_identity_available(identity)
             for identity in pre_identities
         ):
-            raise ValueError(
-                "proof command or overlay input has unavailable content identity"
-            )
+            raise ValueError("proof command input has unavailable content identity")
         pre_source = environment._git_snapshot(effective_cwd, execution_env)
         environment.validate_typed_source_root(envelope, pre_source)
         plan = proof_plan.ProofPlan.load()
@@ -444,7 +557,6 @@ def execute_guarded_request(request_path: Path) -> int:
             raise ValueError("proof source custody has no canonical Git root")
         watch_identities: list[object] = [
             executable_pre,
-            *overlay_pre,
             policy_identities,
             environment_executables_pre,
             custody_authorities_pre,
@@ -491,7 +603,6 @@ def execute_guarded_request(request_path: Path) -> int:
         payload_executable_pre = command_identity._payload_executable_identity(
             envelope, exact
         )
-        overlay_pre = [command_identity._file_identity(path) for path in overlay_paths]
         guarded_exec_pre = (
             command_identity._file_identity(Path(str(guarded_exec_pre["path"])))
             if guarded_exec_pre is not None
@@ -531,7 +642,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 environment.capture_source_content(
                     source_root=Path(source_root_raw),
                     env=execution_env,
-                    overlays=overlay_paths,
+                    overlays=(),
                     cas_root=result_path.parent / "custody-cas",
                     hash_workers=plan.inventory_hash_workers,
                 )
@@ -676,7 +787,6 @@ def execute_guarded_request(request_path: Path) -> int:
         ]
         authoritative_pre_identities = [
             executable_pre,
-            *overlay_pre,
             *custody_authorities_pre,
         ]
         for optional_identity in (
@@ -791,7 +901,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 "row_cwd": str(cwd.resolve(strict=True)),
                 "effective_cwd": str(effective_cwd),
                 "prelaunch": pre_source,
-                "overlay_inputs": {"prelaunch": overlay_pre},
                 "content": (
                     {"prelaunch": source_content, "telemetry": source_content_telemetry}
                     if source_content is not None
@@ -913,7 +1022,6 @@ def execute_guarded_request(request_path: Path) -> int:
                     "identical": True,
                 }
             )
-        overlay_post = [command_identity._file_identity(path) for path in overlay_paths]
         executable_post = command_identity._executable_identity(Path(exact[0]))
         payload_executable_post = command_identity._payload_executable_identity(
             envelope, exact
@@ -1035,13 +1143,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 source_snapshot=pre_source,
             )
         )
-        if overlay_pre != overlay_post:
-            ineligible_reasons.append("overlay-input-changed")
-        if not all(
-            command_identity._content_identity_available(identity)
-            for identity in overlay_post
-        ):
-            ineligible_reasons.append("overlay-input-unavailable-postcompletion")
         eligible = not ineligible_reasons
         source_custody = context["source_custody"]
         assert isinstance(source_custody, dict)
@@ -1051,14 +1152,6 @@ def execute_guarded_request(request_path: Path) -> int:
                 "identical": source_identical,
                 "evidence_eligible": eligible,
                 "ineligible_reasons": ineligible_reasons,
-            }
-        )
-        overlay_inputs = source_custody["overlay_inputs"]
-        assert isinstance(overlay_inputs, dict)
-        overlay_inputs.update(
-            {
-                "postcompletion": overlay_post,
-                "identical": overlay_pre == overlay_post,
             }
         )
         command_executable = context["command_executable"]

@@ -9,22 +9,14 @@ genexpr shape checks, and bound/function call normalization.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class ExpressionPrimitivesMixin(_MixinBase):
+class ExpressionPrimitivesMixin(GeneratorMixinBase):
     def _emit_expr_list(self, exprs: list[ast.expr]) -> list[MoltValue]:
         if not exprs:
             return []

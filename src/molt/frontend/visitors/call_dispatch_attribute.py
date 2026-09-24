@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -16,19 +15,12 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallAttributeDispatchMixin(_MixinBase):
+class CallAttributeDispatchMixin(GeneratorMixinBase):
     def _dotted_attribute_parts(self, expr: ast.AST) -> tuple[str, ...] | None:
         if isinstance(expr, ast.Name):
             return (expr.id,)

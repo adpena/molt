@@ -6,6 +6,6 @@ schema_version = 1
 # attributes are rejected by `molt.cli.__getattr__` rather than compatibility-
 # imported.
 [[source]]
-path = "src/molt/cli/__init__.py"
-nonliteral_calls = 3
+path = "src/molt/cli/_lazy_facade.py"
+nonliteral_calls = 2
 derive_molt_cli_lazy_targets = true

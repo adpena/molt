@@ -13,15 +13,15 @@ import ctypes
 import hashlib
 import json
 import os
-import select
 import secrets
+import select
 import socket
 import struct
 import sys
 import threading
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
 
 from tools.proof_queue_pkg import process_image_capture
 
@@ -53,6 +53,66 @@ class WatchSpec:
         return any(path.startswith(prefix) for path in self.paths)
 
 
+CHILD_POLICY_SCHEMA = "molt.proof-child-custody.v1"
+# v2: the receipt separates the apparatus's own writes (`apparatus_events`) from
+# input mutations and binds them into its identity.
+LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v2"
+
+# Filesystem events that the proof apparatus itself causes inside a watched
+# root. They carry no information about the proof's inputs and are recorded
+# under their own class instead of as input mutations.
+APPARATUS_GIT_INDEX_REFRESH = "git-index-refresh"
+
+
+def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
+    """Name the apparatus class of an event beneath ``root``, or None.
+
+    `git status` (run by custody's own source snapshots and by tools that
+    validate the tree, including a package source checkout that is a git
+    worktree whose gitdir lives inside the watched tree) refreshes the index
+    through `index.lock` and touches the `.git` directory entry, or the
+    `.git/worktrees/<name>` entry for a linked worktree. Neither changes any
+    source input, so those events are `git-index-refresh`. Every other `.git`
+    write (HEAD, refs, objects, a rewritten index) stays an input mutation.
+    """
+    try:
+        relative = Path(_norm(path)).relative_to(Path(_norm(root)))
+    except ValueError:
+        return None
+    parts = relative.parts
+    if ".git" not in parts:
+        return None
+    tail = parts[parts.index(".git") + 1 :]
+    if tail not in ((), ("index.lock",)) and not (
+        len(tail) >= 2 and tail[0] == "worktrees" and tail[2:] in ((), ("index.lock",))
+    ):
+        return None
+    lock_event = bool(tail and tail[-1] == "index.lock")
+    directory = path.parent if lock_event else path
+    # A linked-worktree .git file is an input, not directory bookkeeping.
+    # Missing/replaced directories and symlink aliases are never excused.
+    if not directory.is_dir() or directory.resolve() != Path(_norm(directory)):
+        return None
+    if lock_event:
+        if path.is_dir() or path.is_symlink():
+            return None
+        return APPARATUS_GIT_INDEX_REFRESH
+    safe_directory_change = action == "modified"
+    if action.startswith("inotify:"):
+        try:
+            mask = int(action.partition(":")[2], 16)
+        except ValueError:
+            return None
+        safe_directory_change = bool(mask & 0x6) and not (mask & ~0x40000006)
+    elif action.startswith("fsevents:"):
+        try:
+            flags = int(action.partition(":")[2], 16)
+        except ValueError:
+            return None
+        safe_directory_change = bool(flags & 0x1400) and not (flags & ~0x21400)
+    return APPARATUS_GIT_INDEX_REFRESH if safe_directory_change else None
+
+
 def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
     merged: dict[str, tuple[Path, set[str] | None]] = {}
     for spec in specs:
@@ -81,12 +141,34 @@ def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
     ]
 
 
+def live_custody_identity_sha256(
+    *,
+    events: Sequence[Mapping[str, str]],
+    apparatus_events: Sequence[Mapping[str, str]],
+    errors: Sequence[str],
+    state: object,
+    lifecycle: Sequence[str],
+) -> str:
+    """The one identity of a live custody receipt, shared by producer and publisher."""
+    material = {
+        "events": list(events),
+        "apparatus_events": list(apparatus_events),
+        "errors": list(errors),
+        "state": state,
+        "lifecycle": list(lifecycle),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 class LiveCustodyMonitor:
     """Fail-closed kernel event monitor for immutable execution inputs."""
 
     def __init__(self, specs: Sequence[WatchSpec]) -> None:
         self.specs = _compact_specs(specs)
         self._events: list[dict[str, str]] = []
+        self._apparatus_events: list[dict[str, str]] = []
         self._errors: list[str] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -166,28 +248,28 @@ class LiveCustodyMonitor:
     def receipt(self) -> dict[str, object]:
         with self._lock:
             events = list(self._events)
+            apparatus_events = list(self._apparatus_events)
             errors = list(self._errors)
             state = self._state
             lifecycle = list(self._lifecycle)
         if state != "DRAINED":
             errors.append(f"proof live custody receipt requested in state {state}")
-        material = {
-            "events": events,
-            "errors": errors,
-            "state": state,
-            "lifecycle": lifecycle,
-        }
         return {
-            "schema": "molt.proof-live-custody.v1",
+            "schema": LIVE_CUSTODY_RECEIPT_SCHEMA,
             "watch_roots": len(self.specs),
             "events": events,
+            "apparatus_events": apparatus_events,
             "errors": errors,
             "state": state,
             "lifecycle": lifecycle,
             "stable": state == "DRAINED" and not events and not errors,
-            "identity_sha256": hashlib.sha256(
-                json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest(),
+            "identity_sha256": live_custody_identity_sha256(
+                events=events,
+                apparatus_events=apparatus_events,
+                errors=errors,
+                state=state,
+                lifecycle=lifecycle,
+            ),
         }
 
     def _record_error(self, message: str) -> None:
@@ -199,7 +281,13 @@ class LiveCustodyMonitor:
         if not spec.owns(path):
             return
         event = {"action": action, "path": str(path)}
+        apparatus = classify_apparatus_event(spec.root, path, action)
         with self._lock:
+            if apparatus is not None:
+                classified = {**event, "apparatus": apparatus}
+                if classified not in self._apparatus_events:
+                    self._apparatus_events.append(classified)
+                return
             if event not in self._events:
                 self._events.append(event)
 
@@ -727,7 +815,8 @@ def watch_specs(
 
 
 def child_policy(
-    envelope: Mapping[str, object], toolchains: Mapping[str, object]
+    envelope: Mapping[str, object],
+    toolchains: Mapping[str, object],
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
     if not isinstance(closure, Mapping):
@@ -757,7 +846,7 @@ def child_policy(
     ]
     allowed.sort(key=lambda row: (row["toolchain"], row["path"], row["sha256"]))
     return {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": CHILD_POLICY_SCHEMA,
         "descendants": descendants,
         "allowed": allowed,
     }

@@ -304,7 +304,9 @@ def _load_llvm_releases_cached(
         )
     ):
         raise LlvmToolchainConfigError(
-            f"invalid Debian LLVM installer identity in {path}"
+            f"invalid Debian LLVM installer identity in {path}: the installer "
+            "must be pinned at a commit-addressed raw GitHub URL, never a "
+            "mutable download path"
         )
     wasi_required = (
         "version",

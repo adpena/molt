@@ -19,7 +19,6 @@
     "config/reproducibility_corpus.toml",
     "config/scientific_stack_versions.toml",
     "config/source_extension_package_sets.toml",
-    "config/proof_requirements/pact_witness.txt",
     "config/llvm_toolchain_releases.toml",
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
@@ -174,7 +173,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "8cb0c04eed4c4943a4c47736028cb6eab717e61274e27f936a51261780cd78d3",
+  "authority_sha256": "5218cc65fc59738e2f1b9d940375038c7194688e54b97319924bfbcae38d16d3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -2352,7 +2351,11 @@
         "tests/tools/test_analysis_capsule.py",
         "tests/tools/test_runtime_bridge_test_stubs.py",
         "tests/tools/test_runtime_app_bootstrap_authority.py",
-        "tests/tools/test_cargo_test_truth.py"
+        "tests/tools/test_cargo_test_truth.py",
+        "tests/tools/test_import_symbol_gate.py",
+        "tests/tools/test_phase_exit_manifest.py",
+        "tests/tools/test_legacy_inventory.py",
+        "tests/tools/test_public_contract_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -4099,7 +4102,7 @@
         }
       }
     },
-    "inventory_hash_workers": 4,
+    "inventory_hash_workers": 12,
     "max_workers": 4,
     "resource_policies": [
       {
@@ -4264,6 +4267,8 @@
       "local.heap-kind-lifetime-authority.1": "python3 -m pytest -q tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.0": "uv run --python 3.12 python tools/gen_host_capabilities.py --check",
       "local.host-capability-authority.1": "uv run --python 3.12 pytest -q tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
+      "local.import-symbol-gate.0": "python3 tools/venv_exec.py python tools/import_symbol_gate.py",
+      "local.import-symbol-gate.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_import_symbol_gate.py",
       "local.intrinsic-registry.0": "python3 tools/gen_intrinsics.py --check",
       "local.intrinsic-registry.1": "python3 -m pytest -q tests/test_gen_intrinsics.py",
       "local.llvm-runtime-abi.0": "python3 tools/llvm_runtime_abi_audit.py --check",
@@ -4277,6 +4282,10 @@
       "local.native-callable-abi.4": "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
       "local.op-kind-registry.0": "python3 tools/gen_op_kinds.py --check",
       "local.op-kind-registry.1": "python3 tools/audit_op_kinds.py --check",
+      "local.phase-exit-manifest.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
+      "local.phase-exit-manifest.1": "python3 tools/venv_exec.py python tools/legacy_inventory.py --check",
+      "local.public-contract.0": "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+      "local.public-contract.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py",
       "local.python-effect-capability-authority.0": "python3 tools/gen_python_effects.py --check",
       "local.python-effect-capability-authority.1": "python3 -m pytest -q tests/test_gen_python_effects.py",
       "local.python-effect-capability-authority.2": "cargo test --locked -p molt-ir --lib python_effects_generated",
@@ -5250,6 +5259,66 @@
           "tests/tools/test_disk_guard.py"
         ],
         "name": "apparatus-a8-a12-disk-reclaim"
+      },
+      {
+        "command_ids": [
+          "local.import-symbol-gate.0",
+          "local.import-symbol-gate.1"
+        ],
+        "description": "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane. The property itself runs in the repository docs-tests command; this rule covers edits to the gate.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/import_symbol_gate.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_import_symbol_gate.py"
+        ],
+        "globs": [
+          "tools/import_symbol_gate.py",
+          "tests/tools/test_import_symbol_gate.py"
+        ],
+        "name": "import-symbol-gate"
+      },
+      {
+        "command_ids": [
+          "local.phase-exit-manifest.0",
+          "local.phase-exit-manifest.1"
+        ],
+        "description": "Fixed CENTURY_SYSTEMS_PLAN \u00a75 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks.",
+        "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
+          "python3 tools/venv_exec.py python tools/legacy_inventory.py --check"
+        ],
+        "globs": [
+          "tools/phase_exit_manifest.py",
+          "tools/legacy_inventory.py",
+          "config/phase_exit_requirements.toml",
+          "config/legacy_inventory.toml",
+          "tests/tools/test_phase_exit_manifest.py",
+          "tests/tools/test_legacy_inventory.py"
+        ],
+        "name": "phase-exit-manifest"
+      },
+      {
+        "command_ids": [
+          "local.public-contract.0",
+          "local.public-contract.1"
+        ],
+        "description": "Every CLI command carries a declared stability tier and the generated public surface snapshot (CLI tree, target Python range, release targets, verified-subset matrix digest, native callable ABI) has not drifted without an explicit --update.",
+        "gates": [
+          "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py"
+        ],
+        "globs": [
+          "config/public_contract_v1.toml",
+          "config/public_contract_v1.surface.json",
+          "config/release_targets.toml",
+          "runtime/native_callable_abi.toml",
+          "src/molt/cli/entrypoint_parser.py",
+          "src/molt/cli/__init__.py",
+          "src/molt/release_matrix.py",
+          "src/molt/target_python.py",
+          "tools/public_contract_gate.py",
+          "tests/tools/test_public_contract_gate.py"
+        ],
+        "name": "public-contract"
       }
     ]
   },
@@ -5558,6 +5627,7 @@
       "executable": "node",
       "name": "node",
       "setup_evidence": [
+        "config/tool_releases.toml::version = \"24.16.0\"",
         ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
         ".github/workflows/formal.yml::node-version: \"24.16.0\""
       ],
@@ -5802,6 +5872,54 @@
       "version_pattern": "^cargo-audit 0\\.22\\.2\\b"
     },
     {
+      "executable": "llvm-ar",
+      "name": "llvm-ar",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-ranlib",
+      "name": "llvm-ranlib",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-nm",
+      "name": "llvm-nm",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "llvm-strip",
+      "name": "llvm-strip",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "LLVM version 22\\.1\\.8\\b"
+    },
+    {
       "executable": "wasm-ld",
       "name": "wasm-ld",
       "setup_evidence": [
@@ -5817,13 +5935,14 @@
       "executable": "wasm-tools",
       "name": "wasm-tools",
       "setup_evidence": [
-        ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"
+        "config/tool_releases.toml::version = \"1.259.0\"",
+        ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"
       ],
-      "setup_value": "1.253.0",
+      "setup_value": "1.259.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.253\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.259\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }

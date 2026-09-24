@@ -91,8 +91,10 @@ Minimal server API:
 ```python
 from molt_http import serve
 
+
 async def app(req):
     return Response.json({"ok": True})
+
 
 serve(app, host="0.0.0.0", port=8000)
 ```

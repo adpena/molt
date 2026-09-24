@@ -50,7 +50,17 @@ def make_rust_wasm_facts_provider(
     scanner: Path,
     scratch_root: Path,
     metrics: dict[str, float] | None = None,
+    *,
+    evidence_root: Path | None = None,
 ) -> Callable[[bytes], dict[str, object]]:
+    """Scan link intermediates with the Rust facts scanner.
+
+    ``scratch_root`` holds the bytes only for the duration of a scan; a scan
+    the scanner rejects keeps its input under ``evidence_root`` (a directory
+    that outlives the link, the build output directory) so the failure can be
+    reproduced offline. Without an evidence root the rejected bytes stay in
+    the scratch root.
+    """
     if not scanner.is_file():
         raise ValueError(f"WASM facts scanner is not a file: {scanner}")
     try:
@@ -122,10 +132,22 @@ def make_rust_wasm_facts_provider(
                 metrics["wasm_facts_scan_calls"] += 1.0
                 metrics["wasm_facts_input_bytes"] += float(len(data))
                 metrics["wasm_facts_response_chars"] += float(len(process.stdout))
-            facts = _decode_wasm_facts_response(
-                process,
-                operation=f"Rust WASM facts scan for {artifact.name}",
-            )
+            try:
+                facts = _decode_wasm_facts_response(
+                    process,
+                    operation=f"Rust WASM facts scan for {artifact.name}",
+                )
+            except ValueError as exc:
+                # The rejected bytes are the evidence: keep them, under a root
+                # that outlives the link's scratch, so the failure can be
+                # reproduced offline.
+                evidence_dir = (
+                    evidence_root if evidence_root is not None else scratch_root
+                )
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                evidence = evidence_dir / (artifact.name + ".rejected")
+                artifact.replace(evidence)
+                raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
             try:
                 if (
                     api["_file_stat_identity"](resolved_scanner.stat())

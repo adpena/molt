@@ -8,6 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution

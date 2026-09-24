@@ -133,9 +133,7 @@ def _type_facts_cache_key(
         "sources": source_identity,
         "tooling": _type_facts_tooling_identity(),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 

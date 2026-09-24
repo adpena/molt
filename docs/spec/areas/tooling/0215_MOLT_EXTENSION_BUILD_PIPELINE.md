@@ -667,7 +667,15 @@ source search.
   source-compile-only C/API facts remain visible requirements.
   Reachable native-artifact tree shaking is provider-closed: filtering to the
   user's graph, explicit imports, and runtime dispatch roots must retain every
-  artifact that provides a capsule required by a reachable artifact.
+  artifact that provides a capsule or same-package symbol required by a
+  reachable artifact, transitively, including cycles. Symbol providers must
+  have the same package root and target/Python/ABI/linkage variant and pass the
+  ordinary artifact and manifest validation. WASM provider kind and function
+  signature come from the inspected binary, not a symbol-name allowlist.
+  Ambiguous providers, incompatible kinds/signatures, and collisions with
+  canonical runtime/link/C-API ownership fail admission. Candidate inspection
+  feeds one symbol index and the existing provider closure; do not independently
+  reparse and revalidate every sibling for every consumer.
   Graph, wrapper-build, and backend object-cache identities include the
   validated artifact/manifest custody facts. WASM package
   admission fails closed before graph expansion when an admitted package

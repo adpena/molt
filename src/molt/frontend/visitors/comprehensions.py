@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Sequence,
     cast,
 )
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
@@ -30,16 +30,8 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import FunctionKind, stateful_function_frame_plan
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class ComprehensionMixin(_MixinBase):
+class ComprehensionMixin(GeneratorMixinBase):
     _list_int_containers: set[str]
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:

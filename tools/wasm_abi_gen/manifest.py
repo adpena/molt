@@ -156,7 +156,17 @@ class WasmAbiManifestError(ValueError):
 
 
 CPYTHON_ABI_LINK_IMPORT_CLASS = "molt_cpython_abi_link_import"
-CPYTHON_ABI_EXPORT_PREFIXES = ("Py", "_Py", "molt_capi_", "molt_cpython_abi_")
+# ``Molt``-prefixed exports are the runtime's own ABI objects the public
+# header declares to extensions (``MoltManaged_Type`` behind the managed
+# object check), so a compiled extension references them like any
+# ``Py*`` export.
+CPYTHON_ABI_EXPORT_PREFIXES = (
+    "Py",
+    "_Py",
+    "Molt",
+    "molt_capi_",
+    "molt_cpython_abi_",
+)
 CPYTHON_ABI_NO_MANGLE_FUNCTION_RE = re.compile(
     r"#\[unsafe\(no_mangle\)\]\s*"
     r"(?:#\[[^\]]+\]\s*)*"

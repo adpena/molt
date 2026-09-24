@@ -28,6 +28,7 @@ So:
 ```python
 from molt_schema import model, field
 
+
 @model
 class Item:
     id: int
@@ -48,8 +49,7 @@ class Query:
 ### 1.3 Strictness
 ```python
 @model(strict=True)
-class Input:
-    ...
+class Input: ...
 ```
 
 ---

@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROJECT_DOC_MAX_BYTES = 32_768
 COMPACT_ROOT_BUDGET = 24 * 1024
 DISCOVERABLE_AGENT_DOCS = {"AGENTS.md", "AGENTS.override.md"}
+
+
 def _tracked_agent_docs() -> list[Path]:
     result = subprocess.run(
         ["git", "ls-files", "-z"],

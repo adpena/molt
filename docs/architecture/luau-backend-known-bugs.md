@@ -62,8 +62,8 @@ calls (no Luau equivalent), silently failing at runtime instead of emitting
 **Example:**
 ```python
 def build(pool: list[list[int]], i: int) -> None:
-    node = pool[i]   # type_hint="list" lost here
-    node.append(1)   # → emitted as node.append(1), not table.insert(node, 1)
+    node = pool[i]  # type_hint="list" lost here
+    node.append(1)  # → emitted as node.append(1), not table.insert(node, 1)
 ```
 
 **Fix:** Propagate `type_hint="list"` through:
@@ -153,13 +153,16 @@ Minimal repro:
 # global_subscript_repro.py
 pool: list[list[int]] = [[1, 2, 3], [4, 5, 6]]
 
+
 def get_first(i: int) -> int:
     global pool
     return pool[i][0]  # Bug 1: pool[i][0] → (pool_global or nil)[i][0] → parse error
 
+
 # param_list_repro.py
 def append_to(xs: list[int], v: int) -> None:
     xs.append(v)  # Bug 2: type_hint lost, emits xs.append(v) not table.insert(xs, v)
+
 
 def caller() -> list[int]:
     result: list[int] = []

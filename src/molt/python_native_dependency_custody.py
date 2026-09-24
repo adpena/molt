@@ -707,7 +707,7 @@ def _native_dependency_closure(
         )
     )
     root_components = sorted(
-        component["id"] for component in components if component["roles"]
+        ids[name] for name in ordered_names if roles_by_path.get(discovered[name])
     )
     if not root_components:
         raise PythonEnvironmentIdentityError(

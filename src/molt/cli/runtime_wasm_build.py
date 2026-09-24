@@ -84,9 +84,7 @@ class _RuntimeWasmMemberFinalizer:
             metrics = transform_wasm_publication_file(
                 self.runtime_wasm,
                 rename_map=(
-                    {}
-                    if self.reloc
-                    else wasm_split_runtime_export_rename_map(self.required_exports)
+                    {} if self.reloc else wasm_split_runtime_export_rename_map(None)
                 ),
                 final_artifact=not self.reloc,
                 preserve_debug=preserve_debug,

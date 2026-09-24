@@ -200,6 +200,7 @@ class WasmRelocatableObjectInterface:
     ]
     function_exports: tuple[WasmExport, ...]
     linking_symbols: WasmLinkingSymbolTable
+    function_definition_signatures: tuple[tuple[str, tuple[str, ...], str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1833,7 +1834,7 @@ def parse_wasm_exports(
 def parse_wasm_relocatable_object_interface(
     data: bytes,
     *,
-    signature_import_names: Collection[str] = (),
+    signature_import_names: Collection[str] | None = (),
 ) -> WasmRelocatableObjectInterface:
     """Parse one relocatable artifact once for all closure consumers."""
 
@@ -1850,6 +1851,37 @@ def parse_wasm_relocatable_object_interface(
         wasm_imports=import_interface.imports,
         section_spans=spans,
     )
+    function_types = _read_wasm_function_type_indices(
+        sections,
+        [
+            item.type_index
+            for item in import_interface.imports
+            if item.kind == WASM_EXTERN_KIND_FUNCTION and item.type_index is not None
+        ],
+    )
+    type_signatures = _read_wasm_type_signature_encodings(sections)
+    definitions: list[tuple[str, tuple[str, ...], str]] = []
+    for symbol in linking_symbols.function_symbols:
+        if not symbol.is_externally_linkable:
+            continue
+        type_index = (
+            function_types.get(symbol.index) if symbol.index is not None else None
+        )
+        signature = type_signatures.get(type_index) if type_index is not None else None
+        if signature is None:
+            raise ValueError(
+                f"Missing function signature for linking definition {symbol.name!r}"
+            )
+        params, results = signature
+        definitions.append(
+            (
+                symbol.name,
+                tuple(_format_wasm_value_type_encoding(value) for value in params),
+                _format_wasm_result_kind(
+                    tuple(_format_wasm_value_type_encoding(value) for value in results)
+                ),
+            )
+        )
     return WasmRelocatableObjectInterface(
         imports=import_interface.imports,
         function_import_signatures=import_interface.function_signatures,
@@ -1859,6 +1891,7 @@ def parse_wasm_relocatable_object_interface(
             if export.kind == WASM_EXTERN_KIND_FUNCTION
         ),
         linking_symbols=linking_symbols,
+        function_definition_signatures=tuple(definitions),
     )
 
 

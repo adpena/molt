@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING, Any, Literal
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _ClassNsScope,
     AsyncFrameSlot,
@@ -36,13 +37,7 @@ from molt.native_callable_exports import (
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
-    from molt.frontend._protocol import _GeneratorProtocol
     from molt.type_facts import TypeFacts
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
@@ -151,7 +146,7 @@ FUNCTION_STATE_SNAPSHOT_ATTRS = (
 )
 
 
-class GeneratorStateMixin(_MixinBase):
+class GeneratorStateMixin(GeneratorMixinBase):
     comprehension_bindings: dict[str, ComprehensionBinding]
     current_python_first_arg: str | MoltValue | None
     _next_exact_class_token: int

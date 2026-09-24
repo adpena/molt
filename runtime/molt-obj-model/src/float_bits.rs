@@ -6,6 +6,21 @@ pub enum FloatNarrowError {
     FiniteOverflow,
 }
 
+/// Exact `2^exp` for the f64 normal range, built from the bit pattern.
+///
+/// `powi` is a floating-point intrinsic whose result is not required to be
+/// exact (Miri models that latitude deliberately); a determinism authority
+/// may not depend on it. Every power of two this module needs is a normal
+/// f64, so the encoding is a plain exponent field.
+#[inline]
+fn pow2(exp: i32) -> f64 {
+    debug_assert!(
+        (-1022..=1023).contains(&exp),
+        "pow2 exponent out of normal range"
+    );
+    f64::from_bits(((exp + 1023) as u64) << 52)
+}
+
 #[inline]
 fn round_shift_ties_even(value: u64, shift: u32) -> u64 {
     if shift == 0 {
@@ -73,10 +88,10 @@ pub fn f16_bits_to_f64(bits: u16) -> f64 {
     let fraction = bits & 0x03ff;
     match exponent {
         0 if fraction == 0 => f64::from_bits(u64::from(bits & 0x8000) << 48),
-        0 => sign * f64::from(fraction) * 2f64.powi(-24),
+        0 => sign * f64::from(fraction) * pow2(-24),
         0x1f if fraction == 0 => sign * f64::INFINITY,
         0x1f => f64::from_bits((u64::from(bits & 0x8000) << 48) | 0x7ff8_0000_0000_0000),
-        _ => sign * (1.0 + f64::from(fraction) / 1024.0) * 2f64.powi(i32::from(exponent) - 15),
+        _ => sign * (1.0 + f64::from(fraction) / 1024.0) * pow2(i32::from(exponent) - 15),
     }
 }
 
@@ -103,13 +118,27 @@ mod tests {
     fn ties_subnormals_specials_and_overflow() {
         assert_eq!(f64_to_f16_bits(0.0), Ok(0));
         assert_eq!(f64_to_f16_bits(-0.0), Ok(0x8000));
-        assert_eq!(f64_to_f16_bits(2f64.powi(-24)), Ok(1));
-        assert_eq!(f64_to_f16_bits(2f64.powi(-25)), Ok(0));
-        assert_eq!(f64_to_f16_bits(1.0 + 2f64.powi(-11)), Ok(0x3c00));
-        assert_eq!(f64_to_f16_bits(1.0 + 3.0 * 2f64.powi(-11)), Ok(0x3c02));
+        assert_eq!(f64_to_f16_bits(pow2(-24)), Ok(1));
+        assert_eq!(f64_to_f16_bits(pow2(-25)), Ok(0));
+        assert_eq!(f64_to_f16_bits(1.0 + pow2(-11)), Ok(0x3c00));
+        assert_eq!(f64_to_f16_bits(1.0 + 3.0 * pow2(-11)), Ok(0x3c02));
         assert_eq!(f64_to_f16_bits(f64::INFINITY), Ok(0x7c00));
         assert_eq!(f64_to_f16_bits(f64::NAN), Ok(0x7e00));
         assert!(f64_to_f16_bits(65520.0).is_err());
         assert_eq!(f16_bits_to_f64(0x8000).to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
+    fn pow2_is_exact_across_the_normal_range() {
+        assert_eq!(pow2(0), 1.0);
+        assert_eq!(pow2(-24).to_bits(), (1.0f64 / 16_777_216.0).to_bits());
+        assert_eq!(pow2(1023).to_bits(), 0x7fe0_0000_0000_0000);
+        assert_eq!(pow2(-1022), f64::MIN_POSITIVE);
+        for exp in -1022..=1022 {
+            assert_eq!(pow2(exp) * pow2(-exp), 1.0, "2^{exp} * 2^-{exp}");
+        }
+        for exp in -1021..=1023 {
+            assert_eq!(pow2(exp), 2.0 * pow2(exp - 1), "2^{exp} doubling");
+        }
     }
 }

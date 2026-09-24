@@ -213,8 +213,6 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
         result_dtype = x._dtype
         result_format = x._buf.format_char
     out_shape = x_shape[:-1] + (out_features,)
-    if not out_shape:
-        out_shape = (out_features,)
 
     intrinsic = _resolve_optional_intrinsic(
         "_MOLT_GPU_LINEAR_CONTIGUOUS", "molt_gpu_linear_contiguous"
@@ -1677,8 +1675,6 @@ class Tensor:
         out_batch_shape = tuple(out_batch_shape)
         batch_count = _product(out_batch_shape) if out_batch_shape else 1
         out_shape = out_batch_shape + (a_rows, b_cols)
-        if not out_shape:
-            out_shape = (a_rows, b_cols)
         if a._dtype is _float and b._dtype is _float:
             result_format = _preferred_float_format(a, b)
         else:

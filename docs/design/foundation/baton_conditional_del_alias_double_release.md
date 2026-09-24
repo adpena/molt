@@ -24,8 +24,10 @@ The minimal repro that isolates it has NO `del`, NO aliasing, NO slicing:
 def f(n):
     i = 0
     while i < n:
-        print(i % 7)          # molt printed 9221401712017801216, 9221401712017801217, ...
-        i = i + 1             # CPython: 0, 1, 2
+        print(i % 7)  # molt printed 9221401712017801216, 9221401712017801217, ...
+        i = i + 1  # CPython: 0, 1, 2
+
+
 f(3)
 ```
 
