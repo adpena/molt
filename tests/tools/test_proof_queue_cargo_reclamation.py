@@ -563,7 +563,7 @@ def test_external_retirement_preserves_metadata_siblings_and_offline_receipt(
     assert lease.target.is_relative_to(root)
     owner = Path(lease.provenance["generation_owner"])
     assert owner.is_relative_to(Path(args.logs_root))
-    sibling = lease.target.parent.parent / "retained-sibling"
+    sibling = lease.target.parent / "retained-sibling"
     sibling.mkdir()
     (sibling / "keep.rlib").write_bytes(b"retained")
     before = _persisted_terminal_bytes(args)
