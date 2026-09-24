@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import Any, NoReturn
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.cfg_analysis import CFGEdgeKind
 
 from molt.frontend._types import (
@@ -17,16 +18,8 @@ from molt.frontend._types import (
 from molt.frontend.lowering.try_regions import try_region_id
 from molt.frontend.lowering.midend_dataflow import current_unique_result_definitions
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class MidendCFGMixin(_MixinBase):
+class MidendCFGMixin(GeneratorMixinBase):
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
         if op.kind not in {"GUARD_TAG", "GUARD_TYPE", "GUARD_DICT_SHAPE"}:
             return None

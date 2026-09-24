@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from typing import Literal, NotRequired, TypedDict
 from pathlib import Path
 
 from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
@@ -20,6 +21,32 @@ from molt.exact_json import string_keyed_object
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
 APP_EXPORT_CALL_ABI_SCHEMA = 2
+
+AppBindingKind = Literal["sync", "async", "gen", "asyncgen"]
+AppBindingDisposition = Literal["export", "excluded"]
+
+
+class AppCallableBinding(TypedDict):
+    """One resolved entry-module callable binding, as the frontend emits it.
+
+    The row shape is the contract: `_validated_binding_rows` refuses any other
+    field so a producer change cannot pass through the digest unnoticed.
+    """
+
+    name: str
+    qualified_name: str
+    kind: AppBindingKind
+    origin: str
+    disposition: AppBindingDisposition
+    reason: str | None
+    symbol: str | None
+    superseded_symbols: list[str]
+    imported_from: NotRequired[str]
+
+
+_APP_BINDING_FIELDS: frozenset[str] = frozenset(
+    AppCallableBinding.__required_keys__ | AppCallableBinding.__optional_keys__
+)
 
 
 def _canonical_call_abi() -> dict[str, object]:
@@ -61,7 +88,7 @@ def _validated_call_abi(raw_abi: object) -> dict[str, object]:
 
 def _frontend_resolved_bindings(
     ir: Mapping[str, object], *, entry_module: str
-) -> list[dict[str, object]]:
+) -> list[AppCallableBinding]:
     raw_functions = ir.get("functions")
     if not isinstance(raw_functions, Sequence) or isinstance(
         raw_functions, (str, bytes, bytearray)
@@ -91,14 +118,19 @@ def _frontend_resolved_bindings(
 
 def _validated_binding_rows(
     raw_bindings: Sequence[object], *, entry_module: str
-) -> list[dict[str, object]]:
-    bindings: list[dict[str, object]] = []
+) -> list[AppCallableBinding]:
+    bindings: list[AppCallableBinding] = []
     seen_names: set[str] = set()
     seen_export_symbols: set[str] = set()
     for index, raw_binding in enumerate(raw_bindings):
         binding = string_keyed_object(
             raw_binding, context=f"app export binding {index}"
         )
+        unknown_fields = sorted(set(binding) - _APP_BINDING_FIELDS)
+        if unknown_fields:
+            raise ValueError(
+                f"app export binding {index} has unknown fields {unknown_fields}"
+            )
         name = binding.get("name")
         qualified_name = binding.get("qualified_name")
         disposition = binding.get("disposition")
@@ -111,12 +143,10 @@ def _validated_binding_rows(
         seen_names.add(name)
         if qualified_name != f"{entry_module}.{name}":
             raise ValueError(f"app export binding {name!r} has invalid qualified_name")
-        if kind not in {"sync", "async", "gen", "asyncgen"}:
-            raise ValueError(f"app export binding {name!r} has invalid function kind")
+        kind = _binding_kind(name, kind)
         if not isinstance(origin, str) or not origin:
             raise ValueError(f"app export binding {name!r} has invalid origin")
-        if disposition not in {"export", "excluded"}:
-            raise ValueError(f"app export binding {name!r} has invalid disposition")
+        disposition = _binding_disposition(name, disposition)
         if symbol is not None and (not isinstance(symbol, str) or not symbol):
             raise ValueError(f"app export binding {name!r} has invalid symbol")
         if disposition == "export":
@@ -127,6 +157,8 @@ def _validated_binding_rows(
             seen_export_symbols.add(symbol)
         elif not isinstance(reason, str) or not reason:
             raise ValueError(f"excluded app binding {name!r} requires a reason")
+        if reason is not None and not isinstance(reason, str):
+            raise ValueError(f"app export binding {name!r} has invalid reason")
         superseded = binding.get("superseded_symbols")
         if not isinstance(superseded, list) or not all(
             isinstance(item, str) and item for item in superseded
@@ -143,8 +175,32 @@ def _validated_binding_rows(
             not isinstance(imported_from, str) or not imported_from
         ):
             raise ValueError(f"app export binding {name!r} has invalid imported_from")
-        bindings.append(binding)
+        row: AppCallableBinding = {
+            "name": name,
+            "qualified_name": f"{entry_module}.{name}",
+            "kind": kind,
+            "origin": origin,
+            "disposition": disposition,
+            "reason": reason,
+            "symbol": symbol,
+            "superseded_symbols": list(superseded),
+        }
+        if imported_from is not None:
+            row["imported_from"] = imported_from
+        bindings.append(row)
     return bindings
+
+
+def _binding_kind(name: str, kind: object) -> AppBindingKind:
+    if isinstance(kind, str) and kind in {"sync", "async", "gen", "asyncgen"}:
+        return kind
+    raise ValueError(f"app export binding {name!r} has invalid function kind")
+
+
+def _binding_disposition(name: str, disposition: object) -> AppBindingDisposition:
+    if isinstance(disposition, str) and disposition in {"export", "excluded"}:
+        return disposition
+    raise ValueError(f"app export binding {name!r} has invalid disposition")
 
 
 def _contract_digest(payload: Mapping[str, object]) -> str:

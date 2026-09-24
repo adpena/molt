@@ -9,24 +9,16 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     cast,
 )
 
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallReductionMixin(_MixinBase):
+class CallReductionMixin(GeneratorMixinBase):
     def _can_inline_sum_genexpr(self, node: ast.GeneratorExp | ast.ListComp) -> bool:
         if not self._comprehension_frame_can_fuse(node):
             return False

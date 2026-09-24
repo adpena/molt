@@ -13,11 +13,7 @@ if str(TOOLS) not in sys.path:
 import check_perf_gate_wiring as w  # noqa: E402
 
 
-CONTROLLED_EVENTS = (
-    "  workflow_dispatch:\n"
-    "  schedule:\n"
-    '    - cron: "0 6 * * 1"\n'
-)
+CONTROLLED_EVENTS = '  workflow_dispatch:\n  schedule:\n    - cron: "0 6 * * 1"\n'
 
 
 def _write(tmp: Path, body: str) -> Path:
@@ -37,14 +33,7 @@ def _workflow(
     if cancel is not None:
         concurrency += f"  cancel-in-progress: {cancel}\n"
     return (
-        "on:\n"
-        f"{events}"
-        f"{concurrency}"
-        "jobs:\n"
-        "  scoreboard:\n"
-        f"{job_extra}"
-        "    steps:\n"
-        f"{step}"
+        f"on:\n{events}{concurrency}jobs:\n  scoreboard:\n{job_extra}    steps:\n{step}"
     )
 
 
@@ -125,17 +114,12 @@ def test_scoreboard_job_continue_on_error_is_flagged(monkeypatch, tmp_path):
 
 
 def test_scoreboard_false_if_is_flagged(monkeypatch, tmp_path):
-    step = (
-        "      - if: ${{ false }}\n"
-        "        run: python3 tools/perf_scoreboard.py\n"
-    )
+    step = "      - if: ${{ false }}\n        run: python3 tools/perf_scoreboard.py\n"
     problems = _check_against(monkeypatch, _write(tmp_path, _workflow(step=step)))
     assert any("trivially false" in problem for problem in problems)
 
 
-def test_scoreboard_job_gated_away_from_measurement_is_flagged(
-    monkeypatch, tmp_path
-):
+def test_scoreboard_job_gated_away_from_measurement_is_flagged(monkeypatch, tmp_path):
     body = _workflow(job_extra="    if: github.event_name == 'push'\n")
     problems = _check_against(monkeypatch, _write(tmp_path, body))
     assert any("gated away" in problem for problem in problems)
@@ -143,9 +127,7 @@ def test_scoreboard_job_gated_away_from_measurement_is_flagged(
 
 def test_yaml_on_keyword_gotcha_is_handled(monkeypatch, tmp_path):
     body = _workflow()
-    yaml_shape = {
-        True: {"workflow_dispatch": {}, "schedule": [{"cron": "0 6 * * 1"}]}
-    }
+    yaml_shape = {True: {"workflow_dispatch": {}, "schedule": [{"cron": "0 6 * * 1"}]}}
     assert set(w._triggers(yaml_shape)) == w.MEASUREMENT_EVENTS
     assert set(w._triggers(w._load_yaml(_write(tmp_path, body)))) == (
         w.MEASUREMENT_EVENTS

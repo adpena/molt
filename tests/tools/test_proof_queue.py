@@ -557,7 +557,7 @@ def _write_synthetic_guarded_execution(
         "live_input_custody": _synthetic_live_custody(result_path.parent),
         "child_process_custody": {
             "policy": {
-                "descendants": request["envelope"]["process_closure"]["descendants"]
+                "descendants": request["envelope"]["process_closure"]["descendants"],
             },
             "receipt": {"broker_complete": True},
         },
@@ -644,6 +644,7 @@ def _write_synthetic_guarded_execution(
                     "completed": True,
                     "after": {"active_processes": 0},
                     "terminated_remaining_processes": False,
+                    "remaining_processes": [],
                 },
                 "sampling_telemetry": {
                     "attempts": 1,
@@ -698,7 +699,6 @@ def test_proof_queue_default_state_is_owned_by_checkout_custody(
                 ".",
                 "--python",
                 "3.12",
-                "--with-requirements=requirements/proof.txt",
                 "--isolated",
                 "--directory",
                 "runtime",
@@ -1384,17 +1384,10 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
     tmp_path: Path,
 ) -> None:
     runtime = tmp_path / "runtime"
-    requirements_dir = runtime / "requirements"
-    requirements_dir.mkdir(parents=True)
-    requirements = requirements_dir / "proof.txt"
-    requirements.write_text(
-        "numpy==2.3.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
-    )
+    runtime.mkdir(parents=True)
     command = [
         "uv",
         "run",
-        "--with-requirements",
-        "requirements/proof.txt",
         "--offline",
         "--isolated",
         "--directory=runtime",
@@ -1405,15 +1398,13 @@ def test_exact_uv_prefix_probe_preserves_every_custodied_interpreter_option(
         "pytest",
     ]
     envelope = command_admission.envelope_for_command(command)
-    prefix, effective, overlays = command_admission._canonical_uv_prefix(
-        envelope, cwd=tmp_path
-    )
+    prefix, effective = command_admission._canonical_uv_prefix(envelope, cwd=tmp_path)
     exact = ["C:/Tools/uv.exe", *prefix[1:], *command[command.index("python") :]]
     probe = command_identity._python_probe_command(
         envelope, exact, source_root=effective
     )
     assert probe is not None
-    assert overlays == [requirements.resolve()]
+    assert effective == runtime.resolve()
     assert probe[: len(prefix)] == exact[: len(prefix)]
     assert probe[len(prefix) :] == [
         "python",
@@ -1439,9 +1430,8 @@ def test_uv_directory_and_project_must_stay_inside_admitted_source_root(
     inside = command_admission.envelope_for_command(
         ["uv", "run", "--directory", "runtime", "--project", ".", "python", "-V"]
     )
-    effective, overlays = command_admission._execution_source_paths(inside, cwd=root)
+    effective = command_admission._execution_source_paths(inside, cwd=root)
     assert effective == (root / "runtime").resolve()
-    assert overlays == []
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -1471,67 +1461,25 @@ def test_uv_symlinked_source_selector_cannot_escape_admitted_root(
         command_admission._canonical_uv_prefix(envelope, cwd=root)
 
 
-def test_uv_requirements_input_is_resolved_and_hashed_from_effective_cwd(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "source"
-    runtime = root / "runtime"
-    runtime.mkdir(parents=True)
-    requirements = runtime / "proof-requirements.txt"
-    requirements.write_text(
+def test_uv_requirements_overlays_are_not_modeled(tmp_path: Path) -> None:
+    # A `uv run --with-requirements` overlay is an ephemeral environment whose
+    # interpreter has no stable image to admit; the option is unmodeled, so an
+    # envelope carrying it fails closed instead of degrading to partial custody.
+    (tmp_path / "proof.txt").write_text(
         "pytest==8.4.1 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8"
     )
-    envelope = command_admission.envelope_for_command(
-        [
-            "uv",
-            "run",
-            "--directory",
-            "runtime",
-            "--with-requirements",
-            "proof-requirements.txt",
-            "--offline",
-            "python",
-            "-V",
-        ]
-    )
-    effective, overlays = command_admission._execution_source_paths(envelope, cwd=root)
-    assert effective == runtime.resolve()
-    assert overlays == [requirements.resolve()]
-    identity = command_identity._file_identity(overlays[0])
-    assert identity["size_bytes"] == len(requirements.read_bytes())
-    assert len(identity["sha256"]) == 64
-
-
-@pytest.mark.parametrize(
-    "requirement",
-    [
-        "pytest>=8",
-        "pytest==8.4.1",
-        "-e ../editable",
-        "--index-url https://example.invalid/simple",
-        "-r nested.txt",
-        "demo @ file:///tmp/demo.whl",
-        "demo==https://example.invalid/demo.whl --hash=sha256:" + "a" * 64,
-    ],
-)
-def test_uv_requirements_custody_rejects_unlocked_or_nested_inputs(
-    tmp_path: Path, requirement: str
-) -> None:
-    path = tmp_path / "proof.txt"
-    path.write_text(requirement + "\n", encoding="utf-8")
-    envelope = command_admission.envelope_for_command(
-        [
-            "uv",
-            "run",
-            "--offline",
-            "--with-requirements",
-            "proof.txt",
-            "python",
-            "-V",
-        ]
-    )
-    with pytest.raises(ValueError, match="exact name==version"):
-        command_admission._execution_source_paths(envelope, cwd=tmp_path)
+    with pytest.raises(ValueError, match="unmodeled uv run option"):
+        command_admission.envelope_for_command(
+            [
+                "uv",
+                "run",
+                "--offline",
+                "--with-requirements",
+                "proof.txt",
+                "python",
+                "-V",
+            ]
+        )
 
 
 def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
@@ -2770,6 +2718,7 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
             "completed": True,
             "after": {"active_processes": 0},
             "terminated_remaining_processes": False,
+            "remaining_processes": [],
         },
         "sampling_telemetry": {
             "attempts": 1,
@@ -2810,8 +2759,31 @@ def test_guard_receipt_rejects_replay_substitution_and_dirty_terminal_state(
             {
                 "windows_job_cleanup": {
                     "completed": True,
+                    "after": {"active_processes": 0},
+                    "terminated_remaining_processes": True,
+                    "remaining_processes": [{"pid": 42, "image_name": "mspdbsrv.exe"}],
+                }
+            },
+            "cleanup is incomplete",
+        ),
+        (
+            {
+                "windows_job_cleanup": {
+                    "completed": True,
+                    "after": {"active_processes": 0},
+                    "terminated_remaining_processes": False,
+                    "remaining_processes": [{"pid": 42, "image_name": "mspdbsrv.exe"}],
+                }
+            },
+            "cleanup is incomplete",
+        ),
+        (
+            {
+                "windows_job_cleanup": {
+                    "completed": True,
                     "after": {"active_processes": 1},
                     "terminated_remaining_processes": False,
+                    "remaining_processes": [],
                 }
             },
             "cleanup is incomplete",
@@ -3537,9 +3509,23 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     )
     assert not provision_target.is_relative_to(repo)
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
-    [derived_root] = context["derived_root_custody"]["policy_roots"]
+    roots = {
+        row["role"]: row for row in context["derived_root_custody"]["policy_roots"]
+    }
+    assert set(roots) == {
+        supervisor_custody.BUILD_OUTPUT_ROLE,
+        supervisor_custody.SCRATCH_OUTPUT_ROLE,
+    }
+    derived_root = roots[supervisor_custody.BUILD_OUTPUT_ROLE]
+    scratch_root = Path(roots[supervisor_custody.SCRATCH_OUTPUT_ROLE]["path"])
+    assert scratch_root.parent.name == record["execution_nonce"]
+    assert not scratch_root.is_relative_to(repo)
     assert Path(derived_root["path"]) != persistent_target
-    [provenance] = context["derived_root_custody"]["prelaunch"]
+    provenance = next(
+        row
+        for row in context["derived_root_custody"]["prelaunch"]
+        if row["role"] == supervisor_custody.BUILD_OUTPUT_ROLE
+    )
     assert provenance["state"] == "cold"
     assert provenance["requested_target"] == str(persistent_target)
     assert Path(derived_root["path"]).parent.parent.name == provenance["input_sha256"]
@@ -3644,7 +3630,7 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
         "catch(error){blocked=true;} if(!blocked) process.exit(17);"
     )
     policy_payload = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "forbidden",
         "allowed": [],
     }
@@ -3848,11 +3834,11 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
     assert identity["version"] == "cargo 1.96.1"
 
 
-def test_unavailable_executable_and_requirements_hashes_are_never_evidence(
+def test_unavailable_executable_and_input_hashes_are_never_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    requirements = tmp_path / "requirements.txt"
-    requirements.write_text("pytest==8.4.1\n", encoding="utf-8")
+    requirements = tmp_path / "custody-input.txt"
+    requirements.write_text("input bytes\n", encoding="utf-8")
     monkeypatch.setattr(
         command_identity,
         "_hash_file",
@@ -13669,7 +13655,7 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:12] == [
+    assert command[:10] == [
         "uv",
         "run",
         "--active",
@@ -13679,24 +13665,20 @@ def test_proof_queue_pact_witness_acceptance_is_queue_native(
         "3.12",
         "--no-sync",
         "--no-config",
-        "--offline",
-        "--with-requirements",
-        pact._PACT_WITNESS_REQUIREMENTS,
+        "python",
     ]
-    stack = resolve_scientific_stack()
-    requirements = state.ROOT / pact._PACT_WITNESS_REQUIREMENTS
-    command_admission._validate_requirements_file(requirements)
-    requirements_text = requirements.read_text(encoding="utf-8")
-    assert stack.numpy_requirement in requirements_text
-    assert stack.scipy_requirement in requirements_text
     python_index = command.index("python")
     assert command[python_index : python_index + 2] == [
         "python",
         "tools/pact_witness_acceptance.py",
     ]
-    assert "tmp/pact_witness_acceptance_queue" in command
+    # Outputs go to the run's scratch root; the registered argv names no
+    # repository-relative output path.
+    assert not any(value.startswith("tmp/") for value in command)
     assert "tools/pact_witness_acceptance.py" in spec["scopes"]
-    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
+    # The oracle environment's authorities (the locked pact-witness group).
+    assert "pyproject.toml" in spec["scopes"]
+    assert "uv.lock" in spec["scopes"]
     assert spec["env_overrides"]["MOLT_WITNESS_EXPECTED_REPO_ROOT"] == str(
         state.ROOT.resolve()
     )
@@ -13772,6 +13754,8 @@ def test_proof_queue_named_spec_dispatch_has_one_submission_path(
     expected_rc: int,
 ) -> None:
     spec = pact._pact_witness_oracle_spec(timeout=12.0)
+    # Exercise generic dispatch here; prepared witness setup has its own tests.
+    spec.pop("prepared_named_lane")
     spec["notes"] = ["canonical note"]
     args = argparse.Namespace(
         env=[],
@@ -13840,8 +13824,10 @@ def test_proof_queue_named_spec_closes_connection_when_dispatch_raises(
     monkeypatch.setattr(runner, "_dispatch_detached_runner", dispatch)
     monkeypatch.setattr(state, "_db_path", lambda _args: Path("unused.sqlite3"))
     monkeypatch.setattr(state, "_connect", lambda _path: connection)
+    spec = pact._pact_witness_oracle_spec()
+    spec.pop("prepared_named_lane")
     with pytest.raises(RuntimeError, match="dispatch failed"):
-        pact._run_named_spec(args, pact._pact_witness_oracle_spec())
+        pact._run_named_spec(args, spec)
     assert closed == [True]
 
 
@@ -13923,6 +13909,14 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     monkeypatch.setattr(pact, "_pact_witness_extension_roots", lambda _root: [])
+    monkeypatch.setattr(
+        pact,
+        "source_build_environment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=state.ROOT / "planned-environment",
+            python_executable=state.ROOT / "planned-environment" / "python.exe",
+        ),
+    )
 
     assert (
         cli.main(
@@ -13946,7 +13940,10 @@ def test_proof_queue_pact_witness_acceptance_allows_diagnostic_env(
     spec = json.loads(capsys.readouterr().out)
     assert spec["env_overrides"]["MOLT_TRACE_CAPI"] == "1"
     assert spec["env_overrides"]["MOLT_TRACE_IMPORT_STAGE"] == "1"
-    assert set(spec["locked_env"]) == set(pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV)
+    assert set(spec["locked_env"]) == {
+        *pact._PACT_WITNESS_ACCEPTANCE_LOCKED_ENV,
+        *pact._SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+    }
     assert not db.exists()
 
 
@@ -13961,6 +13958,14 @@ def test_proof_queue_pact_witness_acceptance_scrubs_ambient_input_redirects(
         "MOLT_EXTERNAL_ARTIFACT_ROOTS", str(tmp_path / "other-artifacts")
     )
     monkeypatch.setattr(pact, "_pact_witness_extension_roots", lambda _root: [])
+    monkeypatch.setattr(
+        pact,
+        "source_build_environment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            root=state.ROOT / "planned-environment",
+            python_executable=state.ROOT / "planned-environment" / "python.exe",
+        ),
+    )
 
     assert (
         cli.main(
@@ -14509,6 +14514,7 @@ def _write_current_scientific_seal(
                     "backend": {
                         "distribution": "ninja",
                         "version": "1.13.0",
+                        "reported_version": "1.13.0",
                         "path": "ninja.exe",
                         "sha256": "b" * 64,
                     },
@@ -15186,7 +15192,7 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
     assert spec["resource_family"] == "wasm-browser"
     assert spec["contention_key"] == "wasm:pact-witness"
     command = list(spec["command"])
-    assert command[:12] == [
+    assert command[:9] == [
         "uv",
         "run",
         "--active",
@@ -15196,20 +15202,13 @@ def test_proof_queue_pact_witness_oracle_regenerates_parity_fixture() -> None:
         "3.12",
         "--no-sync",
         "--no-config",
-        "--offline",
-        "--with-requirements",
-        pact._PACT_WITNESS_REQUIREMENTS,
     ]
     assert "--with" not in command
-    stack = resolve_scientific_stack()
-    requirements_text = (state.ROOT / pact._PACT_WITNESS_REQUIREMENTS).read_text(
-        encoding="utf-8"
-    )
-    assert stack.numpy_requirement in requirements_text
-    assert stack.scipy_requirement in requirements_text
+    assert "--with-requirements" not in command
     assert command[-2:] == ["python", "tools/pact_witness_oracle.py"]
     assert "collab/pact/pact_witness_kernel/make_fixture.py" in spec["scopes"]
-    assert pact._PACT_WITNESS_REQUIREMENTS in spec["scopes"]
+    assert "pyproject.toml" in spec["scopes"]
+    assert "uv.lock" in spec["scopes"]
     assert policy._proof_command_policy_error(command) is None
 
 

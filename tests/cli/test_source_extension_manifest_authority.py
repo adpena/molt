@@ -224,7 +224,11 @@ def _manifest(object_count: int = 132) -> dict[str, object]:
             {"path": f"../../inputs/header-{index}.h", "sha256": f"{index:064x}"}
             for index in range(64)
         ),
-        key=lambda dependency: (dependency["path"], dependency["sha256"]),
+        key=lambda dependency: (
+            dependency["sha256"],
+            Path(dependency["path"]).name,
+            dependency["path"],
+        ),
     )
     objects = []
     for index in range(object_count):
@@ -495,6 +499,20 @@ def test_compaction_rejects_dependency_metadata_outside_canonical_pair() -> None
     manifest["object_closure"]["objects"][0]["dependencies"][0]["ambient"] = "drift"
     with pytest.raises(ValueError, match="dependencies is invalid"):
         _compact_source_extension_manifest(manifest)
+
+
+def test_object_closure_requires_content_ordered_dependencies() -> None:
+    manifest = _manifest(object_count=1)
+    dependencies = manifest["object_closure"]["objects"][0]["dependencies"]
+    assert [item["sha256"] for item in dependencies] == sorted(
+        item["sha256"] for item in dependencies
+    )
+    finalize_source_extension_object_closure(manifest)
+    dependencies.sort(key=lambda item: item["path"])
+    with pytest.raises(
+        SourceExtensionObjectClosureError, match="dependencies are not canonical"
+    ):
+        finalize_source_extension_object_closure(manifest)
 
 
 def test_compact_manifest_rejects_unused_string_authority() -> None:

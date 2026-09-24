@@ -323,10 +323,10 @@ Full EA (HotSpot C2) is _flow-insensitive_: if an object escapes on _any_ contro
 PEA (GraalVM) is _flow-sensitive_: it tracks virtual objects through the CFG and materializes them only at merge points where they escape. This captures the common pattern:
 
 ```python
-point = Point(x, y)       # virtual
+point = Point(x, y)  # virtual
 result = point.x + point.y  # scalar replaced
 if debug:
-    log(point)              # materialized only on this branch
+    log(point)  # materialized only on this branch
 return result
 ```
 

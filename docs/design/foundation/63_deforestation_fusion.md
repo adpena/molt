@@ -47,11 +47,11 @@ file — because the absence of an intermediate is a *structural property of the
 an optimization that may or may not have fired.** A Pythonista writes the elegant chain:
 
 ```python
-total = sum(x * x for x in data if x > 0)          # genexpr → sum
-evens = [y for xs in matrix for y in xs if y % 2 == 0]   # nested comprehension
-top   = max(len(w) for w in words)                  # genexpr → max
-pairs = dict((k, f(v)) for k, v in items.items())   # genexpr → dict
-seen  = set(map(normalize, filter(valid, rows)))    # itertools-style chain
+total = sum(x * x for x in data if x > 0)  # genexpr → sum
+evens = [y for xs in matrix for y in xs if y % 2 == 0]  # nested comprehension
+top = max(len(w) for w in words)  # genexpr → max
+pairs = dict((k, f(v)) for k, v in items.items())  # genexpr → dict
+seen = set(map(normalize, filter(valid, rows)))  # itertools-style chain
 ```
 
 …and the Rustacean gets, for each, a **single tight loop with no intermediate `list`,

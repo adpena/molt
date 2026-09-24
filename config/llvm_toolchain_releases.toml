@@ -2,6 +2,10 @@ schema_version = 3
 default_release = "22.1.8"
 canonical_build_type = "Release"
 
+# The apt.llvm.org copy of llvm.sh is a mutable URL: its content moved on
+# 2026-08-09 and broke every CI SDK setup step against the old digest. Pin the
+# same script at its immutable upstream commit instead; the loader refuses any
+# installer URL that is not a commit-addressed raw GitHub path.
 [debian_installer]
 url = "https://raw.githubusercontent.com/opencollab/llvm-jenkins.debian.net/c5ecff7c7208c8b5225e1f6e6ae6f2539e1d31ea/llvm.sh"
 sha256 = "03878e08f47b66cc95bc4b544b0db3c6d9ce8d60e6cf2492ae357984330a9eae"

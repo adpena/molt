@@ -21,9 +21,7 @@ from wasm_link_format import (
     _build_sections,
     _collect_function_exports,
     _count_func_imports,
-    _parse_func_type_indices,
     _parse_sections,
-    _parse_type_section,
     _read_string,
     _read_varsint,
     _read_varuint,
@@ -792,90 +790,6 @@ def _dedup_data_segments(data: bytes) -> bytes | None:
     return _build_sections(new_sections)
 
 
-def _fixup_func_type_indices(
-    data: bytes, reference_data: bytes | None = None, runtime_data: bytes | None = None
-) -> bytes | None:
-    # wasm-ld 22.1.1 produces valid type-index assignments; disable all
-    # repair heuristics to avoid introducing corruption.
-    return None
-    """Detect and repair function-section type-index mismatches.
-
-    After wasm-ld merges two relocatable modules, the type section is
-    renumbered (merged + deduplicated).  In certain wasm-ld versions or
-    when the linking section metadata is stale, the function-section
-    entries (which map each defined function to its type index) can
-    retain the *pre-merge* type indices.  This makes the binary invalid:
-    a function whose body references ``local.get 2`` but whose assigned
-    type only has 1 parameter triggers "unknown local: local index out of
-    bounds" in strict validators (wasmtime, wasm-tools validate).
-
-    The fix scans each function body for ``local.get`` / ``local.set`` /
-    ``local.tee`` instructions to determine the minimum local count.  If
-    the assigned type does not provide enough parameters (accounting for
-    declared locals), we search the type section for a matching signature
-    and patch the function section.
-
-    Returns ``None`` if no repairs were needed.
-    """
-    try:
-        sections = _parse_sections(data)
-    except ValueError:
-        return None
-
-    linked_types = _parse_type_section(sections)
-    if not linked_types:
-        return None
-
-    func_section_idx, func_type_indices = _parse_func_type_indices(sections)
-    if not func_type_indices or func_section_idx < 0:
-        return None
-
-    repairs: dict[int, int] = {}  # code_index -> new_type_index
-
-    code_payload = None
-    for sid, payload in sections:
-        if sid == 10:
-            code_payload = payload
-            break
-    if code_payload is None:
-        return None
-
-    offset = 0
-    func_count, offset = _read_varuint(code_payload, offset)
-    if func_count != len(func_type_indices):
-        return None
-
-    # Skip past the code section bodies to set `offset` correctly.
-    # (The old local-access heuristic was removed because wasm-ld 22.1.1
-    #  produces valid type indices; the heuristic incorrectly re-assigned
-    #  types for functions whose declared locals masked the parameter count.)
-    for _f_idx in range(func_count):
-        body_size, offset = _read_varuint(code_payload, offset)
-        offset += body_size
-
-    if not repairs:
-        return None
-
-    # -- Rebuild function section ------------------------------------------
-    new_type_indices = list(func_type_indices)
-    for f_idx, new_ti in repairs.items():
-        new_type_indices[f_idx] = new_ti
-
-    new_func_payload = bytearray(_write_varuint(len(new_type_indices)))
-    for ti in new_type_indices:
-        new_func_payload.extend(_write_varuint(ti))
-
-    new_sections = list(sections)
-    new_sections[func_section_idx] = (3, bytes(new_func_payload))
-
-    print(
-        f"Repaired {len(repairs):,} function type-index mismatches "
-        f"(wasm-ld type remapping fixup)",
-        file=sys.stderr,
-    )
-    return _build_sections(new_sections)
-
-
 def _post_link_optimize(
     data: bytes,
     *,
@@ -891,17 +805,9 @@ def _post_link_optimize(
     duplicate data.  Stripping them reduces the module size by 30-60%
     which directly translates to less compilation memory.
 
-    *reference_data*, when provided, is the original (pre-link) user module.
-    It enables exact type-index repair via signature matching rather than
-    the heuristic body-scan fallback.
+    *reference_data*, when provided, is the original (pre-link) user module;
+    its function exports are preserved through the internal-export strip.
     """
-    # First, repair any type-index corruption from wasm-ld merging.
-    # This must run before any other pass to ensure all subsequent
-    # analysis (call graph, dead code, etc.) sees valid function types.
-    updated = _fixup_func_type_indices(data, reference_data=reference_data)
-    if updated is not None:
-        data = updated
-
     preserved_export_names = set(preserve_exports or ())
     if preserve_reference_exports and reference_data is not None:
         preserved_export_names.update(_collect_function_exports(reference_data))

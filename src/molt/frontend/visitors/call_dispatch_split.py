@@ -8,19 +8,13 @@ an inert tag distinguishing them. Arguments are evaluated once after capture.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 # This is an emission map, not a source-type classifier. Admission is exact
@@ -33,7 +27,7 @@ _SPLIT_OPS = {
 _SPLIT_KINDS = tuple(_SPLIT_OPS)
 
 
-class CallSplitDispatchMixin(_MixinBase):
+class CallSplitDispatchMixin(GeneratorMixinBase):
     def _try_emit_split_call(self, node: ast.Call) -> Any:
         if not isinstance(node.func, ast.Attribute) or node.func.attr != "split":
             return CALL_NOT_HANDLED

@@ -6,7 +6,7 @@ runner = "macos-15"
 platform = "macos"
 arch = "arm64"
 rust_target = "aarch64-apple-darwin"
-archive = "zip"
+archive = "tar.gz"
 
 [[target]]
 id = "macos-x86_64"
@@ -14,7 +14,7 @@ runner = "macos-15-intel"
 platform = "macos"
 arch = "x86_64"
 rust_target = "x86_64-apple-darwin"
-archive = "zip"
+archive = "tar.gz"
 
 [[target]]
 id = "linux-x86_64"
@@ -22,7 +22,7 @@ runner = "ubuntu-24.04"
 platform = "linux"
 arch = "x86_64"
 rust_target = "x86_64-unknown-linux-gnu"
-archive = "zip"
+archive = "tar.gz"
 
 [[target]]
 id = "linux-aarch64"
@@ -30,7 +30,7 @@ runner = "ubuntu-24.04-arm"
 platform = "linux"
 arch = "aarch64"
 rust_target = "aarch64-unknown-linux-gnu"
-archive = "zip"
+archive = "tar.gz"
 
 [[target]]
 id = "windows-x86_64"

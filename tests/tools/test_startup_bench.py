@@ -5,8 +5,11 @@ from tools import startup_bench
 
 def test_stats_use_median_and_preserve_samples() -> None:
     assert startup_bench._stats([9.0, 1.0, 5.0]) == {
-        "count": 3, "median_ms": 5.0, "min_ms": 1.0,
-        "max_ms": 9.0, "samples_ms": [9.0, 1.0, 5.0],
+        "count": 3,
+        "median_ms": 5.0,
+        "min_ms": 1.0,
+        "max_ms": 9.0,
+        "samples_ms": [9.0, 1.0, 5.0],
     }
 
 
@@ -17,7 +20,8 @@ def test_runtime_phase_parser_reports_median_deltas() -> None:
         {"stderr": "[molt runtime_init] +11us (d5us) state_allocated\n"},
     ]
     assert startup_bench._runtime_phases(records) == {
-        "phase_median_ms": {"state_allocated": 0.005}, "total_median_ms": 0.005,
+        "phase_median_ms": {"state_allocated": 0.005},
+        "total_median_ms": 0.005,
     }
 
 
@@ -51,7 +55,12 @@ def test_baseline_attestation_does_not_claim_variant_ii_improvement() -> None:
 
 def test_cpython_env_removes_project_startup_hooks() -> None:
     env = startup_bench._cpython_env(
-        {"PYTHONPATH": "repo/src", "PYTHONHOME": "bad", "UV_PROJECT_ENVIRONMENT": "env", "KEEP": "1"}
+        {
+            "PYTHONPATH": "repo/src",
+            "PYTHONHOME": "bad",
+            "UV_PROJECT_ENVIRONMENT": "env",
+            "KEEP": "1",
+        }
     )
     assert env["KEEP"] == "1"
     assert env["PYTHONNOUSERSITE"] == "1"

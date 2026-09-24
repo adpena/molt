@@ -60,10 +60,10 @@ plugin = EdgeboxPlugin("acme", __name__, config_class=AcmeConfig)
 
 ```python
 class AcmeConfig(PluginConfig):
-    name = "acme"                  # Machine name (must match EdgeboxPlugin name)
+    name = "acme"  # Machine name (must match EdgeboxPlugin name)
     verbose_name = "Acme Service"  # Human-readable name
-    version = "1.0.0"             # Plugin version
-    default_config = {             # Default settings (overridable)
+    version = "1.0.0"  # Plugin version
+    default_config = {  # Default settings (overridable)
         "api_key": "",
         "timeout_ms": 5000,
     }
@@ -80,17 +80,19 @@ Tools are the primary interface between AI agents and your plugin. Each tool is 
 from edgebox_acme import plugin
 
 
-@plugin.tool("send_notification",
-             description="Send a notification to an Acme channel",
-             input_schema={
-                 "type": "object",
-                 "properties": {
-                     "channel": {"type": "string", "description": "Target channel"},
-                     "message": {"type": "string", "description": "Message body"},
-                     "priority": {"type": "string", "enum": ["low", "normal", "high"]},
-                 },
-                 "required": ["channel", "message"],
-             })
+@plugin.tool(
+    "send_notification",
+    description="Send a notification to an Acme channel",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "channel": {"type": "string", "description": "Target channel"},
+            "message": {"type": "string", "description": "Message body"},
+            "priority": {"type": "string", "enum": ["low", "normal", "high"]},
+        },
+        "required": ["channel", "message"],
+    },
+)
 def send_notification(box, channel="", message="", priority="normal"):
     """Send a notification. Returns confirmation with message ID."""
     api_key = box.settings.get("acme", "api_key")
@@ -105,10 +107,17 @@ def send_notification(box, channel="", message="", priority="normal"):
 
     # Emit event so other plugins can react
     from edgebox.types import Event
-    box.emit_event(Event("acme.notification_sent", data={
-        "channel": channel,
-        "message_id": row_id,
-    }, source="acme"))
+
+    box.emit_event(
+        Event(
+            "acme.notification_sent",
+            data={
+                "channel": channel,
+                "message_id": row_id,
+            },
+            source="acme",
+        )
+    )
 
     return {"ok": True, "message_id": row_id}
 
@@ -161,6 +170,7 @@ def handle_acme_webhook(box, req):
 
     # Emit on the event bus
     from edgebox.types import Event
+
     box.emit_event(Event("acme." + event_type, data=body, source="acme"))
 
     return json.dumps({"ok": True, "event": event_type})
@@ -170,10 +180,12 @@ def handle_acme_webhook(box, req):
 def acme_status(box, req):
     """Return plugin health status."""
     count = box.db.query("SELECT COUNT(*) as cnt FROM acme_events")
-    return json.dumps({
-        "plugin": "acme",
-        "total_events": count[0]["cnt"] if count else 0,
-    })
+    return json.dumps(
+        {
+            "plugin": "acme",
+            "total_events": count[0]["cnt"] if count else 0,
+        }
+    )
 ```
 
 ### Handler function signature
@@ -244,13 +256,12 @@ Each `*` matches exactly one dotted segment.
 Lower numbers run first. Default is 100. Use priorities to ensure ordering when multiple plugins listen for the same event.
 
 ```python
-@plugin.on_event("github.push", priority=10)   # runs first
-def critical_handler(box, event):
-    ...
+@plugin.on_event("github.push", priority=10)  # runs first
+def critical_handler(box, event): ...
+
 
 @plugin.on_event("github.push", priority=200)  # runs last
-def logging_handler(box, event):
-    ...
+def logging_handler(box, event): ...
 ```
 
 ### Stopping propagation
@@ -277,10 +288,10 @@ event = Event(
     source="acme",
 )
 
-event.name          # "acme.notification_sent"
-event.data          # {"channel": "#ops", "message_id": 42}
-event.source        # "acme"
-event.is_stopped    # False
+event.name  # "acme.notification_sent"
+event.data  # {"channel": "#ops", "message_id": 42}
+event.source  # "acme"
+event.is_stopped  # False
 event.stop_propagation()
 ```
 
@@ -355,8 +366,8 @@ def setup(box, settings):
 ```python
 from edgebox.db import BoxDB
 
-json_str = BoxDB.to_json({"key": "value"})   # serialize for storage
-data = BoxDB.from_json(json_str)              # deserialize from storage
+json_str = BoxDB.to_json({"key": "value"})  # serialize for storage
+data = BoxDB.from_json(json_str)  # deserialize from storage
 ```
 
 ### Settings access
@@ -499,19 +510,26 @@ def test_mcp_tools_list():
     os.environ["EDGEBOX_METHOD"] = "POST"
     os.environ["EDGEBOX_PATH"] = "/mcp"
 
-    box = Box(manifest={
-        "plugins": ["edgebox_acme"],
-        "config": {"acme": {"api_key": "test"}},
-    })
+    box = Box(
+        manifest={
+            "plugins": ["edgebox_acme"],
+            "config": {"acme": {"api_key": "test"}},
+        }
+    )
     box.db = BoxDB(":memory:")
 
     # Set argv to the JSON-RPC body
-    sys.argv = ["box.py", json.dumps({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/list",
-        "params": {},
-    })]
+    sys.argv = [
+        "box.py",
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            }
+        ),
+    ]
 
     response = json.loads(box.dispatch())
     tools = response["result"]["tools"]
@@ -534,10 +552,12 @@ from edgebox.types import Event
 
 
 def test_on_pr_opened():
-    box = Box(manifest={
-        "plugins": ["edgebox_acme"],
-        "config": {"acme": {"api_key": "test"}},
-    })
+    box = Box(
+        manifest={
+            "plugins": ["edgebox_acme"],
+            "config": {"acme": {"api_key": "test"}},
+        }
+    )
     box.db = BoxDB(":memory:")
     box.db.execute_schema("""
         CREATE TABLE acme_notifications (
@@ -593,9 +613,11 @@ Then add it to their box manifest:
 ```python
 class MyBox(Box):
     def __init__(self):
-        super().__init__(manifest={
-            "plugins": ["edgebox_acme"],
-        })
+        super().__init__(
+            manifest={
+                "plugins": ["edgebox_acme"],
+            }
+        )
 ```
 
 Or in YAML:
@@ -636,8 +658,10 @@ Molt does not support custom metaclasses. Use plain classes and composition inst
 class Meta(type):
     pass
 
+
 class MyClass(metaclass=Meta):
     pass
+
 
 # Do this instead
 class MyClass:
@@ -674,10 +698,10 @@ Do not reassign methods on classes or modules at runtime. Decorate at import tim
 # Will not work
 SomeClass.method = my_replacement
 
+
 # Do this instead -- register via decorators at import time
 @plugin.tool("my_tool")
-def my_tool(box):
-    ...
+def my_tool(box): ...
 ```
 
 ### Safe operations
@@ -763,12 +787,16 @@ def handle_ping(box, req):
 ```python
 from edgebox.box import Box
 
+
 class MyBox(Box):
     def __init__(self):
-        super().__init__(manifest={
-            "plugins": ["edgebox_ping"],
-            "config": {"ping": {"message": "hello from the edge!"}},
-        })
+        super().__init__(
+            manifest={
+                "plugins": ["edgebox_ping"],
+                "config": {"ping": {"message": "hello from the edge!"}},
+            }
+        )
+
 
 if __name__ == "__main__":
     box = MyBox()

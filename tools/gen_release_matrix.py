@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Any, Mapping
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 for _import_root in (ROOT, ROOT / "src"):
@@ -43,6 +44,11 @@ def _expected_rust_target(platform: str, architecture: str) -> str:
         "windows": "pc-windows-msvc",
     }[platform]
     return f"{rust_arch}-{suffix}"
+
+
+def _expected_archive(platform: str) -> str:
+    """Release archives are zip on Windows and tar.gz elsewhere (packaging/install.sh)."""
+    return "zip" if platform == "windows" else "tar.gz"
 
 
 def _runner_matches_coordinate(
@@ -105,7 +111,7 @@ def load_release_target_authority(path: Path = SOURCE) -> dict[str, object]:
         expected_id = f"{target['platform']}-{target['arch']}"
         if (
             target["id"] != expected_id
-            or target["archive"] != "zip"
+            or target["archive"] != _expected_archive(target["platform"])
             or "latest" in target["runner"]
             or "self-hosted" in target["runner"]
             or re.fullmatch(r"[a-z0-9_]+(?:-[a-z0-9_]+)+", target["rust_target"])

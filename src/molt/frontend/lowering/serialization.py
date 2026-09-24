@@ -5,13 +5,12 @@ Move-only extraction from frontend/__init__.py (F1 phase 1). This is the
 largest single seam in the generator: map_ops_to_json walks the emitted MoltOp
 stream and produces the JSON IR consumed by the backend. self.<method>/<attr>
 references resolve through the SimpleTIRGenerator MRO at runtime; the
-_GeneratorProtocol annotation gives them static checking.
+GeneratorMixinBase (the generated protocol) gives them static checking.
 """
 
 from __future__ import annotations
 
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
 )
@@ -35,14 +34,6 @@ from molt.frontend.lowering.serialization_loop_string_async_ops import (
 from molt.frontend.lowering.serialization_object_attr_ops import (
     SerializationObjectAttrOpsMixin,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 class SerializationMixin(

@@ -4,6 +4,7 @@ The gate must FAIL when a built wasm contains a known stub byte-marker and PASS
 when it does not — the mechanical guard against marking a "resolve != effective"
 capability done on a proxy signal.
 """
+
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
@@ -70,7 +71,9 @@ def test_gate_passes_on_clean_runtime(tmp_path: Path) -> None:
     assert "PASS" in proc.stdout
 
 
-def test_gate_scans_multiple_artifacts_and_reports_the_poisoned_one(tmp_path: Path) -> None:
+def test_gate_scans_multiple_artifacts_and_reports_the_poisoned_one(
+    tmp_path: Path,
+) -> None:
     clean = _fake_wasm(tmp_path, "app.wasm", b"clean app")
     poisoned = _fake_wasm(tmp_path, "molt_runtime.wasm", LONG_DOUBLE_MARKER)
     proc = _run_gate(clean, poisoned)

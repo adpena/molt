@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -23,16 +22,9 @@ from molt.frontend.sema import (
     FunctionKind,
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 _BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
     {
@@ -99,7 +91,7 @@ _BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
 )
 
 
-class CallNamedDispatchMixin(_MixinBase):
+class CallNamedDispatchMixin(GeneratorMixinBase):
     def _try_emit_imported_exception_class_constructor(
         self,
         node: ast.Call,

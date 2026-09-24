@@ -494,9 +494,9 @@ def test_reducer_call_lowering_stays_out_of_call_dispatcher() -> None:
 # ---------------------------------------------------------------------------
 # Protocol-drift guard (phase-1 reviewer finding)
 #
-# Each mixin annotates ``self`` as ``_GeneratorProtocol`` under TYPE_CHECKING so
-# cross-mixin ``self.<method>`` / ``self.<attr>`` references type-check across
-# files.  That guarantee only holds while the Protocol is a SUPERSET of the
+# Each mixin derives from ``GeneratorMixinBase`` (``ast.NodeVisitor`` +
+# ``_GeneratorProtocol`` under TYPE_CHECKING) so cross-mixin ``self.<method>`` /
+# ``self.<attr>`` references type-check across files.  That guarantee only holds while the Protocol is a SUPERSET of the
 # assembled generator's real surface.  If a method moves into a mixin but the
 # Protocol is not regenerated (tools/gen_protocol.py), the moved method - and
 # every sibling-mixin call to it - silently loses static checking.  These tests

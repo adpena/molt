@@ -18,7 +18,7 @@ RELEASE_TARGETS = (
             "platform": "macos",
             "arch": "arm64",
             "rust_target": "aarch64-apple-darwin",
-            "archive": "zip",
+            "archive": "tar.gz",
         }
     ),
     MappingProxyType(
@@ -28,7 +28,7 @@ RELEASE_TARGETS = (
             "platform": "macos",
             "arch": "x86_64",
             "rust_target": "x86_64-apple-darwin",
-            "archive": "zip",
+            "archive": "tar.gz",
         }
     ),
     MappingProxyType(
@@ -38,7 +38,7 @@ RELEASE_TARGETS = (
             "platform": "linux",
             "arch": "x86_64",
             "rust_target": "x86_64-unknown-linux-gnu",
-            "archive": "zip",
+            "archive": "tar.gz",
         }
     ),
     MappingProxyType(
@@ -48,7 +48,7 @@ RELEASE_TARGETS = (
             "platform": "linux",
             "arch": "aarch64",
             "rust_target": "aarch64-unknown-linux-gnu",
-            "archive": "zip",
+            "archive": "tar.gz",
         }
     ),
     MappingProxyType(

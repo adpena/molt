@@ -86,9 +86,7 @@ SCAN_ROOTS = (
     "runtime/molt-backend-native/src",
 )
 
-VALID_CLASSIFICATIONS = frozenset(
-    {"metabug_fix_pending", "make_loud", "sound_keep"}
-)
+VALID_CLASSIFICATIONS = frozenset({"metabug_fix_pending", "make_loud", "sound_keep"})
 # Rows that make a real perf/capability claim must be backed by a fast_path_test.
 NON_SOUND = frozenset({"metabug_fix_pending", "make_loud"})
 
@@ -132,10 +130,10 @@ _PY_SERIAL_MODE_RE = re.compile(
 # counter NAME, not a slow-path decision). This context guard is what keeps
 # telemetry vocabulary out of the discovery set without hard-coding field names.
 _DEGRADE_DECISION_CONTEXT_RE = re.compile(
-    r"""=\s*["']|"""            # assignment: x = "reason..."
-    r"""[=!]=\s*["']|"""        # comparison: x == "reason..."
-    r"""["']\s*[=!]=|"""        # comparison: "reason..." == x
-    r"""\breturn\b|"""          # return "reason..."
+    r"""=\s*["']|"""  # assignment: x = "reason..."
+    r"""[=!]=\s*["']|"""  # comparison: x == "reason..."
+    r"""["']\s*[=!]=|"""  # comparison: "reason..." == x
+    r"""\breturn\b|"""  # return "reason..."
     r"""(?:reason|mode|policy|serial_mode|policy_reason)\s*=|"""  # kwarg
     r"""\bif\b|\belif\b|\belse\b"""  # inline conditional / ternary branch
 )
@@ -305,11 +303,7 @@ def discover_sites(
                 marker = f"reason:{reason_hit.group('reason')}"
             elif not is_rust and _PY_SERIAL_MODE_RE.search(line):
                 marker = "py_serial_mode"
-            elif (
-                is_rust
-                and _RUST_LIMIT_RE.search(line)
-                and _RUST_BAIL_RE.search(line)
-            ):
+            elif is_rust and _RUST_LIMIT_RE.search(line) and _RUST_BAIL_RE.search(line):
                 sym = _enclosing_rust_symbol(lines, i)
                 allow = any(
                     rel.endswith(suf) and sym == want
@@ -385,9 +379,7 @@ def run_gate(
         anchor = row.symbol or (row.signature or "")
         key = (row.file, anchor)
         if key in seen_keys:
-            report.fail(
-                f"duplicate registry row for {row.file} anchor {anchor!r}"
-            )
+            report.fail(f"duplicate registry row for {row.file} anchor {anchor!r}")
         seen_keys.add(key)
         rows_by_file.setdefault(row.file, []).append(row)
 

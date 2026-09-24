@@ -8,8 +8,8 @@ separate under-ceiling mixins.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis import native_support_slice as _native_support_slice
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
@@ -30,16 +30,8 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 from molt.frontend.sema import normalize_function_kind
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class StatementScopeVisitorMixin(_MixinBase):
+class StatementScopeVisitorMixin(GeneratorMixinBase):
     def _module_live_statements_for_target(
         self, statements: list[ast.stmt]
     ) -> list[ast.stmt]:

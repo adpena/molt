@@ -12,16 +12,11 @@ import ast
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import GEN_CONTROL_SIZE, FuncInfo, MoltOp, MoltValue
 
 if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
     from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 @dataclass(frozen=True)
@@ -32,7 +27,7 @@ class PythonFrameContextScope:
     outer_class_body: bool
 
 
-class FunctionLifecycleMixin(_MixinBase):
+class FunctionLifecycleMixin(GeneratorMixinBase):
     def _publish_python_frame_context(
         self,
         *,

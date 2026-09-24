@@ -98,6 +98,7 @@ class WindowsJobCleanup:
     system_before: WindowsSystemResources
     system_after: WindowsSystemResources
     terminated_remaining_processes: bool
+    remaining_processes: tuple[tuple[int, str | None], ...]
     elapsed_s: float
     initial_process_ids: tuple[int, ...]
     escalation_process_ids: tuple[int, ...]
@@ -673,6 +674,34 @@ def wait_until_empty(
         time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
+def remaining_process_images(job: int | None) -> tuple[tuple[int, str | None], ...]:
+    """Name every process still alive in the Job: the evidence behind a cleanup.
+
+    A member that outlives the direct child is a defect in whatever spawned
+    it; recording its image with the cleanup is what makes that defect
+    attributable instead of a bare "terminated remaining processes" flag.
+    """
+    if not _WINDOWS or not job:
+        return ()
+    k32 = _k32()
+    images: list[tuple[int, str | None]] = []
+    for pid in process_ids(job):
+        image_name: str | None = None
+        process = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if process:
+            try:
+                image_size = wintypes.DWORD(32768)
+                image_buffer = ctypes.create_unicode_buffer(image_size.value)
+                if k32.QueryFullProcessImageNameW(
+                    process, 0, image_buffer, ctypes.byref(image_size)
+                ):
+                    image_name = image_buffer.value
+            finally:
+                _close_handle(process, operation="CloseHandle(process)")
+        images.append((int(pid), image_name))
+    return tuple(images)
+
+
 def complete_job_custody(
     job: int | None,
     *,
@@ -707,6 +736,7 @@ def complete_job_custody(
     initial_process_ids = process_ids(job) if before.active_processes else ()
     escalation_process_ids: tuple[int, ...] = ()
     terminated_remaining = False
+    remaining: tuple[tuple[int, str | None], ...] = ()
     natural_exit_wait_s = 0.0
     if before.active_processes:
         natural_started = time.monotonic()
@@ -724,6 +754,7 @@ def complete_job_custody(
             # of exact Job membership, but never use PIDs as cleanup authority.
             escalation_process_ids = process_ids(job)
             if active_process_count(job):
+                remaining = remaining_process_images(job)
                 terminate_job(job)
                 terminated_remaining = True
                 try:
@@ -746,6 +777,7 @@ def complete_job_custody(
         system_before=system_before,
         system_after=system_resources(),
         terminated_remaining_processes=terminated_remaining,
+        remaining_processes=remaining,
         elapsed_s=max(0.0, time.monotonic() - started),
         initial_process_ids=initial_process_ids,
         escalation_process_ids=escalation_process_ids,

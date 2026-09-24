@@ -8,6 +8,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
 from typing import Any
 
 from molt.cli.source_extension_set_registry import (
@@ -28,6 +29,10 @@ DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 SCIENTIFIC_WITNESS_TARGET_TRIPLE = "wasm32-wasip1"
 SCIENTIFIC_WITNESS_ABI_TIER = "cpython-abi"
+# The pyproject dependency group whose locked environment runs the Pact
+# witness lanes' CPython reference numerics; its pins are bound to the
+# selected stack versions by tests/tools/test_scientific_stack_versions.py.
+PACT_WITNESS_DEPENDENCY_GROUP = "pact-witness"
 
 _PUBLIC_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 
@@ -82,7 +87,7 @@ def _config_path(config_path: Path | None) -> Path:
 
 
 def _require_exact_keys(
-    value: dict[str, Any], *, expected: set[str], field: str, path: Path
+    value: Mapping[Any, Any], *, expected: set[str], field: str, path: Path
 ) -> None:
     actual = set(value)
     if actual != expected:
@@ -149,7 +154,7 @@ def _extension_set_ref(value: str, *, field: str, path: Path) -> tuple[str, str]
 
 
 def _scientific_entry(
-    raw: dict[str, Any],
+    raw: Mapping[Any, Any],
     *,
     index: int,
     path: Path,

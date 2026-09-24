@@ -14,12 +14,15 @@ repos:
         always_run: true
       - id: ruff
         name: ruff
-        entry: uv run ruff check
+        # --force-exclude: the hook passes staged paths explicitly, and ruff only
+        # honours pyproject's extend-exclude (generated modules) for explicit paths
+        # with this flag.
+        entry: uv run ruff check --force-exclude
         language: system
         types_or: [python, pyi]
       - id: ruff-format
         name: ruff format check
-        entry: uv run ruff format --check
+        entry: uv run ruff format --check --force-exclude
         language: system
         types_or: [python, pyi]
       - id: ty

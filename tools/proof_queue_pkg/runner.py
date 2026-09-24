@@ -28,6 +28,7 @@ from tools.proof_queue_pkg import (
     command_identity,
     cargo_cache_custody,
     cargo_output_environment,
+    execution_custody,
     execution_environment as environment_authority,
     execution_receipt_details,
     supervisor_custody,
@@ -163,6 +164,7 @@ def _validated_guard_receipt(
             or not _is_receipt_object(after_cleanup)
             or after_cleanup.get("active_processes") != 0
             or windows_cleanup.get("terminated_remaining_processes") is not False
+            or windows_cleanup.get("remaining_processes") != []
         ):
             raise ValueError("memory-guard Windows job cleanup is incomplete")
     sampling = payload.get("sampling_telemetry")
@@ -465,7 +467,7 @@ def _validated_execution_context(
     live_custody = context.get("live_input_custody")
     if (
         not _is_receipt_object(live_custody)
-        or live_custody.get("schema") != "molt.proof-live-custody.v1"
+        or live_custody.get("schema") != execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA
         or live_custody.get("stable") is not True
     ):
         raise ValueError("guarded receipt has no stable live input custody")
@@ -476,21 +478,24 @@ def _validated_execution_context(
         live_event_artifact, expected_root=cas_root
     )
     live_events = live_event_payload.get("events")
+    live_apparatus_events = live_event_payload.get("apparatus_events")
     live_errors = live_event_payload.get("errors")
+    live_lifecycle = live_custody.get("lifecycle")
     if (
         live_event_payload.get("kind") != "live-input-custody-events"
         or not isinstance(live_events, list)
+        or not isinstance(live_apparatus_events, list)
         or not isinstance(live_errors, list)
+        or not isinstance(live_lifecycle, list)
         or live_custody.get("event_count") != len(live_events)
         or live_custody.get("error_count") != len(live_errors)
         or live_custody.get("identity_sha256")
-        != supervisor_custody._canonical_payload_sha256(
-            {
-                "events": live_events,
-                "errors": live_errors,
-                "state": live_custody.get("state"),
-                "lifecycle": live_custody.get("lifecycle"),
-            }
+        != execution_custody.live_custody_identity_sha256(
+            events=live_events,
+            apparatus_events=live_apparatus_events,
+            errors=live_errors,
+            state=live_custody.get("state"),
+            lifecycle=live_lifecycle,
         )
     ):
         raise ValueError("guarded receipt live-custody event binding is invalid")

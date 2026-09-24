@@ -43,7 +43,9 @@ def _record_line(path: str, data: bytes) -> str:
     return f"{path},sha256={digest.rstrip('=')},{len(data)}"
 
 
-def test_staged_wheel_identity_comes_only_from_canonical_manifest(tmp_path: Path) -> None:
+def test_staged_wheel_identity_comes_only_from_canonical_manifest(
+    tmp_path: Path,
+) -> None:
     filename = "scipy-1.0-py3-molt_abi1-wasm32_wasip1.whl"
     first_source = tmp_path / "first" / filename
     second_source = tmp_path / "second" / filename

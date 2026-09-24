@@ -63,13 +63,9 @@ def test_valid_rejects_tampered_executable(tmp_path: Path, monkeypatch) -> None:
         ),
     )
     executable_digest = hashlib.sha256(b"trusted").hexdigest()
-    assert bootstrap._valid(
-        executable, "1.7.12", "archive", executable_digest
-    ) is True
+    assert bootstrap._valid(executable, "1.7.12", "archive", executable_digest) is True
     executable.write_bytes(b"tampered")
-    assert bootstrap._valid(
-        executable, "1.7.12", "archive", executable_digest
-    ) is False
+    assert bootstrap._valid(executable, "1.7.12", "archive", executable_digest) is False
 
 
 def _zip_asset(payload: bytes) -> bytes:
@@ -88,7 +84,9 @@ def test_bootstrap_rejects_bad_archive_checksum(tmp_path: Path, monkeypatch) -> 
     )
     monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tmp_path / "tool")
     monkeypatch.setattr(
-        bootstrap.urllib.request, "urlopen", lambda *_args, **_kwargs: io.BytesIO(archive)
+        bootstrap.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(archive),
     )
 
     with pytest.raises(RuntimeError, match="digest mismatch"):
@@ -120,12 +118,16 @@ def test_concurrent_bootstrap_publishes_once(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(
         bootstrap,
         "_valid",
-        lambda executable, *_args: executable.exists()
-        and (executable.parent / "actionlint-receipt.json").exists(),
+        lambda executable, *_args: (
+            executable.exists()
+            and (executable.parent / "actionlint-receipt.json").exists()
+        ),
     )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        paths = list(executor.map(lambda _index: bootstrap.ensure_actionlint(), range(2)))
+        paths = list(
+            executor.map(lambda _index: bootstrap.ensure_actionlint(), range(2))
+        )
 
     assert paths[0] == paths[1]
     assert downloads == 1
@@ -138,7 +140,9 @@ def test_kernel_lock_recovers_after_owner_process_exit(tmp_path: Path) -> None:
         "from tools.bootstrap_actionlint import _install_lock; "
         f"cm=_install_lock(Path({str(lock)!r})); cm.__enter__(); os._exit(0)"
     )
-    completed = run_guarded_test_process([sys.executable, "-c", code], cwd=bootstrap.ROOT)
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", code], cwd=bootstrap.ROOT
+    )
     assert completed.returncode == 0
     with bootstrap._install_lock(lock, timeout=1):
         assert lock.exists()

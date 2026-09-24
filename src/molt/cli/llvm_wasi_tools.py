@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 from typing import Literal
 
+from molt.dx import TOOLCHAINS_DIRNAME
+
 from molt.cli.command_runtime import _run_completed_command
 from molt.file_hashing import _sha256_file
 from molt.rust_toolchain import RustToolSearch, rustc_host, rustc_printed_sysroot
@@ -186,7 +188,7 @@ def _cached_managed_llvm_bin_directories(
     candidates: list[Path] = []
     for root_string in roots:
         root = Path(root_string)
-        toolchains = root / "toolchains"
+        toolchains = root / TOOLCHAINS_DIRNAME
         candidates.extend((root / "bin", toolchains / "wasi-sdk" / "bin"))
         if toolchains.is_dir():
             candidates.extend(
@@ -217,7 +219,8 @@ def _managed_llvm_bin_directories(
         map(os.fspath, _dedupe_search_directories(roots, environment=environment))
     )
     identities = tuple(
-        _directory_identity(Path(root) / "toolchains") for root in normalized_roots
+        _directory_identity(Path(root) / TOOLCHAINS_DIRNAME)
+        for root in normalized_roots
     )
     return _cached_managed_llvm_bin_directories(normalized_roots, identities)
 

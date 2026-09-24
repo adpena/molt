@@ -73,10 +73,11 @@ runtime reflection, no descriptor pool, and no allocations on the decode path
 ```python
 from molt.proto import message, field
 
+
 @message("mypackage.UserProfile")
 class UserProfile:
-    name: str = field(1)         # field number 1, wire type length-delimited
-    age: int = field(2)          # field number 2, wire type varint
+    name: str = field(1)  # field number 1, wire type length-delimited
+    age: int = field(2)  # field number 2, wire type varint
     email: str = field(3)
     scores: list[float] = field(4, repeated=True)
 ```
@@ -124,8 +125,8 @@ instance.  Unknown fields are silently skipped (proto3 forward compatibility).
 
 ```python
 view: UserProfile.View = UserProfile.decode_view(wire_bytes)
-print(view.name)   # zero-copy slice into wire_bytes
-print(view.age)    # parsed on access from wire_bytes
+print(view.name)  # zero-copy slice into wire_bytes
+print(view.age)  # parsed on access from wire_bytes
 ```
 
 `decode_view()` returns a lightweight view object that borrows from the input
@@ -145,11 +146,12 @@ class Address:
     city: str = field(2)
     zip_code: str = field(3)
 
+
 @message("mypackage.UserProfile")
 class UserProfile:
     name: str = field(1)
     age: int = field(2)
-    address: Address = field(3)              # nested message
+    address: Address = field(3)  # nested message
     previous: list[Address] = field(4, repeated=True)  # repeated nested
 ```
 
@@ -162,10 +164,11 @@ needed (all referenced message classes must be defined before use).
 ```python
 from typing import Optional
 
+
 @message("mypackage.SearchResult")
 class SearchResult:
     title: str = field(1)
-    snippet: Optional[str] = field(2)    # has presence tracking
+    snippet: Optional[str] = field(2)  # has presence tracking
     score: Optional[float] = field(3)
 ```
 

@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
     same_literal_value,
@@ -99,11 +100,6 @@ def _admit_sccp_value(value: Any) -> Any:
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
 
 def unique_result_definitions(ops: Sequence[MoltOp]) -> dict[str, MoltOp]:
     """Return only names with one producer in the current operation stream."""
@@ -163,7 +159,7 @@ def primitive_const_values(definitions: dict[str, MoltOp]) -> dict[str, Any]:
     return const_by_name
 
 
-class MidendDataflowMixin(_MixinBase):
+class MidendDataflowMixin(GeneratorMixinBase):
     def _compute_block_use_def(self, ops: list[MoltOp]) -> tuple[set[str], set[str]]:
         use: set[str] = set()
         defs: set[str] = set()

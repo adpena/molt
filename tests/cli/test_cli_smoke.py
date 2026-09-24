@@ -453,8 +453,8 @@ def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
     def fake_execvpe(*_args):
         raise AssertionError("Windows hash-seed restart must not use os.execvpe")
 
-    def fake_exit(code):
-        raise SystemExit(code)
+    def fake_exit(code):  # pragma: no cover - must never be reached
+        raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
 
     monkeypatch.delenv("PYTHONHASHSEED", raising=False)
     monkeypatch.delenv(cli._HASH_SEED_SENTINEL_ENV, raising=False)
@@ -507,22 +507,18 @@ def test_cli_hash_seed_sentinel_requires_applied_seed(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    exits: list[int] = []
-
-    def fake_exit(code: int) -> None:
-        exits.append(code)
-        raise SystemExit(code)
+    def hard_exit(code: int) -> None:  # pragma: no cover - must never be reached
+        raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
 
     monkeypatch.setenv("PYTHONHASHSEED", "random")
     monkeypatch.setenv(cli._HASH_SEED_SENTINEL_ENV, "1")
     monkeypatch.setenv(cli._HASH_SEED_OVERRIDE_ENV, "123")
-    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+    monkeypatch.setattr(cli.os, "_exit", hard_exit)
 
     with pytest.raises(SystemExit) as exc_info:
         cli._ensure_cli_hash_seed()
 
     assert exc_info.value.code == 127
-    assert exits == [127]
     assert (
         "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
     )

@@ -35,16 +35,18 @@ from molt.cli.source_package_seal import (
     SourcePackageSealVerificationError,
 )
 from molt.dx import DxConfigError, _reject_onedrive, checkout_custody
+from tools import proof_plan
 from molt.scientific_stack_versions import (
     CONFIG_ENV as SCIENTIFIC_STACK_CONFIG_ENV,
 )
 from molt.scientific_stack_versions import (
+    PACT_WITNESS_DEPENDENCY_GROUP,
     ScientificStackVersion,
     resolve_scientific_stack,
     scientific_witness_seal_root,
     scientific_witness_variant,
 )
-from tools.proof_queue_pkg import policy, runner, state
+from tools.proof_queue_pkg import command_admission, policy, runner, state
 
 
 class NamedProofSpec(TypedDict):
@@ -56,6 +58,7 @@ class NamedProofSpec(TypedDict):
     scopes: list[str]
     env_overrides: dict[str, str]
     locked_env: NotRequired[tuple[str, ...]]
+    prepared_named_lane: NotRequired[str]
     notes: list[str]
     timeout: float
 
@@ -139,8 +142,6 @@ def _pact_witness_env_overrides(repo_root: Path = state.ROOT) -> dict[str, str]:
 
 
 _PACT_WITNESS_ACCEPTANCE_LOGICAL_ID = "pact-witness-acceptance"
-
-_PACT_WITNESS_REQUIREMENTS = "config/proof_requirements/pact_witness.txt"
 
 _PACT_WITNESS_ACCEPTANCE_LOCKED_ENV = (
     "MOLT_MODULE_ROOTS",
@@ -418,6 +419,47 @@ def _temporary_environment(overrides: Mapping[str, str]):
                 os.environ[name] = value
 
 
+def named_lane_argv(lane_id: str) -> list[str]:
+    """The registered argv is the child-admission authority; never rebuild it here."""
+    return list(proof_plan.ProofPlan.load().named_lane(lane_id).argv)
+
+
+def _named_lane_spec(
+    lane_id: str, timeout: float | None = None, repo_root: Path = state.ROOT
+) -> dict[str, object]:
+    del repo_root
+    lane = proof_plan.ProofPlan.load().named_lane(lane_id)
+    return {
+        "logical_id": lane_id.replace(".", "-"),
+        "reason": str(lane.data["description"]),
+        "command": list(lane.argv),
+        "resource_family": str(lane.data["resource_family"]),
+        "contention_key": str(lane.data["contention_key"]),
+        "scopes": ["tools/proof_plan.toml"],
+        "env_overrides": {},
+        "notes": [
+            f"named lane {lane_id}: argv and toolchain closure come from "
+            "tools/proof_plan.toml; outputs go to the run's scratch root."
+        ],
+        "timeout": timeout
+        if timeout is not None
+        else float(lane.data["timeout_seconds"]),
+    }
+
+
+def _cmd_named_lane(args: argparse.Namespace) -> int:
+    # A lane with a dedicated aperture (input custody, locked environment
+    # names, provenance pins) runs through that aperture whichever entry point
+    # names it: one lane id, one spec, so a generic submission can never strip
+    # the custody the lane's tool fails closed without.
+    dedicated = _DEDICATED_NAMED_LANE_HANDLERS.get(args.lane_id)
+    if dedicated is not None:
+        return dedicated(args)
+    return _run_named_spec(
+        args, _named_lane_spec(args.lane_id, args.timeout, state._repo_root(args))
+    )
+
+
 def _pact_witness_acceptance_spec(
     timeout: float | None = None, repo_root: Path = state.ROOT
 ) -> NamedProofSpec:
@@ -443,12 +485,8 @@ def _pact_witness_acceptance_spec(
             "Run the Pact Kernel A browser/WASM witness acceptance aperture "
             "through queue custody."
         ),
-        "command": policy._uv_active_python_command(
-            "tools/pact_witness_acceptance.py",
-            "--out-dir",
-            "tmp/pact_witness_acceptance_queue",
-            with_requirements=_PACT_WITNESS_REQUIREMENTS,
-        ),
+        "command": named_lane_argv("pact.witness.acceptance"),
+        "prepared_named_lane": "pact.witness.acceptance",
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
@@ -458,7 +496,8 @@ def _pact_witness_acceptance_spec(
             "wasm/run_wasm.js",
             "tools/pact_witness_acceptance.py",
             "config/scientific_stack_versions.toml",
-            _PACT_WITNESS_REQUIREMENTS,
+            "pyproject.toml",
+            "uv.lock",
             *wasm_loader_asset_scope_paths(),
         ],
         "env_overrides": env_overrides,
@@ -482,10 +521,8 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
             "Regenerate the Pact Kernel A fixture/reference pair and prove the "
             "check_parity.py oracle under queue custody."
         ),
-        "command": policy._uv_active_python_command(
-            "tools/pact_witness_oracle.py",
-            with_requirements=_PACT_WITNESS_REQUIREMENTS,
-        ),
+        "command": named_lane_argv("pact.witness.oracle"),
+        "prepared_named_lane": "pact.witness.oracle",
         "resource_family": "wasm-browser",
         "contention_key": "wasm:pact-witness",
         "scopes": [
@@ -493,7 +530,8 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
             "collab/pact/pact_witness_kernel/field_solve.py",
             "collab/pact/pact_witness_kernel/check_parity.py",
             "tools/pact_witness_oracle.py",
-            _PACT_WITNESS_REQUIREMENTS,
+            "pyproject.toml",
+            "uv.lock",
         ],
         "env_overrides": {},
         "notes": [],
@@ -662,6 +700,48 @@ def _native_molt_run_spec(
 
 
 def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
+    prepared_lane = spec.get("prepared_named_lane")
+    if prepared_lane is not None:
+        from molt.cli.source_extension_producer import _locked_console_tool_path
+
+        locked = tuple(
+            dict.fromkeys(
+                (
+                    *spec.get("locked_env", ()),
+                    *_SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+                )
+            )
+        )
+        # Refuse redirection before any setup mutation, then resolve/provision
+        # using the same typed environment authority as source producers.
+        policy._named_spec_user_env_overrides(
+            spec["logical_id"],
+            policy._named_spec_locked_env(spec["logical_id"], locked),
+            args.env,
+        )
+        with _temporary_environment(spec["env_overrides"]):
+            environment = source_build_environment(
+                state._repo_root(args),
+                PACT_WITNESS_DEPENDENCY_GROUP,
+                provision=not args.print_spec,
+            )
+        spec = {
+            **spec,
+            "command": command_admission.prepared_named_lane_command(
+                prepared_lane, environment.python_executable
+            ),
+            "scopes": [*spec["scopes"], str(environment.root.resolve())],
+            "locked_env": locked,
+            "env_overrides": {
+                **spec["env_overrides"],
+                "PATH": _locked_console_tool_path(
+                    environment.python_executable.parent, os.environ.get("PATH")
+                ),
+                "VIRTUAL_ENV": str(environment.root.resolve()),
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            },
+        }
     env_overrides = policy._named_spec_env_overrides(spec, args.env)
     initial_notes = list(spec["notes"])
     initial_notes.extend(getattr(args, "note", []) or [])
@@ -768,6 +848,12 @@ def _cmd_source_extension_produce(args: argparse.Namespace) -> int:
 
 def _cmd_pact_witness_oracle(args: argparse.Namespace) -> int:
     return _run_named_spec(args, _pact_witness_oracle_spec(args.timeout))
+
+
+_DEDICATED_NAMED_LANE_HANDLERS = {
+    "pact.witness.acceptance": _cmd_pact_witness_acceptance,
+    "pact.witness.oracle": _cmd_pact_witness_oracle,
+}
 
 
 def _cmd_r6_target_version_parity(args: argparse.Namespace) -> int:

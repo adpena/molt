@@ -10,8 +10,8 @@ visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
     BUILTIN_TYPE_TAGS,
@@ -23,16 +23,8 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
 )
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class AttributeAccessMixin(_MixinBase):
+class AttributeAccessMixin(GeneratorMixinBase):
     def _exact_dataclass_field(
         self,
         obj: MoltValue,

@@ -39,6 +39,26 @@ gate receipt. The two metric artifacts are compared against their checked-in
 baselines and fail closed on any regression; the poison receipt must contain the
 `fail-closed gate: OK` verdict.
 
+## v1.0 Acceptance Scope
+
+The existing core gate is necessary, not sufficient, for v1.0. A native/LLVM
+core pass does not certify WASM, ecosystem workloads, frontend/build latency,
+memory, temporary disk usage, or binary size. Missing target coverage and stale
+measurements remain release gaps; they are not implicit passes.
+
+Each claimed workload and target needs reproducible correctness-checked
+measurements, explicit resource/latency budgets, and input-size scaling. Extend
+the existing scoreboard and typed release receipts when a dimension is missing;
+do not create a second performance authority. Profile outliers and resolve
+known budget violations or pathological scaling before release. Aggregate
+speedups cannot cancel a failing workload, target, or resource budget.
+
+Megafunctions are structural review triggers: isolate semantic responsibilities
+and ownership, remove repeated analysis, and measure compiler and generated-code
+costs. Splitting lines into wrappers is not acceptance; neither is faster
+compilation that changes observable semantics, duplicates authority, or moves
+the cost into runtime memory or code size.
+
 ## Non-Canonical Lanes
 
 `tools/bench.py` and `bench/harness.py` still measure useful development

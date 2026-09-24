@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from molt import tool_releases
 from molt.cargo_execution_policy import PROOF_COMMAND_TIMEOUT_ENV
 from molt.python_environment_identity import python_capture_authority_paths
 from tools import (
@@ -150,7 +151,7 @@ def test_manifest_is_complete_and_single_authority() -> None:
     assert len(PLAN.toolchain_policies) >= 15
     assert "src/molt/cargo_execution_policy.py" in PLAN.authority_inputs
     assert PLAN.executor_max_workers == 4
-    assert PLAN.inventory_hash_workers == 4
+    assert PLAN.inventory_hash_workers == 12
     assert {policy.name: policy.max_parallel for policy in PLAN.resource_policies} == {
         "compiler-build-resource": 1,
         "formal-tools": 2,
@@ -216,7 +217,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         "incident_command": "cargo metadata --locked --format-version 1",
     }
     assert projection["executor"]["max_workers"] == 4
-    assert projection["executor"]["inventory_hash_workers"] == 4
+    assert projection["executor"]["inventory_hash_workers"] == 12
     assert projection["executor"]["resource_policies"] == [
         {"name": policy.name, "max_parallel": policy.max_parallel}
         for policy in PLAN.resource_policies
@@ -672,16 +673,30 @@ def test_toolchain_dependency_graph_fails_closed(
     )
 
 
+def test_node_policy_pins_the_tool_release() -> None:
+    policy = next(policy for policy in PLAN.toolchain_policies if policy.name == "node")
+    version = tool_releases.tool_release("node").version
+    assert policy.data["setup_value"] == version
+    assert re.fullmatch(str(policy.data["version_pattern"]), f"v{version}")
+    assert not re.fullmatch(str(policy.data["version_pattern"]), f"v{version}1")
+    assert (
+        f'config/tool_releases.toml::version = "{version}"'
+        in policy.data["setup_evidence"]
+    )
+
+
 def test_wasm_tools_identity_accepts_only_pinned_release_build_metadata() -> None:
     policy = next(
         policy for policy in PLAN.toolchain_policies if policy.name == "wasm-tools"
     )
     pattern = str(policy.data["version_pattern"])
 
-    assert re.fullmatch(pattern, "wasm-tools 1.253.0")
-    assert re.fullmatch(pattern, "wasm-tools 1.253.0 (c799bb87b 2026-07-07)")
-    assert not re.fullmatch(pattern, "wasm-tools 1.253.1")
-    assert not re.fullmatch(pattern, "wasm-tools 1.253.0 (local build)")
+    version = tool_releases.tool_release("wasm-tools").version
+    assert policy.data["setup_value"] == version
+    assert re.fullmatch(pattern, f"wasm-tools {version}")
+    assert re.fullmatch(pattern, f"wasm-tools {version} (7fc33f279 2026-09-10)")
+    assert not re.fullmatch(pattern, f"wasm-tools {version}1")
+    assert not re.fullmatch(pattern, f"wasm-tools {version} (local build)")
 
 
 def test_source_extension_toolchain_requires_target_context_capture() -> None:
@@ -1224,7 +1239,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         ("windows", "windows-2022"),
     ]
     assert all(entry["family"] == "platform_portability" for entry in matrix)
-    assert [len(entry["command_ids"]) for entry in matrix] == [1, 2, 2]
+    assert [len(entry["command_ids"]) for entry in matrix] == [2, 3, 3]
     for entry in matrix:
         commands = proof_plan._topological_commands(
             PLAN,

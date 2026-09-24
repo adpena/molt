@@ -61,7 +61,7 @@ pub struct EventJournal {
     count: u64,
     bytes: u64,
     last_sequence: Option<u64>,
-    derived: BTreeMap<String, FileIdentity>,
+    derived: BTreeMap<PathBuf, FileIdentity>,
     published: bool,
 }
 
@@ -130,7 +130,7 @@ impl EventJournal {
         if let Some(image) = &event.image
             && image.class == ImageClass::Derived
         {
-            let key = crate::normalized_path_key(&image.path);
+            let key = image.path.clone();
             if let Some(prior) = self.derived.get(&key) {
                 if prior != image {
                     return Err(format!(
@@ -265,7 +265,7 @@ pub fn verify_event_artifact(
         if let Some(image) = &event.image
             && image.class == ImageClass::Derived
         {
-            let key = crate::normalized_path_key(&image.path);
+            let key = image.path.clone();
             if let Some(prior) = derived.get(&key) {
                 if prior != image {
                     return Err(format!(
@@ -380,9 +380,9 @@ pub fn durable_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn summarize_identities(mut identities: Vec<FileIdentity>) -> Result<IdentitySummary, String> {
-    identities.sort_by(|left, right| {
-        crate::normalized_path_key(&left.path).cmp(&crate::normalized_path_key(&right.path))
-    });
+    // Recorded paths are already canonical. Replay must never consult the
+    // current filesystem or merge distinct native path identities.
+    identities.sort_by(|left, right| left.path.cmp(&right.path));
     let bytes = serde_json::to_vec(&identities)
         .map_err(|error| format!("cannot serialize derived image summary: {error}"))?;
     Ok(IdentitySummary {
@@ -618,6 +618,58 @@ mod tests {
         durable_atomic_write(&path, b"sealed").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"sealed");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_identity_keys_survive_offline_record_and_replay() {
+        let receipt = unique_path("native-keys.json");
+        let absent_root = unique_path("absent-images");
+        let names = ["Output", "output", "\u{130}", "i\u{307}"];
+        let mut journal = EventJournal::create(&receipt).unwrap();
+        for (index, name) in names.iter().enumerate() {
+            let path = absent_root.join(name).join("image.exe");
+            assert!(!path.exists());
+            journal
+                .record(&ProcessEvent {
+                    sequence: index as u64 + 1,
+                    kind: if index == 0 {
+                        EventKind::ProcessCreate
+                    } else {
+                        EventKind::Exec
+                    },
+                    process_id: 1,
+                    parent_process_id: None,
+                    stable_process_id: "test:1".to_owned(),
+                    image: Some(FileIdentity {
+                        path,
+                        file_id: format!("file:{index}"),
+                        size_bytes: 4,
+                        sha256: "a".repeat(64),
+                        class: ImageClass::Derived,
+                        roles: vec!["generated-tool".to_owned()],
+                    }),
+                    exit_code: None,
+                })
+                .unwrap();
+        }
+        journal
+            .record(&ProcessEvent {
+                sequence: names.len() as u64 + 1,
+                kind: EventKind::ProcessExit,
+                process_id: 1,
+                parent_process_id: None,
+                stable_process_id: "test:1".to_owned(),
+                image: None,
+                exit_code: Some(0),
+            })
+            .unwrap();
+        let published = journal.publish().unwrap();
+        assert_eq!(published.derived_images.count, names.len() as u64);
+        let replayed = verify_event_artifact(&receipt, &published.event_log).unwrap();
+        assert_eq!(replayed.derived_images, published.derived_images);
+        assert_eq!(replayed.accounting.active_processes, 0);
+        let _ =
+            fs::remove_file(event_artifact_path(&receipt, &published.event_log.sha256).unwrap());
     }
 
     #[test]

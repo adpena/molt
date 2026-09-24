@@ -69,6 +69,7 @@ In Molt-compiled code (or shims), you check for capabilities using the `molt.cap
 ```python
 from molt import capabilities
 
+
 def my_handler():
     # Throws PermissionError if outbound connection authority is not granted.
     capabilities.require("net.connect")

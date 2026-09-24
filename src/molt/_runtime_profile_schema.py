@@ -26,6 +26,7 @@ class _MemorySnapshot(TypedDict):
     current_rss_bytes: int | None
     peak_rss_bytes: int | None
 
+
 _PROCESS_ROOT_KEYS = {
     "schema_version",
     "kind",

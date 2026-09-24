@@ -348,12 +348,17 @@ def test_import_molt_cli_does_not_load_backend() -> None:
         "before = set(sys.modules)\n"
         "assert '_BuildHelpFormatter' in dir(molt.cli)\n"
         "assert set(sys.modules) == before, 'dir(cli) loaded lazy modules'\n"
+        "assert not hasattr(molt.cli, 'backend_binary')\n"
+        "assert set(sys.modules) == before, 'attribute lookup imported an undeclared module'\n"
         "assert molt.cli._build_inputs._module is None\n"
         "assert molt.cli._build_pipeline._module is None\n"
         "formatter = molt.cli._BuildHelpFormatter\n"
         "from molt.cli.arg_helpers import _BuildHelpFormatter\n"
         "assert formatter is _BuildHelpFormatter\n"
         "assert molt.cli._BuildHelpFormatter is formatter\n"
+        "assert molt.cli.__dict__['_BuildHelpFormatter'] is formatter\n"
+        "from molt.cli import backend_binary\n"
+        "assert molt.cli.backend_binary is backend_binary\n"
         "print('OK')\n"
     )
     env = {**os.environ, "PYTHONPATH": str(root / "src")}

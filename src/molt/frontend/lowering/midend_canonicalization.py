@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.literal_identity import literal_identity_key
 
 from molt.frontend._types import (
@@ -47,16 +48,7 @@ _EXACT_SEQUENCE_INDEX_RECEIVER_TYPES = frozenset(
 _EXACT_SEQUENCE_INDEX_KEY_TYPES = frozenset({"int", "bool"})
 
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class MidendCanonicalizationMixin(_MixinBase):
+class MidendCanonicalizationMixin(GeneratorMixinBase):
     def _resolve_alias_value(
         self, value: MoltValue, aliases: dict[str, MoltValue]
     ) -> MoltValue:

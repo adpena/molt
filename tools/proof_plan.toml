@@ -27,7 +27,6 @@ authority_inputs = [
   "config/reproducibility_corpus.toml",
   "config/scientific_stack_versions.toml",
   "config/source_extension_package_sets.toml",
-  "config/proof_requirements/pact_witness.txt",
   "config/llvm_toolchain_releases.toml",
   "formal/lean/lean-toolchain",
   "rust-toolchain.toml",
@@ -201,7 +200,7 @@ executor_max_workers = 4
 # Installed Python custody hashes a deterministic, locality-sorted file
 # worklist in coarse batches. This bounds the I/O fanout independently from
 # proof-command fanout; every pre/post scan still reads every admitted byte.
-inventory_hash_workers = 4
+inventory_hash_workers = 12
 
 [[resource_policy]]
 name = "compiler-build-resource"
@@ -272,6 +271,7 @@ version_args = ["--version"]
 version_pattern = '^v24\.16\.0$'
 setup_value = "24.16.0"
 setup_evidence = [
+  "config/tool_releases.toml::version = \"24.16.0\"",
   ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
   ".github/workflows/formal.yml::node-version: \"24.16.0\"",
 ]
@@ -428,6 +428,38 @@ setup_value = "0.22.2"
 setup_evidence = [".github/workflows/security_hardening.yml::cargo-audit --version 0.22.2 --locked"]
 
 [[toolchain_policy]]
+name = "llvm-ar"
+executable = "llvm-ar"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-ranlib"
+executable = "llvm-ranlib"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-nm"
+executable = "llvm-nm"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "llvm-strip"
+executable = "llvm-strip"
+version_args = ["--version"]
+version_pattern = 'LLVM version 22\.1\.8\b'
+setup_value = "22.1.8"
+setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
 name = "wasm-ld"
 executable = "wasm-ld"
 version_args = ["--version"]
@@ -439,9 +471,9 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 name = "wasm-tools"
 executable = "wasm-tools"
 version_args = ["--version"]
-version_pattern = '^wasm-tools 1\.253\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
-setup_value = "1.253.0"
-setup_evidence = [".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.253.0"]
+version_pattern = '^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
+setup_value = "1.259.0"
+setup_evidence = ["config/tool_releases.toml::version = \"1.259.0\"", ".github/workflows/molt-wasm-ci.yml::tool: wasm-tools@1.259.0"]
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
@@ -1653,7 +1685,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.proof-plan.generated", "repository.structural-debt", "repository.canonicalization", "repository.runtime-bridge-stubs", "repository.call-fact-coverage"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
@@ -3070,6 +3102,87 @@ gates = [
   "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
   "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
 ]
+
+# --- Static first-party from-import symbol resolution ---------------------
+[[rule]]
+name = "import-symbol-gate"
+description = "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane. The property itself runs in the repository docs-tests command; this rule covers edits to the gate."
+globs = [
+  "tools/import_symbol_gate.py",
+  "tests/tools/test_import_symbol_gate.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python tools/import_symbol_gate.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_import_symbol_gate.py",
+]
+
+# --- Century-plan phase exits + legacy inventory ---------------------------
+[[rule]]
+name = "phase-exit-manifest"
+description = "Fixed CENTURY_SYSTEMS_PLAN §5 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks."
+globs = [
+  "tools/phase_exit_manifest.py",
+  "tools/legacy_inventory.py",
+  "config/phase_exit_requirements.toml",
+  "config/legacy_inventory.toml",
+  "tests/tools/test_phase_exit_manifest.py",
+  "tests/tools/test_legacy_inventory.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
+  "python3 tools/venv_exec.py python tools/legacy_inventory.py --check",
+]
+
+# --- v1 public stable contract ------------------------------------------------
+[[rule]]
+name = "public-contract"
+description = "Every CLI command carries a declared stability tier and the generated public surface snapshot (CLI tree, target Python range, release targets, verified-subset matrix digest, native callable ABI) has not drifted without an explicit --update."
+globs = [
+  "config/public_contract_v1.toml",
+  "config/public_contract_v1.surface.json",
+  "config/release_targets.toml",
+  "runtime/native_callable_abi.toml",
+  "src/molt/cli/entrypoint_parser.py",
+  "src/molt/cli/__init__.py",
+  "src/molt/release_matrix.py",
+  "src/molt/target_python.py",
+  "tools/public_contract_gate.py",
+  "tests/tools/test_public_contract_gate.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py",
+]
+
+# =========================================================================
+# NAMED LANES: queue-owned proofs that run under host custody, not CI families.
+#
+# The exact argv is the child-process admission authority. A queue submission
+# whose argv equals a named lane receives the lane's declared toolchain
+# closure (every child image located for those toolchains is admitted);
+# anything else that spawns processes is a leaf and is refused. Version and
+# source selection stay in their own authorities (config/scientific_stack_
+# versions.toml, config/source_extension_package_sets.toml, checkout custody);
+# a named lane argv never carries a host path.
+# =========================================================================
+
+[[named_lane]]
+id = "pact.witness.acceptance"
+description = "Pact Kernel A witness acceptance: build field_solve.py, execute the artifact, write candidate_outputs.npz, run check_parity.py."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "wasm-ld", "wasm-tools", "node"]
+resource_family = "wasm-browser"
+contention_key = "wasm:pact-witness"
+timeout_seconds = 1800
+
+[[named_lane]]
+id = "pact.witness.oracle"
+description = "Pact Kernel A fixture/reference regeneration and check_parity.py oracle proof."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_oracle.py"]
+toolchains = ["python", "uv"]
+resource_family = "wasm-browser"
+contention_key = "wasm:pact-witness"
+timeout_seconds = 900
 
 # =========================================================================
 # GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)

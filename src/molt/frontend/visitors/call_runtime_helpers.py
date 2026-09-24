@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import ast
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
-from typing import (
-    TYPE_CHECKING,
-)
-
 from molt.frontend._types import (
     FormatParseState,
     MoltOp,
@@ -16,16 +13,8 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class CallRuntimeHelperMixin(_MixinBase):
+class CallRuntimeHelperMixin(GeneratorMixinBase):
     @staticmethod
     def _is_gpu_intrinsic_call(node: ast.Call) -> str | None:
         """If *node* is a gpu.thread_id() / gpu.block_id() / etc., return the

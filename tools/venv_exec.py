@@ -69,6 +69,11 @@ def venv_env(
     bin_dir = venv_bin_dir(venv)
     old_path = merged.get("PATH", "")
     merged["VIRTUAL_ENV"] = str(venv)
+    # Every gate launched here must decode and print UTF-8 regardless of the
+    # host console codec; the Windows cp1252 default aborts tools whose help or
+    # diagnostics contain a non-cp1252 character (the recurring M43 class).
+    merged["PYTHONUTF8"] = "1"
+    merged["PYTHONIOENCODING"] = "utf-8"
     merged["PATH"] = (
         str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
     )

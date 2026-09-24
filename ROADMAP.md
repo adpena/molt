@@ -33,6 +33,12 @@ observable behavior against the supported CPython versions. An archive,
 unit-test shard, symbol count, or a pass on one target is not a substitute for
 those receipts.
 
+For v1.0, close measured performance and resource-budget violations across the
+advertised workloads, including frontend/build scaling and native/WASM runtime
+costs. Missing measurements are gaps, not passes. The
+[performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope) owns this
+acceptance scope; do not infer it from an aggregate speedup or a smaller test.
+
 ## Strategic Target
 
 - Reach full CPython `>=3.12` parity for the supported Molt subset.

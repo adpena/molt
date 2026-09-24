@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -15,18 +14,12 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallNamedBuiltinScalarDispatchMixin(_MixinBase):
+class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
     def _try_emit_named_builtin_scalar_call(
         self, node: ast.Call, func_id: str, needs_bind: bool
     ) -> Any:

@@ -37,7 +37,7 @@ def _run_node(
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     node = _node()
     policy = {
-        "schema": "molt.proof-child-custody.v1",
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
         "descendants": "declared-toolchains",
         "allowed": authorities,
     }
@@ -76,9 +76,7 @@ def test_node_spawn_sync_uses_only_parent_broker_admission() -> None:
     assert receipt["broker_complete"] is True
     assert receipt["process_closure_complete"] is False
     child_events = [
-        event
-        for event in receipt["events"]
-        if event.get("event") == "child-process"
+        event for event in receipt["events"] if event.get("event") == "child-process"
     ]
     assert len(child_events) == 1
     assert child_events[0]["admitted"] is True
@@ -87,9 +85,7 @@ def test_node_spawn_sync_uses_only_parent_broker_admission() -> None:
 
 
 def test_node_process_exit_closes_broker_terminal_handshake() -> None:
-    completed, receipt = _run_node(
-        "process.exit(0)", authorities=[_authority(_node())]
-    )
+    completed, receipt = _run_node("process.exit(0)", authorities=[_authority(_node())])
 
     assert completed.returncode == 0, completed.stderr
     assert receipt["broker_complete"] is True
@@ -108,9 +104,9 @@ def test_node_exec_file_sync_preserves_synchronous_result_semantics() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert receipt["broker_complete"] is True
-    assert sum(
-        event.get("event") == "child-process" for event in receipt["events"]
-    ) == 1
+    assert (
+        sum(event.get("event") == "child-process" for event in receipt["events"]) == 1
+    )
 
 
 def test_node_custody_survives_empty_env_across_three_generations() -> None:
@@ -137,12 +133,12 @@ def test_node_custody_survives_empty_env_across_three_generations() -> None:
     completed, receipt = _run_node(root, authorities=[_authority(node)])
 
     assert completed.returncode == 0, completed.stderr
-    starts = [event for event in receipt["events"] if event.get("event") == "hook-start"]
+    starts = [
+        event for event in receipt["events"] if event.get("event") == "hook-start"
+    ]
     ends = [event for event in receipt["events"] if event.get("event") == "hook-end"]
     assert len(starts) == len(ends) == 3
-    assert any(
-        event.get("reason") == "opaque-shell" for event in receipt["violations"]
-    )
+    assert any(event.get("reason") == "opaque-shell" for event in receipt["violations"])
     assert receipt["broker_complete"] is True
 
 
@@ -169,7 +165,9 @@ def test_node_user_worker_cannot_impersonate_transport_worker(
 
     assert completed.returncode == 0, completed.stderr
     assert not marker.exists()
-    starts = [event for event in receipt["events"] if event.get("event") == "hook-start"]
+    starts = [
+        event for event in receipt["events"] if event.get("event") == "hook-start"
+    ]
     ends = [event for event in receipt["events"] if event.get("event") == "hook-end"]
     assert len(starts) == len(ends) == 2
     assert receipt["broker_complete"] is True
@@ -193,9 +191,7 @@ def test_node_shell_options_are_parent_denied_before_launch(shell: object) -> No
     completed, receipt = _run_node(script, authorities=[_authority(node)])
 
     assert completed.returncode == 0, completed.stderr
-    assert any(
-        event.get("reason") == "opaque-shell" for event in receipt["violations"]
-    )
+    assert any(event.get("reason") == "opaque-shell" for event in receipt["violations"])
 
 
 @pytest.mark.parametrize("suffix", [".cmd", ".bat", ".ps1"])
@@ -221,8 +217,7 @@ def test_node_windows_implicit_interpreters_are_parent_denied(
 
     assert completed.returncode == 0, completed.stderr
     assert any(
-        event.get("reason") == "implicit-interpreter"
-        for event in receipt["violations"]
+        event.get("reason") == "implicit-interpreter" for event in receipt["violations"]
     )
 
 
@@ -247,8 +242,7 @@ def test_node_posix_shebang_is_parent_denied(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert any(
-        event.get("reason") == "implicit-interpreter"
-        for event in receipt["violations"]
+        event.get("reason") == "implicit-interpreter" for event in receipt["violations"]
     )
 
 
@@ -288,3 +282,16 @@ def test_node_hook_contains_no_executable_identity_authority() -> None:
         assert forbidden not in source
     assert "spawn-intent" in source
     assert "spawn-decision" in source
+
+
+def test_node_hook_pins_the_current_child_policy_schema() -> None:
+    """The Node hook is a second consumer of the policy contract.
+
+    It cannot import the Python authority, so its literal is a hand-synced
+    table: this gate keeps it equal to `CHILD_POLICY_SCHEMA` so a policy
+    schema bump can never leave Node payloads refusing every launch.
+    """
+    hook = Path(execution_custody.__file__).with_name("node_child_custody.cjs")
+    source = hook.read_text(encoding="utf-8")
+    assert f"policy.schema !== '{execution_custody.CHILD_POLICY_SCHEMA}'" in source
+    assert source.count("molt.proof-child-custody.") == 1

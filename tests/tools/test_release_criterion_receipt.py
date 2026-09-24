@@ -11,10 +11,10 @@ from typing import Any
 import pytest
 
 from molt import verified_subset as verified_authority
+from tests.process_guard_common import run_guarded_test_process
 from tools import release_criterion_receipt as receipt
 from tools import verified_subset
 from tools.compat import comparison, test_policy
-from tests.process_guard_common import run_guarded_test_process
 
 
 SOURCE_SHA = "a" * 40
@@ -647,7 +647,7 @@ def _git(root: Path, *args: str) -> str:
         text=True,
         encoding="utf-8",
     )
-    return completed.stdout.strip()
+    return str(completed.stdout).strip()
 
 
 def test_receipt_destination_requires_absent_output_and_clean_exact_head(

@@ -150,15 +150,21 @@ def validate_source_extension_wasm_import_shapes(
     receipts: Sequence[Mapping[str, str]],
     *,
     provider_function_names: Collection[str] = (),
+    provider_function_signatures: Mapping[str, tuple[tuple[str, ...], str]]
+    | None = None,
     actual_function_signatures: Mapping[tuple[str, str], tuple[tuple[str, ...], str]],
 ) -> list[str]:
     errors: list[str] = []
+    provider_function_signatures = provider_function_signatures or {}
     for receipt in receipts:
         name = receipt["name"]
         expected = WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.get(name)
         generated_shape = expected is not None
         if expected is None:
-            if name not in provider_function_names:
+            if (
+                name not in provider_function_names
+                and name not in provider_function_signatures
+            ):
                 errors.append(
                     f"WASM import {name!r} has no generated ABI or exact-link-provider "
                     "authority"
@@ -174,6 +180,13 @@ def validate_source_extension_wasm_import_shapes(
             continue
         if receipt["kind"] != "function":
             continue
+        actual_signature = actual_function_signatures.get((receipt["module"], name))
+        provider_signature = provider_function_signatures.get(name)
+        if provider_signature is not None and actual_signature != provider_signature:
+            errors.append(
+                f"WASM function import {receipt['module']!r}.{name!r} has signature "
+                f"{actual_signature!r}; package provider has {provider_signature!r}"
+            )
         external_signature = WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES.get(
             (receipt["module"], name)
         )
@@ -211,7 +224,6 @@ def validate_source_extension_wasm_import_shapes(
                     f"WASM function import {name!r} has no generated signature authority"
                 )
             continue
-        actual_signature = actual_function_signatures.get((receipt["module"], name))
         if actual_signature != expected_signature:
             errors.append(
                 f"WASM function import {receipt['module']!r}.{name!r} has signature "
@@ -490,7 +502,11 @@ def source_extension_object_closure_identity_payload(
             )
         if dependencies != sorted(
             dependencies,
-            key=lambda dependency: (dependency["path"], dependency["sha256"]),
+            key=lambda dependency: (
+                dependency["sha256"],
+                Path(dependency["path"]).name,
+                dependency["path"],
+            ),
         ) or len({dependency["path"] for dependency in dependencies}) != len(
             dependencies
         ):

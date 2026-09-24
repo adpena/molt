@@ -1530,7 +1530,7 @@ def _analyze_module_import_flow_uncached(
                             eager_annotations=eager_annotations,
                             direct_metadata_names=direct_metadata_names,
                         )
-                        if scoped_target:
+                        if scoped_target and handler.name is not None:
                             target = ast.Name(id=handler.name, ctx=ast.Del())
                             branch = branch.map_states(
                                 lambda states: _merge_states(

@@ -34,7 +34,9 @@ def test_pact_witness_acceptance_attests_pinned_worktree(
 
     output = capsys.readouterr().out
     assert f"root={acceptance.ROOT.resolve()}" in output
-    assert f"wasm_link={(acceptance.ROOT / 'tools' / 'wasm_link.py').resolve()}" in output
+    assert (
+        f"wasm_link={(acceptance.ROOT / 'tools' / 'wasm_link.py').resolve()}" in output
+    )
 
 
 def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
@@ -49,7 +51,9 @@ def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
     exactly ONE acceptance authority, never two disagreeing implementations."""
     captured: dict[str, object] = {}
 
-    def fake_run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    ) -> None:
         captured["args"] = args
         captured["cwd"] = cwd
 
@@ -80,7 +84,9 @@ def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
     assert str(acceptance.KERNEL_ROOT / "check_parity.py") not in args
 
 
-def test_pact_witness_acceptance_check_parity_requires_reference(tmp_path: Path) -> None:
+def test_pact_witness_acceptance_check_parity_requires_reference(
+    tmp_path: Path,
+) -> None:
     candidate = tmp_path / "candidate_outputs.npz"
     candidate.write_bytes(b"candidate")
     missing_reference = tmp_path / "reference_outputs.npz"
@@ -153,8 +159,7 @@ def test_pact_witness_acceptance_generates_run_scoped_fixture_and_reference(
     kernel_root = tmp_path / "kernel"
     kernel_root.mkdir()
     (kernel_root / "make_fixture.py").write_text(
-        "from pathlib import Path\n"
-        "Path('lstar_sample.npz').write_bytes(b'fixture')\n",
+        "from pathlib import Path\nPath('lstar_sample.npz').write_bytes(b'fixture')\n",
         encoding="utf-8",
     )
     (kernel_root / "field_solve.py").write_text(
@@ -396,13 +401,46 @@ def test_oracle_selfcheck_lane_pins_numpy_dispatch_baseline(monkeypatch) -> None
 
     captured_envs: list[dict[str, str]] = []
 
-    def fake_subprocess_run(args, *, cwd, check, env):  # noqa: ANN001
+    def fake_run(self, args, *, cwd, check, env):  # noqa: ANN001
         captured_envs.append(dict(env))
 
-    monkeypatch.setattr(oracle.subprocess, "run", fake_subprocess_run)
+    # The oracle runs inside its locked environment; the test is already the
+    # process the prepared command targets. The executor is a frozen record, so
+    # the guarded run seam is patched on its type.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        oracle,
+        "source_build_environment",
+        lambda *a, **k: SimpleNamespace(active=True),
+    )
+    monkeypatch.setattr(type(oracle._COMMANDS), "run", fake_run)
     monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
 
     assert oracle.main() == 0
     assert len(captured_envs) == 3  # make_fixture + field_solve + check_parity
     for env in captured_envs:
         assert env.get("NPY_DISABLE_CPU_FEATURES") == "X86_V3"
+
+
+@pytest.mark.parametrize("name", ["acceptance", "oracle"])
+def test_witness_refuses_unprepared_environment_without_launching(name, monkeypatch):
+    from types import SimpleNamespace
+    import tools.pact_witness_oracle as oracle
+
+    module = acceptance if name == "acceptance" else oracle
+    calls = []
+
+    def resolve(root, dependency_group, *, provision=False):
+        calls.append(provision)
+        return SimpleNamespace(active=False)
+
+    monkeypatch.setattr(module, "source_build_environment", resolve)
+    monkeypatch.setattr(
+        type(module._COMMANDS),
+        "run",
+        lambda *a, **k: pytest.fail("unprepared witness launched a child"),
+    )
+    with pytest.raises(SystemExit, match="prepared locked interpreter"):
+        module.main([]) if name == "acceptance" else module.main()
+    assert calls == [False]

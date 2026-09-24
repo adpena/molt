@@ -196,6 +196,7 @@ def _windows_job_cleanup(*, active_processes: int) -> memory_guard.WindowsJobCle
         system_before=resources,
         system_after=resources,
         terminated_remaining_processes=False,
+        remaining_processes=(),
         elapsed_s=0.01,
         initial_process_ids=(),
         escalation_process_ids=(),

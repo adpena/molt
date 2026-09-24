@@ -453,6 +453,7 @@ A test asserts `ratio ≤ 3.0` (allows for log factors, cache effects).
 ```python
 import time, os, resource
 
+
 def scaling_assert(fn, sizes, max_ratio=3.0, label=""):
     """fn(n) must run in O(n) or better."""
     times = []
@@ -461,7 +462,10 @@ def scaling_assert(fn, sizes, max_ratio=3.0, label=""):
         fn(n)
         times.append(time.perf_counter() - t0)
     ratio = times[-1] / times[-2]  # T(4n) / T(2n) for sizes=[n,2n,4n]
-    assert ratio <= max_ratio, f"{label}: scaling ratio {ratio:.2f} > {max_ratio} (expected ≤ 2x)"
+    assert ratio <= max_ratio, (
+        f"{label}: scaling ratio {ratio:.2f} > {max_ratio} (expected ≤ 2x)"
+    )
+
 
 def rss_scaling_assert(fn, sizes, max_rss_ratio=2.5, label=""):
     """RSS growth must be subquadratic."""

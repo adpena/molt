@@ -13,6 +13,9 @@ import time
 from typing import Any, Literal
 
 from wasm_link_format import CallableTableLayout
+from molt.dx import proof_scratch_root
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 RuntimeLinkInputRole = Literal["reloc", "shared"]
 
@@ -103,6 +106,10 @@ def run_wasm_ld_with_custodied_inputs(
             wasm_facts_scanner,
             Path(temp_dir.name),
             facts_metrics,
+            # A rejected scan input must outlive both the link scratch and the
+            # custodied copy of the output (itself a temporary directory): the
+            # run's own scratch root is the durable, run-owned home.
+            evidence_root=proof_scratch_root(_REPO_ROOT) / "wasm-link-evidence",
         )
         output_facts = facts_provider(output_data)
         output_callable_layout = api["_callable_layout_from_wasm_facts"](output_facts)
@@ -386,6 +393,9 @@ def run_wasm_ld_with_custodied_inputs(
         wasm_ld,
         "--no-entry",
         "--gc-sections",
+        # Every unresolved symbol is evidence; the default limit of twenty
+        # hides the rest of a failed link behind "too many errors emitted".
+        "--error-limit=0",
         f"--allow-undefined-file={str(allowlist)}",
         "--import-table",
         # Place the stack before data segments in linear memory so that the
@@ -447,7 +457,10 @@ def run_wasm_ld_with_custodied_inputs(
     split_app_cmd: list[str] | None = None
     split_app_required_table_min: int | None = None
     split_app_got_runtime_addresses: dict[str, int] = {}
+    deploy_runtime_data = b""
     if split_runtime:
+        assert deploy_runtime_path is not None
+        deploy_runtime_data = deploy_runtime_path.read_bytes()
         split_native_inputs = native_link_inputs
         # Keep the active-data-segment alias: it defines each CPython-ABI data
         # symbol (Py_None/Py_False/PyExc_*/Py*_Type/...) so the split app link
@@ -474,7 +487,7 @@ def run_wasm_ld_with_custodied_inputs(
                 )
                 split_app_got_runtime_addresses = api[
                     "_runtime_exported_data_symbol_addresses"
-                ](deploy_runtime_path.read_bytes())
+                ](deploy_runtime_data)
             except ValueError as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
@@ -483,7 +496,7 @@ def run_wasm_ld_with_custodied_inputs(
         split_native_allowlist = api["_compose_split_runtime_native_allowlist"](
             base_allowlist=base_allowlist,
             native_objects=split_native_inputs,
-            runtime_exports=runtime_exports,
+            split_runtime_exports=api["_collect_exports"](deploy_runtime_data),
             temp_dir=temp_dir,
         )
         split_linked_app_path = Path(temp_dir.name) / "app_split_linked.wasm"
@@ -1087,9 +1100,9 @@ def run_wasm_ld_with_custodied_inputs(
                     return 1
             app_stage.write_bytes(optimized_app)
 
-            # Resolve the deploy-ready (non-relocatable) runtime.
+            # The deploy-ready (non-relocatable) runtime was read once when the
+            # split app link was composed against its export surface.
             assert deploy_runtime_path is not None
-            deploy_runtime = deploy_runtime_path
 
             # Tree-shake the runtime against its OWN canonical, app-independent
             # public export surface â€” never against the current app's import
@@ -1105,8 +1118,7 @@ def run_wasm_ld_with_custodied_inputs(
             # app.wasm (the intrinsic manifest + wasm-ld --gc-sections), which is
             # the correct split-runtime model: one large cached runtime + a tiny
             # per-app payload.
-            full_rt_size = deploy_runtime.stat().st_size
-            deploy_runtime_data = deploy_runtime.read_bytes()
+            full_rt_size = len(deploy_runtime_data)
             size_attestation["runtime_before"] = api["wasm_metrics"](
                 deploy_runtime_data
             )

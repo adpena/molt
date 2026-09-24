@@ -17,7 +17,9 @@ __all__ = [
 ]
 
 
-def browser_target_profile_for_imports(browser_host_import_names: Collection[str]) -> str:
+def browser_target_profile_for_imports(
+    browser_host_import_names: Collection[str],
+) -> str:
     """Resolve the browser package target profile from required host imports."""
 
     if WEBGPU_DISPATCH_HOST_IMPORT in set(browser_host_import_names):

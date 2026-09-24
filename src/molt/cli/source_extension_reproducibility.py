@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from molt.cli.source_extension_object_closure import (
@@ -59,7 +59,7 @@ def _root_occurrence_is_path(value: str, index: int) -> bool:
     return any(prefix.endswith(flag) for flag in _JOINED_PATH_PREFIXES)
 
 
-def _filesystem_root_pattern(root: Path) -> re.Pattern[str]:
+def _filesystem_root_pattern(root: PurePath) -> re.Pattern[str]:
     rendered = root.as_posix().rstrip("/")
     if not rendered:
         raise ValueError("filesystem root cannot be a location identity authority")
@@ -71,9 +71,12 @@ def _filesystem_root_pattern(root: Path) -> re.Pattern[str]:
         while components and not components[0]:
             components.pop(0)
         prefix = r"(?<!:)//+"
-    body = "/+".join(re.escape(component) for component in components)
+    # A root may be spelled with forward slashes, single backslashes (raw
+    # text) or escaped backslashes (a JSON or Python string literal); every
+    # spelling names the same directory.
+    body = r"(?:/+|\\+)".join(re.escape(component) for component in components)
     return re.compile(
-        prefix + body + r"""(?:(?P<separator>/+)|(?=$|[=;,\s'"\)\]\}]))""",
+        prefix + body + r"""(?:(?P<separator>/+|\\+)|(?=$|[=;,\s'"\)\]\}]))""",
         re.IGNORECASE if root.drive else 0,
     )
 
@@ -144,37 +147,57 @@ def _require_location_neutral(value: Any, *, authority: str) -> None:
 
 
 def _ordered_location_roots(
-    roots: Sequence[tuple[Path | None, str]],
-) -> tuple[tuple[Path, str], ...]:
-    deduped: list[tuple[Path, str]] = []
-    seen: set[Path] = set()
+    roots: Sequence[tuple[PurePath | None, str]],
+) -> tuple[tuple[PurePath, str], ...]:
+    """The location roots in their declared, canonical order.
+
+    The declared order is the neutralization order: where two roots contain
+    the same path the earlier one wins, so a caller declares every root that
+    can sit inside another before that container. The order is therefore one
+    function of the roles and never of the host layout: the same roots yield
+    the same path-map arguments and the same canonical metadata on every
+    machine. A layout that nests a root inside an earlier-declared one is
+    refused rather than reordered, because reordering would make the recorded
+    command depend on where this host happened to put its directories.
+
+    A producer location may appear in build metadata under more than one
+    spelling of the same directory: the lexical path the tool was handed (an
+    installer's version alias junction, a relative segment) and the resolved
+    real path. Both spellings map to the same token. A virtual root (a
+    PurePosixPath such as the Meson install prefix) names no directory on this
+    machine and is matched exactly as spelled.
+    """
+    deduped: list[tuple[PurePath, str]] = []
+    seen: set[str] = set()
     for path, replacement in roots:
         if path is None:
             continue
-        resolved = path.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            deduped.append((resolved, replacement))
-
-    def ancestor_count(candidate: Path) -> int:
-        return sum(
-            candidate != other and candidate.is_relative_to(other)
-            for other, _replacement in deduped
+        candidates = (
+            (Path(os.path.abspath(path)), path.resolve())
+            if isinstance(path, Path)
+            else (path,)
         )
-
-    return tuple(
-        item
-        for _index, item in sorted(
-            enumerate(deduped),
-            key=lambda indexed: (-ancestor_count(indexed[1][0]), indexed[0]),
-        )
-    )
+        for candidate in candidates:
+            key = os.path.normcase(os.fspath(candidate))
+            if key not in seen:
+                seen.add(key)
+                deduped.append((candidate, replacement))
+    for later, (candidate, replacement) in enumerate(deduped):
+        for earlier, earlier_replacement in deduped[:later]:
+            if candidate != earlier and candidate.is_relative_to(earlier):
+                raise ValueError(
+                    "location roots are not in canonical order: "
+                    f"{replacement} ({candidate}) lies inside the earlier "
+                    f"{earlier_replacement} ({earlier}); declare the nested "
+                    "root before its container"
+                )
+    return tuple(deduped)
 
 
 def _source_extension_deterministic_path_args(
     *,
     compiler_command: Sequence[str],
-    roots: Sequence[tuple[Path | None, str]],
+    roots: Sequence[tuple[PurePath | None, str]],
 ) -> list[str]:
     if not compiler_command:
         return []
@@ -194,34 +217,103 @@ def _source_extension_deterministic_path_args(
 
 
 def _canonicalize_location_string(
-    value: str, location_roots: Sequence[tuple[Path | None, str]]
+    value: str, location_roots: Sequence[tuple[PurePath | None, str]]
 ) -> str:
     return _canonicalize_location_string_ordered(
         value, _ordered_location_roots(location_roots)
     )
 
 
+_PATH_SPAN_DELIMITERS = frozenset(" \t\r\n'\"()[]{};,<>|")
+_SEPARATOR_STYLE_SLASH = "/"
+_SEPARATOR_STYLE_RAW = "raw-backslash"
+_SEPARATOR_STYLE_ESCAPED = "escaped-backslash"
+
+
+def _path_span_end(text: str, start: int, separator_style: str) -> tuple[str, int]:
+    """Read the path that continues after a matched root.
+
+    Returns the continuation with its separators spelled ``/`` and the index
+    where the span ends. Separators keep the style the root was spelled in:
+    a forward slash, a raw backslash, or an escaped backslash pair (a JSON or
+    Python string literal), so a lone backslash inside an escaped-style span
+    starts an escape sequence and ends the path rather than joining it.
+    """
+    tail: list[str] = []
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in _PATH_SPAN_DELIMITERS:
+            break
+        if char == "/":
+            tail.append("/")
+            while index < length and text[index] == "/":
+                index += 1
+            continue
+        if char == "\\":
+            run_end = index
+            while run_end < length and text[run_end] == "\\":
+                run_end += 1
+            run = run_end - index
+            if separator_style == _SEPARATOR_STYLE_SLASH or (
+                separator_style == _SEPARATOR_STYLE_ESCAPED and run % 2
+            ):
+                break
+            tail.append("/")
+            index = run_end
+            continue
+        tail.append(char)
+        index += 1
+    return "".join(tail), index
+
+
+def _separator_style(separator: str) -> str:
+    if "/" in separator:
+        return _SEPARATOR_STYLE_SLASH
+    return _SEPARATOR_STYLE_ESCAPED if len(separator) >= 2 else _SEPARATOR_STYLE_RAW
+
+
 def _canonicalize_location_string_ordered(
-    value: str, ordered_roots: Sequence[tuple[Path, str]]
+    value: str, ordered_roots: Sequence[tuple[PurePath, str]]
 ) -> str:
-    canonical = value.replace("\\", "/")
+    """Rewrite every path span rooted at a location root to its token.
+
+    Only the root and the path continuing from it change; the rest of the
+    text (escape sequences in a Python or JSON literal, compile flags) is
+    preserved byte for byte, so canonicalizing an installed Python source
+    never alters its meaning.
+    """
+    canonical = value
     for root, token in ordered_roots:
         pattern = _filesystem_root_pattern(root)
-
-        def replace(match: re.Match[str]) -> str:
+        pieces: list[str] = []
+        position = 0
+        for match in pattern.finditer(canonical):
+            if match.start() < position:
+                continue
             if _inside_url_token(
                 canonical, match.start()
             ) or not _root_occurrence_is_path(canonical, match.start()):
-                return match.group(0)
-            return token + ("/" if match.group("separator") else "")
-
-        canonical = pattern.sub(replace, canonical)
+                continue
+            pieces.append(canonical[position : match.start()])
+            separator = match.group("separator")
+            if not separator:
+                pieces.append(token)
+                position = match.end()
+                continue
+            tail, position = _path_span_end(
+                canonical, match.end(), _separator_style(separator)
+            )
+            pieces.append(f"{token}/{tail}")
+        pieces.append(canonical[position:])
+        canonical = "".join(pieces)
     return canonical
 
 
 def _canonicalize_locations(
     value: Any,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     source_paths: Mapping[Path, str] | None = None,
 ) -> Any:
     ordered_roots = _ordered_location_roots(location_roots)
@@ -265,7 +357,7 @@ def _canonicalize_locations(
 
 
 def _canonicalize_meson_metadata(
-    value: Any, location_roots: Sequence[tuple[Path | None, str]]
+    value: Any, location_roots: Sequence[tuple[PurePath | None, str]]
 ) -> Any:
     canonical = _canonicalize_locations(value, location_roots)
     dependency_ids: dict[str, str] = {}
@@ -294,7 +386,7 @@ def _canonicalize_meson_metadata(
 def _canonical_json_sha256(
     path: Path,
     *,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     normalize_meson_dependency_ids: bool,
 ) -> str:
     try:
@@ -316,7 +408,7 @@ def _canonical_json_sha256(
 def _canonical_extension_manifest_for_wheel(
     manifest: Mapping[str, Any],
     *,
-    location_roots: Sequence[tuple[Path | None, str]],
+    location_roots: Sequence[tuple[PurePath | None, str]],
     meson_plan_path: Path | None = None,
     compile_commands_path: Path | None = None,
 ) -> dict[str, Any]:

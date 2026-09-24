@@ -3,11 +3,11 @@ use crate::{
     ImageHashCache, ProcessEvent, Receipt, RootExitDisposition, SupervisorState, ValidatedPolicy,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::mem::{size_of, zeroed};
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
@@ -486,13 +486,9 @@ fn path_from_handle(handle: HANDLE) -> Result<PathBuf, String> {
     if count == 0 || count as usize >= buffer.len() {
         return Err(last_error("GetFinalPathNameByHandleW"));
     }
-    let mut value = String::from_utf16_lossy(&buffer[..count as usize]);
-    if let Some(path) = value.strip_prefix(r"\\?\UNC\") {
-        value = format!(r"\\{path}");
-    } else if let Some(path) = value.strip_prefix(r"\\?\") {
-        value = path.to_owned();
-    }
-    Ok(PathBuf::from(value))
+    let value = OsString::from_wide(&buffer[..count as usize]);
+    let path = PathBuf::from(value);
+    Ok(dunce::simplified(&path).to_path_buf())
 }
 
 fn parent_process_id(pid: u32) -> Option<u32> {

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import harness_memory_guard
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
