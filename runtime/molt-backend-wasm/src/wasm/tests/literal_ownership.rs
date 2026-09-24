@@ -640,6 +640,7 @@ fn direct_calls_release_only_owned_value_results() {
                 None,
                 vec![wasm_test_op("ret_void", None, vec![])],
             );
+            external_void.return_abi = molt_ir::FunctionReturnAbi::Void;
             external_void.externalize_with_signature().unwrap();
             let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
                 functions: vec![
