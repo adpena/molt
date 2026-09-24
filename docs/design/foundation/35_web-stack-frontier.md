@@ -276,12 +276,25 @@ like `molt.gpu`). Surface:
 
 ```python
 import molt.serve
-molt.serve.run(app, bind="0.0.0.0:8000", workers=4, http="auto",
-               ssl_certfile=None, ssl_keyfile=None, ssl_alpn=("h2","http/1.1"),
-               lifespan="auto", backlog=2048, limit_concurrency=None,
-               h11_max_incomplete=16384, ws="auto", ws_max_size=16*1024*1024)
+
+molt.serve.run(
+    app,
+    bind="0.0.0.0:8000",
+    workers=4,
+    http="auto",
+    ssl_certfile=None,
+    ssl_keyfile=None,
+    ssl_alpn=("h2", "http/1.1"),
+    lifespan="auto",
+    backlog=2048,
+    limit_concurrency=None,
+    h11_max_incomplete=16384,
+    ws="auto",
+    ws_max_size=16 * 1024 * 1024,
+)
 # or the programmatic Server object for embedding:
-server = molt.serve.Server(config); await server.serve()
+server = molt.serve.Server(config)
+await server.serve()
 ```
 
 `run` is the entry `--emit server` wires to `main`. The bulk of `molt.serve` is a thin

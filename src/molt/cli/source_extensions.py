@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from molt._wasm_abi_generated import (
-    WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
     WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES,
-    wasm_import_signature,
 )
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.c_api_symbols import is_c_api_external_requirement
@@ -68,7 +66,7 @@ from molt.cli.source_extension_object_closure import (
     validate_source_extension_object_closure,
     validate_source_extension_wasm_import_shapes,
 )
-from molt.wasm_artifact import WasmImport
+from molt.wasm_artifact import WasmImport, WasmRelocatableObjectInterface
 
 
 _MOLT_NUMPY_ARRAY_API_CAPSULE = "numpy.core._multiarray_umath._ARRAY_API"
@@ -112,14 +110,6 @@ _SOURCE_EXTENSION_MISSING_SOURCE_ERROR_PREFIX = (
     "extension_manifest.json source missing:"
 )
 _MESON_EXTENSION_TARGET_TYPES = {"shared module", "shared library", "library"}
-_SOURCE_EXTENSION_SIGNATURED_WASM_IMPORTS = frozenset(
-    {name for _module, name in WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES}
-    | {
-        name
-        for name, (_module, kind) in WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES.items()
-        if kind == "function" and wasm_import_signature(name) is not None
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -142,6 +132,7 @@ class _SourceExtensionArtifactSymbolInspection:
     wasm_function_exports: tuple[str, ...] = ()
     artifact_bytes: bytes | None = None
     artifact_digest: str | None = None
+    wasm_interface: WasmRelocatableObjectInterface | None = None
 
 
 @dataclass(frozen=True)
@@ -2019,6 +2010,9 @@ def _source_extension_object_fact(
                 sha256=_sha256_file(dependency),
             )
         )
+    dependencies.sort(
+        key=lambda fact: (fact.sha256, fact.path.name, fact.path.as_posix())
+    )
     inspected_digest = symbol_inspection.artifact_digest
     try:
         if inspected_digest is None or _sha256_file(object_path) != inspected_digest:
@@ -2074,7 +2068,7 @@ def _inspect_source_extension_artifact_symbols(
             assert artifact_bytes is not None
             interface = parse_wasm_relocatable_object_interface(
                 artifact_bytes,
-                signature_import_names=_SOURCE_EXTENSION_SIGNATURED_WASM_IMPORTS,
+                signature_import_names=None,
             )
         except (OSError, UnicodeDecodeError, ValueError, IndexError):
             return None
@@ -2094,20 +2088,26 @@ def _inspect_source_extension_artifact_symbols(
             ),
             artifact_bytes=artifact_bytes,
             artifact_digest=hashlib.sha256(artifact_bytes).hexdigest(),
+            wasm_interface=interface,
         )
 
     # Reading a native object file's global symbols is a backend/native-link
     # concern; import it lazily so this module stays off the frontend import path.
     from molt.cli.native_symbol_inspection import (
+        _native_archive_global_symbol_facts,
         _native_object_global_symbol_facts,
     )
 
-    if not nm_command:
+    if not nm_command and not aggregate_linker_closure:
         return None
-    symbol_facts = _native_object_global_symbol_facts(
-        artifact_path,
-        nm_command=nm_command,
-        target_triple=target_triple,
+    symbol_facts = (
+        _native_archive_global_symbol_facts(artifact_path, target_triple=target_triple)
+        if not nm_command
+        else _native_object_global_symbol_facts(
+            artifact_path,
+            nm_command=nm_command,
+            target_triple=target_triple,
+        )
     )
     defined = set(symbol_facts.defined)
     undefined = set(symbol_facts.undefined)
@@ -2131,6 +2131,8 @@ def validate_source_extension_artifact_object_closure(
     required_function_exports: Collection[str] = (),
     inspection: _SourceExtensionArtifactSymbolInspection | None = None,
     external_link_provider_classes: Mapping[str, str] | None = None,
+    package_function_signatures: Mapping[str, tuple[tuple[str, ...], str]]
+    | None = None,
     validated_closure: tuple[Mapping[str, Any], str] | None = None,
 ) -> list[str]:
     """Validate the signed closure against one exact artifact inspection."""
@@ -2301,6 +2303,7 @@ def validate_source_extension_artifact_object_closure(
     errors.extend(
         validate_source_extension_wasm_import_shapes(
             actual_receipts,
+            provider_function_signatures=package_function_signatures,
             provider_function_names=(
                 (
                     wasm_external_link_provider_symbol_classes(target_triple)

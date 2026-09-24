@@ -41,9 +41,7 @@ _C_API_DECLARATION_ONLY_SYMBOLS = frozenset(
     }
 )
 
-_C_API_SOURCE_INTERNAL_PREFIXES = (
-    "npyv_",
-)
+_C_API_SOURCE_INTERNAL_PREFIXES = ("npyv_",)
 
 
 _C_API_PRIMITIVE_EXACT: dict[str, str] = {

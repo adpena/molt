@@ -8,7 +8,6 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -27,17 +26,10 @@ from molt.frontend.sema import (
     signature_contains_yield,
     stateful_function_frame_plan,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class FunctionVisitorMixin(_MixinBase):
+class FunctionVisitorMixin(GeneratorMixinBase):
     def _is_contextmanager_decorator(self, deco: ast.expr) -> bool:
         if isinstance(deco, ast.Name) and deco.id == "contextmanager":
             return True

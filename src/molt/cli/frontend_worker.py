@@ -156,9 +156,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
     fallback_policy = cast(FallbackPolicy, payload["fallback_policy"])
     module_is_namespace = bool(payload["module_is_namespace"])
-    module_execution_kind = cast(
-        ModuleExecutionKind, payload["module_execution_kind"]
-    )
+    module_execution_kind = cast(ModuleExecutionKind, payload["module_execution_kind"])
     entry_module = cast(str | None, payload["entry_module"])
     enable_phi = bool(payload["enable_phi"])
     known_modules = set(cast(list[str], payload["known_modules"]))

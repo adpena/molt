@@ -439,6 +439,14 @@ iterator results carried by `var` and unpack results carried by trailing `args`
 are not reads merely because of their wire field. Unknown-operation transport
 metadata becomes an SSA read only when it resolves to an actual SSA name.
 
+WASM temporary-slot reuse spans the first definition through the last access,
+including later dead writes. Ranges intersecting repeated execution widen to
+the enclosing iteration regions derived from generated control facts; resumable
+state-machine functions retain distinct locals. Merge iteration regions once
+and locate intersections by binary search. Allocate the lowest available slot
+deterministically using expiry and free-slot heaps, rather than repeatedly
+scanning all live slots. Region metadata alone is not a backward transfer.
+
 Numeric op-loop emitters carry the selected typed runtime import through to the
 shared result sink, including guarded inline branches and in-place variants.
 The generated numeric selector table drives execution coverage for live,

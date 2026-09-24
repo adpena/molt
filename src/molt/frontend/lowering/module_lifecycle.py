@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
@@ -28,16 +28,8 @@ from molt.frontend._types import (
 )
 from molt.frontend.module_publication import SourceModulePublication
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class ModuleLifecycleMixin(_MixinBase):
+class ModuleLifecycleMixin(GeneratorMixinBase):
     def _init_module_lifecycle_state(
         self,
         *,

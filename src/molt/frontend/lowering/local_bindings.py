@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 from typing import (
-    TYPE_CHECKING,
     Callable,
     Iterable,
     Iterator,
@@ -20,6 +19,7 @@ from typing import (
     TypeVar,
 )
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -37,14 +37,6 @@ from molt.frontend.lowering.generator_state import (
     FUNCTION_IMPORT_RESOLUTION_STATE_ATTRS,
 )
 from molt.frontend.sema.funcmeta import parse_stateful_function_type_hint
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 _ProjectionValue = TypeVar("_ProjectionValue")
@@ -75,7 +67,7 @@ def _mask_binding_projection(
     return restore
 
 
-class LocalBindingMixin(_MixinBase):
+class LocalBindingMixin(GeneratorMixinBase):
     def _advance_exact_class_token(self) -> int:
         self._next_exact_class_token += 1
         self.exact_class_token = self._next_exact_class_token

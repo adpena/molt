@@ -13,7 +13,7 @@ import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal, cast
 
 from packaging.requirements import Requirement
@@ -661,12 +661,7 @@ def _locked_console_tool_path(
     *,
     separator: str = os.pathsep,
 ) -> str:
-    """Put attested environment scripts ahead of intentional host tools.
-
-    The inherited suffix retains system and cross-toolchain discovery (LLVM,
-    Git, Rust, and platform SDKs). Only the locked environment's console-script
-    directory gains precedence; ambient Python environments gain no authority.
-    """
+    """Prepend the attested environment scripts to intentional host tools."""
     locked = str(scripts_root)
     return separator.join((locked, inherited_path)) if inherited_path else locked
 
@@ -753,6 +748,12 @@ def _materialize_meson_config_tool_cross(
     return path
 
 
+# Install prefix of every cross build: POSIX-absolute (Meson validates the
+# prefix by the host machine's rules) and free of producer identity, so the
+# install_filename entries in the build metadata are reproducible as written.
+MESON_INSTALL_PREFIX = "/molt-install-prefix"
+
+
 def _run_meson_setup(
     *,
     source_root: Path,
@@ -769,6 +770,11 @@ def _run_meson_setup(
     ]
     for meson_cross in meson_cross_files:
         argv.extend(("--cross-file", str(meson_cross)))
+    # Meson's default install prefix is a producer host path (`c:/` on
+    # Windows, `/usr/local` elsewhere) that leaks into every install_filename
+    # of the build metadata. The seal targets a POSIX host, so the prefix is
+    # one fixed POSIX-absolute location that names no machine at all.
+    argv.append(f"--prefix={MESON_INSTALL_PREFIX}")
     argv.extend(setup_args)
     result = _run_process(argv, cwd=source_root)
     if result.returncode != 0:
@@ -858,8 +864,8 @@ def _source_ninja_driver(
     path = binaries[0]
     command = (sys.executable, "-m", "ninja")
     result = _run_process((*command, "--version"), cwd=source_root)
-    version = result.stdout.strip()
-    if result.returncode != 0 or not version:
+    reported_version = result.stdout.strip()
+    if result.returncode != 0 or not reported_version:
         detail = (result.stderr or result.stdout).strip()
         raise SourceExtensionProducerError(
             f"Ninja backend cannot attest its version: {detail}"
@@ -868,7 +874,8 @@ def _source_ninja_driver(
         command=command,
         manifest={
             "distribution": str(distribution["name"]),
-            "version": version,
+            "version": str(distribution["version"]),
+            "reported_version": reported_version,
             "path": path.name,
             "sha256": _sha256_file(path),
         },
@@ -927,7 +934,7 @@ def _stage_installed_package_files(
     build_root: Path,
     package: str,
     publish_root: Path,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     required_installed_files: Sequence[str],
 ) -> tuple[Path, ...]:
     try:
@@ -1406,7 +1413,7 @@ def _stage_extension(
     produced: _ProducedExtension,
     *,
     publish_root: Path,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     plan_metadata: Mapping[str, Path],
 ) -> _ProducedExtension:
     relative_artifact = produced.artifact_path.relative_to(produced.output_root)
@@ -1679,7 +1686,7 @@ def _stage_canonical_metadata_file(
     source: Path,
     destination: Path,
     *,
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
     normalize_meson_dependency_ids: bool = False,
 ) -> Path:
     try:
@@ -1720,7 +1727,7 @@ def _stage_build_metadata(
     intro_installed: Path,
     config_tool_cross: Path | None,
     target_metadata_payload: Mapping[str, Any],
-    location_roots: Sequence[tuple[Path, str]],
+    location_roots: Sequence[tuple[PurePath, str]],
 ) -> tuple[dict[str, Path], dict[str, Any]]:
     metadata_publish_root = publish_root / "provenance" / "metadata"
     staged = {
@@ -1866,22 +1873,19 @@ def _producer_location_roots(
     transaction_root: Path,
     metadata_payload: Mapping[str, Any],
     config_tools: Sequence[_SourceBuildConfigTool],
-) -> tuple[tuple[Path, str], ...]:
-    roots: list[tuple[Path, str]] = [
-        (source_root, "@source"),
-        (build_root, "@build"),
-        (transaction_root, "@transaction"),
-        (_REPO_ROOT, "@molt"),
-        (Path(sys.prefix), "@python-env"),
-        (Path(sys.base_prefix), "@python-base"),
-    ]
-    for scheme, token in (
-        ("include", "@python-include"),
-        ("platinclude", "@python-platform-include"),
-    ):
-        raw_path = sysconfig.get_path(scheme)
-        if raw_path:
-            roots.append((Path(raw_path), token))
+) -> tuple[tuple[PurePath, str], ...]:
+    """The producer's location roots in their canonical, declared order.
+
+    The order is the neutralization order (see ``_ordered_location_roots``):
+    every root that can sit inside another is declared before its container.
+    Molt's ABI include directories and an interpreter's include and scripts
+    directories live inside an environment; an environment, the source, the
+    build and the transaction roots may live inside the Molt checkout; a
+    toolchain's bin directory, its compiler builtins archive and the WASI
+    sysroot live inside the toolchain prefix. The recorded metadata is one
+    function of these roles, never of where this host keeps them.
+    """
+    roots: list[tuple[PurePath, str]] = []
     abi = metadata_payload.get("abi")
     raw_include_dirs = abi.get("include_dirs") if isinstance(abi, Mapping) else None
     if isinstance(raw_include_dirs, list):
@@ -1890,11 +1894,57 @@ def _producer_location_roots(
             for index, raw_path in enumerate(raw_include_dirs)
             if isinstance(raw_path, str) and raw_path
         )
+    for scheme, token in (
+        ("include", "@python-include"),
+        ("platinclude", "@python-platform-include"),
+    ):
+        raw_path = sysconfig.get_path(scheme)
+        if raw_path:
+            roots.append((Path(raw_path), token))
+    config_by_parent: dict[Path, list[str]] = {}
+    for tool in config_tools:
+        config_by_parent.setdefault(tool.path.resolve().parent, []).append(tool.name)
+    if len(config_by_parent) == 1:
+        roots.append((next(iter(config_by_parent)), "@python-scripts"))
+    else:
+        config_roles = sorted(
+            (
+                "-".join(sorted(name.replace("_", "-") for name in names)),
+                parent,
+            )
+            for parent, names in config_by_parent.items()
+        )
+        roots.extend((parent, f"@config-{role}-bin") for role, parent in config_roles)
+    roots.extend(
+        (
+            (Path(sys.prefix), "@python-env"),
+            (Path(sys.base_prefix), "@python-base"),
+            (build_root, "@build"),
+            (transaction_root, "@transaction"),
+            (source_root, "@source"),
+        )
+    )
+    toolchain_prefixes: list[tuple[PurePath, str]] = []
     toolchain = metadata_payload.get("toolchain")
     if isinstance(toolchain, Mapping):
-        wasi_sysroot = toolchain.get("wasi_sysroot")
-        if isinstance(wasi_sysroot, str) and wasi_sysroot:
-            roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+        tools = toolchain.get("tools")
+        if isinstance(tools, Mapping):
+            tool_paths: dict[str, Path] = {}
+            for role, tool in sorted(tools.items()):
+                if not isinstance(tool, Mapping):
+                    continue
+                raw_path = tool.get("path")
+                if isinstance(raw_path, str) and raw_path:
+                    tool_paths[str(role)] = Path(raw_path).expanduser().resolve().parent
+            tool_parents = set(tool_paths.values())
+            if len(tool_parents) == 1:
+                parent = next(iter(tool_parents))
+                roots.append((parent, "@llvm-bin"))
+                toolchain_prefixes.append((parent.parent, "@llvm-prefix"))
+            else:
+                for role, parent in tool_paths.items():
+                    roots.append((parent, f"@llvm-{role}-bin"))
+                    toolchain_prefixes.append((parent.parent, f"@llvm-{role}-prefix"))
         archives = toolchain.get("link_probe_archives")
         compiler_builtins = (
             archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
@@ -1908,40 +1958,20 @@ def _producer_location_roots(
             builtins_path = Path(compiler_builtins_path)
             roots.append((builtins_path, "@compiler-builtins"))
             roots.append((builtins_path.parent, "@rust-target-libdir"))
-        tools = toolchain.get("tools")
-        if isinstance(tools, Mapping):
-            tool_paths: dict[str, Path] = {}
-            for role, tool in sorted(tools.items()):
-                if not isinstance(tool, Mapping):
-                    continue
-                raw_path = tool.get("path")
-                if isinstance(raw_path, str) and raw_path:
-                    tool_paths[str(role)] = Path(raw_path).expanduser().resolve().parent
-            tool_parents = set(tool_paths.values())
-            if len(tool_parents) == 1:
-                parent = next(iter(tool_parents))
-                roots.extend(((parent, "@llvm-bin"), (parent.parent, "@llvm-prefix")))
-            else:
-                for role, parent in tool_paths.items():
-                    roots.extend(
-                        (
-                            (parent, f"@llvm-{role}-bin"),
-                            (parent.parent, f"@llvm-{role}-prefix"),
-                        )
-                    )
-    config_by_parent: dict[Path, list[str]] = {}
-    for tool in config_tools:
-        config_by_parent.setdefault(tool.path.resolve().parent, []).append(tool.name)
-    if len(config_by_parent) == 1:
-        roots.append((next(iter(config_by_parent)), "@python-scripts"))
-    else:
-        for parent, names in sorted(config_by_parent.items()):
-            role = "-".join(sorted(name.replace("_", "-") for name in names))
-            roots.append((parent, f"@config-{role}-bin"))
-    deduped: dict[Path, str] = {}
+        wasi_sysroot = toolchain.get("wasi_sysroot")
+        if isinstance(wasi_sysroot, str) and wasi_sysroot:
+            roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
+    roots.extend(toolchain_prefixes)
+    roots.append((_REPO_ROOT, "@molt"))
+    roots.append((PurePosixPath(MESON_INSTALL_PREFIX), "@install-prefix"))
+    # Deduplicate by real directory but keep the spelling the producer was
+    # handed: the canonicalizer neutralizes both the lexical and the resolved
+    # spelling of each root, and only the lexical one can be preserved here.
+    deduped: dict[PurePath, tuple[PurePath, str]] = {}
     for path, token in roots:
-        deduped.setdefault(path.resolve(), token)
-    return tuple(deduped.items())
+        key = path.resolve() if isinstance(path, Path) else path
+        deduped.setdefault(key, (path, token))
+    return tuple(deduped.values())
 
 
 def _missing_installed_generated_inputs(

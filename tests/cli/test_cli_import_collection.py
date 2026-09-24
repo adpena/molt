@@ -4873,12 +4873,14 @@ def _wasm_extension_artifact(
     *symbols: str,
     imports: tuple[str, ...] = (),
     memory_imports: tuple[str, ...] = (),
+    undefined_data_symbols: tuple[str, ...] = (),
 ) -> bytes:
     init_symbol = f"PyInit_{module.rsplit('.', 1)[-1]}"
     return _wasm_exporting_i64_unary_symbols(
         tuple(dict.fromkeys((init_symbol, *symbols))),
         imports=imports,
         memory_imports=memory_imports,
+        undefined_data_symbols=undefined_data_symbols,
     )
 
 
@@ -6071,7 +6073,12 @@ def test_external_native_artifact_plan_rejects_archive_callable_symbol_without_c
         package="nativepkg",
         relative_module="ndimage._nd_image",
         artifact_name="_nd_image.a",
-        artifact_bytes=b"archive-bytes",
+        native_symbols=NativeSymbolFixture(
+            functions=(
+                "PyInit__nd_image",
+                "molt_nativepkg_ndimage_distance_transform_edt",
+            )
+        ),
         intentionally_invalid_object_closure=True,
         manifest_overrides={
             "runtime_linkage": "static_link",
@@ -22230,12 +22237,17 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
     }
 
+    first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        **common_kwargs, phase_starts=first_phase_starts
     )
     assert first_err is None
     assert first is not None
     assert len(link_calls) == 1
+    # The link is its own diagnostics phase, started after the cache write and
+    # closed by the publish marker, so its wall time is never charged to
+    # backend_cache_write.
+    assert 0.0 < first_phase_starts["wasm_link"] <= first_phase_starts["wasm_publish"]
     first_cmd = link_calls[0]
     assert first_cmd[:4] == [
         sys.executable,
@@ -22263,12 +22275,15 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "--preserve-debug-sections",
     ]
 
+    second_phase_starts: dict[str, float] = {}
     second, second_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        **common_kwargs, phase_starts=second_phase_starts
     )
     assert second_err is None
     assert second is not None
     assert len(link_calls) == 1
+    # A skipped relink runs no link, so it claims no link phase.
+    assert "wasm_link" not in second_phase_starts
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
@@ -31423,3 +31438,462 @@ def test_type_checking_from_import_retains_runtime_closure(module: str, mode: st
     imports = cli_module_import_scanner._collect_imports(tree, import_scan_mode=mode)
     assert module in imports
     assert "dead" not in imports
+
+
+@pytest.mark.parametrize("data_symbol", ["PyExc_TypeError", "errno"])
+def test_external_native_artifact_plan_reads_data_requirements_from_linking_section(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    data_symbol: str,
+) -> None:
+    # The sealed object needs PyLong_FromLong (a function import) and the
+    # data object (a relocation, present only in the linking
+    # section); the closure sidecar names both, and only both.
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {"errno": "wasm_libc_link_import"},
+    )
+    external_root = tmp_path / "site"
+    _write_external_native_artifact(
+        external_root,
+        native_archives=native_archives,
+        package="nativepkg",
+        relative_module="ndimage._nd_image",
+        artifact_name="_nd_image.molt.wasm",
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.ndimage._nd_image",
+            "molt_nativepkg_placeholder",
+            imports=("PyLong_FromLong",),
+            undefined_data_symbols=(data_symbol,),
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": ["PyLong_FromLong"],
+                "undefined_symbols": sorted([data_symbol, "PyLong_FromLong"]),
+                "runtime_symbols": sorted(
+                    ["PyLong_FromLong"]
+                    + ([data_symbol] if data_symbol == "PyExc_TypeError" else [])
+                ),
+            },
+        },
+    )
+
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.ndimage._nd_image"},
+    )
+
+    assert errors == []
+    assert plan is not None
+    artifact = plan.artifacts[0]
+    symbols = {
+        item.symbol: item for item in (*artifact.c_api_symbols, *artifact.abi_symbols)
+    }
+    assert symbols[data_symbol].status == (
+        "cpython_abi_link" if data_symbol == "PyExc_TypeError" else "external_link"
+    )
+    assert "undefined_symbols" in symbols[data_symbol].source
+
+
+@pytest.mark.parametrize("package_symbol", ["npy_cabs", "shared_helper"])
+def test_external_native_artifact_plan_resolves_symbols_from_package_sibling(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package_symbol: str,
+) -> None:
+    # Same-package binary definitions resolve both NumPy C-API and ordinary
+    # native helpers; admission does not depend on a package/symbol-name special case.
+    external_root = tmp_path / "site"
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {},
+    )
+    secondary_overrides = {
+        "target_triple": "wasm32-wasip1",
+        "platform_tag": "wasm32_wasip1",
+        "runtime_linkage": "static_link",
+        "artifact_kind": "wasm_relocatable_object",
+        "object_closure": {
+            "required_c_api_symbols": [],
+            "undefined_symbols": [package_symbol],
+        },
+    }
+    _write_external_native_artifact(
+        external_root,
+        native_archives=native_archives,
+        package="nativepkg",
+        relative_module="linalg._umath_linalg",
+        artifact_name="_umath_linalg.molt.wasm",
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg.linalg._umath_linalg",
+            "molt_nativepkg_linalg",
+            imports=(package_symbol,),
+        ),
+        manifest_overrides=secondary_overrides,
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.linalg._umath_linalg"},
+    )
+    assert plan is None
+    assert any(f"symbol {package_symbol!r} is missing" in error for error in errors)
+
+    _write_external_native_artifact(
+        external_root,
+        native_archives=native_archives,
+        package="nativepkg",
+        relative_module="_core._multiarray_umath",
+        artifact_name="_multiarray_umath.molt.wasm",
+        artifact_bytes=_wasm_extension_artifact(
+            "nativepkg._core._multiarray_umath", "molt_nativepkg_core", package_symbol
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            "object_closure": {
+                "required_c_api_symbols": [],
+                "undefined_symbols": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: pytest.fail(
+            "package provider must not scan WASI archives"
+        ),
+    )
+    inspected: list[Path] = []
+    inspect = cli_external_native._inspect_source_extension_artifact_symbols
+
+    def capture_inspection(path: Path, **kwargs):
+        inspected.append(path)
+        return inspect(path, **kwargs)
+
+    monkeypatch.setattr(
+        cli_external_native,
+        "_inspect_source_extension_artifact_symbols",
+        capture_inspection,
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(external_root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.linalg._umath_linalg"},
+    )
+    assert errors == []
+    assert plan is not None
+    assert {artifact.module for artifact in plan.artifacts} == {
+        "nativepkg.linalg._umath_linalg",
+        "nativepkg._core._multiarray_umath",
+    }
+    assert len(inspected) == len(set(inspected)) == 2
+    secondary = next(
+        artifact
+        for artifact in plan.artifacts
+        if artifact.module == "nativepkg.linalg._umath_linalg"
+    )
+    symbols = {
+        item.symbol: item for item in (*secondary.c_api_symbols, *secondary.abi_symbols)
+    }
+    assert symbols[package_symbol].status == "package_native"
+
+
+def _write_package_symbol_wasm_artifact(
+    external_root: Path,
+    native_archives: NativeArchiveFixtureCatalog,
+    module: str,
+    *,
+    functions: tuple[str, ...] = (),
+    imports: tuple[str, ...] = (),
+    defined_data: tuple[str, ...] = (),
+    undefined_data: tuple[str, ...] = (),
+    artifact_bytes: bytes | None = None,
+    overrides: dict[str, Any] | None = None,
+    package: str = "nativepkg",
+) -> tuple[Path, Path]:
+    return _write_external_native_artifact(
+        external_root,
+        native_archives=native_archives,
+        package=package,
+        relative_module=module,
+        artifact_name=f"{module}.molt.wasm",
+        artifact_bytes=(
+            artifact_bytes
+            if artifact_bytes is not None
+            else _wasm_exporting_i64_unary_symbols(
+                (f"PyInit_{module}", *functions),
+                imports=imports,
+                defined_data_symbols=defined_data,
+                undefined_data_symbols=undefined_data,
+            )
+        ),
+        manifest_overrides={
+            "target_triple": "wasm32-wasip1",
+            "platform_tag": "wasm32_wasip1",
+            "runtime_linkage": "static_link",
+            "artifact_kind": "wasm_relocatable_object",
+            **(overrides or {}),
+        },
+    )
+
+
+@pytest.mark.parametrize("cyclic", [False, True])
+def test_external_native_package_symbol_closure_selects_transitive_providers(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cyclic: bool,
+) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: pytest.fail(
+            "package closure must not scan WASI archives"
+        ),
+    )
+    root = tmp_path / "site"
+    for module, function, imports in (
+        ("consumer", "helper_a", ("helper_b",)),
+        ("middle", "helper_b", ("helper_c",)),
+        ("leaf", "helper_c", ("helper_a",) if cyclic else ()),
+    ):
+        _write_package_symbol_wasm_artifact(
+            root, native_archives, module, functions=(function,), imports=imports
+        )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.consumer"},
+    )
+    assert errors == []
+    assert plan is not None
+    assert {artifact.module for artifact in plan.artifacts} == {
+        "nativepkg.consumer",
+        "nativepkg.middle",
+        "nativepkg.leaf",
+    }
+
+
+@pytest.mark.parametrize(
+    ("consumer_kind", "provider_kind"),
+    [("data", "data"), ("data", "function"), ("function", "data")],
+)
+def test_external_native_package_symbol_closure_requires_exact_binary_kind(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    consumer_kind: str,
+    provider_kind: str,
+) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {},
+    )
+    root = tmp_path / "site"
+    _write_package_symbol_wasm_artifact(
+        root,
+        native_archives,
+        "consumer",
+        imports=("shared_helper",) if consumer_kind == "function" else (),
+        undefined_data=("shared_helper",) if consumer_kind == "data" else (),
+    )
+    _write_package_symbol_wasm_artifact(
+        root,
+        native_archives,
+        "provider",
+        functions=("shared_helper",) if provider_kind == "function" else (),
+        defined_data=("shared_helper",) if provider_kind == "data" else (),
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.consumer"},
+    )
+    if consumer_kind != provider_kind:
+        assert plan is None
+        assert any(
+            "shared_helper" in error and "kind mismatch" in error for error in errors
+        )
+    else:
+        assert errors == []
+        assert plan is not None
+        assert {artifact.module for artifact in plan.artifacts} == {
+            "nativepkg.consumer",
+            "nativepkg.provider",
+        }
+
+
+@pytest.mark.parametrize("mismatch", ["signature", "module"])
+def test_external_native_package_symbol_closure_checks_function_import_contract(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch: str,
+) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {},
+    )
+    root = tmp_path / "site"
+    consumer = _wasm_extension_artifact(
+        "nativepkg.consumer", imports=("shared_helper",)
+    )
+    provider = _wasm_extension_artifact("nativepkg.provider", "shared_helper")
+    if mismatch == "signature":
+        provider = wasm_artifact._build_wasm_sections(
+            [
+                (
+                    section_id,
+                    payload.replace(b"\x60\x01\x7e\x01\x7e", b"\x60\x01\x7f\x01\x7f")
+                    if section_id == 1
+                    else payload.replace(b"\x42\x00\x0b", b"\x41\x00\x0b")
+                    if section_id == 10
+                    else payload,
+                )
+                for section_id, payload in wasm_artifact.parse_wasm_sections(provider)
+            ]
+        )
+    else:
+        consumer = wasm_artifact._build_wasm_sections(
+            [
+                (
+                    section_id,
+                    payload.replace(b"\x03env", b"\x03bad")
+                    if section_id == 2
+                    else payload,
+                )
+                for section_id, payload in wasm_artifact.parse_wasm_sections(consumer)
+            ]
+        )
+    _write_package_symbol_wasm_artifact(
+        root, native_archives, "consumer", artifact_bytes=consumer
+    )
+    _write_package_symbol_wasm_artifact(
+        root, native_archives, "provider", artifact_bytes=provider
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.consumer"},
+    )
+    assert plan is None
+    expected = "package provider has" if mismatch == "signature" else "module/kind"
+    assert any("shared_helper" in error and expected in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["target", "python", "abi", "package", "root", "digest", "closure", "ambiguous"],
+)
+def test_external_native_package_symbol_closure_rejects_invalid_provider(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    defect: str,
+) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {},
+    )
+    root = tmp_path / "site"
+    _write_package_symbol_wasm_artifact(
+        root, native_archives, "consumer", imports=("shared_helper",)
+    )
+    overrides = {
+        "target": {"target_triple": "wasm32-unknown-unknown"},
+        "python": {"target_python": "py313"},
+        "abi": {"abi_tag": "molt_abi2"},
+    }.get(defect, {})
+    provider_root = tmp_path / "other-site" if defect == "root" else root
+    _, manifest_path = _write_package_symbol_wasm_artifact(
+        provider_root,
+        native_archives,
+        "provider",
+        functions=("shared_helper",),
+        overrides=overrides,
+        package="otherpkg" if defect == "package" else "nativepkg",
+    )
+    if defect in {"digest", "closure"}:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if defect == "digest":
+            manifest["extension_sha256"] = "0" * 64
+        else:
+            manifest["object_closure"]["defined_symbols"].remove("shared_helper")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    if defect == "ambiguous":
+        _write_package_symbol_wasm_artifact(
+            root, native_archives, "duplicate", functions=("shared_helper",)
+        )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(root, provider_root) if defect == "root" else (root,),
+        admitted_packages={"nativepkg", "otherpkg"},
+        target="wasm",
+        required_modules={"nativepkg.consumer"},
+    )
+    assert plan is None
+    assert errors
+    if defect == "ambiguous":
+        assert any(
+            "shared_helper" in error and "ambiguous providers" in error
+            for error in errors
+        )
+    elif defect == "digest":
+        assert any("extension_sha256 mismatch" in error for error in errors)
+    elif defect == "closure":
+        assert any("object_closure" in error for error in errors)
+    else:
+        assert any("symbol 'shared_helper' is missing" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "symbol", ["PyLong_FromLong", "molt_alloc", "molt_unregistered_runtime_helper"]
+)
+def test_external_native_package_symbol_closure_rejects_runtime_authority_collision(
+    native_archives: NativeArchiveFixtureCatalog,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    symbol: str,
+) -> None:
+    monkeypatch.setattr(
+        cli_external_native,
+        "wasm_external_link_provider_symbol_classes",
+        lambda _target_triple=None: {},
+    )
+    root = tmp_path / "site"
+    _write_package_symbol_wasm_artifact(
+        root, native_archives, "consumer", imports=(symbol,)
+    )
+    _write_package_symbol_wasm_artifact(
+        root, native_archives, "provider", functions=(symbol,)
+    )
+    plan, errors = cli._resolve_external_package_native_artifact_plan(
+        external_module_roots=(root,),
+        admitted_packages={"nativepkg"},
+        target="wasm",
+        required_modules={"nativepkg.consumer"},
+    )
+    assert plan is None
+    assert any(
+        symbol in error and "collides with canonical" in error for error in errors
+    )

@@ -144,16 +144,19 @@ def test_default_touch_files_track_current_split_modules() -> None:
     assert touch_files["function_compiler"].exists()
     assert touch_files["modules"].exists()
     assert touch_files["gvn"].exists()
-    assert module._scenario_preflight_errors(
-        [
-            "inc-value_range",
-            "inc-gvn",
-            "inc-function_compiler",
-            "inc-modules",
-            "test-lib",
-        ],
-        touch_files,
-    ) == []
+    assert (
+        module._scenario_preflight_errors(
+            [
+                "inc-value_range",
+                "inc-gvn",
+                "inc-function_compiler",
+                "inc-modules",
+                "test-lib",
+            ],
+            touch_files,
+        )
+        == []
+    )
 
 
 def test_scenario_preflight_fails_before_prime_for_stale_touch_path(
@@ -171,8 +174,7 @@ def test_scenario_preflight_fails_before_prime_for_stale_touch_path(
         in errors[0]
     )
     assert (
-        "scenario=molt-build-unknown unknown molt build target; choices="
-        in errors[1]
+        "scenario=molt-build-unknown unknown molt build target; choices=" in errors[1]
     )
     assert "unknown scenario: unknown-shape" == errors[2]
 
@@ -299,15 +301,12 @@ def test_molt_build_python_prefers_uv_project_environment(tmp_path: Path) -> Non
     python.parent.mkdir(parents=True)
     python.write_text("", encoding="utf-8")
 
-    assert (
-        module._molt_build_python_executable(
-            {
-                "UV_PROJECT_ENVIRONMENT": str(uv_env),
-                "VIRTUAL_ENV": str(tmp_path / "other-env"),
-            }
-        )
-        == str(python)
-    )
+    assert module._molt_build_python_executable(
+        {
+            "UV_PROJECT_ENVIRONMENT": str(uv_env),
+            "VIRTUAL_ENV": str(tmp_path / "other-env"),
+        }
+    ) == str(python)
 
 
 def test_molt_build_output_root_defaults_to_json_stem_for_evidence_custody(
@@ -315,21 +314,27 @@ def test_molt_build_output_root_defaults_to_json_stem_for_evidence_custody(
 ) -> None:
     module = _load_dx_build_timer()
 
-    assert module._molt_build_output_root(
-        SimpleNamespace(
-            target_dir=str(tmp_path / "target"),
-            json_out=str(tmp_path / "proof" / "row.json"),
-            molt_output_root=None,
+    assert (
+        module._molt_build_output_root(
+            SimpleNamespace(
+                target_dir=str(tmp_path / "target"),
+                json_out=str(tmp_path / "proof" / "row.json"),
+                molt_output_root=None,
+            )
         )
-    ) == (tmp_path / "proof" / "row.molt-builds").resolve()
+        == (tmp_path / "proof" / "row.molt-builds").resolve()
+    )
 
-    assert module._molt_build_output_root(
-        SimpleNamespace(
-            target_dir=str(tmp_path / "target"),
-            json_out=str(tmp_path / "proof" / "row.json"),
-            molt_output_root=str(tmp_path / "explicit"),
+    assert (
+        module._molt_build_output_root(
+            SimpleNamespace(
+                target_dir=str(tmp_path / "target"),
+                json_out=str(tmp_path / "proof" / "row.json"),
+                molt_output_root=str(tmp_path / "explicit"),
+            )
         )
-    ) == (tmp_path / "explicit").resolve()
+        == (tmp_path / "explicit").resolve()
+    )
 
 
 def test_main_repairs_target_after_restored_touch(

@@ -18,14 +18,9 @@ def server() -> None:
     conn, _addr = srv.accept()
     data = conn.recv(1024)
     if b"Expect: 100-continue" in data:
-        conn.sendall(b"HTTP/1.1 100 Continue
-
-")
+        conn.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
     body = conn.recv(1024)
-    resp = b"HTTP/1.1 200 OK
-Content-Length: 2
-
-OK"
+    resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
     conn.sendall(resp)
     conn.close()
     srv.close()
@@ -38,15 +33,10 @@ ready.wait(timeout=1.0)
 
 sock = socket.create_connection(("127.0.0.1", port_holder[0]))
 request = (
-    b"POST / HTTP/1.1
-"
-    b"Host: localhost
-"
-    b"Content-Length: 4
-"
-    b"Expect: 100-continue
-
-"
+    b"POST / HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Content-Length: 4\r\n"
+    b"Expect: 100-continue\r\n\r\n"
 )
 sock.sendall(request)
 interim = sock.recv(64)

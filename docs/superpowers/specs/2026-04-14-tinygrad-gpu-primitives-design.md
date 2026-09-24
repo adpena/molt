@@ -165,10 +165,10 @@ The `Tensor` class matches tinygrad's method signatures so tinygrad code compile
 
 ```python
 class Tensor:
-    _buf: Buffer          # GPU/CPU buffer handle
-    _st: ShapeTracker     # view stack
-    _dtype: DType         # element type
-    
+    _buf: Buffer  # GPU/CPU buffer handle
+    _st: ShapeTracker  # view stack
+    _dtype: DType  # element type
+
     # --- Creation ---
     @staticmethod
     def zeros(*shape, dtype=dtypes.float32) -> Tensor: ...
@@ -178,43 +178,47 @@ class Tensor:
     def rand(*shape, dtype=dtypes.float32) -> Tensor: ...
     @staticmethod
     def eye(n, dtype=dtypes.float32) -> Tensor: ...
-    
+
     # --- Unary (dispatch to primitives) ---
-    def exp(self) -> Tensor: ...     # EXP2(self * LOG2_E)
-    def log(self) -> Tensor: ...     # LOG2(self) * LN_2
-    def sqrt(self) -> Tensor: ...    # SQRT
-    def sin(self) -> Tensor: ...     # SIN
-    def cos(self) -> Tensor: ...     # SIN(self + PI/2) — tinygrad-conformant; precision loss for |x| > 2^23 is acceptable for ML workloads
+    def exp(self) -> Tensor: ...  # EXP2(self * LOG2_E)
+    def log(self) -> Tensor: ...  # LOG2(self) * LN_2
+    def sqrt(self) -> Tensor: ...  # SQRT
+    def sin(self) -> Tensor: ...  # SIN
+    def cos(
+        self,
+    ) -> Tensor: ...  # SIN(self + PI/2) — tinygrad-conformant; precision loss for |x| > 2^23 is acceptable for ML workloads
     def reciprocal(self) -> Tensor: ...  # RECIPROCAL
-    def neg(self) -> Tensor: ...     # NEG primitive
-    def relu(self) -> Tensor: ...    # MAX(self, 0)
-    def sigmoid(self) -> Tensor: ... # composed
-    def tanh(self) -> Tensor: ...    # composed
-    def gelu(self) -> Tensor: ...    # composed
-    
+    def neg(self) -> Tensor: ...  # NEG primitive
+    def relu(self) -> Tensor: ...  # MAX(self, 0)
+    def sigmoid(self) -> Tensor: ...  # composed
+    def tanh(self) -> Tensor: ...  # composed
+    def gelu(self) -> Tensor: ...  # composed
+
     # --- Binary ---
     def __add__(self, other) -> Tensor: ...  # ADD
     def __mul__(self, other) -> Tensor: ...  # MUL
     def __sub__(self, other) -> Tensor: ...  # SUB primitive
     def __truediv__(self, other) -> Tensor: ...  # MUL(self, RECIPROCAL(other))
     def maximum(self, other) -> Tensor: ...  # MAX
-    def __floordiv__(self, other) -> Tensor: ...  # IDIV (integer) or TRUNC(MUL(self, RECIPROCAL(other))) (float)
+    def __floordiv__(
+        self, other
+    ) -> Tensor: ...  # IDIV (integer) or TRUNC(MUL(self, RECIPROCAL(other))) (float)
     def __mod__(self, other) -> Tensor: ...  # MOD
-    def __and__(self, other) -> Tensor: ...   # AND
-    def __or__(self, other) -> Tensor: ...    # OR
-    def __xor__(self, other) -> Tensor: ...   # XOR
-    def __lshift__(self, other) -> Tensor: ... # SHL
-    def __rshift__(self, other) -> Tensor: ... # SHR
-    
+    def __and__(self, other) -> Tensor: ...  # AND
+    def __or__(self, other) -> Tensor: ...  # OR
+    def __xor__(self, other) -> Tensor: ...  # XOR
+    def __lshift__(self, other) -> Tensor: ...  # SHL
+    def __rshift__(self, other) -> Tensor: ...  # SHR
+
     # --- Reduce ---
-    def sum(self, axis=None) -> Tensor: ...     # REDUCE_SUM
-    def max(self, axis=None) -> Tensor: ...     # REDUCE_MAX
-    def mean(self, axis=None) -> Tensor: ...    # REDUCE_SUM / count
-    def argmax(self, axis=-1) -> Tensor: ...    # comparison reduction
-    def topk(self, k, axis=-1) -> Tensor: ...   # iterative argmax + mask
-    def softmax(self, axis=-1) -> Tensor: ...   # composed
-    def log_softmax(self, axis=-1) -> Tensor: ... # composed
-    
+    def sum(self, axis=None) -> Tensor: ...  # REDUCE_SUM
+    def max(self, axis=None) -> Tensor: ...  # REDUCE_MAX
+    def mean(self, axis=None) -> Tensor: ...  # REDUCE_SUM / count
+    def argmax(self, axis=-1) -> Tensor: ...  # comparison reduction
+    def topk(self, k, axis=-1) -> Tensor: ...  # iterative argmax + mask
+    def softmax(self, axis=-1) -> Tensor: ...  # composed
+    def log_softmax(self, axis=-1) -> Tensor: ...  # composed
+
     # --- Movement (zero-cost via ShapeTracker) ---
     def reshape(self, *shape) -> Tensor: ...
     def permute(self, *order) -> Tensor: ...
@@ -222,21 +226,23 @@ class Tensor:
     def pad(self, padding, value=0.0) -> Tensor: ...
     def shrink(self, arg) -> Tensor: ...
     def flip(self, axis) -> Tensor: ...
-    def contiguous(self) -> Tensor: ...   # only op that generates kernel
-    def T(self) -> Tensor: ...            # permute
+    def contiguous(self) -> Tensor: ...  # only op that generates kernel
+    def T(self) -> Tensor: ...  # permute
     def flatten(self, start=0) -> Tensor: ...  # reshape
-    def unsqueeze(self, dim) -> Tensor: ...    # reshape
-    def squeeze(self, dim=None) -> Tensor: ... # reshape
-    
+    def unsqueeze(self, dim) -> Tensor: ...  # reshape
+    def squeeze(self, dim=None) -> Tensor: ...  # reshape
+
     # --- Matrix ops (composed from primitives) ---
-    def dot(self, other) -> Tensor: ...     # RESHAPE + EXPAND + MUL + REDUCE_SUM
+    def dot(self, other) -> Tensor: ...  # RESHAPE + EXPAND + MUL + REDUCE_SUM
     def matmul(self, other) -> Tensor: ...  # same as dot
-    
+
     @staticmethod
-    def cat(*tensors, dim=0) -> Tensor: ...  # PAD each tensor to aligned shape, then ADD
+    def cat(
+        *tensors, dim=0
+    ) -> Tensor: ...  # PAD each tensor to aligned shape, then ADD
     @staticmethod
-    def stack(*tensors, dim=0) -> Tensor: ... # unsqueeze each, then cat
-    
+    def stack(*tensors, dim=0) -> Tensor: ...  # unsqueeze each, then cat
+
     # --- Indexing ---
     # NOTE: gather/scatter are NOT free compositions. They use masked select
     # over expanded index comparison: O(n * vocab_size) memory, not O(n).
@@ -245,10 +251,11 @@ class Tensor:
     def gather(self, idx, axis) -> Tensor: ...
     def scatter(self, idx, src, axis) -> Tensor: ...
     def __getitem__(self, key) -> Tensor: ...  # shrink/stride/reshape
-    
+
     # --- Specialized (composed, not primitives) ---
-    def scaled_dot_product_attention(self, key, value,
-                                      attn_mask=None, is_causal=False) -> Tensor: ...
+    def scaled_dot_product_attention(
+        self, key, value, attn_mask=None, is_causal=False
+    ) -> Tensor: ...
     def layernorm(self, weight, bias=None, eps=1e-5) -> Tensor: ...
     def conv2d(self, weight, bias=None, stride=1, padding=0) -> Tensor: ...
 ```
@@ -511,8 +518,8 @@ Random projection to sign bits:
 R = Tensor.rand(d, k)  # projection matrix
 
 # Project and sign-extract
-projected = x.dot(R)                          # matmul (composed)
-signs = projected.cmplt(Tensor.zeros(k))      # CMPLT primitive
+projected = x.dot(R)  # matmul (composed)
+signs = projected.cmplt(Tensor.zeros(k))  # CMPLT primitive
 ```
 
 ### 3.3 Quantized Attention Kernel
@@ -525,8 +532,8 @@ keys_f32 = (q_keys.cast(dtypes.float32) - zero_point) * scale  # CAST + ADD + MU
 
 # Standard attention with dequantized keys
 attn = query.dot(keys_f32.T) * (1.0 / math.sqrt(d_k))  # composed
-attn = attn.softmax(axis=-1)                              # composed
-out = attn.dot(values)                                     # composed
+attn = attn.softmax(axis=-1)  # composed
+out = attn.dot(values)  # composed
 ```
 
 ## 4. DFlash + DDTree Integration
@@ -556,33 +563,33 @@ The drafter is a standard transformer that produces per-position token distribut
 def build_ddtree(marginals: list[Tensor], budget: int, top_k: int) -> DraftTree:
     """
     Build optimal draft tree from per-position marginal distributions.
-    
+
     Args:
         marginals: L tensors of shape [vocab_size], one per future position
         budget: maximum number of nodes B
         top_k: K most probable tokens per position
-    
+
     Returns:
         DraftTree with B nodes, maximizing expected acceptance length
     """
     # Extract top-K tokens and log-probs per position (GPU)
     top_tokens = [m.topk(top_k) for m in marginals]  # composed from primitives
     log_probs = [m.log_softmax(axis=-1) for m in marginals]  # composed
-    
+
     # Best-first heap construction (CPU, O(B log B))
     # Score σ(ρ) = Σ log q_i^(ρ_i) — additive over positions.
     # Each heap entry stores the FULL path score for correct sibling computation.
     heap = MaxHeap()
     heap.push((log_probs[0][0], (0,)))  # rank tuple (1,) at depth 1
-    
+
     tree = DraftTree()
     while len(tree) < budget and not heap.empty():
         score, ranks = heap.pop()
         tree.add(ranks)
-        
+
         d = len(ranks)
         rho_d = ranks[-1]
-        
+
         # Push sibling: replace last rank's contribution.
         # σ(sibling) = σ(parent_prefix) + log q_d^(ρ_d+1)
         # = score - log q_d^(ρ_d) + log q_d^(ρ_d+1)
@@ -590,16 +597,18 @@ def build_ddtree(marginals: list[Tensor], budget: int, top_k: int) -> DraftTree:
         # and we are replacing only the d-th term.
         if rho_d + 1 < top_k:
             sibling_ranks = ranks[:-1] + (rho_d + 1,)
-            sibling_score = score - log_probs[d-1][rho_d] + log_probs[d-1][rho_d + 1]
+            sibling_score = (
+                score - log_probs[d - 1][rho_d] + log_probs[d - 1][rho_d + 1]
+            )
             heap.push((sibling_score, sibling_ranks))
-        
+
         # Push first child: extend path by best token at next position.
         # σ(child) = score + log q_{d+1}^(1)
         if d < len(marginals):
             child_ranks = ranks + (0,)
             child_score = score + log_probs[d][0]
             heap.push((child_score, child_ranks))
-    
+
     return tree
 ```
 
@@ -617,7 +626,7 @@ def build_tree_attention_mask(tree: DraftTree) -> Tensor:
         for ancestor_idx in node.ancestor_indices:
             mask = mask.scatter(...)  # composed from primitives
     # Convert to attention mask: 0 for attend, -inf for don't
-    return mask.where(Tensor.zeros(n, n), Tensor.ones(n, n) * float('-inf'))
+    return mask.where(Tensor.zeros(n, n), Tensor.ones(n, n) * float("-inf"))
 ```
 
 ### 4.4 KV Cache Compaction
@@ -627,8 +636,8 @@ After tree-walk verification, compact KV cache to accepted path:
 ```python
 accepted_indices = tree.walk(target_logits)  # CPU
 # GPU gather on accepted indices
-new_keys = keys.gather(accepted_indices, axis=1)    # composed
-new_values = values.gather(accepted_indices, axis=1) # composed
+new_keys = keys.gather(accepted_indices, axis=1)  # composed
+new_values = values.gather(accepted_indices, axis=1)  # composed
 ```
 
 ## 5. Legacy Code Migration

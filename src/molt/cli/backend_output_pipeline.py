@@ -123,6 +123,7 @@ def _emit_backend_pipeline_outputs(
                 native_artifact_plan=native_artifact_plan,
                 artifacts_root=artifacts_root,
                 stage_timings_ms=pipeline_stage_ms,
+                phase_starts=prepared_build_preamble.phase_starts,
                 wasm_facts_scanner=prepared_backend_setup.backend_bin,
                 app_export_contract_path=app_export_contract_path,
             )

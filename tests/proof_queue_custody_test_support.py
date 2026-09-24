@@ -32,6 +32,7 @@ from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
     custody_cas,
+    execution_custody,
     execution_environment,
     execution_receipt_details,
     process_image_capture,
@@ -265,21 +266,21 @@ def publish_receipt_custody(
 
 def synthetic_live_custody(directory: Path) -> dict[str, object]:
     raw = {
-        "schema": "molt.proof-live-custody.v1",
+        "schema": execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA,
         "watch_roots": 0,
         "events": [],
+        "apparatus_events": [],
         "errors": [],
         "state": "DRAINED",
         "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
         "stable": True,
     }
-    raw["identity_sha256"] = supervisor_custody._canonical_payload_sha256(
-        {
-            "events": raw["events"],
-            "errors": raw["errors"],
-            "state": raw["state"],
-            "lifecycle": raw["lifecycle"],
-        }
+    raw["identity_sha256"] = execution_custody.live_custody_identity_sha256(
+        events=[],
+        apparatus_events=[],
+        errors=[],
+        state=raw["state"],
+        lifecycle=["CREATED", "ARMED", "DRAINING", "DRAINED"],
     )
     return supervisor_custody._publish_live_custody_receipt(
         raw, cas_root=directory / "custody-cas"

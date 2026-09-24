@@ -19,6 +19,7 @@
 ```python
 from molt_db import pool
 
+
 async def handler():
     async with pool.transaction() as tx:
         await tx.execute("INSERT ...", params)

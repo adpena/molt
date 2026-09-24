@@ -80,7 +80,9 @@ def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path
     from molt.cli import build_locks
 
     state_root = tmp_path / "state"
-    monkeypatch.setattr(build_locks, "_build_state_root", lambda _project_root: state_root)
+    monkeypatch.setattr(
+        build_locks, "_build_state_root", lambda _project_root: state_root
+    )
     monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
 
     with build_locks._build_lock(tmp_path, "unit"):

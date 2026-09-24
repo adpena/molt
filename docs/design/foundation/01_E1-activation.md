@@ -213,47 +213,68 @@ These cover the primary correctness axes. All must produce CPython 3.12/3.13/3.1
 
 **Basic inlining:**
 ```python
-def add(a, b): return a + b
-print(add(3, 4))           # 7
-print(add(10, 20))         # 30
+def add(a, b):
+    return a + b
+
+
+print(add(3, 4))  # 7
+print(add(10, 20))  # 30
 ```
 
 **BigInt boundary (the critical non-regression):**
 ```python
-def apply(f, x, y): return f(x, y)
-def mul(a, b): return a * b
-print(apply(mul, 1 << 60, 7))   # 8317084599235823616 -- bigint path
-print(apply(mul, 3, 4))         # 12 -- inline path
+def apply(f, x, y):
+    return f(x, y)
+
+
+def mul(a, b):
+    return a * b
+
+
+print(apply(mul, 1 << 60, 7))  # 8317084599235823616 -- bigint path
+print(apply(mul, 3, 4))  # 12 -- inline path
 ```
 
 **Exception observation-only callee (phase c path):**
 ```python
 def inner(x):
     return x + 1
+
+
 def outer(lst):
     return [inner(v) for v in lst]
-print(outer([1, 2, 3]))         # [2, 3, 4]
+
+
+print(outer([1, 2, 3]))  # [2, 3, 4]
 ```
 
 **Exception propagation through inlined body:**
 ```python
-def div(a, b): return a // b
+def div(a, b):
+    return a // b
+
+
 def safe_div(a, b):
     try:
         return div(a, b)
     except ZeroDivisionError:
         return -1
-print(safe_div(10, 2))   # 5
-print(safe_div(10, 0))   # -1
+
+
+print(safe_div(10, 2))  # 5
+print(safe_div(10, 0))  # -1
 ```
 Note: `div` is a handler-free callee (observation-only); `safe_div` has a handler and is NOT inlined into (it is the caller with a handler, not a callee with one). `div` is inlined into `safe_div`. The exception edge in the inlined body routes to `safe_div`'s own handler via the post-call `CheckException` / continuation block. This is the primary phase-c correctness shape.
 
 **Recursive callee (must NOT be inlined):**
 ```python
 def fib(n):
-    if n <= 1: return n
-    return fib(n-1) + fib(n-2)
-print(fib(10))   # 55
+    if n <= 1:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+
+print(fib(10))  # 55
 ```
 Verify `fib` is in the recursive set and the call is retained.
 
@@ -262,13 +283,18 @@ Write a function with more than `tti.inline_op_limit` (30) ops and verify the ca
 
 **Cross-function type specialization (the key win):**
 ```python
-def inc(x): return x + 1
+def inc(x):
+    return x + 1
+
+
 def main():
     total = 0
     for i in range(100):
         total = inc(total)
     print(total)
-main()   # 100
+
+
+main()  # 100
 ```
 After inlining `inc` into `main`, the SCCP pass should fold the loop-accumulated value through the inlined `+1` body. Verify the output is correct on all backends.
 
@@ -279,21 +305,31 @@ def f(x):
         return x + 1
     except:
         return 0
+
+
 def g(y):
     try:
         return f(y) * 2
     except:
         return -1
-print(g(5))    # 12
+
+
+print(g(5))  # 12
 print(g("s"))  # -1 -- but f has no handler so f is inlined into g
 ```
 `f` is observation-only (`has_exception_handling=True`, `has_exception_handlers()=False`). It is inlined into `g` which has a real handler. Label ids from `f`'s clone must not collide with `g`'s labels. The `build_label_remap` function (`inliner.rs:731-745`) handles this; this test is the regression.
 
 **Leaf set soundness:**
 ```python
-def leaf(x): return x * 2      # leaf — no calls
-def caller(x): return leaf(x)  # after inlining: also a leaf
-print(caller(7))   # 14
+def leaf(x):
+    return x * 2  # leaf — no calls
+
+
+def caller(x):
+    return leaf(x)  # after inlining: also a leaf
+
+
+print(caller(7))  # 14
 ```
 The recursion guard in the Cranelift-emitted `caller` should be absent for `leaf` (it was already absent before), and after inlining, `caller` itself joins the leaf set, so callers of `caller` also skip the recursion guard for it.
 

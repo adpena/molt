@@ -312,6 +312,7 @@ def _write_meson_metadata(
         "backend": {
             "distribution": "ninja",
             "version": "1.13.0",
+            "reported_version": "1.13.0.git.kitware.jobserver-pipe-1",
             "path": "ninja.exe",
             "sha256": "a" * 64,
         },
@@ -332,6 +333,48 @@ def _write_meson_metadata(
         ],
         "pkg_config_requirement": "pkgconf==3.0.1.post0",
         "generated_inputs": [],
+    }
+
+
+def test_ninja_driver_uses_locked_distribution_version_not_binary_self_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    filename = "ninja.exe" if os.name == "nt" else "ninja"
+    binary = tmp_path / "lib" / filename
+    binary.parent.mkdir()
+    binary.write_bytes(b"locked ninja image")
+    inventory = SimpleNamespace(
+        identity={
+            "operating_system": "windows" if os.name == "nt" else "linux",
+            "scripts_root": "Scripts" if os.name == "nt" else "bin",
+        },
+        distribution=lambda name: (
+            {
+                "name": "ninja",
+                "version": "1.13.0",
+                "installed_files": [{"path": f"lib/{filename}"}],
+            }
+            if name == "ninja"
+            else None
+        ),
+        file=lambda _relative, *, distribution: binary,
+    )
+    monkeypatch.setattr(
+        producer,
+        "_run_process",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="1.13.0.git.kitware.jobserver-pipe-1\n", stderr=""
+        ),
+    )
+    driver = producer._source_ninja_driver(
+        tmp_path, SimpleNamespace(inventory=inventory)
+    )
+    assert driver.manifest_payload() == {
+        "distribution": "ninja",
+        "version": "1.13.0",
+        "reported_version": "1.13.0.git.kitware.jobserver-pipe-1",
+        "path": filename,
+        "sha256": producer._sha256_file(binary),
     }
 
 
@@ -469,6 +512,30 @@ def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
         ]
     )
     assert native.target == "aarch64-apple-darwin"
+
+
+@pytest.mark.parametrize(
+    "missing", ["--package-version", "--python-version", "--source", "--build-root"]
+)
+def test_produce_set_rejects_implicit_source_or_environment(
+    missing: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    selectors = {
+        "--package": "scipy",
+        "--package-version": "1.18.0",
+        "--module-set": "pact-witness",
+        "--python-version": "3.12",
+        "--source": "repos/scipy",
+        "--build-root": "build/scipy-wasm",
+    }
+    argv = ["extension", "produce-set"]
+    for option, value in selectors.items():
+        if option != missing:
+            argv.extend((option, value))
+    with pytest.raises(SystemExit) as error:
+        entrypoint_parser._build_entrypoint_parser().parse_args(argv)
+    assert error.value.code == 2
+    assert missing in capsys.readouterr().err
 
 
 def test_produce_set_dispatches_complete_set(
@@ -1229,6 +1296,7 @@ def test_distribution_probe_sanitizes_python_import_authority(
     )
     expected_argv = [
         str(Path(sys.executable)),
+        "-B",
         "-I",
         str(Path(python_environment_identity.__file__).resolve()),
         "--capture-environment",
@@ -1241,7 +1309,7 @@ def test_distribution_probe_sanitizes_python_import_authority(
     assert "PYTHONHOME" not in environment
     assert "PYTHONPATH" not in environment
     assert environment["PYTHONNOUSERSITE"] == "1"
-    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    # The exact argv above owns bytecode policy: isolated -I ignores PYTHON*.
 
 
 def test_complete_environment_cleans_exact_stale_sibling_record(
@@ -2139,6 +2207,7 @@ def test_meson_setup_uses_typed_driver(
             str(tmp_path / "metadata/meson.cross"),
             "--cross-file",
             str(tmp_path / "metadata/build-tools.cross"),
+            f"--prefix={producer.MESON_INSTALL_PREFIX}",
             "-Dblas=none",
         )
     ]

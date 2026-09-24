@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
@@ -747,13 +748,25 @@ def test_publication_finalizer_uses_target_and_resolved_profile_policy(
         RUNTIME_WASM_BUILD, "transform_wasm_publication_file", transform
     )
     member = RUNTIME_WASM_BUILD._RuntimeWasmMemberFinalizer(
-        path, reloc, True, 5.0, root, None, reloc_spec if reloc else shared
+        path,
+        reloc,
+        True,
+        5.0,
+        root,
+        frozenset({"PyLong_FromLong"}),
+        reloc_spec if reloc else shared,
     )
     assert member.finalize_publication()
     assert seen["final_artifact"] is not reloc
     assert seen["preserve_debug"] is preserve
     if reloc:
         assert seen["rename_map"] == {}
+    else:
+        # An app's required subset must not shape the shared runtime ABI.
+        rename_map = seen["rename_map"]
+        assert rename_map == wasm_split_runtime_export_rename_map(None)
+        assert rename_map["PyLong_FromLong"] == "molt_PyLong_FromLong"
+        assert rename_map["PyType_Ready"] == "molt_PyType_Ready"
 
 
 def test_reloc_runtime_publication_preserves_linker_metadata_bytes(

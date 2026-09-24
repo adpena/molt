@@ -261,7 +261,7 @@ def _resolved_runtime_wasm_family_identities(
                 kind="shared",
                 resolved_rustflags=shared_spec.fingerprint_rustflags,
                 link_args=tuple(shlex.split(shared_spec.link_flags)),
-                publication_transform="shared-runtime-publication-v2",
+                publication_transform="shared-runtime-publication-v3",
                 preserve_debug=preserve_debug,
             ),
             RuntimeBuildMemberPlan(

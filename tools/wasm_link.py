@@ -125,6 +125,7 @@ from wasm_link_format import (  # noqa: E402
     _collect_module_imports as _collect_module_imports,
     _count_func_imports as _count_func_imports,
     _ensure_table_export as _ensure_table_export,
+    _insert_standard_section as _insert_standard_section,
     _find_func_import_index as _find_func_import_index,
     _has_table as _has_table,
     _is_wasm_binary as _is_wasm_binary,
@@ -2012,15 +2013,20 @@ def _compose_split_runtime_native_allowlist(
     *,
     base_allowlist: Path,
     native_objects: Sequence[Path],
-    runtime_exports: set[str],
+    split_runtime_exports: set[str],
     temp_dir: tempfile.TemporaryDirectory,
 ) -> Path:
     """Return the deployed split-app allowlist for static native extensions.
 
-    The monolithic validation link resolves Molt ABI symbols against the runtime
-    stub. The deployed split app deliberately leaves those same symbols as
-    ``molt_runtime`` imports, so wasm-ld must allow the generated runtime export
-    surface only for that transaction-local app link.
+    The monolithic validation link resolves Molt ABI symbols against the
+    relocatable runtime under their canonical C names. The deployed split app
+    deliberately leaves those same symbols as ``molt_runtime`` imports under
+    their split export names, so wasm-ld must allow exactly the export surface
+    of the runtime the app deploys with (``split_runtime_exports``, the deploy
+    runtime's export section) for that transaction-local app link. The
+    relocatable runtime's defined names are the wrong authority here: they
+    spell the CPython ABI canonically (``PyType_Ready``) while the split app
+    imports ``molt_PyType_Ready``.
     """
     if not native_objects:
         return base_allowlist
@@ -2028,7 +2034,7 @@ def _compose_split_runtime_native_allowlist(
         {
             *_read_link_allowlist_symbols(base_allowlist),
             *_external_native_host_link_imports(),
-            *runtime_exports,
+            *split_runtime_exports,
         }
     )
     composed = Path(temp_dir.name) / "wasm_allowed_imports.split_runtime_native.txt"
@@ -2082,9 +2088,11 @@ def _make_rust_wasm_facts_provider(
     scanner: Path,
     scratch_root: Path,
     metrics: dict[str, float] | None = None,
+    *,
+    evidence_root: Path | None = None,
 ) -> Callable[[bytes], dict[str, object]]:
     return _link_facts.make_rust_wasm_facts_provider(
-        globals(), scanner, scratch_root, metrics
+        globals(), scanner, scratch_root, metrics, evidence_root=evidence_root
     )
 
 

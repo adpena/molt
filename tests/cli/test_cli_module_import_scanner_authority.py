@@ -10,6 +10,7 @@ import molt.cli as cli
 from molt.cli import module_graph
 from molt.cli import module_import_scanner
 from molt.compiler_analysis import python_binding_flow
+from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import TargetPythonVersion
 
 _MODULE_IMPORT_SCANNER_NAMES = (
@@ -147,3 +148,199 @@ def test_static_scan_uses_selected_target_annotation_policy() -> None:
 
     assert eager == ("annotation",)
     assert deferred == ("target",)
+
+
+@pytest.mark.parametrize(
+    "iterable", ["['float96', 'float128']", "('float96',)", "'ab'"]
+)
+def test_iterating_a_constant_display_keeps_relative_imports_static(
+    iterable: str,
+) -> None:
+    tree = ast.parse(f"for ta in {iterable}:\n    pass\nfrom . import lib\n")
+    assert "pkg.lib" in module_import_scanner._collect_imports(
+        tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+
+def test_constant_iteration_does_not_erase_body_callback_custody() -> None:
+    # Retain the incoming NumPy-shaped witness, but not its old unsound static
+    # expectation: getattr can execute a descriptor, and replacement/release
+    # can call Python even though advancing the literal list cannot.
+
+    static = ast.parse(
+        "for ta in ['float96', 'float128']:\n"
+        "    try:\n"
+        "        globals()[ta] = getattr(_core, ta)\n"
+        "    except AttributeError:\n"
+        "        pass\n"
+        "del ta\n"
+        "from . import lib\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError):
+        module_import_scanner._collect_imports(
+            static, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+
+    dynamic = ast.parse(
+        "for ta in aliases():\n"
+        "    globals()[ta] = getattr(_core, ta)\n"
+        "from . import lib\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            dynamic, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("iteration over a call must keep runtime custody")
+
+
+def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
+    # Builtin kind survives a tracked builtin mutation, but not a callback that
+    # can replace the module binding. No import-specific provenance set exists.
+    tree = ast.parse(
+        "env_added = []\n"
+        "env_added.append('OPENBLAS_MAIN_FREE')\n"
+        "for envkey in env_added:\n"
+        "    pass\n"
+        "from . import umath\n"
+    )
+    assert "pkg.umath" in module_import_scanner._collect_imports(
+        tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+
+def test_builtin_binding_does_not_survive_unknown_callbacks() -> None:
+    # The incoming NumPy-shaped source crosses descriptor/comparison/call
+    # boundaries. For example os.environ.__contains__ can replace env_added
+    # with a custom iterator that changes __package__; list presence is not
+    # custody of the later loaded binding.
+
+    static = ast.parse(
+        "env_added = []\n"
+        "for envkey in ['OPENBLAS_MAIN_FREE']:\n"
+        "    if envkey not in os.environ:\n"
+        "        env_added.append(envkey)\n"
+        "try:\n"
+        "    from . import multiarray\n"
+        "finally:\n"
+        "    for envkey in env_added:\n"
+        "        os.unsetenv(envkey)\n"
+        "del envkey\n"
+        "del env_added\n"
+        "from . import umath\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError):
+        module_import_scanner._collect_imports(
+            static, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+
+    rebound = ast.parse(
+        "env_added = []\n"
+        "env_added = discover()\n"
+        "for envkey in env_added:\n"
+        "    os.unsetenv(envkey)\n"
+        "from . import umath\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            rebound, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("a name rebound to a call must keep runtime custody")
+
+
+def test_callback_bearing_finally_retains_runtime_import_custody() -> None:
+    # Keep the original incoming package-init shape. The same finally executes
+    # on raised and normal paths; env_added is a live module binding across the
+    # callback-bearing handler, not a permanently builtin import-scanner fact.
+
+    raising = ast.parse(
+        "env_added = []\n"
+        "try:\n"
+        "    from . import multiarray\n"
+        "except ImportError as exc:\n"
+        "    candidates = []\n"
+        "    for path in __path__:\n"
+        "        candidates.extend(f for f in os.listdir(path))\n"
+        "    for f in discover():\n"
+        "        candidates.append(f)\n"
+        "    raise ImportError(candidates) from exc\n"
+        "finally:\n"
+        "    for envkey in env_added:\n"
+        "        os.unsetenv(envkey)\n"
+        "from . import umath\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError):
+        module_import_scanner._collect_imports(
+            raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+
+
+def test_a_raising_handler_does_not_taint_the_imports_after_its_try() -> None:
+    raising = ast.parse(
+        "try:\n"
+        "    from . import multiarray\n"
+        "except ImportError:\n"
+        "    for f in discover():\n"
+        "        pass\n"
+        "    raise\n"
+        "from . import umath\n"
+    )
+    assert "pkg.umath" in module_import_scanner._collect_imports(
+        raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
+    )
+
+    falls_through = ast.parse(
+        "try:\n"
+        "    from . import multiarray\n"
+        "except ImportError:\n"
+        "    for f in discover():\n"
+        "        pass\n"
+        "from . import umath\n"
+    )
+    try:
+        module_import_scanner._collect_imports(
+            falls_through,
+            module_name="pkg",
+            is_package=True,
+            import_scan_mode="module_init",
+        )
+    except UnresolvedStaticImportError:
+        pass
+    else:
+        raise AssertionError("a handler that completes normally still taints")
+
+
+def test_rebound_package_path_is_not_builtin_iteration_provenance() -> None:
+    tree = ast.parse(
+        "__path__ = discover()\nfor path in __path__:\n    pass\nfrom . import child\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError):
+        module_import_scanner._collect_imports(
+            tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+
+
+def test_callback_can_replace_a_previously_builtin_iterable() -> None:
+    tree = ast.parse(
+        "class Redirect:\n"
+        "    def __iter__(self):\n"
+        "        globals()['__package__'] = 'other'\n"
+        "        return iter(())\n"
+        "def replace():\n"
+        "    global env_added\n"
+        "    env_added = Redirect()\n"
+        "env_added = []\n"
+        "replace()\n"
+        "for envkey in env_added:\n"
+        "    pass\n"
+        "from . import child\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError):
+        module_import_scanner._collect_imports(
+            tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )

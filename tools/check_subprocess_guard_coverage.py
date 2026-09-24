@@ -433,12 +433,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "memory guard Windows process snapshot helper with a hard timeout",
     ),
     AllowedRawSubprocessUse(
-        "tools/pact_witness_oracle.py",
-        "_run",
-        "run",
-        "bounded oracle helper used by Pact witness tooling under explicit runner custody",
-    ),
-    AllowedRawSubprocessUse(
         "tools/proof_queue_pkg/state.py",
         "_git_snapshot.run_git",
         "run",

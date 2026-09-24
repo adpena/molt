@@ -176,6 +176,7 @@ Python's call-by-object-reference semantics require care:
 def modify(lst):
     lst.append(42)
 
+
 items = [1, 2, 3]
 modify(items)
 print(items)  # [1, 2, 3, 42]
@@ -369,7 +370,7 @@ class Point:
         self.y = y
 
     def distance(self) -> float:
-        return (self.x ** 2 + self.y ** 2) ** 0.5
+        return (self.x**2 + self.y**2) ** 0.5
 ```
 
 ```rust

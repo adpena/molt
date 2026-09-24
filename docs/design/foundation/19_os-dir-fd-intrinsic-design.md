@@ -164,7 +164,9 @@ def stat(path, *, dir_fd=None, follow_symlinks=True):
     _require_cap("fs.read")
     if dir_fd is not None:
         intrinsic = _require_os_intrinsic("molt_os_stat_at")
-        return _expect_stat_result(intrinsic(path, dir_fd, bool(follow_symlinks)), "stat")
+        return _expect_stat_result(
+            intrinsic(path, dir_fd, bool(follow_symlinks)), "stat"
+        )
     if bool(follow_symlinks):
         return _expect_stat_result(_require_os_intrinsic("molt_os_stat")(path), "stat")
     return _expect_stat_result(_require_os_intrinsic("molt_os_lstat")(path), "lstat")

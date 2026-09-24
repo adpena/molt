@@ -53,13 +53,13 @@ def validate_source_extension_build_custody(
         raise SourceExtensionSetValidationError(
             "extension-set Meson metadata differs from recorded build contract"
         )
-    resolved_build_requirements = {
-        canonicalize_name(str(item["distribution"])): str(item["version"])
-        for item in cast(Mapping[str, Any], build_environment)["resolved"]
-        if isinstance(item, Mapping)
-    }
     backend = cast(Mapping[str, Any], meson["backend"])
     custody = cast(Mapping[str, Any], build_environment)["custody"]
+    realized = cast(Mapping[str, Any], custody)["realized_environment"]
+    installed_versions = {
+        canonicalize_name(str(item["name"])): str(item["version"])
+        for item in cast(list[Mapping[str, Any]], realized["distributions"])
+    }
     group_requirements = cast(Mapping[str, Any], custody)[
         "dependency_group_requirements"
     ]
@@ -81,9 +81,13 @@ def validate_source_extension_build_custody(
         )
     )
     if (
-        set(backend) != {"distribution", "version", "path", "sha256"}
+        set(backend)
+        != {"distribution", "version", "reported_version", "path", "sha256"}
         or canonicalize_name(str(backend.get("distribution"))) != "ninja"
         or not backend_matches_custody
+        or backend_version != installed_versions.get("ninja")
+        or not isinstance(backend.get("reported_version"), str)
+        or not backend["reported_version"].strip()
         or not isinstance(backend.get("path"), str)
         or not backend.get("path")
         or any(separator in backend["path"] for separator in ("/", "\\"))
@@ -101,7 +105,7 @@ def validate_source_extension_build_custody(
             set(driver) != {"kind", "module", "distribution", "version"}
             or driver.get("module") != "mesonbuild.mesonmain"
             or canonicalize_name(str(driver.get("distribution"))) != "meson"
-            or driver.get("version") != resolved_build_requirements.get("meson")
+            or driver.get("version") != installed_versions.get("meson")
         ):
             raise SourceExtensionSetValidationError(
                 "extension-set Meson driver identity is invalid"
@@ -175,7 +179,7 @@ def validate_source_extension_build_custody(
                 raise SourceExtensionSetValidationError(
                     "extension-set Meson pkg-config identity differs from custody"
                 )
-        elif resolved_build_requirements.get(normalized_distribution) != version:
+        elif installed_versions.get(normalized_distribution) != version:
             raise SourceExtensionSetValidationError(
                 f"extension-set Meson config_tools[{index}] differs from resolved "
                 "build custody"

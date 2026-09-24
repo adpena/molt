@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence, TypeVar
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     GEN_CONTROL_SIZE,
@@ -30,11 +31,6 @@ from molt.frontend.sema import (
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 _MetadataValue = TypeVar("_MetadataValue")
@@ -292,7 +288,7 @@ class _FrontendFunctionMetadataEmitter(FunctionMetadataEmitter[MoltValue]):
         )
 
 
-class FunctionMetadataMixin(_MixinBase):
+class FunctionMetadataMixin(GeneratorMixinBase):
     @staticmethod
     def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
         if isinstance(expr, ast.Constant):

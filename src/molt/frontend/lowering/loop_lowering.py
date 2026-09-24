@@ -9,20 +9,12 @@ loop fast paths shared by statement, comprehension, call, and analysis visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import LoopScope, MoltOp, MoltValue, ScratchCell
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class LoopLoweringMixin(_MixinBase):
+class LoopLoweringMixin(GeneratorMixinBase):
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
         if iterable is None:
             return False

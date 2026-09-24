@@ -47,6 +47,7 @@ from molt_web import App
 
 app = App()
 
+
 @app.get("/health")
 async def health(req):
     return {"ok": True}

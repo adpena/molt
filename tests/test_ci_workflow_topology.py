@@ -7,6 +7,8 @@ import tomllib
 import pytest
 import yaml
 
+from molt import tool_releases
+
 from tools.proof_counts import fail_closed_proof_exit_code
 
 
@@ -718,11 +720,13 @@ def test_pre_commit_hooks_are_read_only_by_default() -> None:
 
     assert "- id: ruff" in pre_commit_text
     assert "repo: https://github.com/astral-sh/ruff-pre-commit" not in pre_commit_text
-    assert "uv run ruff check" in pre_commit_text
+    # The hooks pass staged paths explicitly; only --force-exclude makes ruff
+    # honour pyproject's extend-exclude (generated modules) for explicit paths.
+    assert "uv run ruff check --force-exclude" in pre_commit_text
     assert f"--python {default_python}" not in pre_commit_text
     assert "--fix" not in pre_commit_text
     assert "- id: ruff-format" in pre_commit_text
-    assert "uv run ruff format --check" in pre_commit_text
+    assert "uv run ruff format --check --force-exclude" in pre_commit_text
     assert "uv run ty check src" in pre_commit_text
     assert "tools/secret_guard.py --staged" in pre_commit_text
     assert "- id: end-of-file-fixer" not in pre_commit_text
@@ -916,7 +920,8 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert (
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
     )
-    assert 'node-version: "24.16.0"' in formal_workflow
+    node_version = tool_releases.tool_release("node").version
+    assert f'node-version: "{node_version}"' in formal_workflow
     assert "check-latest: true" not in setup_project
     assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
         formal_workflow
@@ -930,7 +935,7 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
         not in nightly_workflow
     )
-    assert "node-version: '24.16.0'" not in nightly_workflow
+    assert f"node-version: '{node_version}'" not in nightly_workflow
     assert "Install Quint Rust evaluator" not in nightly_workflow
 
 
@@ -1110,7 +1115,7 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "push:" in release_text
     assert "tags:" in release_text
     assert "workflow_dispatch:" in release_text
-    release_config = _read("config/release_supply_chain.toml")
+    release_config = _read("config/release_targets.toml")
     assert "macos-15" in release_config
     assert "ubuntu-24.04" in release_config
     assert "windows-2022" in release_config
@@ -1253,7 +1258,10 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         "uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b"
         in wasm_text
     )
-    assert "tool: wasm-tools@1.253.0" in wasm_text
+    assert (
+        f"tool: wasm-tools@{tool_releases.tool_release('wasm-tools').version}"
+        in wasm_text
+    )
     assert "fallback: none" in wasm_text
     assert (
         "MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}"

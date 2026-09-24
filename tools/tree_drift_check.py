@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 from pathlib import Path
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -130,27 +131,52 @@ def _classify(root: Path, base: str, path: str, porcelain: dict[str, str]) -> st
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", default="origin/main", help="ref to compare against (default origin/main)")
-    parser.add_argument("--fetch", action="store_true", help="git fetch origin before comparing")
-    parser.add_argument("--files", nargs="*", default=None, help="explicit files to scope the trust decision to")
-    parser.add_argument("--witness", action="store_true", help="scope to the witness/E1 frontier-masking file set")
-    parser.add_argument("--behind-threshold", type=int, default=DEFAULT_BEHIND_THRESHOLD)
-    parser.add_argument("--quiet", action="store_true", help="print only the one-line verdict")
+    parser.add_argument(
+        "--base",
+        default="origin/main",
+        help="ref to compare against (default origin/main)",
+    )
+    parser.add_argument(
+        "--fetch", action="store_true", help="git fetch origin before comparing"
+    )
+    parser.add_argument(
+        "--files",
+        nargs="*",
+        default=None,
+        help="explicit files to scope the trust decision to",
+    )
+    parser.add_argument(
+        "--witness",
+        action="store_true",
+        help="scope to the witness/E1 frontier-masking file set",
+    )
+    parser.add_argument(
+        "--behind-threshold", type=int, default=DEFAULT_BEHIND_THRESHOLD
+    )
+    parser.add_argument(
+        "--quiet", action="store_true", help="print only the one-line verdict"
+    )
     args = parser.parse_args(argv)
 
     root = _repo_root()
     if args.fetch:
         try:
             _git(["fetch", "origin", "--quiet"], root)
-        except subprocess.CalledProcessError as exc:  # network/offline: LOUD, not silent
-            print(f"DRIFT-CHECK ERROR: git fetch failed: {exc.stderr.strip() if exc.stderr else exc}")
+        except (
+            subprocess.CalledProcessError
+        ) as exc:  # network/offline: LOUD, not silent
+            print(
+                f"DRIFT-CHECK ERROR: git fetch failed: {exc.stderr.strip() if exc.stderr else exc}"
+            )
             return 3
 
     try:
         head = _git(["rev-parse", "--short", "HEAD"], root)
         base_sha = _git(["rev-parse", "--short", args.base], root)
     except subprocess.CalledProcessError as exc:
-        print(f"DRIFT-CHECK ERROR: cannot resolve {args.base}: {exc.stderr.strip() if exc.stderr else exc}")
+        print(
+            f"DRIFT-CHECK ERROR: cannot resolve {args.base}: {exc.stderr.strip() if exc.stderr else exc}"
+        )
         return 3
 
     behind = int(_git(["rev-list", "--count", f"HEAD..{args.base}"], root))
@@ -167,8 +193,14 @@ def main(argv: list[str] | None = None) -> int:
     seen: set[str] = set()
     scope = [f for f in scope if not (f in seen or seen.add(f))]
 
-    file_states: list[tuple[str, str]] = [(f, _classify(root, args.base, f, porcelain)) for f in scope]
-    masking = [f for f, s in file_states if s in {"STALE", "DIRTY", "UNTRACKED", "ABSENT-ONE-SIDE"}]
+    file_states: list[tuple[str, str]] = [
+        (f, _classify(root, args.base, f, porcelain)) for f in scope
+    ]
+    masking = [
+        f
+        for f, s in file_states
+        if s in {"STALE", "DIRTY", "UNTRACKED", "ABSENT-ONE-SIDE"}
+    ]
 
     # A scoped request trusts the tree only if no scoped file is masking.
     # An unscoped request trusts the tree only if it is not materially behind.
@@ -188,7 +220,9 @@ def main(argv: list[str] | None = None) -> int:
             mark = " " if s == "CLEAN" else "!"
             print(f"  {mark} {s:16s} {f}")
     if not args.quiet and not ok and not scope:
-        print(f"  ! tree is {behind} commit(s) behind {args.base}; build/audit/acceptance here reflects a STALE tree, not current {args.base}.")
+        print(
+            f"  ! tree is {behind} commit(s) behind {args.base}; build/audit/acceptance here reflects a STALE tree, not current {args.base}."
+        )
 
     return 0 if ok else 1
 

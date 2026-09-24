@@ -35,12 +35,15 @@ def test_timeout_payloads_are_normalized_at_interpreter_boundary(
 
     monkeypatch.setattr(python_interpreter.subprocess, "run", time_out)
 
-    assert python_interpreter._run_command(
-        ["python"],
-        timeout=1.0,
-        env={},
-        cwd=tmp_path,
-    ) == expected
+    assert (
+        python_interpreter._run_command(
+            ["python"],
+            timeout=1.0,
+            env={},
+            cwd=tmp_path,
+        )
+        == expected
+    )
 
 
 def test_target_python_candidates_are_cross_platform_without_ambient_default():
@@ -99,7 +102,11 @@ def test_selector_preserves_explicit_path_and_command(
         "dev",
     )
     monkeypatch.chdir(tmp_path)
-    relative = ".\\python custom.exe" if sys.platform.startswith("win") else "./python custom.exe"
+    relative = (
+        ".\\python custom.exe"
+        if sys.platform.startswith("win")
+        else "./python custom.exe"
+    )
     assert python_interpreter.resolve_python_selector(f'"{relative}"') == (relative,)
 
 

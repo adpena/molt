@@ -8,20 +8,13 @@ function, and control-flow visitors.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from molt.frontend._types import MoltOp, MoltValue
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CompileWarningMixin(_MixinBase):
+class CompileWarningMixin(GeneratorMixinBase):
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _deferred_runtime_warnings: list[str]
 

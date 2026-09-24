@@ -7,7 +7,6 @@ import ast
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -28,14 +27,7 @@ from molt.frontend.visitors.call_dispatch_builtin_scalar import (
     CallNamedBuiltinScalarDispatchMixin,
 )
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 class CallNamedBuiltinDispatchMixin(
@@ -43,7 +35,7 @@ class CallNamedBuiltinDispatchMixin(
     CallNamedBuiltinIterDispatchMixin,
     CallNamedBuiltinConstructorDispatchMixin,
     CallNamedBuiltinFallbackDispatchMixin,
-    _MixinBase,
+    GeneratorMixinBase,
 ):
     def _try_emit_shape_builtin_call(self, node: ast.Call) -> Any:
         """Lower the shape family from source-point identity and lifetime facts.

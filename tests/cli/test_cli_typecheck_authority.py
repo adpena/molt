@@ -54,9 +54,7 @@ def test_collect_type_facts_for_build_reuses_successful_ty_cache(
     monkeypatch.setattr(typecheck, "_run_ty_check", fake_ty_check)
     monkeypatch.setattr(typecheck, "collect_type_facts_from_paths", fake_collect)
 
-    first, first_ok = typecheck._collect_type_facts_for_build(
-        [source], "check", source
-    )
+    first, first_ok = typecheck._collect_type_facts_for_build([source], "check", source)
     second, second_ok = typecheck._collect_type_facts_for_build(
         [source], "check", source
     )
@@ -109,9 +107,7 @@ def test_collect_type_facts_does_not_cache_failed_ty_result(
 
     monkeypatch.setattr(typecheck, "_run_ty_check", fake_ty_check)
 
-    first, first_ok = typecheck._collect_type_facts_for_build(
-        [source], "check", source
-    )
+    first, first_ok = typecheck._collect_type_facts_for_build([source], "check", source)
     second, second_ok = typecheck._collect_type_facts_for_build(
         [source], "check", source
     )

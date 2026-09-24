@@ -266,6 +266,62 @@ def test_hydrate_validates_source_pair_and_publishes_immutable_destination(
     )
 
 
+def test_publish_self_validation_survives_a_concurrent_manifest_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The losing publisher of a manifest race still published a valid pair.
+
+    Two publishers may replace the shared manifest back to back; the one whose
+    replacement is overwritten must validate the members IT committed, not
+    whatever the manifest points at afterwards (that is the reader's job).
+    """
+    from molt.cli import runtime_wasm_generation as module
+
+    winner, winner_shared, winner_reloc = _publish_pair(
+        tmp_path, pair_seed="winner", shared=b"w-shared", reloc=b"w-reloc"
+    )
+    winner_manifest = json.loads(winner.manifest.read_text(encoding="utf-8"))
+    original_write = module._atomic_write_json
+
+    def write_then_lose_the_race(path: Path, payload: object, **kwargs) -> None:
+        original_write(path, payload, **kwargs)
+        if path == winner.manifest:
+            # The competing publisher's replacement lands before this
+            # publisher can look at the manifest again.
+            original_write(path, winner_manifest, **kwargs)
+
+    monkeypatch.setattr(module, "_atomic_write_json", write_then_lose_the_race)
+
+    loser, loser_shared, loser_reloc = _publish_pair(
+        tmp_path, pair_seed="loser", shared=b"l-shared", reloc=b"l-reloc"
+    )
+
+    # The loser's publication is complete and self-consistent ...
+    assert loser.shared_identity == loser_shared
+    assert loser.reloc_identity == loser_reloc
+    assert loser.shared.read_bytes() == b"l-shared"
+    assert loser.reloc.read_bytes() == b"l-reloc"
+    assert loser.manifest == winner.manifest
+    # ... while the manifest, by the last-writer-wins contract, selects the
+    # winner: the reader authority reports exactly that.
+    assert (
+        read_runtime_wasm_generation(
+            loser.manifest,
+            expected_shared_identity=loser_shared,
+            expected_reloc_identity=loser_reloc,
+        )
+        is None
+    )
+    assert (
+        read_runtime_wasm_generation(
+            loser.manifest,
+            expected_shared_identity=winner_shared,
+            expected_reloc_identity=winner_reloc,
+        )
+        == winner
+    )
+
+
 def _publish_process(
     root: str,
     source_name: str,

@@ -134,7 +134,7 @@ def test_preflight_revalidates_source_disk_pair_and_custody_under_claim(
     )
     monkeypatch.setattr(preflight, "_source_identity", lambda _root: next(identities))
     monkeypatch.setattr(
-        preflight, "_planned_pair", lambda **_kwargs: {"pair_digest": "ab" * 32}
+        preflight, "_planned_pair", lambda **_kwargs: {"family_digest": "ab" * 32}
     )
     from tools import memory_guard
 
@@ -174,7 +174,7 @@ def test_preflight_blocks_when_source_changes_while_claim_is_held(
     )
     monkeypatch.setattr(preflight, "_source_identity", lambda _root: next(identities))
     monkeypatch.setattr(
-        preflight, "_planned_pair", lambda **_kwargs: {"pair_digest": "ab" * 32}
+        preflight, "_planned_pair", lambda **_kwargs: {"family_digest": "ab" * 32}
     )
     from tools import memory_guard
 

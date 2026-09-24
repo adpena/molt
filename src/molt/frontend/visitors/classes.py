@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     cast,
@@ -39,14 +38,6 @@ from molt.frontend.sema import (
 from molt.frontend.visitors.class_method_compilation import (
     ClassMethodCompilationMixin,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
 
 
 def _iter_slots_field_names(value: ast.expr | None) -> list[str]:

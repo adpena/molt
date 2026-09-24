@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from molt.compiler_analysis.python_effects_generated import (
     NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
@@ -28,17 +28,10 @@ from molt.frontend.lowering.op_kinds_generated import (
     FRONTEND_REPOLL_KINDS,
     RAISING_KIND_NAMES,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class EmissionCoreMixin(_MixinBase):
+class EmissionCoreMixin(GeneratorMixinBase):
     def visit(self, node: ast.AST) -> Any:
         try:
             if isinstance(node, (ast.stmt, ast.ExceptHandler)):

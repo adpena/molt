@@ -196,8 +196,7 @@ def test_negative_control_research_quarantine_loader_import_fails_for_production
 
     fail = gate.check_research_quarantines(tmp_path)
     assert any(
-        v.kind == "research-quarantine-usage"
-        and "bad_reference_loader.py" in v.detail
+        v.kind == "research-quarantine-usage" and "bad_reference_loader.py" in v.detail
         for v in fail
     ), f"gate MUST fail on production imports of the quarantine loader; got {fail}"
     assert not any("test_reference_loader.py" in v.detail for v in fail), (
@@ -293,12 +292,12 @@ def test_negative_control_ecosystem_build_crutch_fails_then_passes(
     assert any(
         s.file == "tools/regen_scipy_ndimage_source_plan.py" for s in discovered
     ), f"Scan F failed to discover injected package build crutch; got {discovered}"
-    assert any(
-        s.file == "src/molt/cli/pandas_header_overlay.py" for s in discovered
-    ), f"Scan F failed to discover injected package header overlay; got {discovered}"
-    assert any(
-        s.file == "tools/write_tinygrad_config.py" for s in discovered
-    ), f"Scan F failed to discover injected package config authoring; got {discovered}"
+    assert any(s.file == "src/molt/cli/pandas_header_overlay.py" for s in discovered), (
+        f"Scan F failed to discover injected package header overlay; got {discovered}"
+    )
+    assert any(s.file == "tools/write_tinygrad_config.py" for s in discovered), (
+        f"Scan F failed to discover injected package config authoring; got {discovered}"
+    )
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(
@@ -307,13 +306,11 @@ def test_negative_control_ecosystem_build_crutch_fails_then_passes(
         for v in fail
     ), f"gate MUST fail on unregistered ecosystem_build_crutch; got {fail}"
     assert any(
-        v.kind == "unregistered-poison-site"
-        and "pandas_header_overlay.py" in v.detail
+        v.kind == "unregistered-poison-site" and "pandas_header_overlay.py" in v.detail
         for v in fail
     ), f"gate MUST fail on unregistered package header overlay; got {fail}"
     assert any(
-        v.kind == "unregistered-poison-site"
-        and "write_tinygrad_config.py" in v.detail
+        v.kind == "unregistered-poison-site" and "write_tinygrad_config.py" in v.detail
         for v in fail
     ), f"gate MUST fail on unregistered package config authoring; got {fail}"
 
@@ -342,9 +339,9 @@ def test_negative_control_ecosystem_reimplementation_fails_then_passes(
     )
 
     discovered = gate.discover_ecosystem_reimplementations(tmp_path)
-    assert any(
-        s.file == "src/molt/stdlib/numpy/__init__.py" for s in discovered
-    ), f"Scan A3 failed to discover injected package reimplementation; got {discovered}"
+    assert any(s.file == "src/molt/stdlib/numpy/__init__.py" for s in discovered), (
+        f"Scan A3 failed to discover injected package reimplementation; got {discovered}"
+    )
 
     fail = gate.run_gate(tmp_path, registry)
     assert any(

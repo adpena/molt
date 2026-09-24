@@ -213,6 +213,7 @@ def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
     import os
 
     import molt.cli as cli
+    from molt.cli import build_inputs
 
     for env_value, expected in (("full", "full"), (None, DEFAULT_STDLIB_PROFILE)):
         if env_value is None:
@@ -226,8 +227,6 @@ def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
             # The env the module-graph closure reader will observe.
             captured["env"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
             return None, 0  # (no inputs, sentinel error) -> build() returns early
-
-        from molt.cli import build_inputs
 
         monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare)
         cli.build("examples/hello.py", stdlib_profile=None)

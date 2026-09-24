@@ -272,9 +272,7 @@ def resolve_target_python(
         and current == target_python.short
     ):
         try:
-            return probe_python_command(
-                (sys.executable,), env=probe_env, cwd=probe_cwd
-            )
+            return probe_python_command((sys.executable,), env=probe_env, cwd=probe_cwd)
         except PythonInterpreterError as exc:
             failures.append(f"{sys.executable}: {exc}")
     if override is None or not override.strip():

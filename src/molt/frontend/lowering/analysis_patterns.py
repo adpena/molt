@@ -9,22 +9,11 @@ from __future__ import annotations
 
 import ast
 
-from typing import (
-    TYPE_CHECKING,
-)
-
+from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import MoltValue
 
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
 
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
-
-
-class AnalysisPatternMixin(_MixinBase):
+class AnalysisPatternMixin(GeneratorMixinBase):
     def _match_vector_reduction_loop(
         self, node: ast.For
     ) -> tuple[str, str, str] | None:

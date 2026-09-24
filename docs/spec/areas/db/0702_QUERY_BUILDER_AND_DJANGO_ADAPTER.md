@@ -21,10 +21,11 @@ from molt_sql import table
 
 User = table("users")
 
-q = (User
-     .where(User.email.endswith("@austin.edu"))
-     .select(User.id, User.email)
-     .limit(100))
+q = (
+    User.where(User.email.endswith("@austin.edu"))
+    .select(User.id, User.email)
+    .limit(100)
+)
 
 rows = await q.fetch_all()
 ```

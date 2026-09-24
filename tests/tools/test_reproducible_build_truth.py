@@ -19,9 +19,7 @@ def test_repeated_build_requires_two_observations(tmp_path: Path) -> None:
     assert details["error"] == "runs must be at least 2"
 
 
-def test_repeated_build_compares_every_observation(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_repeated_build_compares_every_observation(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source.py"
     artifact = tmp_path / "artifact.o"
     source.write_text("print('ok')\n", encoding="utf-8")
@@ -106,9 +104,7 @@ def test_batch_receipt_fails_closed_for_missing_registered_source(
     assert payload["status"] == "failure"
 
 
-def test_single_build_mode_emits_counted_receipt(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_single_build_mode_emits_counted_receipt(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source.py"
     receipt = tmp_path / "receipt.json"
     source.write_text("print('ok')\n", encoding="utf-8")

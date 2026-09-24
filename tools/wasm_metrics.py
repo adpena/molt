@@ -6,9 +6,20 @@ import hashlib
 from pathlib import Path
 
 SECTION_NAMES = {
-    0: "custom", 1: "type", 2: "import", 3: "function", 4: "table",
-    5: "memory", 6: "global", 7: "export", 8: "start", 9: "element",
-    10: "code", 11: "data", 12: "data_count", 13: "tag",
+    0: "custom",
+    1: "type",
+    2: "import",
+    3: "function",
+    4: "table",
+    5: "memory",
+    6: "global",
+    7: "export",
+    8: "start",
+    9: "element",
+    10: "code",
+    11: "data",
+    12: "data_count",
+    13: "tag",
 }
 
 
@@ -50,8 +61,13 @@ def _skip_const_expr(data: bytes, offset: int) -> int:
 
 def _data_segment_metrics(payload: bytes) -> dict[str, int]:
     count, offset = _read_varuint(payload, 0)
-    metrics = {"count": count, "active_count": 0, "passive_count": 0,
-               "payload_bytes": 0, "zero_bytes": 0}
+    metrics = {
+        "count": count,
+        "active_count": 0,
+        "passive_count": 0,
+        "payload_bytes": 0,
+        "zero_bytes": 0,
+    }
     for _ in range(count):
         flags, offset = _read_varuint(payload, offset)
         if flags == 0:
@@ -84,8 +100,13 @@ def wasm_metrics(source: bytes | Path) -> dict[str, object]:
         raise ValueError("invalid WebAssembly header")
     offset = 8
     sections: dict[str, int] = {}
-    data_segments = {"count": 0, "active_count": 0, "passive_count": 0,
-                     "payload_bytes": 0, "zero_bytes": 0}
+    data_segments = {
+        "count": 0,
+        "active_count": 0,
+        "passive_count": 0,
+        "payload_bytes": 0,
+        "zero_bytes": 0,
+    }
     while offset < len(data):
         section_id = data[offset]
         offset += 1

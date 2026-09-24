@@ -531,7 +531,7 @@ def validate_active_import_finders(
             continue
         if (
             type(finder) is not machinery.FileFinder
-            or finder._loaders != expected_loaders
+            or vars(finder).get("_loaders") != expected_loaders
             or Path(str(key)).absolute() != Path(finder.path).absolute()
         ):
             raise PythonEnvironmentIdentityError(

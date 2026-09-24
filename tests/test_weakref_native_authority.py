@@ -55,7 +55,12 @@ def test_deleted_trusted_class_transport_lane_has_no_survivors() -> None:
     survivors: list[str] = []
     for root in roots:
         for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in {".py", ".rs", ".toml", ".json"}:
+            if not path.is_file() or path.suffix not in {
+                ".py",
+                ".rs",
+                ".toml",
+                ".json",
+            }:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             if any(token in text for token in forbidden):
@@ -76,12 +81,12 @@ def test_class_shaped_attribute_authority_is_generated_not_type_listed() -> None
     attr = (ROOT / "runtime/molt-runtime/src/builtins/attr.rs").read_text(
         encoding="utf-8"
     )
-    attributes = (
-        ROOT / "runtime/molt-runtime/src/builtins/attributes.rs"
-    ).read_text(encoding="utf-8")
-    accessors = (
-        ROOT / "runtime/molt-runtime/src/object/accessors.rs"
-    ).read_text(encoding="utf-8")
+    attributes = (ROOT / "runtime/molt-runtime/src/builtins/attributes.rs").read_text(
+        encoding="utf-8"
+    )
+    accessors = (ROOT / "runtime/molt-runtime/src/object/accessors.rs").read_text(
+        encoding="utf-8"
+    )
     assert "fn class_instance_layout_attr_allowed" in attr
     assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attr
     assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attributes

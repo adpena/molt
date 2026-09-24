@@ -264,6 +264,7 @@ def sum_int(n: int) -> int:
         total += x
     return total
 
+
 def sum_float(n: int) -> float:
     nums: list[float] = [float(i) for i in range(n)]
     total = 0.0
@@ -271,10 +272,11 @@ def sum_float(n: int) -> float:
         total += x
     return total
 
+
 # Tail remainder: length not a multiple of SIMD width
-print(sum_int(7))    # 21 — 7 % 4 != 0
+print(sum_int(7))  # 21 — 7 % 4 != 0
 print(sum_int(100))  # 4950
-print(sum_int(0))    # 0 — empty
+print(sum_int(0))  # 0 — empty
 print(sum_float(7))
 # Bigint safety: values in [0, 2^47) stay RawI64Safe, above stays boxed
 print(sum_int(1 << 10))  # must match CPython exactly
@@ -288,9 +290,10 @@ def map_double(n: int) -> list[int]:
     out: list[int] = [x * 2 for x in nums]
     return out
 
-print(map_double(9))   # tail remainder test
-print(map_double(8))   # exact multiple
-print(map_double(0))   # empty
+
+print(map_double(9))  # tail remainder test
+print(map_double(8))  # exact multiple
+print(map_double(0))  # empty
 ```
 
 ### New test file: `/Users/adpena/Projects/molt/tests/differential/basic/simd_no_vectorize_boxed.py`
@@ -303,7 +306,9 @@ def sum_big(nums: list) -> int:
         total += x
     return total
 
+
 import sys
+
 nums = [1 << 47, 1 << 48, 1 << 49]
 print(sum_big(nums))  # must not miscompile; stays on boxed path
 ```

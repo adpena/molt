@@ -12,6 +12,8 @@ The release priority is a stable `v1.0` contract, with a scoped, evidence-backed
 `v0.0.1` as the initial milestone. Neither implies full
 Python or ecosystem compatibility beyond its verified subset. See the
 [release milestone](ROADMAP.md#first-release-milestone).
+Release readiness also requires the declared workload and resource budgets in
+the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
 
 ## Why Molt
 

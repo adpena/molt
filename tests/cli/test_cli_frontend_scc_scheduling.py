@@ -416,9 +416,7 @@ def test_a3_run_frontend_layer_isolates_failed_module_and_keeps_parallel(
         integrated.append(module_name)
         return None
 
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_frontend_layer_plan", _fake_layer_plan
-    )
+    monkeypatch.setattr(cli_frontend_parallel, "_frontend_layer_plan", _fake_layer_plan)
     monkeypatch.setattr(
         cli_frontend_execution,
         "_run_frontend_parallel_layer_batches",
@@ -498,9 +496,7 @@ def test_a4_run_frontend_layer_surrenders_pool_only_when_broken(
     def _fake_consume(*, module_name, **kwargs):
         return None
 
-    monkeypatch.setattr(
-        cli_frontend_parallel, "_frontend_layer_plan", _fake_layer_plan
-    )
+    monkeypatch.setattr(cli_frontend_parallel, "_frontend_layer_plan", _fake_layer_plan)
     monkeypatch.setattr(
         cli_frontend_execution,
         "_run_frontend_parallel_layer_batches",

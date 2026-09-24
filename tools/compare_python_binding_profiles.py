@@ -62,12 +62,8 @@ def main() -> int:
         "tool_sha256": before["identity"]["tool_sha256"],
         "scale": baseline["scaling"]["scales"][-1],
         "source_sha256": before["source_sha256"],
-        "baseline_implementation_sha256": before["identity"][
-            "implementation_sha256"
-        ],
-        "candidate_implementation_sha256": after["identity"][
-            "implementation_sha256"
-        ],
+        "baseline_implementation_sha256": before["identity"]["implementation_sha256"],
+        "candidate_implementation_sha256": after["identity"]["implementation_sha256"],
         "baseline_scaling": baseline["scaling"],
         "candidate_scaling": candidate["scaling"],
         "comparisons": comparisons,

@@ -518,6 +518,7 @@ run each as `molt build --target native` + run, compared to CPython.
    ```python
    # probe_pep562.py  — module-level __getattr__
    import probe_pep562_mod as m
+
    print(m.foo)
    # probe_pep562_mod.py:
    #   def __getattr__(name): return "lazy:" + name
@@ -526,51 +527,80 @@ run each as `molt build --target native` + run, compared to CPython.
    ```python
    from __future__ import annotations
    from typing import get_type_hints
+
+
    class A:
        x: "int"
        y: "list[str]"
-   print(get_type_hints(A))   # CPython resolves to {'x': int, 'y': list[str]}
+
+
+   print(get_type_hints(A))  # CPython resolves to {'x': int, 'y': list[str]}
    ```
 3. **dataclasses shim end-to-end (slots + make_dataclass).**
    ```python
    from dataclasses import dataclass, make_dataclass, field
+
+
    @dataclass(slots=True, frozen=True)
    class P:
-       x: int; y: int = 5
+       x: int
+       y: int = 5
+
+
    D = make_dataclass("D", [("a", int), ("b", int, field(default=2))])
    print(P(1).x, P(1).y, D(7).a, D(7).b)
    ```
 4. **runtime_checkable Protocol isinstance (D9).**
    ```python
    from typing import Protocol, runtime_checkable
+
+
    @runtime_checkable
    class HasName(Protocol):
        def name(self) -> str: ...
+
+
    class C:
-       def name(self): return "c"
-   print(isinstance(C(), HasName))   # CPython True
+       def name(self):
+           return "c"
+
+
+   print(isinstance(C(), HasName))  # CPython True
    ```
 5. **abc.register virtual subclass (D7).**
    ```python
    from abc import ABC
+
+
    class MyABC(ABC): ...
+
+
    class Plain: ...
+
+
    MyABC.register(Plain)
    print(issubclass(Plain, MyABC), isinstance(Plain(), MyABC))  # True True
    ```
 6. **importlib.metadata.entry_points present at runtime (D24).**
    ```python
    from importlib.metadata import entry_points
+
    eps = entry_points()
-   print(type(eps).__name__)   # should not raise
+   print(type(eps).__name__)  # should not raise
    ```
 7. **ctypes FFI depth (D22)** — does a real `CDLL`/`Structure`/`c_int` round-trip?
    ```python
    import ctypes
-   libc = ctypes.CDLL(None)            # platform-dependent; probe behavior/error
+
+   libc = ctypes.CDLL(None)  # platform-dependent; probe behavior/error
+
+
    class Pt(ctypes.Structure):
        _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int)]
-   p = Pt(3, 4); print(p.x, p.y)
+
+
+   p = Pt(3, 4)
+   print(p.x, p.y)
    ```
 8. **Track-2 ABI bridge real-wheel import (D23)** — build the crate with
    `--features cext_loader,extension-loader`, point `MOLT_EXTENSION_PATH` at a
@@ -580,13 +610,21 @@ run each as `molt build --target native` + run, compared to CPython.
 9. **inspect.signature on a decorated function (D12).**
    ```python
    import functools, inspect
+
+
    def deco(f):
        @functools.wraps(f)
-       def w(*a, **k): return f(*a, **k)
+       def w(*a, **k):
+           return f(*a, **k)
+
        return w
+
+
    @deco
    def g(a: int, b: str = "x") -> bool: ...
-   print(str(inspect.signature(g)))   # (a: int, b: str = 'x') -> bool
+
+
+   print(str(inspect.signature(g)))  # (a: int, b: str = 'x') -> bool
    ```
 10. **The triage's "PARTIAL" verdicts at import** — for each of {requests,
     flask, werkzeug, pyyaml, rich, tqdm}, confirm bare `import X; X.__version__`

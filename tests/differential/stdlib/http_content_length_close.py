@@ -18,16 +18,7 @@ def server() -> None:
     conn, _addr = srv.accept()
     conn.recv(1024)
     body = b"hello"
-    resp = (
-        b"HTTP/1.1 200 OK
-"
-        b"Content-Length: 5
-"
-        b"Connection: close
-
-"
-        + body
-    )
+    resp = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n" + body
     conn.sendall(resp)
     conn.close()
     srv.close()
@@ -38,16 +29,11 @@ t.start()
 ready.wait(timeout=1.0)
 
 sock = socket.create_connection(("127.0.0.1", port_holder[0]))
-request = b"GET / HTTP/1.1
-Host: localhost
-
-"
+request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
 sock.sendall(request)
 response = sock.recv(1024)
 sock.close()
 
 t.join(timeout=1.0)
 
-print(response.split(b"
-
-", 1)[1])
+print(response.split(b"\r\n\r\n", 1)[1])

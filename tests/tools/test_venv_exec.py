@@ -49,6 +49,9 @@ def test_venv_env_marks_virtualenv_and_prepends_bin(tmp_path: Path) -> None:
     assert env["VIRTUAL_ENV"] == str(venv)
     assert env["PATH"].split(os.pathsep)[0] == str(venv_exec.venv_bin_dir(venv))
     assert env["PATH"].endswith(base_env["PATH"])
+    # Gates must never inherit the host console codec (Windows cp1252 class).
+    assert env["PYTHONUTF8"] == "1"
+    assert env["PYTHONIOENCODING"] == "utf-8"
 
 
 def test_resolve_command_rewrites_python_to_venv_python(tmp_path: Path) -> None:

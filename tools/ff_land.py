@@ -36,6 +36,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
@@ -44,7 +45,9 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(
+    root: Path, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return _COMMANDS.run(
         ["git", *args], cwd=root, check=check, capture_output=True, text=True
     )
@@ -98,8 +101,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="main")
-    parser.add_argument("--dry-run", action="store_true", help="check + report, do not push")
-    parser.add_argument("--allow-dirty", action="store_true", help="permit uncommitted tracked changes (they are not pushed)")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="check + report, do not push"
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="permit uncommitted tracked changes (they are not pushed)",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -108,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
 
     dirty = _tracked_dirty(root)
     if dirty and not args.allow_dirty:
-        print(f"FF-LAND REFUSED: {len(dirty)} uncommitted tracked change(s) — commit by pathspec first "
-              f"(git commit -m MSG -- <files>); NOTE '-m' must come BEFORE '--'.")
+        print(
+            f"FF-LAND REFUSED: {len(dirty)} uncommitted tracked change(s) — commit by pathspec first "
+            f"(git commit -m MSG -- <files>); NOTE '-m' must come BEFORE '--'."
+        )
         for p in dirty[:20]:
             print(f"  ! dirty {p}")
         return 2
@@ -117,29 +128,44 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _git(root, "fetch", args.remote, "--quiet")
     except subprocess.CalledProcessError as exc:
-        print(f"FF-LAND ERROR: git fetch {args.remote} failed: {exc.stderr.strip() if exc.stderr else exc}")
+        print(
+            f"FF-LAND ERROR: git fetch {args.remote} failed: {exc.stderr.strip() if exc.stderr else exc}"
+        )
         return 3
 
     try:
         head = _out(root, "rev-parse", "--short", "HEAD")
         remote_sha = _out(root, "rev-parse", "--short", target)
     except subprocess.CalledProcessError as exc:
-        print(f"FF-LAND ERROR: cannot resolve {target}: {exc.stderr.strip() if exc.stderr else exc}")
+        print(
+            f"FF-LAND ERROR: cannot resolve {target}: {exc.stderr.strip() if exc.stderr else exc}"
+        )
         return 3
 
     ahead = int(_out(root, "rev-list", "--count", f"{target}..HEAD"))
     behind = int(_out(root, "rev-list", "--count", f"HEAD..{target}"))
 
     if ahead == 0:
-        print(f"FF-LAND: nothing to land — HEAD={head} has 0 commits ahead of {target}={remote_sha} (behind={behind}).")
+        print(
+            f"FF-LAND: nothing to land — HEAD={head} has 0 commits ahead of {target}={remote_sha} (behind={behind})."
+        )
         return 0
 
-    is_ff = _git(root, "merge-base", "--is-ancestor", target, "HEAD", check=False).returncode == 0
+    is_ff = (
+        _git(
+            root, "merge-base", "--is-ancestor", target, "HEAD", check=False
+        ).returncode
+        == 0
+    )
     if not is_ff or behind != 0:
-        print(f"FF-LAND REFUSED (DRIFT): {target} advanced to {remote_sha} ({behind} commit(s) you lack); "
-              f"HEAD={head} is NOT a fast-forward. Rebase onto {target}, re-verify, then re-run.")
+        print(
+            f"FF-LAND REFUSED (DRIFT): {target} advanced to {remote_sha} ({behind} commit(s) you lack); "
+            f"HEAD={head} is NOT a fast-forward. Rebase onto {target}, re-verify, then re-run."
+        )
         if not args.quiet:
-            for line in _out(root, "log", "--oneline", f"HEAD..{target}").splitlines()[:15]:
+            for line in _out(root, "log", "--oneline", f"HEAD..{target}").splitlines()[
+                :15
+            ]:
                 print(f"  ~ (theirs) {line}")
         return 1
 
@@ -157,7 +183,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Clean fast-forward: safe to land.
     if args.dry_run:
-        print(f"FF-LAND OK (dry-run): HEAD={head} fast-forwards {target}={remote_sha} by {ahead} commit(s); not pushed.")
+        print(
+            f"FF-LAND OK (dry-run): HEAD={head} fast-forwards {target}={remote_sha} by {ahead} commit(s); not pushed."
+        )
         return 0
 
     push = _git(root, "push", args.remote, f"HEAD:{args.branch}", check=False)
@@ -165,7 +193,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FF-LAND ERROR: push rejected (race?): {push.stderr.strip()}")
         return 1
     new_remote = _out(root, "rev-parse", "--short", target)
-    print(f"FF-LAND OK: pushed {ahead} commit(s) {remote_sha}..{head} -> {target} (now {new_remote}).")
+    print(
+        f"FF-LAND OK: pushed {ahead} commit(s) {remote_sha}..{head} -> {target} (now {new_remote})."
+    )
     return 0
 
 

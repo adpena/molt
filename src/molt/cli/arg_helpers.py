@@ -185,9 +185,13 @@ def _reexec_cli_with_hash_seed(env: Mapping[str, str]) -> None:
                 f"molt: failed to restart with PYTHONHASHSEED: {exc}", file=sys.stderr
             )
             _flush_standard_streams()
-            os._exit(127)
+            raise SystemExit(127) from exc
+        # A normal interpreter exit, never os._exit: the launcher's atexit
+        # handlers (the proof-queue child custody hook's terminal handshake
+        # among them) must run, or every guarded molt invocation ends with an
+        # incomplete child-custody receipt.
         _flush_standard_streams()
-        os._exit(_process_exit_code(completed.returncode))
+        raise SystemExit(_process_exit_code(completed.returncode))
     os.execvpe(argv[0], argv, env)
 
 
@@ -206,7 +210,7 @@ def _ensure_cli_hash_seed() -> None:
             file=sys.stderr,
         )
         _flush_standard_streams()
-        os._exit(127)
+        raise SystemExit(127)
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = desired
     env[_hash_seed_sentinel_env()] = "1"

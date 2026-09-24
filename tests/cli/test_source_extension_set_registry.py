@@ -199,8 +199,8 @@ def test_expected_identity_rejects_forged_set(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("dirty_kind", ["tracked", "untracked"])
-def test_source_checkout_attestation_rejects_every_dirty_input(
+@pytest.mark.parametrize("dirty_kind", ["tracked", "untracked", "wrong-head"])
+def test_source_checkout_attestation_rejects_unregistered_input(
     tmp_path: Path, dirty_kind: str
 ) -> None:
     source = tmp_path / "source"
@@ -235,7 +235,17 @@ def test_source_checkout_attestation_rejects_every_dirty_input(
     verify_source_extension_checkout(extension_set, source, registry=registry)
     if dirty_kind == "tracked":
         tracked.write_text("int demo(void) { return 2; }\n", encoding="utf-8")
-    else:
+    elif dirty_kind == "untracked":
         (source / "untracked.c").write_text("int drift;\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="not a clean immutable input"):
+    else:
+        run_guarded_test_process(
+            ["git", "-C", str(source), "commit", "--allow-empty", "-q", "-m", "drift"],
+            check=True,
+        )
+    expected = (
+        "registered commit"
+        if dirty_kind == "wrong-head"
+        else "not a clean immutable input"
+    )
+    with pytest.raises(ValueError, match=expected):
         verify_source_extension_checkout(extension_set, source, registry=registry)

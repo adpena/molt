@@ -123,6 +123,9 @@ def windows_job_cleanup_payload(
         "initial_process_ids": list(cleanup.initial_process_ids),
         "escalation_process_ids": list(cleanup.escalation_process_ids),
         "natural_exit_wait_s": cleanup.natural_exit_wait_s,
+        "remaining_processes": [
+            {"pid": pid, "image": image} for pid, image in cleanup.remaining_processes
+        ],
         "elapsed_s": cleanup.elapsed_s,
         "before": _windows_job_accounting_payload(cleanup.before),
         "after": _windows_job_accounting_payload(cleanup.after),

@@ -22,7 +22,10 @@ from molt.cli.source_package_seal import (
 )
 from molt.exact_json import loads_exact
 
-SOURCE_EXTENSION_SET_SCHEMA_VERSION = 5
+# Version 6 binds the locked Ninja distribution to the backend identity and
+# records the binary's self-report separately. Version-5 seals remain evidence,
+# but are not interpreted under this changed identity projection.
+SOURCE_EXTENSION_SET_SCHEMA_VERSION = 6
 
 
 def _digest_payload(payload: Any) -> str:
@@ -131,6 +134,7 @@ def _extension_content_projection(
     objects = closure.get("objects") if isinstance(closure, Mapping) else None
     if not isinstance(objects, list) or not objects:
         raise ValueError("extension identity requires a non-empty object closure")
+
     source_plan = manifest.get("source_plan")
     projection = {
         key: manifest.get(key)

@@ -85,7 +85,7 @@ pub struct Policy {
 pub struct ValidatedPolicy {
     pub policy: Policy,
     pub policy_sha256: String,
-    pub fixed: BTreeMap<String, FixedAuthority>,
+    pub fixed: BTreeMap<PathBuf, FixedAuthority>,
     pub derived: Vec<DerivedRoot>,
 }
 
@@ -456,7 +456,7 @@ impl Policy {
                     image.sha256
                 ));
             }
-            let key = normalized_path_key(&path);
+            let key = path.clone();
             let normalized = FixedImage {
                 role: image.role.clone(),
                 path: path.clone(),
@@ -484,7 +484,7 @@ impl Policy {
             return Err("policy must contain at least the root fixed image".to_owned());
         }
         let root_path = canonical_file(Path::new(&self.command[0]), "root command")?;
-        let root_key = normalized_path_key(&root_path);
+        let root_key = root_path;
         let root = fixed
             .get(&root_key)
             .ok_or_else(|| "root command is outside fixed image authority".to_owned())?;
@@ -504,7 +504,7 @@ impl Policy {
                 return Err("derived root paths must be absolute".to_owned());
             }
             let path = canonical_directory(&root.path, "derived root")?;
-            let key = normalized_path_key(&path);
+            let key = path.clone();
             if !seen_roots.insert(key) {
                 return Err("policy has duplicate derived roots".to_owned());
             }
@@ -525,14 +525,12 @@ impl Policy {
         let mut canonical = self;
         canonical.cwd = cwd;
         normalized_images.sort_by(|left, right| {
-            normalized_path_key(&left.path)
-                .cmp(&normalized_path_key(&right.path))
+            left.path
+                .cmp(&right.path)
                 .then_with(|| left.role.cmp(&right.role))
         });
         normalized_images.dedup();
-        derived.sort_by(|left, right| {
-            normalized_path_key(&left.path).cmp(&normalized_path_key(&right.path))
-        });
+        derived.sort_by(|left, right| left.path.cmp(&right.path));
         canonical.fixed_images = normalized_images;
         canonical.derived_roots = derived.clone();
         let bytes = serde_json::to_vec(&canonical)
@@ -548,9 +546,10 @@ impl Policy {
 
 impl ValidatedPolicy {
     pub fn root_exit_disposition(&self, path: &Path) -> RootExitDisposition {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let canonical =
+            dunce::canonicalize(path).unwrap_or_else(|_| dunce::simplified(path).to_path_buf());
         self.fixed
-            .get(&normalized_path_key(&canonical))
+            .get(&canonical)
             .map_or(RootExitDisposition::RequireExit, |authority| {
                 authority.root_exit_disposition
             })
@@ -563,9 +562,9 @@ impl ValidatedPolicy {
         size_bytes: u64,
         sha256: String,
     ) -> FileIdentity {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let key = normalized_path_key(&canonical);
-        if let Some(authority) = self.fixed.get(&key) {
+        let canonical =
+            dunce::canonicalize(path).unwrap_or_else(|_| dunce::simplified(path).to_path_buf());
+        if let Some(authority) = self.fixed.get(&canonical) {
             let matches = constant_time_eq(authority.sha256.as_bytes(), sha256.as_bytes());
             return FileIdentity {
                 path: canonical,
@@ -631,23 +630,15 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
-pub fn normalized_path_key(path: &Path) -> String {
-    let value = path.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        value.to_lowercase()
-    } else {
-        value
-    }
-}
-
+/// Both paths must already come from the live canonical/handle boundary.
+/// Native components remain exact: case-sensitive directories and distinct
+/// Unicode sequences must never acquire another root's authority.
 pub fn path_is_within(path: &Path, root: &Path) -> bool {
-    let path_key = normalized_path_key(path);
-    let root_key = normalized_path_key(root);
-    path_key == root_key || path_key.starts_with(&(root_key.trim_end_matches('/').to_owned() + "/"))
+    path.starts_with(root)
 }
 
 fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let canonical = std::fs::canonicalize(path)
+    let canonical = dunce::canonicalize(path)
         .map_err(|error| format!("cannot resolve {label} {}: {error}", path.display()))?;
     if !canonical.is_file() {
         return Err(format!("{label} is not a file: {}", canonical.display()));
@@ -656,7 +647,7 @@ fn canonical_file(path: &Path, label: &str) -> Result<PathBuf, String> {
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
-    let canonical = std::fs::canonicalize(path)
+    let canonical = dunce::canonicalize(path)
         .map_err(|error| format!("cannot resolve {label} {}: {error}", path.display()))?;
     if !canonical.is_dir() {
         return Err(format!(
@@ -699,10 +690,113 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canonical_paths_use_the_shared_filesystem_authority() {
+        let cwd = std::env::current_dir().unwrap();
+        let canonical = canonical_directory(&cwd, "test cwd").unwrap();
+        assert_eq!(canonical, dunce::canonicalize(&cwd).unwrap());
+        assert_eq!(
+            canonical_directory(&cwd.join("."), "aliased cwd").unwrap(),
+            canonical
+        );
+    }
+
+    #[test]
     fn path_containment_has_a_component_boundary() {
         let root = Path::new("/tmp/target");
         assert!(path_is_within(Path::new("/tmp/target/a"), root));
         assert!(!path_is_within(Path::new("/tmp/target-escape/a"), root));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_simplification_preserves_namespace_semantics() {
+        assert_eq!(
+            dunce::simplified(Path::new(r"\\?\C:\Molt\safe\image.exe")),
+            Path::new(r"C:\Molt\safe\image.exe")
+        );
+        for raw in [
+            r"\\?\C:\Molt\output.\image.exe",
+            r"\\?\C:\Molt\output \image.exe",
+            r"\\?\C:\Molt\image.exe.",
+            r"\\?\C:\Molt\image.exe ",
+            r"\\?\C:\Molt\CON.exe",
+            r"\\?\C:\Molt\AUX\image.exe",
+            r"\\?\C:\Molt\LPT1.txt",
+            r"\\?\C:\Molt\COM1 .txt",
+            r"\\?\C:\Molt\..\image.exe",
+            r"\\?\Volume{test}\image.exe",
+            r"\\?\UNC\host\share\image.exe",
+            r"\\.\PhysicalDrive0",
+        ] {
+            let path = Path::new(raw);
+            assert_eq!(dunce::simplified(path).as_os_str(), path.as_os_str());
+        }
+        let root = Path::new(r"C:\Molt\output");
+        assert!(!path_is_within(
+            dunce::simplified(Path::new(r"\\?\C:\Molt\output.\image.exe")),
+            root,
+        ));
+        assert!(!path_is_within(
+            dunce::simplified(Path::new(r"\\?\C:\Molt\output \image.exe")),
+            root,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_identity_preserves_unpaired_native_units() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        for prefix in [r"\\?\C:\Molt\", r"\\?\UNC\host\share\"] {
+            let mut units: Vec<u16> = prefix.encode_utf16().collect();
+            units.push(0xd800);
+            let path = PathBuf::from(OsString::from_wide(&units));
+            assert_eq!(
+                dunce::simplified(&path)
+                    .as_os_str()
+                    .encode_wide()
+                    .collect::<Vec<_>>(),
+                units,
+            );
+            let replacement = PathBuf::from(format!("{prefix}\u{fffd}"));
+            assert_ne!(path, replacement);
+            assert!(!path_is_within(&path, &replacement));
+        }
+    }
+
+    #[test]
+    fn native_keys_do_not_infer_filesystem_case_or_unicode_equivalence() {
+        let upper = PathBuf::from("/custody/Output");
+        let lower = PathBuf::from("/custody/output");
+        let composed = PathBuf::from("/custody/\u{130}");
+        let expanded = PathBuf::from("/custody/i\u{307}");
+        let keys = BTreeSet::from([
+            upper.clone(),
+            lower.clone(),
+            composed.clone(),
+            expanded.clone(),
+        ]);
+        assert_eq!(keys.len(), 4);
+        assert!(!path_is_within(&lower.join("image.exe"), &upper));
+        assert!(!path_is_within(&expanded.join("image.exe"), &composed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_path_identity_preserves_bytes_and_backslashes() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let bytes = PathBuf::from(OsString::from_vec(b"/tmp/\xff".to_vec()));
+        let replacement = PathBuf::from("/tmp/\u{fffd}");
+        assert_ne!(bytes, replacement);
+        assert!(!path_is_within(&bytes, &replacement));
+        assert_ne!(Path::new(r"/tmp/a\b"), Path::new("/tmp/a/b"));
+        assert!(!path_is_within(
+            Path::new(r"/tmp/a\b/image"),
+            Path::new("/tmp/a/b"),
+        ));
     }
 
     #[test]

@@ -18,12 +18,15 @@ FF_LAND = TOOLS / "ff_land.py"
 
 
 def _git(repo: Path, *args: str) -> str:
-    return run_guarded_test_process(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    return run_guarded_test_process(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return run_guarded_test_process([sys.executable, str(CLAIM), *args],
-                          cwd=repo, capture_output=True, text=True)
+    return run_guarded_test_process(
+        [sys.executable, str(CLAIM), *args], cwd=repo, capture_output=True, text=True
+    )
 
 
 def _claims_body(rows: str) -> str:
@@ -31,8 +34,7 @@ def _claims_body(rows: str) -> str:
         "# Solo-Owner Lane Claims\n\n"
         "## Log (append-only)\n\n"
         "| lane | agent-id | UTC (ISO) | status | note / evidence |\n"
-        "|------|----------|-----------|--------|-----------------|\n"
-        + rows
+        "|------|----------|-----------|--------|-----------------|\n" + rows
     )
 
 

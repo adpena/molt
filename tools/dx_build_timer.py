@@ -230,15 +230,18 @@ def _run_completed_inside_active_guard(
         else None
     )
     next_keepalive = start + interval if interval is not None else None
-    with tempfile.TemporaryFile(
-        mode="w+t",
-        encoding="utf-8",
-        errors="replace",
-    ) as stdout_tmp, tempfile.TemporaryFile(
-        mode="w+t",
-        encoding="utf-8",
-        errors="replace",
-    ) as stderr_tmp:
+    with (
+        tempfile.TemporaryFile(
+            mode="w+t",
+            encoding="utf-8",
+            errors="replace",
+        ) as stdout_tmp,
+        tempfile.TemporaryFile(
+            mode="w+t",
+            encoding="utf-8",
+            errors="replace",
+        ) as stderr_tmp,
+    ):
         proc = _COMMANDS.start_owned(
             cmd,
             cwd=cwd,
@@ -341,9 +344,7 @@ def _molt_build_output_root(args: argparse.Namespace) -> Path:
     if json_out:
         json_path = Path(json_out)
         return (
-            json_path.with_name(f"{json_path.stem}.molt-builds")
-            .expanduser()
-            .resolve()
+            json_path.with_name(f"{json_path.stem}.molt-builds").expanduser().resolve()
         )
     return (Path(args.target_dir) / "dx_molt_builds").expanduser().resolve()
 
@@ -708,9 +709,7 @@ def main() -> int:
                 "repair_samples_sec": repair_samples,
                 "repair_rc": repair_rc_last,
                 "repair_cmd": repair_cmd if repair_samples else None,
-                "repair_stderr_tail": (
-                    repair_tail_last if repair_rc_last != 0 else ""
-                ),
+                "repair_stderr_tail": (repair_tail_last if repair_rc_last != 0 else ""),
             }
             _write_snapshot(
                 args,
@@ -737,9 +736,7 @@ def main() -> int:
                 "repair_samples_sec": repair_samples,
                 "repair_rc": repair_rc_last,
                 "repair_cmd": repair_cmd if repair_samples else None,
-                "repair_stderr_tail": (
-                    repair_tail_last if repair_rc_last != 0 else ""
-                ),
+                "repair_stderr_tail": (repair_tail_last if repair_rc_last != 0 else ""),
             },
         )
 

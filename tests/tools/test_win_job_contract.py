@@ -139,6 +139,11 @@ def cleanup_model(monkeypatch):
     monkeypatch.setattr(win_job, "job_accounting", accounting)
     monkeypatch.setattr(win_job, "system_resources", lambda: resources)
     monkeypatch.setattr(win_job, "process_ids", members)
+    monkeypatch.setattr(
+        win_job,
+        "remaining_process_images",
+        lambda job: tuple((pid, f"image-{pid}") for pid in members(job)),
+    )
     monkeypatch.setattr(win_job, "active_process_count", lambda _job: model.active)
     monkeypatch.setattr(win_job, "terminate_job", terminate)
     return model
@@ -168,6 +173,11 @@ def test_complete_job_custody_terminates_only_after_bounded_natural_drain(
     assert cleanup.after.active_processes == 0
     assert cleanup.initial_process_ids == (101, 202, 303)
     assert cleanup.escalation_process_ids == (101, 202, 303)
+    assert cleanup.remaining_processes == (
+        (101, "image-101"),
+        (202, "image-202"),
+        (303, "image-303"),
+    )
     assert cleanup.natural_exit_wait_s == 0.25
     assert cleanup.elapsed_s == 0.3
     assert model.calls == [("wait", 0.25), ("terminate", 777), ("wait", 2.25)]
@@ -177,6 +187,9 @@ def test_complete_job_custody_terminates_only_after_bounded_natural_drain(
     assert payload["escalation_process_ids"] == [101, 202, 303]
     assert payload["natural_exit_wait_s"] == 0.25
     assert payload["terminated_remaining_processes"] is True
+    assert payload["remaining_processes"] == [
+        {"pid": pid, "image": f"image-{pid}"} for pid in (101, 202, 303)
+    ]
 
 
 def test_complete_job_custody_does_not_wait_or_terminate_an_empty_job(
@@ -193,6 +206,7 @@ def test_complete_job_custody_does_not_wait_or_terminate_an_empty_job(
 
     assert cleanup is not None and cleanup.completed
     assert not cleanup.terminated_remaining_processes
+    assert cleanup.remaining_processes == ()
     assert cleanup.initial_process_ids == ()
     assert cleanup.escalation_process_ids == ()
     assert cleanup.natural_exit_wait_s == 0.0

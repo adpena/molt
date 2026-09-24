@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from typing import (
-    TYPE_CHECKING,
     Any,
 )
 
@@ -24,17 +23,10 @@ from molt.frontend.sema import (
     normalize_function_kind,
     parse_stateful_function_type_hint,
 )
-
-if TYPE_CHECKING:
-    from molt.frontend._protocol import _GeneratorProtocol
-
-if TYPE_CHECKING:
-    _MixinBase = _GeneratorProtocol
-else:
-    _MixinBase = object
+from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-class CallModuleDispatchMixin(_MixinBase):
+class CallModuleDispatchMixin(GeneratorMixinBase):
     @staticmethod
     def _is_internal_module(module_name: str | None) -> bool:
         if not module_name:

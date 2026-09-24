@@ -9,6 +9,7 @@
   },
   "external_native_link_imports": {
     "primitive_classes": {
+      "MoltManaged_Type": "molt_cpython_abi_link_import",
       "PyArg_ParseTuple": "molt_cpython_abi_link_import",
       "PyArg_ParseTupleAndKeywords": "molt_cpython_abi_link_import",
       "PyArg_UnpackTuple": "molt_cpython_abi_link_import",
@@ -810,6 +811,7 @@
       "sched_yield": "wasi_link_import"
     },
     "symbol_kinds": {
+      "MoltManaged_Type": "data",
       "PyArg_ParseTuple": "function",
       "PyArg_ParseTupleAndKeywords": "function",
       "PyArg_UnpackTuple": "function",
@@ -1560,6 +1562,7 @@
   },
   "generated_by": "tools/gen_wasm_abi.py",
   "runtime_export_by_import": {
+    "MoltManaged_Type": "molt_MoltManaged_Type",
     "PyArg_ParseTuple": "molt_PyArg_ParseTuple",
     "PyArg_ParseTupleAndKeywords": "molt_PyArg_ParseTupleAndKeywords",
     "PyArg_UnpackTuple": "molt_PyArg_UnpackTuple",
@@ -4002,6 +4005,7 @@
     "module_new": "molt_module_new",
     "module_registry_install": "molt_module_registry_install",
     "module_set_attr": "molt_module_set_attr",
+    "molt_MoltManaged_Type": "molt_MoltManaged_Type",
     "molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple",
     "molt_PyArg_ParseTupleAndKeywords": "molt_PyArg_ParseTupleAndKeywords",
     "molt_PyArg_UnpackTuple": "molt_PyArg_UnpackTuple",
@@ -6193,6 +6197,7 @@
     "zoneinfo_utcoffset": "molt_zoneinfo_utcoffset"
   },
   "runtime_import_canonical_names": {
+    "molt_MoltManaged_Type": "MoltManaged_Type",
     "molt_PyArg_ParseTuple": "PyArg_ParseTuple",
     "molt_PyArg_ParseTupleAndKeywords": "PyArg_ParseTupleAndKeywords",
     "molt_PyArg_UnpackTuple": "PyArg_UnpackTuple",

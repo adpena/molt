@@ -1,0 +1,52 @@
+schema = "molt.legacy-inventory.v1"
+
+# Legacy inventory: every registered row is a lane that a newer authority has
+# superseded and that still exists in the tree. tools/legacy_inventory.py counts
+# the rows whose probe still matches; the count feeds `legacy_count` in every
+# phase-exit manifest (docs/design/CENTURY_SYSTEMS_PLAN.md §5) and must reach 0.
+# Delete a row in the same landing that deletes the lane; `--check` refuses a
+# row whose probe no longer matches.
+
+[[item]]
+id = "pact-contract-ledger-doc"
+path = "docs/agent/PACT_CONTRACT_LEDGER.md"
+superseded_by = "collab/pact/README.md stable Pact acceptance contract"
+removal_release = "1.0.0"
+reason = "Dated obligation narrative; the stable contract and the proof queue own acceptance state."
+
+[[item]]
+id = "pact-status-snapshot-doc"
+path = "collab/pact/STATUS.md"
+superseded_by = "tools/proof_queue.py evidence plus collab/pact/README.md"
+removal_release = "1.0.0"
+reason = "Self-described dated snapshot of the 2026-07-10 witness frontier."
+
+[[item]]
+id = "pact-inline-parity-oracle"
+path = "collab/pact/pact_witness_kernel/check_parity.py"
+superseded_by = "collab/pact/parity/check_parity.py driven by field_solve_gates.json"
+removal_release = "1.0.0"
+reason = "Retained only as the frozen equivalence fixture for tests/tools/test_pact_parity_engine.py; the manifest-driven engine is the sole acceptance authority."
+
+[[item]]
+id = "generic-ssd-janitor"
+path = "tools/molt_ssd_janitor.py"
+superseded_by = "consumer-owned artifact retention (tools/disk_guard.py allow-set)"
+removal_release = "1.0.0"
+reason = "Generic age-based artifact sweep; retention must come from the owning consumer's custody policy."
+
+[[item]]
+id = "backend-daemon-legacy-pid-files"
+path = "src/molt/backend_daemon_custody.py"
+pattern = '^def remove_legacy_pid_files\('
+superseded_by = "typed backend daemon identity files (remove_backend_daemon_identity)"
+removal_release = "1.0.0"
+reason = "Migration sweep for pre-identity-file `*.pid` daemon records; a compatibility path kept after its replacement was attested."
+
+[[item]]
+id = "concurrency-runtime-duplicate-module"
+path = "src/moltlib/_concurrency_runtime.py"
+pattern = '^class Channel\(Generic\[T\]\):'
+superseded_by = "src/molt/concurrency.py (one channel/task authority; moltlib.concurrency re-exports it)"
+removal_release = "1.0.0"
+reason = "Byte-for-byte duplicate of molt.concurrency kept only because compiled-module resolution of moltlib.concurrency has not been routed through the single authority; a duplicate registry is drift by construction."

@@ -310,4 +310,6 @@ def cmd_detached_verify(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--detached-worker":
         raise SystemExit(_detached_worker_main(Path(sys.argv[2])))
-    raise SystemExit("molt_dev_detached.py is an internal module; use tools/molt_dev.py")
+    raise SystemExit(
+        "molt_dev_detached.py is an internal module; use tools/molt_dev.py"
+    )

@@ -353,6 +353,7 @@ def gen():
     yield 2
     yield 3
 
+
 total = 0
 for x in gen():
     total += x
@@ -368,6 +369,7 @@ def counter(n):
         yield i
         i += 1
 
+
 result = list(counter(5))
 assert result == [0, 1, 2, 3, 4]
 ```
@@ -379,6 +381,7 @@ def naturals():
     while True:
         yield i
         i += 1
+
 
 first_5 = []
 for x in naturals():
@@ -395,6 +398,7 @@ def gen():
     yield 1
     yield 2
 
+
 try:
     for x in gen():
         if x == 1:
@@ -409,6 +413,7 @@ Expected: exception propagates correctly, byte-identical to CPython.
 def gen():
     yield 1
     raise RuntimeError("from gen")
+
 
 result = []
 try:
@@ -425,6 +430,7 @@ def big():
     yield 1 << 60
     yield (1 << 60) + 1
 
+
 vals = list(big())
 assert vals[0] == (1 << 60)
 assert vals[1] == (1 << 60) + 1
@@ -433,7 +439,9 @@ assert vals[1] == (1 << 60) + 1
 **`gen_multiple_frames.py`** — multiple independent generator instances in same scope
 ```python
 def gen():
-    yield 1; yield 2
+    yield 1
+    yield 2
+
 
 a = list(gen())
 b = list(gen())
@@ -443,7 +451,9 @@ assert a == b == [1, 2]
 **`gen_nested_for.py`** — non-fused outer, fused inner
 ```python
 def inner():
-    yield 1; yield 2
+    yield 1
+    yield 2
+
 
 result = []
 for outer in [10, 20]:
@@ -455,9 +465,13 @@ assert result == [11, 12, 21, 22]
 **`gen_yield_from_not_fused.py`** — must stay unfused, still correct
 ```python
 def sub():
-    yield 1; yield 2
+    yield 1
+    yield 2
+
+
 def gen():
     yield from sub()
+
 
 result = list(gen())
 assert result == [1, 2]
@@ -468,6 +482,7 @@ assert result == [1, 2]
 def gen():
     x = yield 0
     yield x + 1
+
 
 g = gen()
 assert next(g) == 0
@@ -490,6 +505,7 @@ def gen(n):
         yield i
         i += 1
 
+
 N = 10_000_000
 total = 0
 for x in gen(N):
@@ -508,6 +524,7 @@ def fibonacci(n):
         yield a
         a, b = b, a + b
 
+
 total = sum(fibonacci(100_000))
 ```
 Expected: no heap frame; frame slots `a` and `b` become loop-carried phis.
@@ -515,6 +532,7 @@ Expected: no heap frame; frame slots `a` and `b` become loop-carried phis.
 **os.walk benchmark** (phase 5 gate only)
 ```python
 import os
+
 total = 0
 for root, dirs, files in os.walk("/usr/include"):
     total += len(files)
