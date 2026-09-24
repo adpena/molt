@@ -161,7 +161,7 @@ Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
 absolute output directory for a Cargo proof. The selection is frozen at
 admission and survives queued or detached execution. Without an explicit
-selection, the existing result-root layout is unchanged. A missing selected
+selection, outputs remain on the result-root volume. A missing selected
 volume is an error, never a request to fall back to the system drive.
 Queued submission logs project the persisted command and storage declaration;
 they do not reconstruct an incomplete envelope from command-line arguments.
@@ -178,6 +178,26 @@ Capacity admission measures the actual build-output volume against the same
 validated independently; a drive-letter substitution, source/evidence overlap,
 link or conflicting output override cannot authorize writes or retirement.
 Selection does not move existing artifacts or adopt unknown generations.
+
+New Cargo generations have one compact physical address:
+`<output root>/cargo-target/<full SHA-256>`. Without a selected tier, the output
+root is the result root. The digest binds the target-layout domain, canonical
+result-root spelling, full input digest and generation identity. It does not
+truncate identifiers. Explicit input/generation directories, owners and locks
+remain in the metadata tree. Provenance, seals, pointers, terminal receipts and
+lifecycle projections bind `cargo_target_layout`; unknown or mismatched versions
+fail closed. Historical records without that field retain their original nested
+address for validation and retirement only. No old receipt or payload is moved,
+rewritten or adopted for warm execution.
+
+On Windows, new proof launch reserves 128 UTF-16 code units below the physical
+target for tool-generated descendants within the 259-unit relative-tool path
+budget. Overlong roots fail before expensive capture, naming the target and
+required shorter `--cargo-output-root`. This is an admission budget, not a claim
+that arbitrary profiles, cross-target names or generated filenames always fit.
+MSVC can reject relative and verbatim paths even when the ordinary absolute
+spelling is readable; changing filesystem identity or blindly stripping prefixes
+is not a repair. Final-link execution remains the consumer proof.
 
 Placement is independent of lifetime: a `test --no-run` producer can retain its
 images on the selected tier, while a proof-only test can declare

@@ -464,6 +464,12 @@ def _terminal_receipt(
 ) -> dict:
     return {
         "schema": cache.TERMINAL_RECEIPT_SCHEMA,
+        **cache.cargo_output_layout.target_layout_fields(lease.provenance),
+        **(
+            {"cargo_output_root": lease.provenance["cargo_output_root"]}
+            if "cargo_output_root" in lease.provenance
+            else {}
+        ),
         "run_id": lease.provenance["generation_run_id"],
         "execution_nonce_sha256": lease.provenance["execution_nonce_sha256"],
         "input_sha256": lease.provenance["input_sha256"],
@@ -482,6 +488,197 @@ def _terminal_receipt(
             "execution_error": None,
         },
     }
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("sealed", [False, True])
+def test_historical_target_lifecycle_preserves_receipts_and_new_acquisition_is_compact(
+    tmp_path, monkeypatch, external, sealed
+):
+    inputs = _inputs(tmp_path)
+    layout = cache.cargo_output_layout
+    if external:
+        output = tmp_path / "volume"
+        output.mkdir()
+        inputs["cargo_output_root"] = layout.declare_root(str(output))
+        inputs["outputs"] = (
+            cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                command_admission.envelope_for_command(
+                    inputs["command"], cargo_output_root=str(output)
+                )
+            )
+        )
+    lease = cache.acquire(**inputs)
+    # Construct a historical fixture; production never migrates old payloads
+    # or rewrites their immutable evidence. Preserve the real lifecycle path.
+    historical = layout.CargoOutputLayout.create(
+        result_root=inputs["result_root"], declaration=inputs.get("cargo_output_root")
+    ).target(
+        lease.provenance["input_sha256"],
+        lease.provenance["generation_id"],
+        version=layout.recorded_target_layout({}),
+    )
+    historical.parent.mkdir(parents=True, exist_ok=True)
+    lease.target.rename(historical)
+    lease.target = historical
+    lease.provenance.pop("cargo_target_layout")
+    lease.provenance.update(path=str(historical), effective_target=str(historical))
+    lease.owner.pop("cargo_target_layout")
+    lease.owner["target"] = str(historical)
+    lease.environment = inputs["outputs"].bind(inputs["env"], target=historical)
+    cache._write_owner(lease.owner_path, lease.owner)
+    pointer = cache.loads_exact(lease.pointer.read_text())
+    pointer.pop("cargo_target_layout")
+    pointer["target"] = str(historical)
+    cache._atomic_json(lease.pointer, pointer)
+    (historical / "artifact").write_bytes(b"historical output")
+    publication = lease.publish(_completed(lease) if sealed else {"phase": "failed"})
+    lease.close()
+    projection = cache.record_terminal_receipt(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        terminal_receipt=_terminal_receipt(lease, publication),
+    )
+    assert "cargo_target_layout" not in projection
+    immutable = Path(projection["terminal_receipt"]["path"])
+    before = immutable.read_bytes()
+    if sealed:
+        with pytest.raises(cache.CargoInputClosureUnproven) as rejected:
+            cache.acquire(**inputs)
+        assert rejected.value.diagnostic["candidate_path"] == str(historical)
+    dispose = (
+        cache.retire_terminal_sealed if sealed else cache.reclaim_terminal_unsealed
+    )
+    result = dispose(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+    )
+    assert result["state"] == ("retired-sealed" if sealed else "reclaimed")
+    assert not historical.exists()
+    assert immutable.read_bytes() == before
+    inputs.update(run_id="successor", execution_nonce_sha256="d" * 64)
+    successor = cache.acquire(**inputs)
+    successor.close()
+    assert successor.provenance["cargo_target_layout"] == layout.TARGET_LAYOUT
+    assert successor.target.parent.name == "cargo-target"
+    assert "cargo_target_layout" not in lease.provenance
+
+    # Historical terminal verification is independent of mounted output media.
+    def offline(value):
+        raise OSError("output media offline")
+
+    monkeypatch.setattr(layout, "validate_root", offline)
+    assert cache.validate_terminal_receipt(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        projection=projection,
+        run_id="unit-one",
+        execution_nonce_sha256="a" * 64,
+    )["target"] == str(historical)
+
+
+@pytest.mark.parametrize("phase", ["terminal", "reclaim", "retire"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("cargo_target_layout", "molt.proof-cargo-target.v1"),
+        ("cargo_target_layout", None),
+        ("generation_owner", "foreign-owner"),
+        ("cargo_output_root", {}),
+        ("run_id", "foreign-run"),
+    ],
+)
+def test_pointer_binding_precedes_terminal_mutation_or_deletion(
+    tmp_path, phase, field, value
+):
+    inputs = _inputs(tmp_path)
+    lease = cache.acquire(**inputs)
+    (lease.target / "keep").write_bytes(b"must not delete")
+    publication = lease.publish(
+        _completed(lease) if phase == "retire" else {"phase": "failed"}
+    )
+    lease.close()
+    terminal = dict(
+        result_root=inputs["result_root"],
+        provenance=lease.provenance,
+        terminal_receipt=_terminal_receipt(lease, publication),
+    )
+    projection = (
+        cache.record_terminal_receipt(**terminal) if phase != "terminal" else None
+    )
+    pointer = cache.loads_exact(lease.pointer.read_text())
+    if value is None:
+        pointer.pop(field)
+    else:
+        pointer[field] = value
+    cache._atomic_json(lease.pointer, pointer)
+    before_pointer = lease.pointer.read_bytes()
+    before_owner = lease.owner_path.read_bytes()
+    with pytest.raises(ValueError, match="binding mismatch"):
+        if phase == "terminal":
+            cache.record_terminal_receipt(**terminal)
+        else:
+            dispose = (
+                cache.retire_terminal_sealed
+                if phase == "retire"
+                else cache.reclaim_terminal_unsealed
+            )
+            dispose(
+                result_root=inputs["result_root"],
+                provenance=lease.provenance,
+                projection=projection,
+            )
+    assert (lease.target / "keep").read_bytes() == b"must not delete"
+    assert lease.pointer.read_bytes() == before_pointer
+    assert lease.owner_path.read_bytes() == before_owner
+
+
+def test_compact_target_requires_exclusive_creation_even_if_empty(
+    tmp_path, monkeypatch
+):
+    inputs = _inputs(tmp_path)
+    derive = cache.cargo_output_layout.CargoOutputLayout.target
+    targets = []
+
+    def preexisting(self, *args, **kwargs):
+        target = derive(self, *args, **kwargs)
+        target.mkdir(parents=True)
+        targets.append(target)
+        return target
+
+    monkeypatch.setattr(
+        cache.cargo_output_layout.CargoOutputLayout, "target", preexisting
+    )
+    with pytest.raises(FileExistsError):
+        cache.acquire(**inputs)
+    assert targets and targets[0].is_dir()
+    assert not list(targets[0].iterdir())
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_active_publication_requires_its_current_pointer(tmp_path, missing):
+    inputs = _inputs(tmp_path)
+    lease = cache.acquire(**inputs)
+    try:
+        pointer = cache.loads_exact(lease.pointer.read_text())
+        if missing:
+            lease.pointer.unlink()
+        else:
+            pointer["target"] = str(tmp_path / "foreign")
+            cache._atomic_json(lease.pointer, pointer)
+        before = None if missing else lease.pointer.read_bytes()
+        owner_before = lease.owner_path.read_bytes()
+        with pytest.raises(ValueError, match="lost its current pointer"):
+            lease.publish(_completed(lease))
+        assert lease.owner_path.read_bytes() == owner_before
+        assert not lease.published
+        if missing:
+            assert not lease.pointer.exists()
+        else:
+            assert lease.pointer.read_bytes() == before
+    finally:
+        lease.close()
 
 
 @pytest.mark.parametrize(

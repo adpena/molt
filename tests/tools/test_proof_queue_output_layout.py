@@ -39,6 +39,78 @@ def _root(tmp_path):
     return root
 
 
+@pytest.mark.parametrize("external", [False, True])
+def test_compact_target_binds_full_identity_without_repeating_metadata(
+    tmp_path, external
+):
+    metadata = tmp_path / "receipts"
+    declaration = layout.declare_root(str(_root(tmp_path))) if external else None
+    selected = layout.CargoOutputLayout.create(
+        result_root=metadata, declaration=declaration
+    )
+    root = Path(declaration["path"]) if declaration else metadata
+    target = selected.target("a" * 64, "b" * 16)
+    assert target.parent == root / "cargo-target"
+    assert len(target.name) == 64
+    assert target == selected.target("a" * 64, "b" * 16)
+    assert target != selected.target("a" * 63 + "c", "b" * 16)
+    assert target != selected.target("a" * 64, "b" * 15 + "c")
+    other = layout.CargoOutputLayout.create(
+        result_root=tmp_path / "other-receipts", declaration=declaration
+    )
+    assert target != other.target("a" * 64, "b" * 16)
+    legacy = selected.target(
+        "a" * 64, "b" * 16, version=layout.recorded_target_layout({})
+    )
+    assert (
+        legacy
+        == selected.payload_root / "cargo-cache" / ("a" * 64) / ("b" * 16) / "target"
+    )
+    assert target != legacy
+    assert selected.targets_root in selected.capacity_paths()
+    assert selected.payload_root / "cargo-cache" in selected.capacity_paths()
+    assert not target.exists() and not legacy.exists()
+
+
+@pytest.mark.parametrize("version", [None, True, 2, "v2", "unknown", []])
+def test_target_layout_rejects_unknown_or_substituted_versions(version):
+    with pytest.raises(ValueError, match="layout version"):
+        layout.recorded_target_layout({"cargo_target_layout": version})
+
+
+def test_historical_projection_keeps_absent_discriminator():
+    assert layout.target_layout_fields({}) == {}
+    current = {"cargo_target_layout": layout.TARGET_LAYOUT}
+    assert layout.target_layout_fields(current) == current
+    with pytest.raises(ValueError, match="layout binding"):
+        layout.require_same_target_layout({}, current)
+
+
+def test_windows_target_budget_counts_utf16_before_creating_outputs(tmp_path):
+    selected = layout.CargoOutputLayout(tmp_path / ("\U0001f600" * 70))
+    selected.admit_target_path(platform="linux")
+    with pytest.raises(
+        ValueError, match="target_utf16_units=.*shorter --cargo-output-root"
+    ):
+        selected.admit_target_path(platform="win32")
+    assert not selected.result_root.exists()
+
+
+def test_current_target_namespace_cannot_be_redirected(tmp_path):
+    selected = layout.CargoOutputLayout.create(result_root=tmp_path / "receipts")
+    selected.result_root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        (selected.result_root / "cargo-target").symlink_to(
+            elsewhere, target_is_directory=True
+        )
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError, match="link|junction"):
+        selected.target("a" * 64, "b" * 16)
+
+
 @pytest.mark.parametrize(
     "command",
     [

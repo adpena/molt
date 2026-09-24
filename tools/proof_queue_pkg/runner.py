@@ -258,6 +258,7 @@ def _record_cargo_generation_terminal(
         process_supervisor = context.get("process_supervisor")
     terminal = {
         "schema": cargo_cache_custody.TERMINAL_RECEIPT_SCHEMA,
+        **cargo_output_layout.target_layout_fields(provenance),
         "cargo_output_lifetime": lifetime,
         **({"cargo_output_root": output_root} if output_root is not None else {}),
         "run_id": run_id,
@@ -1571,6 +1572,7 @@ def _run_one(
         if uses_cargo:
             # The queue owns Cargo and derived output below the result root.
             # Reject before environment provisioning, capture, or child launch.
+            output_layout.admit_target_path()
             capacity_admission = disk_capacity.require_build_capacity(
                 output_layout.capacity_paths()
                 if output_layout.declaration is not None
