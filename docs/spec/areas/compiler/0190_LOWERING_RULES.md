@@ -531,6 +531,12 @@ repair. One local `None` definition dominates the consuming block's operations
 and outgoing edge arguments, including disconnected roots. An unused SSA
 placeholder must not emit instructions before checked entry or escape into
 published operands or type facts.
+Executable exception transfers end their CFG blocks at the transfer program
+point. Success-continuation definitions cannot reach an earlier failure edge;
+SSA dominance, liveness and block-argument placement consume the same augmented
+exception/resume graph rather than independently reconstructing its successors.
+One source liveness solution seeds implicit-edge environments and pruned phi
+placement; argument seeding does not recompute unchanged source defs/uses.
 
 The function's explicit `return_abi` owns the linkage result independently of
 return payloads and inferred semantic types. Python functions, pollers, and

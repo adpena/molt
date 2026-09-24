@@ -743,12 +743,6 @@ pub fn split_large_function(
         let start = boundaries[i];
         let end = boundaries[i + 1];
         let mut chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
-        if !drop_fact_markers.is_empty() {
-            chunk_ops.retain(|op| !is_drop_fact_marker_op(op));
-            let mut prefixed = drop_fact_markers.clone();
-            prefixed.extend(chunk_ops);
-            chunk_ops = prefixed;
-        }
         let live_in: BTreeSet<String> = name_index
             .live_names(start)
             .filter(|name| frame_slot_for.contains_key(*name))
@@ -824,87 +818,70 @@ pub fn split_large_function(
         if execution_context == ExecutionContextPolicy::Local {
             chunk_ops.retain(|op| op.kind != "trace_exit");
         }
+        if !drop_fact_markers.is_empty() {
+            chunk_ops.retain(|op| !is_drop_fact_marker_op(op));
+        }
 
         let chunk_name = chunk_names[i].clone();
-        let return_protocol = if body_has_value_returns {
-            let terminal = if chunk_ops
+        let terminal = if body_has_value_returns {
+            if chunk_ops
                 .last()
                 .is_some_and(|op| simpleir_kind_is_return_terminator(op.kind.as_str()))
             {
                 chunk_ops.pop()
             } else {
                 None
-            };
-            let returns_value = terminal.as_ref().is_some_and(simple_ir_return_has_value);
-            if uses_split_frame {
-                let stores = split_frame_store_ops(
-                    &frame_name,
-                    &frame_slot_for,
-                    &live_out,
-                    &mut occupied_names,
-                );
-                if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
-                    let Some(insert_idx) = chunk_ops
-                        .iter()
-                        .position(|op| op.kind == "jump" && op.value == Some(skip_label))
-                    else {
-                        return Err(Box::new(func));
-                    };
-                    chunk_ops.splice(insert_idx..insert_idx, stores);
-                } else {
-                    chunk_ops.extend(stores);
-                }
-                let mut prefixed = split_frame_load_ops(
-                    &frame_name,
-                    &frame_slot_for,
-                    &live_in,
-                    &mut occupied_names,
-                );
-                prefixed.extend(chunk_ops);
-                chunk_ops = prefixed;
-            }
-            chunk_ops.push(terminal.unwrap_or_else(|| OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }));
-            if returns_value {
-                ChunkReturnProtocol::OwnerValue
-            } else {
-                ChunkReturnProtocol::Fallthrough
             }
         } else {
             chunk_ops =
                 split_rewrite_void_terminals_to_status(chunk_ops, &mut occupied_names, false);
-            if uses_split_frame {
-                let stores = split_frame_store_ops(
-                    &frame_name,
-                    &frame_slot_for,
-                    &live_out,
-                    &mut occupied_names,
-                );
-                if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
-                    let Some(insert_idx) = chunk_ops
-                        .iter()
-                        .position(|op| op.kind == "jump" && op.value == Some(skip_label))
-                    else {
-                        return Err(Box::new(func));
-                    };
-                    chunk_ops.splice(insert_idx..insert_idx, stores);
-                } else {
-                    chunk_ops.extend(stores);
-                }
-                let mut prefixed = split_frame_load_ops(
-                    &frame_name,
-                    &frame_slot_for,
-                    &live_in,
-                    &mut occupied_names,
-                );
-                prefixed.extend(chunk_ops);
-                chunk_ops = prefixed;
-            }
-            chunk_ops.extend(split_status_return_ops(&mut occupied_names, true));
-            ChunkReturnProtocol::ContinuationStatus
+            None
         };
+        let return_protocol = if !body_has_value_returns {
+            ChunkReturnProtocol::ContinuationStatus
+        } else if terminal.as_ref().is_some_and(simple_ir_return_has_value) {
+            ChunkReturnProtocol::OwnerValue
+        } else {
+            ChunkReturnProtocol::Fallthrough
+        };
+
+        // Both return protocols share one frame-transport placement. Ownership
+        // facts remain the leading prefix, ahead of every generated frame load.
+        let mut chunk_prologue = drop_fact_markers.clone();
+        if uses_split_frame {
+            let stores =
+                split_frame_store_ops(&frame_name, &frame_slot_for, &live_out, &mut occupied_names);
+            if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
+                let Some(insert_idx) = chunk_ops
+                    .iter()
+                    .position(|op| op.kind == "jump" && op.value == Some(skip_label))
+                else {
+                    return Err(Box::new(func));
+                };
+                chunk_ops.splice(insert_idx..insert_idx, stores);
+            } else {
+                chunk_ops.extend(stores);
+            }
+            chunk_prologue.extend(split_frame_load_ops(
+                &frame_name,
+                &frame_slot_for,
+                &live_in,
+                &mut occupied_names,
+            ));
+        }
+        chunk_prologue.extend(chunk_ops);
+        chunk_ops = chunk_prologue;
+        match return_protocol {
+            ChunkReturnProtocol::ContinuationStatus => {
+                chunk_ops.extend(split_status_return_ops(&mut occupied_names, true));
+            }
+            ChunkReturnProtocol::Fallthrough | ChunkReturnProtocol::OwnerValue => {
+                chunk_ops.push(terminal.unwrap_or_else(|| OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }));
+            }
+        }
         let mut chunk_params = func.params.clone();
         if uses_split_frame {
             chunk_params.push(frame_name.clone());

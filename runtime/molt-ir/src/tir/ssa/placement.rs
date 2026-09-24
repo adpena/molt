@@ -873,7 +873,7 @@ impl<'a> SsaContext<'a> {
 
     // -- Phase 3: insert block arguments (phi placement) ---------------------
 
-    pub(super) fn insert_block_arguments(&mut self) {
+    pub(super) fn insert_block_arguments(&mut self, live_in: &[HashSet<String>]) {
         // For each variable, compute the iterated dominance frontier of all
         // blocks that define it, then insert a block argument at those blocks.
         // This is pruned SSA: only insert a block argument when the variable is
@@ -883,8 +883,6 @@ impl<'a> SsaContext<'a> {
         // Liveness is computed over the augmented CFG (regular + exception
         // edges) so that variables propagated through an exception handler's
         // normal exit are considered live at the post-handler merge block.
-        let live_in = self.compute_live_in_vars(true);
-
         // Function parameters are implicit definitions available at the entry
         // block. Add them as entry-block arguments so the rename phase creates
         // proper ValueIds and subsequent ops can resolve them.
@@ -908,7 +906,7 @@ impl<'a> SsaContext<'a> {
                 // A block is a definition site for `var` when its ops define
                 // it — OR when it is a handler block that already carries
                 // `var` as a block argument (established by
-                // `insert_exception_handler_arguments`): along the exception
+                // `insert_implicit_edge_block_arguments`): along the exception
                 // edge the handler introduces a fresh SSA value for the
                 // variable. It must seed the iterated dominance frontier so
                 // that every block where the handler's normal exit rejoins the
@@ -965,59 +963,34 @@ impl<'a> SsaContext<'a> {
         }
     }
 
-    /// Exception handlers are reached via implicit `check_exception` edges,
-    /// not ordinary block terminators. Preserve a conservative environment
-    /// vector for those targets based on true live-in variables across normal
-    /// and exceptional edges. Threading every variable into every handler is
-    /// both expensive and unsound: unresolved future vars collapse to
-    /// `ValueId(0)` and can corrupt downstream lowering.
-    pub(super) fn insert_exception_handler_arguments(&mut self) {
-        let mut handler_blocks: HashSet<usize> = HashSet::new();
-        for &(_, handler_bid) in &self.cfg.exception_edges {
-            handler_blocks.insert(handler_bid);
-        }
-        if handler_blocks.is_empty() {
-            return;
-        }
-
-        let live_in = self.compute_live_in_vars(true);
-        for bid in handler_blocks {
-            let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
-            vars.sort();
-            for var in &vars {
-                if !self.block_arg_vars[bid].contains(var) {
-                    self.block_arg_vars[bid].push(var.clone());
-                }
-            }
-        }
-    }
-
-    /// State-machine resume continuations are reached via the implicit
-    /// `state_switch` dispatch edge, not an ordinary block terminator — exactly
-    /// like exception handler blocks.  Seed each resume block with its true
-    /// live-in variables as block arguments so the dispatch edge can supply them
-    /// (mirror `insert_exception_handler_arguments`).  This both (a) makes the
-    /// resume block a fresh SSA definition site for each live-across-suspend
-    /// variable, seeding the IDF so every rejoin past the resume gets a phi, and
-    /// (b) gives the `StateDispatch` terminator a concrete block-arg list to fill
-    /// from the var stacks live at the dispatch point.
+    /// Exception handlers and state-machine resume continuations are reached
+    /// through implicit edges. Seed their shared live-in environment before IDF
+    /// placement so each target introduces fresh SSA definitions and every
+    /// normal/exception/resume rejoin receives the required phi. The exception
+    /// operation or StateDispatch supplies that same environment at its source
+    /// program point; unrelated future variables are never threaded through it.
     ///
     /// Variables that the frontend spilled to the frame (the common
     /// live-across-yield case) are reloaded via fresh `closure_load` defs inside
     /// the resume block and are NOT live-in there, so they are not seeded — only
     /// the values genuinely threaded across the suspend (the frame `self`
     /// pointer, exception-stack bookkeeping values) are.
-    pub(super) fn insert_state_resume_block_arguments(&mut self) {
-        let mut resume_blocks: HashSet<usize> = HashSet::new();
-        for &(_, resume_bid, _) in &self.cfg.state_resume_edges {
-            resume_blocks.insert(resume_bid);
-        }
-        if resume_blocks.is_empty() {
-            return;
-        }
-
-        let live_in = self.compute_live_in_vars(true);
-        for bid in resume_blocks {
+    pub(super) fn insert_implicit_edge_block_arguments(&mut self, live_in: &[HashSet<String>]) {
+        let mut targets: Vec<usize> = self
+            .cfg
+            .exception_edges
+            .iter()
+            .map(|&(_, target)| target)
+            .chain(
+                self.cfg
+                    .state_resume_edges
+                    .iter()
+                    .map(|&(_, target, _)| target),
+            )
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        for bid in targets {
             let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
             vars.sort();
             for var in &vars {
@@ -1028,38 +1001,12 @@ impl<'a> SsaContext<'a> {
         }
     }
 
-    fn compute_live_in_vars(&self, include_exception_edges: bool) -> Vec<HashSet<String>> {
+    pub(super) fn compute_live_in_vars(&self) -> Vec<HashSet<String>> {
         let n = self.cfg.blocks.len();
-        let mut succs = self.cfg.successors.clone();
-        if include_exception_edges {
-            for &(from_bid, handler_bid) in &self.cfg.exception_edges {
-                if from_bid >= n || handler_bid >= n {
-                    continue;
-                }
-                if !succs[from_bid].contains(&handler_bid) {
-                    succs[from_bid].push(handler_bid);
-                }
-            }
-            // The `state_switch` dispatch supplies each resume continuation's
-            // live-in on re-entry (the live-across-suspend values that were
-            // spilled to the frame and reloaded after the dispatch).  Model the
-            // dispatch as a liveness successor of the `state_switch` block so
-            // those values are seen as live across the suspend — mirror the
-            // exception-handler edge.
-            for &(switch_bid, resume_bid, _state_id) in &self.cfg.state_resume_edges {
-                if switch_bid >= n || resume_bid >= n {
-                    continue;
-                }
-                if !succs[switch_bid].contains(&resume_bid) {
-                    succs[switch_bid].push(resume_bid);
-                }
-            }
-        }
-        for block_succs in &mut succs {
-            block_succs.sort_unstable();
-            block_succs.dedup();
-        }
-
+        // Dominance, handler/resume arguments, pruned phi placement and
+        // iterator validity all consume the same executable graph. Rebuilding
+        // a separate exception/resume projection here can make liveness and
+        // definition dominance disagree about which program points can meet.
         let mut live_in: Vec<HashSet<String>> = vec![HashSet::new(); n];
         let mut live_out: Vec<HashSet<String>> = vec![HashSet::new(); n];
         let mut changed = true;
@@ -1067,7 +1014,7 @@ impl<'a> SsaContext<'a> {
             changed = false;
             for bid in (0..n).rev() {
                 let mut new_live_out: HashSet<String> = HashSet::new();
-                for succ_bid in &succs[bid] {
+                for succ_bid in &self.aug_successors[bid] {
                     new_live_out.extend(live_in[*succ_bid].iter().cloned());
                 }
 

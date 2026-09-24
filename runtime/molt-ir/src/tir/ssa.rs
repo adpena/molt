@@ -222,6 +222,9 @@ impl<'a> SsaContext<'a> {
         self.gather_defs_uses();
         self.build_augmented_cfg();
         self.compute_dominance_frontiers();
+        // All argument placement consumes one liveness solution. Seeding SSA
+        // arguments changes neither source defs/uses nor the executable graph.
+        let live_in = self.compute_live_in_vars();
         // Handler-block arguments must be established BEFORE the iterated
         // dominance frontier runs: a handler block that receives a live-in
         // variable as a block argument is a *new* SSA definition of that
@@ -232,13 +235,12 @@ impl<'a> SsaContext<'a> {
         // places those rejoin phis; running it afterward would leave the
         // rejoin merges phi-less and produce values that are defined on the
         // normal path but undefined on the handler path.
-        self.insert_exception_handler_arguments();
         // State-machine resume continuations are reached via the implicit
         // `state_switch` dispatch edge; seed their block arguments before the
         // IDF runs, for the same reason handler-block arguments are seeded above
         // (each becomes a fresh SSA def whose rejoin frontier needs a phi).
-        self.insert_state_resume_block_arguments();
-        self.insert_block_arguments();
+        self.insert_implicit_edge_block_arguments(&live_in);
+        self.insert_block_arguments(&live_in);
         self.rename_and_emit();
     }
 
