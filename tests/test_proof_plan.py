@@ -310,6 +310,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }.issubset(filters)
 
 
+def test_libtest_accounting_is_hashed_and_selects_rust_consumers() -> None:
+    path = "tools/libtest_results.py"
+    assert path in PLAN.authority_inputs
+    assert _classes(path)["rust"] is True
+
+
 @pytest.mark.parametrize(
     "path", ["Cargo.toml", ".cargo/config.toml", "runtime/molt-wasm-host/Cargo.toml"]
 )

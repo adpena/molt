@@ -24,6 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "check_suite_honesty.py"
 HONESTY_DIR = REPO_ROOT / "tools" / "suite_honesty"
@@ -38,6 +40,40 @@ def _load_guard():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("entry", ["module", "script"])
+def test_honesty_consumers_bind_one_guard_without_tools_search_path(
+    tmp_path: Path, entry: str
+) -> None:
+    code = """
+import runpy
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+entry = sys.argv[2]
+if entry == "script":
+    sys.path.insert(0, str(root / "tools"))
+    namespace = runpy.run_path(str(root / "tools" / "check_suite_honesty.py"))
+    selected = namespace["harness_memory_guard"]
+else:
+    sys.path.insert(0, str(root))
+    from tools import check_suite_honesty
+    selected = check_suite_honesty.harness_memory_guard
+from tools import harness_memory_guard, run_cargo_test_truth
+assert selected is harness_memory_guard
+assert run_cargo_test_truth.check_suite_honesty.harness_memory_guard is selected
+assert "harness_memory_guard" not in sys.modules
+assert "compat.test_policy" not in sys.modules
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-I", "-B", "-c", code, str(REPO_ROOT), entry],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 @pytest.fixture

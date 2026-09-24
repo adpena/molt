@@ -462,6 +462,21 @@ abort must not discard the earlier assertion details needed to classify the
 whole failure family. Retain the detailed run log and query it on failure;
 console summaries need not repeat passing test output.
 
+`tools/libtest_results.py` owns pretty-text result accounting for the Cargo
+binary runner and truth consumer. Binary receipt v2 preserves all observed test
+identities, ignored outcomes, pending tests, summary counts and accounting errors.
+Success requires complete, consistent accounting as well as a successful guarded
+process. Split `--nocapture` results may be associated only when the invocation
+explicitly selects one test thread; ambiguous parallel output fails closed.
+Only stdout participates in parsing; separately captured stderr has no shared
+ordering. Raw streams remain available for diagnosis. Text accounting does not
+authenticate test output against a test that deliberately impersonates libtest.
+Ignored tests are recorded but never count as execution coverage. Historical v1
+receipts remain immutable and require replay, not an acceptance fallback.
+An attributed known failure cannot mask a partial cohort, timeout, abnormal
+termination, or unexecuted isolated test. Preserve those identities as diagnostics;
+only complete execution accounting can enter the known-red acceptance check.
+
 Public ownership/memory pass contracts live in the `ownership_memory_contracts`
 Cargo integration target and link the ordinary `molt-passes` library; private
 analysis/kernel tests remain in libtest. The core batch selects both targets,

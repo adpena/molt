@@ -94,15 +94,17 @@ import re
 import sys
 from pathlib import Path
 
-import harness_memory_guard
-from molt.verified_subset import load_verified_subset_policy
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
 
-try:
-    from tools.compat import test_policy
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    from compat import test_policy  # type: ignore[no-redef]
+ROOT = bind_repository_imports(__file__)
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools import harness_memory_guard  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
+from molt.verified_subset import load_verified_subset_policy  # noqa: E402
+
 HONESTY_DIR = Path(__file__).resolve().parent / "suite_honesty"
 MANIFEST_PATH = HONESTY_DIR / "differential_expectations.json"
 BASELINE_PATH = HONESTY_DIR / "honesty_baseline.json"
