@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,25 @@ SPEC = importlib.util.spec_from_file_location("check_cargo_test_truth", MODULE_P
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+
+def _accounting(count: int, *, complete: bool = True) -> dict:
+    return {
+        "schema": "molt.libtest-accounting.v1",
+        "complete": complete,
+        "observed_results": count,
+        "declared_results": count if complete else None,
+        "issues": [],
+    }
+
+
+def _libtest_output(identity: str, status: str = "ok") -> str:
+    return (
+        f"running 1 test\ntest {identity} ... {status}\n"
+        f"test result: {'FAILED' if status == 'FAILED' else 'ok'}. "
+        f"{int(status == 'ok')} passed; {int(status == 'FAILED')} failed; "
+        f"{int(status == 'ignored')} ignored; 0 measured; 0 filtered out; finished in 0.01s\n"
+    )
 
 
 def test_cargo_test_topology_cannot_mask_or_skip_binaries() -> None:
@@ -135,6 +155,8 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
         {
             "executable_resolved": executable,
             "status": "failed" if registered else "success",
+            "schema": "molt.cargo-test-binary.v2",
+            "result_accounting": _accounting(len(raw_registered)),
             "failure_identities": raw_registered,
             "test_results": [
                 {"identity": identity, "status": "fail"} for identity in raw_registered
@@ -286,7 +308,8 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
             (receipt_dir / "one.json").write_text(
                 json.dumps(
                     {
-                        "schema": "molt.cargo-test-binary.v1",
+                        "schema": "molt.cargo-test-binary.v2",
+                        "result_accounting": _accounting(1),
                         "invocation_id": "one",
                         "run_id": "root-workspace",
                         "source_identity": source_identity,
@@ -568,6 +591,8 @@ def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -
             "status": "success",
             "failure_identities": [],
             "test_results": [{"identity": "tests::same", "status": "pass"}],
+            "schema": "molt.cargo-test-binary.v2",
+            "result_accounting": _accounting(1),
         }
         for executable in (first, second)
     ]
@@ -593,6 +618,8 @@ def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -
         {
             "executable_resolved": first,
             "status": "failed",
+            "schema": "molt.cargo-test-binary.v2",
+            "result_accounting": _accounting(1),
             "failure_identities": ["tests::same"],
             "test_results": [{"identity": "tests::same", "status": "pass"}],
         }
@@ -636,6 +663,8 @@ def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
             "status": "failed",
             "failure_identities": [],
             "test_results": [],
+            "schema": "molt.cargo-test-binary.v2",
+            "result_accounting": _accounting(0, complete=False),
             "diagnosis": {
                 "kind": kind,
                 "identity": "not_confirmed",
@@ -650,7 +679,9 @@ def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
         {"platform": "windows", "target": "default"},
     )
     assert rows == []
-    assert any("structural attribution only" in problem for problem in problems)
+    assert len(problems) == 1
+    assert "not semantic or known-red evidence" in problems[0]
+    assert "complete libtest result accounting" in problems[0]
 
 
 @pytest.mark.parametrize(
@@ -971,7 +1002,11 @@ def test_resource_binary_runner_isolates_each_test_and_continues_after_failure(
         identity = argv[argv.index("--exact") + 1]
         return SimpleNamespace(
             returncode=-6 if identity == "limit_one" else 0,
-            stdout=f"test {identity} ...\n" if identity == "limit_one" else "",
+            stdout=(
+                f"running 1 test\ntest {identity} ...\n"
+                if identity == "limit_one"
+                else _libtest_output(identity)
+            ),
             stderr="",
         )
 
@@ -1016,7 +1051,7 @@ def test_resource_timeout_remains_structural_and_not_known_red(
     timed_out = binary_runner.BinaryExecution(
         argv=("resource_enforcement", "--exact", "candidate"),
         returncode=124,
-        stdout="test candidate ...\n",
+        stdout="running 1 test\ntest candidate ...\n",
         stderr="",
         elapsed_seconds=10.0,
         timed_out=True,
@@ -1051,9 +1086,12 @@ def test_resource_timeout_remains_structural_and_not_known_red(
     )
     assert returncode == 1
     assert diagnosis["failed_tests"] == []
-    assert diagnosis["structural_failures"] == [
-        {"identity": "candidate", "termination": {"kind": "timeout", "returncode": 124}}
-    ]
+    [failure] = diagnosis["structural_failures"]
+    assert failure["identity"] == "candidate"
+    assert failure["termination"] == {"kind": "timeout", "returncode": 124}
+    assert failure["libtest"]["pending_tests"] == ["candidate"]
+    assert failure["libtest"]["complete"] is False
+    assert failure["libtest"]["observations"] == []
     assert "test candidate ... FAILED" not in capsys.readouterr().out
     exact_argv = list(_executions[-1].argv)
     assert "stale_filter" not in exact_argv
@@ -1075,20 +1113,18 @@ def test_resource_binary_detection_does_not_capture_sibling_targets() -> None:
     )
 
 
-def test_isolated_signal_failure_is_captured_as_exact_receipt_identity() -> None:
-    runner = _load_tool("run_cargo_test_truth_signal", "run_cargo_test_truth.py")
-    rows = runner.parse_test_results(
-        "test env_var_init_installs_tracker ... FAILED\n"
-        "isolated resource test process exited with -6\n",
-        {"platform": "linux", "target": "default"},
-    )
+def test_libtest_failure_is_normalized_by_shared_authority() -> None:
+    from tools.libtest_results import parse_libtest
 
-    assert rows == [
-        {
-            "identity": "env_var_init_installs_tracker",
-            "status": "fail",
-            "context": {"platform": "linux", "target": "default"},
-        }
+    report = parse_libtest(
+        StringIO(
+            _libtest_output("env_var_init_installs_tracker - should panic", "FAILED")
+        ),
+        ("fixture",),
+    )
+    assert report.complete
+    assert report.rows() == [
+        {"identity": "env_var_init_installs_tracker", "status": "fail"}
     ]
 
 
@@ -1230,9 +1266,9 @@ def test_binary_runner_harness_error_is_not_an_isolated_failure() -> None:
     )
     assert binary_runner._exact_reproduction_kind(startup_crash, "candidate") is None
     started_crash = binary_runner.BinaryExecution(
-        argv=startup_crash.argv,
+        argv=(*startup_crash.argv, "--test-threads=1"),
         returncode=-6,
-        stdout="test candidate ...\n",
+        stdout="running 1 test\ntest candidate ...\n",
         stderr="",
         elapsed_seconds=0.01,
         timed_out=False,
@@ -1294,7 +1330,7 @@ def test_binary_runner_records_normal_reported_failure_identities(
         return binary_runner.BinaryExecution(
             argv=tuple(argv),
             returncode=101,
-            stdout="test module::tests::ordinary_failure ... FAILED\n",
+            stdout=_libtest_output("module::tests::ordinary_failure", "FAILED"),
             stderr="",
             elapsed_seconds=0.01,
             timed_out=False,
@@ -1394,7 +1430,7 @@ def test_binary_runner_receipts_are_append_only_per_invocation(
         return binary_runner.BinaryExecution(
             argv=tuple(argv),
             returncode=0,
-            stdout="test same::identity ... ok\n",
+            stdout=_libtest_output("same::identity"),
             stderr="",
             elapsed_seconds=0.01,
             timed_out=False,
@@ -1463,14 +1499,18 @@ def test_binary_runner_reduces_abort_to_exact_test_and_writes_receipt(
             return result(argv, 0, "safe_test: test\nabort_test: test\n")
         if "--exact" in argv:
             assert argv[argv.index("--exact") + 1] == "abort_test"
-            return result(argv, -6, "test abort_test ...\n")
+            return result(argv, -6, "running 1 test\ntest abort_test ...\n")
         skipped = {
             argv[index + 1]
             for index, value in enumerate(argv[:-1])
             if value == "--skip"
         }
         if skipped:
-            return result(argv, -6 if "safe_test" in skipped else 0)
+            return (
+                result(argv, -6)
+                if "safe_test" in skipped
+                else result(argv, 0, _libtest_output("safe_test"))
+            )
         return result(argv, -6, "unattributed abort\n")
 
     monkeypatch.setattr(binary_runner, "execute_binary", fake_execute)
@@ -1535,13 +1575,13 @@ def test_binary_runner_stops_every_diagnostic_phase_on_guard_infrastructure(
             stdout = "first: test\n" + ("second: test\n" if stage != "exact" else "")
         elif "--exact" in argv:
             current = "resource" if stage == "resource" else "exact"
-            stdout = "test first ... FAILED\n"
+            stdout = _libtest_output("first", "FAILED")
         elif "--skip" in argv:
             current = "partition"
             stdout = ""
         elif observed:
             current = "serial"
-            stdout = "test first ...\n"
+            stdout = "running 1 test\ntest first ...\n"
         else:
             current = "baseline"
             stdout = ""
@@ -1740,9 +1780,9 @@ def test_binary_runner_uses_bounded_serial_attribution_when_skip_argv_is_too_lon
             return result(argv, 0, "".join(f"{identity}: test\n" for identity in tests))
         if "--exact" in argv:
             assert argv[argv.index("--exact") + 1] == culprit
-            return result(argv, 0, f"test {culprit} ... ok\n")
+            return result(argv, 0, _libtest_output(culprit))
         assert "--test-threads=1" in argv
-        return result(argv, -6, f"test {culprit} ... ")
+        return result(argv, -6, f"running 1 test\ntest {culprit} ... ")
 
     monkeypatch.setattr(binary_runner, "execute_binary", fake_execute)
     diagnosis, executions = binary_runner.diagnose_abnormal_exit(
@@ -1914,7 +1954,7 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
     receipt.write_text(
         json.dumps(
             {
-                "schema": "molt.cargo-test-binary.v1",
+                "schema": "molt.cargo-test-binary.v2",
                 "invocation_id": "invocation-one",
                 "executable": "one",
             }
@@ -1924,7 +1964,7 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
 
     assert runner.load_binary_receipts(tmp_path) == [
         {
-            "schema": "molt.cargo-test-binary.v1",
+            "schema": "molt.cargo-test-binary.v2",
             "invocation_id": "invocation-one",
             "executable": "one",
         }
@@ -1940,7 +1980,7 @@ def test_truth_runner_cannot_erase_infrastructure_status_with_duplicate_json_key
 ):
     runner = _load_tool("run_cargo_test_truth_exact_outcome", "run_cargo_test_truth.py")
     (tmp_path / "one.json").write_text(
-        '{"schema":"molt.cargo-test-binary.v1","invocation_id":"one",'
+        '{"schema":"molt.cargo-test-binary.v2","invocation_id":"one",'
         '"status":"infrastructure_error","status":"success"}',
         encoding="utf-8",
     )
@@ -1961,7 +2001,7 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
     receipt.write_text(
         json.dumps(
             {
-                "schema": "molt.cargo-test-binary.v1",
+                "schema": "molt.cargo-test-binary.v2",
                 "invocation_id": "invocation-one",
                 "run_id": "exact-run",
                 "executable_resolved": str(executable),
@@ -1991,7 +2031,7 @@ def test_truth_runner_rejects_binary_receipt_from_different_source_snapshot(
     (tmp_path / "one.json").write_text(
         json.dumps(
             {
-                "schema": "molt.cargo-test-binary.v1",
+                "schema": "molt.cargo-test-binary.v2",
                 "invocation_id": "invocation-one",
                 "run_id": "exact-run",
                 "source_identity": {
@@ -2027,7 +2067,7 @@ def test_binary_runner_carries_exact_source_identity_into_receipt(
         lambda argv, _timeout: binary_runner.BinaryExecution(
             argv=tuple(argv),
             returncode=0,
-            stdout="test exact::source ... ok\n",
+            stdout=_libtest_output("exact::source"),
             stderr="",
             elapsed_seconds=0.01,
             timed_out=False,
@@ -2055,3 +2095,473 @@ def test_binary_runner_carries_exact_source_identity_into_receipt(
     [receipt_path] = list(tmp_path.glob("*.json"))
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["source_identity"] == source_identity
+
+
+@pytest.mark.parametrize("threads", [("--test-threads=1",), ("--test-threads", "1")])
+def test_libtest_serial_split_stdout_accounts_for_every_test(threads):
+    from tools.libtest_results import parse_libtest
+
+    output = (
+        "running 10 tests\n"
+        + "".join(
+            f'test kernel::{index} ... {{"accounting_valid":true}}\n{{"receipt":{index}}}\nok\n'
+            if index < 7
+            else f"test kernel::{index} ... ok\n"
+            for index in range(10)
+        )
+        + "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.59s\n"
+    )
+    report = parse_libtest(
+        StringIO(output), ("kernel_closure", "--nocapture", *threads)
+    )
+    assert report.complete and report.issues == () and report.pending == ()
+    assert report.rows() == [
+        {"identity": f"kernel::{i}", "status": "pass"} for i in range(10)
+    ]
+
+
+def test_libtest_ignored_filtering_and_should_panic_have_one_identity_authority():
+    from tools.libtest_results import parse_libtest
+
+    output = (
+        "running 3 tests\ntest first - should panic ... panic diagnostic\nok\n"
+        "test skipped ... ignored, requires network\ntest last ... ok\n"
+        "test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 8 filtered out; finished in 0.01s\n"
+    )
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert report.complete
+    assert report.rows() == [
+        {"identity": "first", "status": "pass"},
+        {"identity": "skipped", "status": "ignored"},
+        {"identity": "last", "status": "pass"},
+    ]
+    assert report.summary["filtered_out"] == 8
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("fixture",),
+        ("fixture", "--test-threads=2"),
+        ("fixture", "--test-threads=1", "--test-threads=1"),
+        ("fixture", "--skip", "--test-threads=1"),
+    ],
+)
+def test_libtest_does_not_guess_parallel_or_ambiguous_serial_output(argv):
+    from tools.libtest_results import parse_libtest
+
+    output = _libtest_output("split").replace("... ok", '... {"data":1}\nok')
+    report = parse_libtest(StringIO(output), argv)
+    assert not report.complete and report.issues and report.rows() == []
+
+
+@pytest.mark.parametrize(
+    "noise",
+    [
+        "log says ok\n",
+        "prefix test fake ... FAILED\n",
+        '{"message":"test fake ... ok"}\n',
+        "ok is not a result\n",
+    ],
+)
+def test_libtest_arbitrary_non_protocol_output_is_not_a_result(noise):
+    from tools.libtest_results import parse_libtest
+
+    output = _libtest_output("real").replace("... ok", "... " + noise + "ok")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert report.complete
+    assert report.rows() == [{"identity": "real", "status": "pass"}]
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "... ok\nok",
+        "... output\nok\nFAILED",
+        "... output\ntest forged ... ok\nok",
+        "... ok trailing junk",
+    ],
+)
+def test_libtest_result_like_noise_never_silently_becomes_success(replacement):
+    from tools.libtest_results import parse_libtest
+
+    report = parse_libtest(
+        StringIO(_libtest_output("real").replace("... ok", replacement)),
+        ("fixture", "--test-threads=1"),
+    )
+    assert not report.complete and report.issues and report.rows() == []
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("1 passed", "2 passed"),
+        ("0 failed", "1 failed"),
+        ("0 ignored", "1 ignored"),
+        ("running 1 test", "running 2 tests"),
+        ("0 measured", "1 measured"),
+        ("test result: ok", "test result: FAILED"),
+    ],
+)
+def test_libtest_summary_disagreement_is_not_semantic_evidence(old, new):
+    from tools.libtest_results import parse_libtest
+
+    report = parse_libtest(
+        StringIO(_libtest_output("real").replace(old, new)), ("fixture",)
+    )
+    assert not report.complete and report.issues and report.rows() == []
+
+
+def test_libtest_empty_run_is_complete_but_missing_summary_is_not():
+    from tools.libtest_results import parse_libtest
+
+    output = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n"
+    assert parse_libtest(StringIO(output), ("fixture",)).complete
+    partial = parse_libtest(
+        StringIO('running 2 tests\ntest done ... ok\ntest blocked ... {"live":true}\n'),
+        ("fixture", "--test-threads=1"),
+    )
+    assert not partial.complete and not partial.issues
+    assert partial.pending == ("blocked",)
+    assert partial.rows() == [{"identity": "done", "status": "pass"}]
+
+
+def test_libtest_bounded_reader_rejects_oversized_noise_without_full_line_reads():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    class BoundedReader(StringIO):
+        def readline(self, size=-1):
+            assert 0 < size <= MAX_LINE_CHARS + 1
+            return super().readline(size)
+
+    output = _libtest_output("real").replace(
+        "... ok", "... " + "x" * (3 * MAX_LINE_CHARS) + "\nok"
+    )
+    report = parse_libtest(BoundedReader(output), ("fixture", "--test-threads=1"))
+    assert "line-limit-exceeded" in report.issues and report.rows() == []
+
+
+def test_binary_runner_reads_complete_stdout_not_tail_or_stderr(tmp_path):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_stdout_authority", "cargo_test_binary_runner.py"
+    )
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    stdout.write_text(_libtest_output("real"), encoding="utf-8")
+    stderr.write_text(_libtest_output("fake", "FAILED"), encoding="utf-8")
+    execution = binary_runner.BinaryExecution(
+        ("fixture",),
+        0,
+        "truncated tail",
+        "test fake ... FAILED",
+        0.01,
+        False,
+        None,
+        None,
+        stdout,
+        stderr,
+    )
+    assert binary_runner._structured_results_for_execution(execution) == [
+        {"identity": "real", "status": "pass"}
+    ]
+    assert binary_runner._test_results_for_execution(execution, "FAILED") == []
+    assert execution.receipt()["libtest"]["complete"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "test missing_banner ... ok\n",
+        "running 1 test\ntest missing_summary ... ok\n",
+        _libtest_output("one").replace("1 passed", "2 passed"),
+    ],
+)
+def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
+    tmp_path, monkeypatch, output
+):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_incomplete", "cargo_test_binary_runner.py"
+    )
+    monkeypatch.setattr(
+        binary_runner,
+        "execute_binary",
+        lambda argv, _timeout: binary_runner.BinaryExecution(
+            tuple(argv), 0, output, "", 0.01, False, None, None
+        ),
+    )
+    monkeypatch.setattr(
+        binary_runner,
+        "diagnose_abnormal_exit",
+        lambda *a, **k: pytest.fail("accounting is not an abnormal-exit retry request"),
+    )
+    assert (
+        binary_runner.main(
+            ["--timeout-seconds", "30", "--receipt-dir", str(tmp_path), "--", "fixture"]
+        )
+        == 2
+    )
+    [path] = list(tmp_path.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["schema"] == "molt.cargo-test-binary.v2"
+    assert (
+        receipt["status"] == "failed" and not receipt["result_accounting"]["complete"]
+    )
+    assert receipt["diagnosis"]["kind"] == "libtest-accounting-error"
+
+
+def test_resource_exit_zero_without_exact_result_is_structural(monkeypatch):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_resource_accounting", "cargo_test_binary_runner.py"
+    )
+    discovery = binary_runner.BinaryExecution(
+        ("resource_enforcement", "--list"),
+        0,
+        "wanted: test\n",
+        "",
+        0.01,
+        False,
+        None,
+        None,
+    )
+    monkeypatch.setattr(
+        binary_runner, "listed_tests", lambda *a, **k: (["wanted"], discovery)
+    )
+    monkeypatch.setattr(
+        binary_runner,
+        "execute_binary",
+        lambda argv, _timeout: binary_runner.BinaryExecution(
+            tuple(argv), 0, "", "", 0.01, False, None, None
+        ),
+    )
+    code, diagnosis, executions = binary_runner.run_resource_tests(
+        "resource_enforcement",
+        [],
+        total_timeout_seconds=30,
+        deadline=time.monotonic() + 30,
+    )
+    assert code == 1 and diagnosis["failed_tests"] == []
+    assert diagnosis["structural_failures"][0]["identity"] == "wanted"
+    assert (
+        binary_runner._canonical_test_results(executions, resource_isolation=True) == []
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "old-schema",
+        "missing",
+        "incomplete",
+        "wrong-count",
+        "wrong-declared",
+        "ambiguous",
+    ],
+)
+def test_truth_rejects_success_without_complete_v2_accounting(mutation):
+    runner = _load_tool("run_cargo_test_truth_accounting", "run_cargo_test_truth.py")
+    executable = str((ROOT / "target" / "fixture").resolve())
+    expected = {
+        runner._executable_key(executable): dict(
+            package="fixture",
+            target_name="fixture",
+            target_kind="test",
+            executable=executable,
+        )
+    }
+    receipt = dict(
+        schema="molt.cargo-test-binary.v2",
+        executable=executable,
+        status="success",
+        test_results=[dict(identity="one", status="pass")],
+        failure_identities=[],
+        result_accounting=_accounting(1),
+    )
+    if mutation == "old-schema":
+        receipt["schema"] = "molt.cargo-test-binary.v1"
+    elif mutation == "missing":
+        del receipt["result_accounting"]
+    elif mutation == "incomplete":
+        receipt["result_accounting"]["complete"] = False
+    elif mutation == "wrong-count":
+        receipt["result_accounting"]["observed_results"] = 2
+    elif mutation == "wrong-declared":
+        receipt["result_accounting"]["declared_results"] = 2
+    else:
+        receipt["result_accounting"]["issues"] = ["ambiguous-standalone-result"]
+    rows, problems = runner.receipt_test_rows([receipt], expected, {})
+    assert not rows and len(problems) == 1
+    assert "not semantic or known-red evidence" in problems[0]
+
+
+def test_truth_keeps_ignored_in_receipt_but_not_execution_reality():
+    runner = _load_tool("run_cargo_test_truth_ignored", "run_cargo_test_truth.py")
+    executable = str((ROOT / "target" / "fixture").resolve())
+    expected = {
+        runner._executable_key(executable): dict(
+            package="fixture",
+            target_name="fixture",
+            target_kind="test",
+            executable=executable,
+        )
+    }
+    receipt = dict(
+        schema="molt.cargo-test-binary.v2",
+        executable=executable,
+        status="success",
+        test_results=[dict(identity="skip", status="ignored")],
+        failure_identities=[],
+        result_accounting=_accounting(1),
+    )
+    assert runner.receipt_test_rows([receipt], expected, {}) == ([], [])
+
+
+@pytest.mark.parametrize("extra", ["test real ... ok\n", "running 1 test\n"])
+def test_libtest_duplicate_identity_or_run_is_ambiguous(extra):
+    from tools.libtest_results import parse_libtest
+
+    output = _libtest_output("real").replace("test result:", extra + "test result:")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert report.issues and not report.complete and report.rows() == []
+
+
+def test_truth_loader_rejects_old_schema_instead_of_upgrading_evidence(tmp_path):
+    runner = _load_tool("run_cargo_test_truth_old_schema", "run_cargo_test_truth.py")
+    historical = dict(
+        schema="molt.cargo-test-binary.v1", invocation_id="old", status="success"
+    )
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(historical), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match="invalid Cargo test binary receipt schema"):
+        runner.load_binary_receipts(tmp_path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [
+            {"identity": "same", "status": "pass"},
+            {"identity": "same", "status": "pass"},
+        ],
+        [
+            {"identity": "same", "status": "pass"},
+            {"identity": "same", "status": "fail"},
+        ],
+        [{"identity": "", "status": "pass"}],
+        [{"identity": "  ", "status": "pass"}],
+        [{"identity": "one", "status": "unknown"}],
+        ["not a result object"],
+    ],
+)
+def test_truth_rejects_duplicate_empty_or_malformed_v2_rows(rows):
+    runner = _load_tool("run_cargo_test_truth_invalid_rows", "run_cargo_test_truth.py")
+    executable = str((ROOT / "target" / "fixture").resolve())
+    expected = {
+        runner._executable_key(executable): dict(
+            package="fixture",
+            target_name="fixture",
+            target_kind="test",
+            executable=executable,
+        )
+    }
+    receipt = dict(
+        schema="molt.cargo-test-binary.v2",
+        executable=executable,
+        status="success",
+        test_results=rows,
+        failure_identities=[],
+        result_accounting=_accounting(len(rows)),
+    )
+    published, problems = runner.receipt_test_rows([receipt], expected, {})
+    assert not published and len(problems) == 1
+    assert "not semantic or known-red evidence" in problems[0]
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+@pytest.mark.parametrize("termination", ["timeout", "signal", "unexecuted"])
+def test_known_failure_cannot_mask_incomplete_binary_cohort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated: bool, termination: str
+) -> None:
+    binary_runner = _load_tool("binary_mixed_failure", "cargo_test_binary_runner.py")
+    runner = _load_tool("truth_mixed_failure", "run_cargo_test_truth.py")
+    executable = str(tmp_path / ("resource_enforcement" if isolated else "fixture"))
+
+    def execution(argv, output, code, *, timed_out=False):
+        return binary_runner.BinaryExecution(
+            tuple(argv), code, output, "", 0.01, timed_out, None, None
+        )
+
+    if isolated and termination == "unexecuted":
+        discovery = execution([executable, "--list"], "known: test\nblocked: test\n", 0)
+        known = execution(
+            [executable, "--exact", "known", "--test-threads=1"],
+            _libtest_output("known", "FAILED"),
+            101,
+        )
+        monkeypatch.setattr(
+            binary_runner,
+            "run_resource_tests",
+            lambda *args, **kwargs: (
+                1,
+                {
+                    "kind": "resource-isolation-timeout",
+                    "failed_tests": ["known"],
+                    "unexecuted_tests": ["blocked"],
+                },
+                [discovery, known],
+            ),
+        )
+    else:
+
+        def execute(argv, _timeout):
+            if "--list" in argv:
+                return execution(argv, "known: test\nblocked: test\n", 0)
+            if "--exact" in argv and argv[argv.index("--exact") + 1] == "known":
+                return execution(argv, _libtest_output("known", "FAILED"), 101)
+            output = (
+                "running 1 test\ntest blocked ...\n"
+                if isolated
+                else "running 2 tests\ntest known ... FAILED\ntest blocked ...\n"
+            )
+            return execution(
+                argv,
+                output,
+                124 if termination == "timeout" else -6,
+                timed_out=termination == "timeout",
+            )
+
+        monkeypatch.setattr(binary_runner, "execute_binary", execute)
+
+    receipt_dir = tmp_path / "receipts"
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(receipt_dir),
+                "--",
+                executable,
+                "--nocapture",
+                "--test-threads=1",
+            ]
+        )
+        != 0
+    )
+    [path] = list(receipt_dir.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert "known" in receipt["failure_identities"]
+    assert receipt["result_accounting"]["complete"] is False
+    expected = {
+        runner._executable_key(executable): dict(
+            package="fixture",
+            target_name="fixture",
+            target_kind="test",
+            executable=executable,
+        )
+    }
+    rows, problems = runner.receipt_test_rows([receipt], expected, {})
+    assert rows == []
+    assert len(problems) == 1 and "not semantic or known-red evidence" in problems[0]

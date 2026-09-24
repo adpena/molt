@@ -25,6 +25,7 @@ ROOT = bind_repository_imports(__file__)
 from molt.exact_json import loads_exact  # noqa: E402
 from tools import check_suite_honesty  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.libtest_results import BINARY_RECEIPT_SCHEMA, accounting_problem  # noqa: E402
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -78,29 +79,6 @@ _SOURCE_SUFFIXES = frozenset(
 def host_context() -> dict[str, str]:
     platform = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
     return {"platform": platform, "target": "default"}
-
-
-def parse_test_results(output: str, context: dict[str, str]) -> list[dict]:
-    rows: dict[str, dict] = {}
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("test ") or " ... " not in line:
-            continue
-        identity, status = line[5:].rsplit(" ... ", 1)
-        identity = identity.removesuffix(" - should panic")
-        if status == "ok":
-            rows[identity] = {
-                "identity": identity,
-                "status": "pass",
-                "context": context,
-            }
-        elif status == "FAILED":
-            rows[identity] = {
-                "identity": identity,
-                "status": "fail",
-                "context": context,
-            }
-    return list(rows.values())
 
 
 def verdict(
@@ -187,7 +165,7 @@ def load_binary_receipts(
     invocation_ids: set[str] = set()
     for path in sorted(receipt_dir.glob("*.json")):
         payload = loads_exact(path.read_text(encoding="utf-8"))
-        if payload.get("schema") != "molt.cargo-test-binary.v1":
+        if payload.get("schema") != BINARY_RECEIPT_SCHEMA:
             raise RuntimeError(f"invalid Cargo test binary receipt schema: {path}")
         invocation_id = payload.get("invocation_id")
         if not isinstance(invocation_id, str) or not invocation_id:
@@ -477,11 +455,10 @@ def binary_coverage_problems(
 
 
 def _namespaced_test_identity(metadata: dict[str, str], identity: str) -> str:
-    test = identity.removesuffix(" - should panic")
     workspace = metadata.get("workspace", "")
     return (
         f"{f'{workspace}::' if workspace else ''}{metadata['package']}::{metadata['target_kind']}:"
-        f"{metadata['target_name']}::{test}"
+        f"{metadata['target_name']}::{identity}"
     )
 
 
@@ -549,12 +526,12 @@ def receipt_test_rows(
             "executable": metadata["executable"],
             "workspace": metadata.get("workspace", "root"),
         }
-        raw_results = receipt.get("test_results")
-        if not isinstance(raw_results, list):
+        accounting = accounting_problem(receipt)
+        if accounting is not None:
             problems.append(
-                f"Cargo test binary receipt lacks structured test results: {metadata['executable']}"
+                f"Cargo test binary is not semantic or known-red evidence; {accounting}; executable={metadata['executable']!r}"
             )
-            raw_results = []
+            continue
         confirmed = receipt.get("failure_identities")
         if not isinstance(confirmed, list) or not all(
             isinstance(identity, str) for identity in confirmed
@@ -564,31 +541,17 @@ def receipt_test_rows(
             )
             confirmed = []
         confirmed_set = set(confirmed)
-        receipt_rows: dict[str, str] = {}
-        for result in raw_results:
-            if not isinstance(result, dict):
-                problems.append(
-                    "Cargo test binary receipt has a non-object test result"
-                )
-                continue
-            identity = result.get("identity")
-            status = result.get("status")
-            if not isinstance(identity, str) or status not in {"pass", "fail"}:
-                problems.append(
-                    f"Cargo test binary receipt has invalid structured result: {result!r}"
-                )
-                continue
-            prior = receipt_rows.setdefault(identity, status)
-            if prior != status:
-                problems.append(
-                    f"Cargo test binary reported contradictory outcomes for {identity!r}"
-                )
+        # The shared accounting boundary has validated row shape and uniqueness.
+        receipt_rows = {
+            result["identity"]: result["status"] for result in receipt["test_results"]
+        }
+        for identity, status in receipt_rows.items():
             if status == "fail" and identity not in confirmed_set:
                 problems.append(
                     f"Cargo test binary reported an unconfirmed failure identity: {identity!r}"
                 )
         for identity in confirmed_set:
-            if receipt_rows.get(identity) == "pass":
+            if receipt_rows.get(identity) in {"pass", "ignored"}:
                 problems.append(
                     "Cargo test binary contradicted pass with confirmed failure "
                     f"for {identity!r}"
@@ -608,6 +571,9 @@ def receipt_test_rows(
                 f"kind={kind!r} candidates={candidates!r} executable={metadata['executable']!r}"
             )
         for identity, status in receipt_rows.items():
+            if status == "ignored":
+                # Retain it in the binary receipt, never claim execution reality.
+                continue
             namespaced = _namespaced_test_identity(metadata, identity)
             prior = observed_rows.setdefault(namespaced, status)
             if prior != status:
