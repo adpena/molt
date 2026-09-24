@@ -163,6 +163,8 @@ absolute output directory for a Cargo proof. The selection is frozen at
 admission and survives queued or detached execution. Without an explicit
 selection, the existing result-root layout is unchanged. A missing selected
 volume is an error, never a request to fall back to the system drive.
+Queued submission logs project the persisted command and storage declaration;
+they do not reconstruct an incomplete envelope from command-line arguments.
 
 The selected tier holds Cargo target bytes, temporary outputs, run scratch,
 selection scratch and native-supervisor build intermediates. Queue state,

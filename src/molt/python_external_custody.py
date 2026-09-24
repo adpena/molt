@@ -61,6 +61,7 @@ _UV_BOOTSTRAP_PROVENANCE = {
 # hashes were independently verified against the immutable PyPI downloads.
 # Coverage's reviewed wheels differ only in the final newline of the .pth file;
 # both exact variants are recorded, never inferred from the installed name.
+_COVERAGE_RELEASE = {"project": "nedbat/coveragepy", "version": "7.16.1"}
 _SETUPTOOLS_WHEEL = {
     "project": "pypa/setuptools",
     "version": "83.0.0",
@@ -82,22 +83,20 @@ _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
     "coverage-inactive.v1": {
         "declaration": "a1_coverage.pth",
         "distribution": "coverage",
-        "version": "7.14.3",
+        "version": _COVERAGE_RELEASE["version"],
         "declaration_artifacts": [
             {
-                "project": "nedbat/coveragepy",
-                "version": "7.14.3",
-                "url": "https://files.pythonhosted.org/packages/eb/e3/a0aa32bfa3a081951f60a23bc0e7b512891ef0eecda1153cf1d8ba36c6b1/coverage-7.14.3-py3-none-any.whl",
-                "artifact_sha256": "fb7e18afb6e903c1a92401a2f0501ac277dca527bb9ca6fe1f691a8a0026a0e8",
+                **_COVERAGE_RELEASE,
+                "url": "https://files.pythonhosted.org/packages/96/1a/d6d16babd0a5fe4c3fae40702158c570351694e74516d8d81b86c5637448/coverage-7.16.1-py3-none-any.whl",
+                "artifact_sha256": "3d8bd4e58b6a5c2018d808f297905393c6c61da466a48c3f0596a76a4900ebe4",
                 "path": "a1_coverage.pth",
                 "sha256": "ef2ed06d19867ec669c09a804060666a9cd5e383af0a9d11aa2de79b77d448e8",
                 "size": 205,
             },
             {
-                "project": "nedbat/coveragepy",
-                "version": "7.14.3",
-                "url": "https://files.pythonhosted.org/packages/df/87/07a4fcee55177a25f1b52331a8e92cf4f2c53b1a9c75ce2981fd59c684ad/coverage-7.14.3-cp312-cp312-win_amd64.whl",
-                "artifact_sha256": "7ea52fc08f007bcc494d4bb3df3851e95843d881860ba38fe2c64dc100db5e7d",
+                **_COVERAGE_RELEASE,
+                "url": "https://files.pythonhosted.org/packages/73/27/ec3d032375735dd331477caa051419678079ff90fcb53d0284a6c2bfb757/coverage-7.16.1-cp312-cp312-win_amd64.whl",
+                "artifact_sha256": "d0f02c633630e2b74522108ee95a84ad6e1204a8016a6cca5297f335ea27147e",
                 "path": "a1_coverage.pth",
                 "sha256": "f1498191b7f52180654ccdb6195233612805e26344100c093058343ea04afd36",
                 "size": 206,
@@ -112,7 +111,7 @@ _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
     "setuptools-local-distutils.v1": {
         "declaration": "distutils-precedence.pth",
         "distribution": "setuptools",
-        "version": "83.0.0",
+        "version": _SETUPTOOLS_WHEEL["version"],
         "declaration_artifacts": [
             {
                 **_SETUPTOOLS_WHEEL,
