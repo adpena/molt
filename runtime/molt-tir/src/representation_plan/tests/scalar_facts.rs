@@ -1287,6 +1287,54 @@ fn returned_counted_loop_retains_direct_add_op_repr() {
 }
 
 #[test]
+fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
+    let add = op("add", Some("i_next"), None, &["i_view", "one"]);
+    let func = function(
+        "checked_counted_alias_loop",
+        &[],
+        None,
+        vec![
+            const_int("init", 0),
+            const_int("one", 1),
+            const_int("stop", 1_000_000),
+            op("store_var", None, Some("i"), &["init"]),
+            op("loop_start", None, None, &[]),
+            op("load_var", Some("i_cur"), Some("i"), &[]),
+            op("copy", Some("i_view"), None, &["i_cur"]),
+            op("lt", Some("keep_going"), None, &["i_view", "stop"]),
+            op("check_exception", None, None, &[]),
+            op("loop_break_if_false", None, None, &["keep_going"]),
+            op("check_exception", None, None, &[]),
+            add.clone(),
+            op("copy", Some("next_view"), None, &["i_next"]),
+            op("store_var", None, Some("i"), &["next_view"]),
+            op("check_exception", None, None, &[]),
+            op("loop_continue", None, None, &[]),
+            op("loop_end", None, None, &[]),
+            op("load_var", Some("i_after"), Some("i"), &[]),
+            op("ret", None, Some("i_after"), &["i_after"]),
+        ],
+    );
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+    ] {
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+        let primary = plan.primary_name_sets();
+        for name in ["i", "i_cur", "i_view", "i_next", "next_view", "i_after"] {
+            assert!(
+                primary.int.contains(name),
+                "missing bounded scalar fact for {name}"
+            );
+        }
+        assert_eq!(
+            plan.op_direct_numeric_repr(11, &add),
+            Some(Repr::RawI64Safe)
+        );
+    }
+}
+
+#[test]
 fn list_repeat_does_not_take_integer_runtime_lane() {
     let list_new = op("list_new", Some("items"), None, &["item"]);
     let repeat = op("mul", Some("repeated"), None, &["items", "count"]);

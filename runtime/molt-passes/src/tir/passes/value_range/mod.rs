@@ -9,8 +9,8 @@
 //!   2. **Scalar evolution** — a canonical induction variable `i` of
 //!      `for i in range(stop)` (SCEV `AddRec {start: s0, step: +k}` with a
 //!      proven trip count) ranges over `[s0, last]` where `last` is the IV's
-//!      value on the final executed iteration. This is the *loop-invariant*
-//!      range that holds *everywhere in the loop body*.
+//!      value on the final executed body iteration. This hull is success-edge
+//!      scoped; the global hull also includes the final failed guard value.
 //!   3. **Edge-sensitive guard narrowing** — inside the true successor of a
 //!      header `CondBranch(Lt(i, n))`, `i < n`; of `Le(i, n)`, `i <= n`. These
 //!      narrow the body range further (and are what proves the `while`-loop
@@ -42,14 +42,14 @@ mod tests;
 
 use crate::tir::analysis::{Analysis, AnalysisId, LoopForest, LoopForestResult};
 use crate::tir::function::TirFunction;
-use crate::tir::numeric_facts::{IntRange, ScevExpr, affine_recurrence_range};
+use crate::tir::numeric_facts::{IntRange, ScevExpr};
 
 use super::scev::{ScevResult, compute_scev_with_loop_forest};
 use super::value_identity::copy_value_source;
 
 pub use crate::tir::value_range::ValueRangeResult;
 use lengths::collect_constants_and_lengths;
-use loops::{back_edge_update_value, narrow_from_header_guards, seed_counted_loop_iv_ranges};
+use loops::{narrow_from_header_guards, seed_counted_loop_iv_ranges, seed_recurrence_ranges};
 use propagation::{narrow_loop_header_phis, propagate_op_ranges};
 use report::emit_vrange_report;
 
@@ -119,13 +119,28 @@ pub(crate) fn compute_value_range_with_loop_forest(
         result.record_global_range(value, IntRange::point(constant));
     }
 
+    // Freeze a genuinely phi-independent baseline before any recurrence or
+    // guard facts exist. Header narrowing may consume only this baseline;
+    // otherwise a guarded update could circularly prove its own header phi.
+    let mut independent = result.clone();
+    propagate_op_ranges(func, &mut independent);
+    let guards = super::counted_loop::LoopGuardContext::new(func);
+
     // ---- IV ranges from SCEV ------------------------------------------------
     // For each loop header with a canonical IV (AddRec) and a known trip count,
-    // the IV ranges over [start, last] for the whole loop body.
+    // use the same global/body placement contract as the counted fallback.
     for &header in scev.headers() {
         let Some(body) = loop_bodies.get(&header) else {
             continue;
         };
+        let Some(guard) = guards.material_guard(func, header, body) else {
+            continue;
+        };
+        // Even an unknown-trip monotone fact requires a complete recurrence
+        // payload. An exceptional header entry cannot inherit normal phi args.
+        if !guards.recurrence_is_guarded(func, header, body, &guard) {
+            continue;
+        }
         // Find the header's IV: the header block-arg whose SCEV is an AddRec
         // over this header.
         let Some(header_block) = func.blocks.get(&header) else {
@@ -148,44 +163,7 @@ pub(crate) fn compute_value_range_with_loop_forest(
                 continue;
             };
             let trip = scev.trip_count(header);
-            // Compute the IV's range over the body from start, step, trip count.
-            let iv_range = match affine_recurrence_range(s0, k, &trip) {
-                Some(r) => r,
-                None => continue,
-            };
-            // The IV range holds everywhere in the loop body. Place it as a
-            // per-block fact for each body block (and as a weak global so a
-            // query outside any guarded block still sees it).
-            result.record_global_range(iv, iv_range);
-            for &b in body {
-                // Meet with any existing (e.g. a tighter guard placed later).
-                result.meet_block_range(b, iv, iv_range);
-            }
-            // Also range the **back-edge update value** `next = iv + k` (the
-            // value carried across the latch into the IV phi). It takes the IV's
-            // values one step later — `{s0 + k, +, k}` — so its range is the same
-            // recurrence shifted by one step. Ranging it is what lets a consumer
-            // prove the *phi's incoming* fits the inline window (e.g. the
-            // representation plan's `RawI64Safe` carrier requires every phi
-            // incoming proven, not just the phi). Without this the loop-carried
-            // update would be unproven and force the IV phi back to the boxed
-            // carrier — a perf cliff on the canonical `for i in range(n)` loop.
-            // All arithmetic saturates in i128; an `s0 + k` that would overflow
-            // simply yields no fact (sound: the value stays unproven).
-            if let Some(next_val) = back_edge_update_value(func, header, iv, body)
-                && let Some(s0_next) = s0.checked_add(k)
-                && let Some(next_range) = affine_recurrence_range(s0_next, k, &trip)
-            {
-                // `next_val = iv + k` takes exactly the recurrence's values one
-                // step later, so `next_range` is its precise range. Store it on
-                // the **canonical** (copy-resolved) value, matching how queries
-                // (`fits_inline_int47`, `range_of`) resolve through plain copies,
-                // and meet with any existing fact (never widen). This lets a
-                // value-keyed consumer prove the IV phi's loop-carried incoming
-                // fits the inline window.
-                let next_canon = result.resolve(next_val);
-                result.meet_global_range(next_canon, next_range);
-            }
+            seed_recurrence_ranges(&mut result, iv, s0, k, &trip, &guard.success_blocks);
         }
     }
 
@@ -204,24 +182,25 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
     seed_counted_loop_iv_ranges(func, loop_forest, &mut result);
 
+    // Guard-success facts must precede site-aware op propagation. They never
+    // apply to the guard itself, its prefix, or an exceptional bypass.
+    narrow_from_header_guards(func, loop_bodies, &guards, &mut result);
+
     // ---- forward transfer-function propagation ------------------------------
     // Compute ranges for op-defined values (`i + 1`, `i & 15`, `i % 4`, `i >> 2`,
-    // …) from their operands' already-proven ranges, to a fixpoint. This is the
+    // …) from their operands' already-proven ranges at the definition site. This is the
     // producer that lets a value DERIVED from an induction variable — not just
     // the IV itself — be proven inline (the SROA hot-loop field-promotion gap).
     //
-    // CRUCIAL INVARIANT this first sweep establishes (relied on by the phi-range
-    // narrowing below): it NEVER assigns a range to a phi / block argument, so
-    // every op-result range it computes is derived under the assumption that all
-    // phis are FULL (unknown). A *bounded interior* range it produces for any
-    // value (see `is_phi_independent_bound`) is therefore phi-independent by
-    // construction — it did not assume any range for any phi.
+    // This sweep may use recurrence and guard facts. It is deliberately NOT
+    // the evidence for phi narrowing: that reads the independent snapshot
+    // frozen before either kind of fact was installed.
     propagate_op_ranges(func, &mut result);
 
     // ---- loop-header phi-range narrowing ------------------------------------
     // Narrow a loop-header phi to the JOIN of its incoming-edge ranges when every
     // incoming range is phi-INDEPENDENT (a bounded interior range proven by the
-    // FULL-phi sweep above). The licensing structure is a re-bounding op on the
+    // pre-recurrence FULL-phi snapshot). The licensing structure is a re-bounding op on the
     // back edge — a
     // `x & const_mask` makes the carried value's range `[0, mask]` REGARDLESS of
     // the phi, so a masked-shift accumulator (`s = (s << 1) & MASK`) recovers its
@@ -230,14 +209,9 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // narrowed (the mandatory bigint soundness gate). After narrowing, re-run the
     // forward sweep so values DERIVED from the now-narrowed phi (`s << 1`) are
     // ranged too — the producer that actually feeds the raw-i64 seed.
-    if narrow_loop_header_phis(func, loop_bodies, &mut result) {
+    if narrow_loop_header_phis(func, loop_bodies, &independent, &mut result) {
         propagate_op_ranges(func, &mut result);
     }
-
-    // ---- edge-sensitive guard narrowing -------------------------------------
-    // For a header `CondBranch(cond -> then=body, else=exit)` where
-    // `cond = Lt(i, n)` / `Le(i, n)`, the body sees `i < n` / `i <= n`.
-    narrow_from_header_guards(func, loop_bodies, &mut result);
 
     // Producer-evidence instrument (`MOLT_VRANGE_REPORT=1`): per-function dump of
     // the proven loop-header IV recurrence + every global integer range, to the

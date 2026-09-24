@@ -17,8 +17,9 @@ enum KnownLength {
 /// Per-function integer value-range facts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ValueRangeResult {
-    /// Loop-invariant range that holds for a value *everywhere in the function*
-    /// (constants) or *everywhere in its loop body* (induction variables).
+    /// Range valid at every executable observation of this SSA value. For a
+    /// loop-header argument this includes the final failed guard and exception
+    /// observers, not only successful body iterations.
     global_range: HashMap<ValueId, IntRange>,
     /// Per-(block, value) narrowed range from edge-sensitive guards. A query
     /// at block `b` for value `v` first consults this, then `global_range`.

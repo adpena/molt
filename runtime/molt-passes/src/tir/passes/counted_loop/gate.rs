@@ -1,9 +1,9 @@
-use crate::tir::blocks::{BlockId, LoopBreakKind, Terminator, TirBlock};
+use std::collections::HashSet;
+
+use crate::tir::blocks::{BlockId, LoopBreakKind, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_counted_loop_comparison_role_table;
 use crate::tir::values::ValueId;
-
-use super::facts::block_loops_back_to;
 
 pub(super) struct LoopGate {
     pub(super) cmp_cond: ValueId,
@@ -23,9 +23,11 @@ pub(super) enum CmpPolarity {
 pub(super) fn loop_gate(
     func: &TirFunction,
     header: BlockId,
-    cond_block_id: BlockId,
-    cond_block: &TirBlock,
+    guard_path: &[BlockId],
+    loop_body: &HashSet<BlockId>,
 ) -> Option<LoopGate> {
+    let cond_block_id = *guard_path.last()?;
+    let cond_block = func.blocks.get(&cond_block_id)?;
     match &cond_block.terminator {
         Terminator::CondBranch {
             cond,
@@ -34,8 +36,8 @@ pub(super) fn loop_gate(
             else_block,
             else_args,
         } => {
-            let then_loops = block_loops_back_to(func, *then_block, header);
-            let else_loops = block_loops_back_to(func, *else_block, header);
+            let then_loops = loop_body.contains(then_block);
+            let else_loops = loop_body.contains(else_block);
             match (then_loops, else_loops) {
                 (true, false) => {
                     if !then_args.is_empty() {
@@ -67,7 +69,7 @@ pub(super) fn loop_gate(
             }
         }
         Terminator::Branch { target, args } if args.is_empty() => {
-            structured_terminal_loop_gate(func, header, cond_block_id, cond_block, *target)
+            structured_terminal_loop_gate(func, header, guard_path, *target)
         }
         Terminator::Branch { .. }
         | Terminator::Switch { .. }
@@ -80,18 +82,15 @@ pub(super) fn loop_gate(
 fn structured_terminal_loop_gate(
     func: &TirFunction,
     header: BlockId,
-    cond_block_id: BlockId,
-    cond_block: &TirBlock,
+    guard_path: &[BlockId],
     body_id: BlockId,
 ) -> Option<LoopGate> {
+    let cond_block_id = *guard_path.last()?;
     if func.loop_cond_blocks.get(&header).copied() != Some(cond_block_id) {
         return None;
     }
-    if !block_loops_back_to(func, body_id, header) {
-        return None;
-    }
     let break_kind = func.loop_break_kinds.get(&header)?;
-    let cmp_cond = unique_loop_guard_cmp_cond(cond_block)?;
+    let cmp_cond = unique_loop_guard_cmp_cond(func, guard_path)?;
     let cmp_polarity = match break_kind {
         LoopBreakKind::BreakIfFalse => CmpPolarity::AsWritten,
         LoopBreakKind::BreakIfTrue => CmpPolarity::Inverted,
@@ -110,9 +109,9 @@ fn structured_terminal_loop_gate(
     })
 }
 
-fn unique_loop_guard_cmp_cond(cond_block: &TirBlock) -> Option<ValueId> {
+fn unique_loop_guard_cmp_cond(func: &TirFunction, guard_path: &[BlockId]) -> Option<ValueId> {
     let mut guard: Option<ValueId> = None;
-    for op in &cond_block.ops {
+    for op in guard_path.iter().flat_map(|bid| &func.blocks[bid].ops) {
         if opcode_counted_loop_comparison_role_table(op.opcode).is_ordered()
             && op.results.len() == 1
             && guard.replace(op.results[0]).is_some()

@@ -66,4 +66,3 @@ mod tests;
 pub use compute::compute_scev;
 pub(crate) use compute::compute_scev_with_loop_forest;
 pub use result::{ScalarEvolution, ScevResult};
-pub(crate) use trip_count::find_loop_guard;

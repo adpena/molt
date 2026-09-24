@@ -41,13 +41,6 @@ pub(super) fn loop_forest_contains_header(loop_forest: &LoopForestResult, header
         .is_ok()
 }
 
-/// True if `block` unconditionally branches back to `header` (the back-edge).
-pub(super) fn block_loops_back_to(func: &TirFunction, block: BlockId, header: BlockId) -> bool {
-    func.blocks.get(&block).is_some_and(
-        |b| matches!(&b.terminator, Terminator::Branch { target, .. } if *target == header),
-    )
-}
-
 /// The argument list `term` passes to `target` along whichever edge reaches it,
 /// or `None` if `term` does not branch to `target`.
 pub(super) fn branch_args_to(term: &Terminator, target: BlockId) -> Option<&[ValueId]> {
