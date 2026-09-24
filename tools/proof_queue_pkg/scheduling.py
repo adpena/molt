@@ -291,7 +291,18 @@ def _insert_run(
     git_snapshot: dict[str, object] | None = None,
     log_path: Path,
     summary_json: Path,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
 ) -> None:
+    envelope = command_admission.admission_envelope(
+        command,
+        cargo_output_lifetime=cargo_output_lifetime,
+        cargo_output_root=cargo_output_root,
+    )
+    if cargo_output_root is not None:
+        command_admission.cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope, result_root=log_path.parent, source_root=cwd
+        )
     resource_mutex_key = state._resource_mutex_key(
         resource_family=resource_family,
         contention_key=contention_key,
@@ -311,7 +322,7 @@ def _insert_run(
             logical_id,
             reason,
             json.dumps(command),
-            dumps_exact(command_admission.admission_envelope(command)),
+            dumps_exact(envelope),
             json.dumps(
                 state._unattested_receipt_context(
                     status="not-executed",
@@ -352,6 +363,8 @@ def _admit_run(
     git_snapshot: dict[str, object] | None = None,
     log_path: Path,
     summary_json: Path,
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: str | None = None,
 ) -> list[sqlite3.Row] | None:
     """Atomically insert a queued run.
 
@@ -360,6 +373,15 @@ def _admit_run(
     parked while earlier work is still running. The launch path owns the
     dispatched/running contention and capacity checks.
     """
+    envelope = command_admission.admission_envelope(
+        command,
+        cargo_output_lifetime=cargo_output_lifetime,
+        cargo_output_root=cargo_output_root,
+    )
+    if cargo_output_root is not None:
+        command_admission.cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope, result_root=log_path.parent, source_root=cwd
+        )
     conn.row_factory = sqlite3.Row
     if conn.in_transaction:
         conn.commit()
@@ -384,7 +406,7 @@ def _admit_run(
                 logical_id,
                 reason,
                 json.dumps(command),
-                dumps_exact(command_admission.admission_envelope(command)),
+                dumps_exact(envelope),
                 json.dumps(
                     state._unattested_receipt_context(
                         status="not-executed",

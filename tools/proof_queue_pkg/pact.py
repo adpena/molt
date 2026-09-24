@@ -59,6 +59,8 @@ class NamedProofSpec(TypedDict):
     env_overrides: dict[str, str]
     locked_env: NotRequired[tuple[str, ...]]
     prepared_named_lane: NotRequired[str]
+    cargo_output_lifetime: NotRequired[str]
+    cargo_output_root: NotRequired[str | None]
     notes: list[str]
     timeout: float
 
@@ -433,6 +435,9 @@ def _named_lane_spec(
         "logical_id": lane_id.replace(".", "-"),
         "reason": str(lane.data["description"]),
         "command": list(lane.argv),
+        "cargo_output_lifetime": command_admission.parse_cargo_output_lifetime(
+            lane.data.get("cargo_output_lifetime", "retain")
+        ),
         "resource_family": str(lane.data["resource_family"]),
         "contention_key": str(lane.data["contention_key"]),
         "scopes": ["tools/proof_plan.toml"],
@@ -700,6 +705,18 @@ def _native_molt_run_spec(
 
 
 def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
+    output_root = getattr(args, "cargo_output_root", None)
+    if output_root is None:
+        output_root = spec.get("cargo_output_root")
+    lifetime = getattr(args, "cargo_output_lifetime", None)
+    if lifetime is None:
+        lifetime = spec.get("cargo_output_lifetime", "retain")
+    if lifetime != "retain" or output_root is not None:
+        command_admission.envelope_for_command(
+            spec["command"],
+            cargo_output_lifetime=lifetime,
+            cargo_output_root=output_root,
+        )
     prepared_lane = spec.get("prepared_named_lane")
     if prepared_lane is not None:
         from molt.cli.source_extension_producer import _locked_console_tool_path
@@ -747,6 +764,8 @@ def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
     initial_notes.extend(getattr(args, "note", []) or [])
     runnable: NamedProofSpec = {
         **spec,
+        "cargo_output_lifetime": lifetime,
+        **({"cargo_output_root": output_root} if output_root is not None else {}),
         "env_overrides": env_overrides,
     }
     if args.print_spec:
@@ -759,6 +778,8 @@ def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
             logical_id=runnable["logical_id"],
             reason=runnable["reason"],
             command=list(runnable["command"]),
+            cargo_output_lifetime=lifetime,
+            cargo_output_root=output_root,
             resource_family=runnable["resource_family"],
             contention_key=runnable["contention_key"],
             scopes=list(runnable["scopes"]),
@@ -788,6 +809,8 @@ def _run_named_spec(args: argparse.Namespace, spec: NamedProofSpec) -> int:
         logical_id=runnable["logical_id"],
         reason=runnable["reason"],
         command=list(runnable["command"]),
+        cargo_output_lifetime=lifetime,
+        cargo_output_root=output_root,
         resource_family=runnable["resource_family"],
         contention_key=runnable["contention_key"],
         scopes=list(runnable["scopes"]),

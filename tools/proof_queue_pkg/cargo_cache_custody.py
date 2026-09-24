@@ -24,6 +24,7 @@ from molt.file_locks import _acquire_file_lock, _release_file_lock, _FileLockHan
 from molt.exact_json import canonical_json_sha256, loads_exact
 from tools.proof_queue_pkg import (
     cargo_output_environment,
+    cargo_output_layout,
     command_identity,
     custody_cas,
     execution_receipt_details,
@@ -180,10 +181,27 @@ def validate_prelaunch(
     source_root: str,
     source_snapshot: Mapping[str, object],
     source_content: Mapping[str, object],
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: Mapping[str, object] | None = None,
 ) -> None:
     """Validate cold custody; reject reuse without an enforced input closure."""
     if row.get("schema") != SCHEMA or row.get("run_owned") is not True:
         raise ValueError("Cargo cache has no exclusive prelaunch custody")
+    if not cargo_output_layout.same_root(
+        row.get("cargo_output_root"), cargo_output_root
+    ):
+        raise ValueError("Cargo cache output root differs from admitted envelope")
+    layout = cargo_output_layout.CargoOutputLayout.create(
+        result_root=cas_root.parent,
+        declaration=cargo_output_root,
+        source_root=Path(source_root),
+    )
+    if outputs.external_placement != (cargo_output_root is not None):
+        raise ValueError("Cargo output roles differ from admitted placement")
+    if _output_lifetime(row) != _output_lifetime(
+        {"cargo_output_lifetime": cargo_output_lifetime}
+    ):
+        raise ValueError("Cargo cache output lifetime differs from admitted envelope")
     inputs = _read(row.get("inputs"), cas_root, _INPUT_KIND)
     identity = inputs.get("identity")
     source = _source_descriptor(source_root, source_content, source_snapshot, cas_root)
@@ -198,8 +216,6 @@ def validate_prelaunch(
         )
     target = Path(str(row.get("path")))
     owned = cas_root.parent / "cargo-cache" / str(row["input_sha256"])
-    if target.parent.parent != owned or target.name != "target":
-        raise ValueError("Cargo cache target is outside its identity-owned generation")
     generation_id = row.get("generation_id")
     generation_owner = row.get("generation_owner")
     generation_run_id = row.get("generation_run_id")
@@ -208,13 +224,15 @@ def validate_prelaunch(
         not isinstance(generation_id, str)
         or _HEX_16.fullmatch(generation_id) is None
         or generation_id != target.parent.name
-        or generation_owner != str(target.parent / "owner.json")
+        or generation_owner != str(owned / str(generation_id) / "owner.json")
         or not isinstance(generation_run_id, str)
         or not generation_run_id
         or not isinstance(execution_nonce_sha256, str)
         or _HEX_64.fullmatch(execution_nonce_sha256) is None
     ):
         raise ValueError("Cargo cache generation provenance is incomplete")
+    if target != layout.target(str(row["input_sha256"]), generation_id):
+        raise ValueError("Cargo cache target is outside its identity-owned generation")
     outputs.validate(env, target=target)
     state = row.get("state")
     if state == "cold":
@@ -261,7 +279,10 @@ def _generation_paths(
     cache_root = file_publication.resolve_owned_path(result_root / "cargo-cache")
     identity_root = file_publication.resolve_owned_path(cache_root / digest)
     generation = file_publication.resolve_owned_path(identity_root / generation_id)
-    target = file_publication.resolve_owned_path(generation / "target")
+    layout = cargo_output_layout.CargoOutputLayout.create(
+        result_root=result_root, declaration=provenance.get("cargo_output_root")
+    )
+    target = layout.target(digest, generation_id)
     owner_path = file_publication.resolve_owned_path(generation / "owner.json")
     if provenance.get("path") != str(target):
         raise ValueError("Cargo cache generation target binding changed")
@@ -280,9 +301,21 @@ def _read_owner(path: Path) -> dict[str, object]:
     return payload
 
 
+def _output_lifetime(record: Mapping[str, object]) -> str:
+    from tools.proof_queue_pkg.command_admission import parse_cargo_output_lifetime
+
+    return parse_cargo_output_lifetime(record.get("cargo_output_lifetime", "retain"))
+
+
 def _validate_owner(
     owner: Mapping[str, object], provenance: Mapping[str, object], target: Path
 ) -> None:
+    if not cargo_output_layout.same_root(
+        owner.get("cargo_output_root"), provenance.get("cargo_output_root")
+    ):
+        raise ValueError("Cargo cache generation owner output root mismatch")
+    if _output_lifetime(owner) != _output_lifetime(provenance):
+        raise ValueError("Cargo cache generation owner output lifetime mismatch")
     expected = {
         "generation_id": provenance.get("generation_id"),
         "input_sha256": provenance.get("input_sha256"),
@@ -320,6 +353,11 @@ def _update_pointer_if_current(
         "run_id": payload.get("run_id"),
         "target": str(target),
         "generation_owner": str(owner_path),
+        **(
+            {"cargo_output_root": payload["cargo_output_root"]}
+            if "cargo_output_root" in payload
+            else {}
+        ),
     }
     if terminal_receipt is not None:
         updated["terminal_receipt"] = terminal_receipt
@@ -358,6 +396,7 @@ class CargoCacheLease:
     def publish(self, result: Mapping[str, object]) -> dict[str, object]:
         if self.closed:
             raise ValueError("Cargo cache cannot publish without its exclusive lease")
+        cargo_output_layout.validate_root(self.provenance.get("cargo_output_root"))
         publication: dict[str, object]
         try:
             complete = _complete_custody(result, cas_root=self.cas_root)
@@ -418,6 +457,7 @@ class CargoCacheLease:
                             f"{type(owner_exc).__name__}: {owner_exc}"
                         )
                     raise
+        cargo_output_layout.validate_root(self.provenance.get("cargo_output_root"))
         self._persist_publication(publication)
         if publication.get("state") == "sealed":
             _atomic_json(
@@ -429,6 +469,11 @@ class CargoCacheLease:
                     "target": str(self.target),
                     "run_id": self.provenance["generation_run_id"],
                     "generation_owner": str(self.owner_path),
+                    **(
+                        {"cargo_output_root": self.provenance["cargo_output_root"]}
+                        if "cargo_output_root" in self.provenance
+                        else {}
+                    ),
                 },
             )
         return publication
@@ -469,6 +514,12 @@ def _terminal_state(
 def _validate_terminal_payload(
     receipt: Mapping[str, object], provenance: Mapping[str, object]
 ) -> str:
+    if not cargo_output_layout.same_root(
+        receipt.get("cargo_output_root"), provenance.get("cargo_output_root")
+    ):
+        raise ValueError("Cargo cache terminal output root mismatch")
+    if _output_lifetime(receipt) != _output_lifetime(provenance):
+        raise ValueError("Cargo cache terminal output lifetime mismatch")
     if receipt.get("schema") != TERMINAL_RECEIPT_SCHEMA:
         raise ValueError("Cargo cache terminal receipt schema mismatch")
     outcome = supervisor_custody.validate_queue_terminal(receipt.get("queue_terminal"))
@@ -643,6 +694,9 @@ def _validate_terminal_generation_authority(
     owner_path: Path,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     """Bind mutable owner lifecycle to the caller's immutable terminal proof."""
+    # Revalidate under the identity lock as well as during path resolution.
+    # Missing/remounted media is never evidence that a target was deleted.
+    cargo_output_layout.validate_root(provenance.get("cargo_output_root"))
     owner = _read_owner(owner_path)
     _validate_owner(owner, provenance, target)
     immutable_receipt = validate_terminal_receipt(
@@ -974,6 +1028,16 @@ _SEALED_RETIREMENT = _TerminalOutputDisposition(
 )
 
 
+def _terminal_target_present(target: Path, provenance: Mapping[str, object]) -> bool:
+    """Only typed absence on still-admitted media can complete disposal."""
+    try:
+        target.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        cargo_output_layout.validate_root(provenance.get("cargo_output_root"))
+        return False
+    return True
+
+
 def _transition_terminal_output(
     *,
     result_root: Path,
@@ -1039,7 +1103,7 @@ def _transition_terminal_output(
                 **policy_fields,
             }
         if lifecycle == disposition.in_progress_lifecycle:
-            if not target.exists():
+            if not _terminal_target_present(target, provenance):
                 owner.update(
                     lifecycle=disposition.completed_lifecycle,
                     **{disposition.completed_at_field: _utc_now()},
@@ -1153,6 +1217,9 @@ def _transition_terminal_output(
             },
         )
         _write_owner(owner_path, owner)
+        # Revalidate selected media after evidence preservation, immediately
+        # before entering the existing identity-locked deletion primitive.
+        cargo_output_layout.validate_root(provenance.get("cargo_output_root"))
         deleted, error = delete_path(target)
         if not deleted:
             owner.update(
@@ -1295,12 +1362,25 @@ def acquire(
     timeout_s: float,
     source_snapshot: Mapping[str, object],
     source_content: Mapping[str, object],
+    cargo_output_lifetime: str = "retain",
+    cargo_output_root: Mapping[str, object] | None = None,
 ) -> CargoCacheLease:
+    cargo_output_lifetime = _output_lifetime(
+        {"cargo_output_lifetime": cargo_output_lifetime}
+    )
     started = time.perf_counter()
     if _HEX_64.fullmatch(execution_nonce_sha256) is None:
         raise ValueError("Cargo cache generation requires an execution nonce digest")
+    layout = cargo_output_layout.CargoOutputLayout.create(
+        result_root=result_root, declaration=cargo_output_root, source_root=source_root
+    )
+    if outputs.external_placement != (cargo_output_root is not None):
+        raise ValueError("Cargo output roles differ from admitted placement")
     capacity_admission = disk_capacity.require_build_capacity(
-        (result_root / "cargo-cache",), env=env
+        layout.capacity_paths()
+        if cargo_output_root is not None
+        else (result_root / "cargo-cache",),
+        env=env,
     ).as_dict()
     cas_root = result_root / "custody-cas"
     source_manifest = _source_descriptor(
@@ -1342,7 +1422,17 @@ def acquire(
             if previous.get("state") == "sealed":
                 seed = previous.get("seal")
                 target = Path(str(previous.get("target")))
-                if target.parent.parent != root or target.name != "target":
+                previous_owner = Path(str(previous.get("generation_owner")))
+                previous_layout = cargo_output_layout.CargoOutputLayout.create(
+                    result_root=result_root,
+                    declaration=previous.get("cargo_output_root"),
+                )
+                if (
+                    previous_owner.parent.parent != root
+                    or previous_owner.name != "owner.json"
+                    or target
+                    != previous_layout.target(digest, previous_owner.parent.name)
+                ):
                     raise ValueError("Cargo cache seal target escaped its generation")
                 raise CargoInputClosureUnproven(candidate=target, seal=seed)
             elif previous.get("state") in {
@@ -1364,7 +1454,7 @@ def acquire(
         generation = root / secrets.token_hex(8)
         generation.mkdir(exist_ok=False)
         file_publication.fsync_directory(root)
-        target = generation / "target"
+        target = layout.target(digest, generation.name)
         owner_path = generation / "owner.json"
         file_publication.resolve_owned_path(owner_path)
         inputs = _artifact(cas_root, _INPUT_KIND, identity=identity)
@@ -1387,10 +1477,22 @@ def acquire(
             "generation_id": generation.name,
             "generation_owner": str(owner_path),
             "generation_run_id": run_id,
+            "cargo_output_lifetime": cargo_output_lifetime,
+            **(
+                {"cargo_output_root": dict(cargo_output_root)}
+                if cargo_output_root is not None
+                else {}
+            ),
             "execution_nonce_sha256": execution_nonce_sha256,
         }
         owner: dict[str, object] = {
             "schema": GENERATION_SCHEMA,
+            "cargo_output_lifetime": cargo_output_lifetime,
+            **(
+                {"cargo_output_root": dict(cargo_output_root)}
+                if cargo_output_root is not None
+                else {}
+            ),
             "generation_id": generation.name,
             "input_sha256": digest,
             "run_id": run_id,
@@ -1410,6 +1512,8 @@ def acquire(
         bound_environment = outputs.bind(env, target=target)
         validate_prelaunch(
             provenance,
+            cargo_output_lifetime=cargo_output_lifetime,
+            cargo_output_root=cargo_output_root,
             cas_root=cas_root,
             command=command,
             outputs=outputs,
@@ -1429,6 +1533,11 @@ def acquire(
                         "run_id": run_id,
                         "target": str(target),
                         "generation_owner": str(owner_path),
+                        **(
+                            {"cargo_output_root": dict(cargo_output_root)}
+                            if cargo_output_root is not None
+                            else {}
+                        ),
                     },
                     sort_keys=True,
                 )

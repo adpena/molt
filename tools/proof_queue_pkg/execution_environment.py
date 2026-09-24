@@ -232,7 +232,7 @@ def _bind_cargo_build_tool_environment(
         # Publish that context before every Rust/formatter/toolchain capture,
         # not merely to the build script's formatter selection.
         selected["RUSTUP_TOOLCHAIN"] = invocation.toolchain_selector
-    outputs = cargo_output_environment.CargoOutputEnvironment.for_invocation(invocation)
+    outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
     _require_cargo_build_tool_environment_context(
         command, outputs=outputs, cwd=cwd, env=selected
     )
@@ -305,6 +305,13 @@ def _require_cargo_build_tool_environment_context(
     it is not a second Cargo configuration resolver. Other [env] entries do
     not affect this process-selection boundary.
     """
+    if outputs.external_placement and any(
+        name.upper() in {"CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET_DIR"}
+        for name in env
+    ):
+        raise ValueError(
+            "Cargo secondary build-dir/target-dir environment bypasses declared output placement"
+        )
     arguments = cargo_config_arguments(command, cwd=cwd)[1::2]
     definitions: list[tuple[str, object]] = []
     for row in command_identity._tool_configuration_identities(
@@ -325,9 +332,24 @@ def _require_cargo_build_tool_environment_context(
         "PATH",
         *cargo_output_environment.TEMPORARY_VARIABLE_NAMES,
         *outputs.names,
+        *(
+            {"CARGO_BUILD_BUILD_DIR", "CARGO_BUILD_TARGET_DIR"}
+            if outputs.external_placement
+            else set()
+        ),
     }
     for origin, payload in definitions:
         build = payload.get("build") if isinstance(payload, Mapping) else None
+        if (
+            outputs.external_placement
+            and isinstance(build, Mapping)
+            and any(
+                name in build for name in ("build-dir", "target-dir", "artifact-dir")
+            )
+        ):
+            raise ValueError(
+                f"Cargo {origin} redirects output outside declared placement"
+            )
         if (
             isinstance(build, Mapping)
             and "rustdoc" in build

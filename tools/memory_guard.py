@@ -257,7 +257,6 @@ ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
 ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
 ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
 ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
-ACTIVE_GUARD_MARKER_KEEP = 128
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
@@ -474,7 +473,9 @@ def _write_active_guard_marker(
         "updated_at": _utc_timestamp(),
     }
     _write_json_atomic(marker_path, payload)
-    _prune_active_guard_markers(marker_dir)
+    # These are custody records, not a bounded artifact cache. Removing an old
+    # marker can erase unresolved ownership or a parent's nested-child closure.
+    # New launches must not discard another execution's evidence.
     return token, marker_path
 
 
@@ -496,18 +497,6 @@ def _update_active_guard_marker(
     payload["updated_at"] = _utc_timestamp()
     with contextlib.suppress(OSError):
         _write_json_atomic(marker_path, payload)
-
-
-def _prune_active_guard_markers(marker_dir: Path) -> None:
-    with contextlib.suppress(OSError):
-        markers = sorted(
-            marker_dir.glob("guard-*.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        for marker in markers[ACTIVE_GUARD_MARKER_KEEP:]:
-            with contextlib.suppress(OSError):
-                marker.unlink()
 
 
 def _apply_child_resource_limit(limit_kb: int) -> None:

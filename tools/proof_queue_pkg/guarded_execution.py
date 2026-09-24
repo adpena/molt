@@ -41,6 +41,7 @@ from tools.proof_queue_pkg import (  # noqa: E402
     command_identity,
     cargo_cache_custody,
     cargo_output_environment,
+    cargo_output_layout,
     custody_cas,
     execution_custody,
     execution_environment as environment,
@@ -106,11 +107,31 @@ def _supervisor_build_environment(
     execution_env: Mapping[str, str],
     *,
     target: Path,
+    external_placement: bool = False,
 ) -> dict[str, str]:
     """Keep bootstrap outputs external and Unix startup sockets bounded."""
     build_env = dict(execution_env)
     build_env["CARGO_TARGET_DIR"] = str(target.resolve(strict=True))
-    if os.name != "nt":
+    if os.name != "nt" and external_placement:
+        wrappers = (
+            build_env.get(name, "")
+            for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")
+        )
+        if any(
+            Path(wrapper).name in {"sccache", "sccache.exe"} for wrapper in wrappers
+        ):
+            temporary = build_env.get("TMPDIR", "")
+            # Refuse an already-impossible directory prefix. The wrapper owns
+            # its filename suffix; do not invent a second socket allocator.
+            path_limit = 108 if sys.platform.startswith("linux") else 104
+            if temporary and len(os.fsencode(temporary)) + 1 >= path_limit:
+                raise ValueError(
+                    "declared Cargo output TMPDIR cannot fit the enabled sccache "
+                    "POSIX startup socket; select a shorter --cargo-output-root "
+                    "or explicitly configure a non-sccache compiler wrapper; "
+                    "no temporary-directory fallback is permitted"
+                )
+    if os.name != "nt" and not external_placement:
         # sccache creates its server-startup notification socket below TMPDIR.
         # A proof run's result-root TMPDIR can exceed sockaddr_un.sun_path even
         # though its Cargo target is valid. /tmp is the established POSIX socket
@@ -284,12 +305,36 @@ def execute_guarded_request(request_path: Path) -> int:
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
         inherited_env = dict(os.environ)
+        output_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope, result_root=result_path.parent, source_root=effective_cwd
+        )
+        if output_layout.declaration is not None:
+            output_layout.validate_environment(inherited_env)
+            cargo_command = admission._nested_command(command) or command
+            environment._require_cargo_build_tool_environment_context(
+                cargo_command,
+                outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                    envelope
+                ),
+                cwd=cwd,
+                env=inherited_env,
+            )
+            for name in cargo_output_environment.TEMPORARY_VARIABLE_NAMES:
+                inherited_env[name] = str(output_layout.temporary)
+            inherited_env["PYTHONPYCACHEPREFIX"] = str(
+                output_layout.temporary / "pycache"
+            )
         requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
             result["disk_capacity_admission"] = disk_capacity.require_build_capacity(
-                (result_path.parent,), env=inherited_env
+                output_layout.capacity_paths()
+                if output_layout.declaration is not None
+                else (result_path.parent,),
+                env=inherited_env,
             ).as_dict()
+            if output_layout.declaration is not None:
+                custody_cas._durable_makedirs(output_layout.temporary)
             inherited_env, applied_cargo_policies = normalize_cargo_environment(
                 inherited_env
             )
@@ -297,13 +342,13 @@ def execute_guarded_request(request_path: Path) -> int:
             # toolchain discovery. No proof command runs here; after immutable
             # input capture the cache authority selects an exclusively owned,
             # empty or content-verified generation.
-            selection_target = result_path.parent / "cargo-cache-selection"
+            selection_target = output_layout.selection
             custody_cas._canonical_root(selection_target, create=True)
             inherited_env["CARGO_TARGET_DIR"] = str(
                 selection_target.resolve(strict=True)
             )
         # Output scratch is run-owned and external to source custody.
-        run_scratch = result_path.parent / "derived" / execution_nonce / "scratch"
+        run_scratch = output_layout.scratch(execution_nonce)
         run_scratch.mkdir(parents=True, exist_ok=False)
         inherited_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(
             run_scratch.resolve(strict=True)
@@ -350,7 +395,7 @@ def execute_guarded_request(request_path: Path) -> int:
         # source tree.  It is therefore the single authority for the reusable
         # supervisor build as well; inherited Cargo target state must not move
         # control-plane output back under proof source custody.
-        supervisor_target = result_path.parent / "proof-supervisor-target"
+        supervisor_target = output_layout.supervisor_target
         source_root = effective_cwd.resolve(strict=True)
         supervisor_target = Path(os.path.abspath(supervisor_target))
         if supervisor_target == source_root or supervisor_target.is_relative_to(
@@ -359,7 +404,9 @@ def execute_guarded_request(request_path: Path) -> int:
             raise ValueError("native proof supervisor target overlaps admitted source")
         supervisor_target.mkdir(parents=True, exist_ok=True)
         supervisor_build_env = _supervisor_build_environment(
-            execution_env, target=supervisor_target
+            execution_env,
+            target=supervisor_target,
+            external_placement=output_layout.declaration is not None,
         )
         built_supervisor, supervisor_provision_telemetry = (
             supervisor._provision_proof_supervisor(cwd=cwd, env=supervisor_build_env)
@@ -434,6 +481,8 @@ def execute_guarded_request(request_path: Path) -> int:
                 supervisor_binary=supervisor_binary,
             )
         )
+        if output_layout.declaration is not None:
+            output_layout.validate(protected_roots=located_roots)
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
             admission.parse_python_invocation(
@@ -484,6 +533,7 @@ def execute_guarded_request(request_path: Path) -> int:
             Path(execution_custody.__file__).resolve(strict=True),
             Path(cargo_cache_custody.__file__).resolve(strict=True),
             Path(cargo_output_environment.__file__).resolve(strict=True),
+            Path(cargo_output_layout.__file__).resolve(strict=True),
             Path(custody_cas.__file__).resolve(strict=True),
             Path(execution_receipt_details.__file__).resolve(strict=True),
             Path(command_identity.__file__).resolve(strict=True),
@@ -648,6 +698,10 @@ def execute_guarded_request(request_path: Path) -> int:
                 )
             )
             cargo_cache = cargo_cache_custody.acquire(
+                cargo_output_root=output_layout.declaration,
+                cargo_output_lifetime=admission.validated_cargo_output_lifetime(
+                    envelope
+                ),
                 result_root=result_path.parent,
                 source_root=Path(source_root_raw),
                 toolchains=toolchains_full,
@@ -742,6 +796,10 @@ def execute_guarded_request(request_path: Path) -> int:
             # parent repeats this same check against the sealed native policy.
             cargo_cache_custody.validate_prelaunch(
                 cargo_cache.provenance,
+                cargo_output_root=output_layout.declaration,
+                cargo_output_lifetime=admission.validated_cargo_output_lifetime(
+                    envelope
+                ),
                 cas_root=result_path.parent / "custody-cas",
                 command=execution_command,
                 outputs=cargo_outputs,

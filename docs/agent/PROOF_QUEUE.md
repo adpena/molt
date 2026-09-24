@@ -108,10 +108,12 @@ and final validation; execution argv may already contain Python custody wrappers
 and must not be reparsed as a new logical command. The parent derives its policy
 independently from the original admitted envelope, not the child's policy claim.
 The exact transformed execution argv still participates in input identity.
-The input identity represents `CARGO_TARGET_DIR`, and documentation
-commands' `TEMP`/`TMP`/`TMPDIR`, as typed build-output bindings; the lease binds
-their actual values before returning its execution environment. Other commands'
-caller temporary paths remain semantic inputs. Both pre-execution validation and
+The input identity represents `CARGO_TARGET_DIR`, and documentation commands'
+`TEMP`/`TMP`/`TMPDIR`, as typed build-output bindings; an explicit output-root
+selection also owns these temporary variables for other Cargo operations.
+The lease binds their actual values before returning its execution environment.
+Without that selection, other commands' caller temporary paths remain semantic
+inputs. Both pre-execution validation and
 the parent terminal verifier require the exact leased paths, so symbolic identity
 does not admit a redirected or missing output variable. There is no post-identity
 temporary-directory rewrite. Input schema v2 makes the changed policy explicit;
@@ -137,8 +139,10 @@ the publication must be the non-reusable
 only failed terminal runs. An explicitly audited older successful run may be
 selected with `--allow-passed`; this does not admit reusable output or weaken any
 custody check. Select exact run IDs, preserve current proof/replay artifacts, and
-inspect the complete cohort before applying it. There is no age/LRU sweep or
-automatic successful-output retirement. `--apply` first
+inspect the complete cohort before applying it. There is no age/LRU sweep.
+Retained generations require explicit release; an admitted `terminal-success`
+output lifetime uses this same retirement authority after successful proof.
+`--apply` first
 records append-only intent, then under the same `target.lock` captures the
 output manifest and timings into custody CAS before retiring only the target.
 It preserves the source/toolchain inputs, terminal receipt, publication seal,
@@ -150,6 +154,96 @@ failed deletion or interrupted retirement is `retire-blocked` and is never
 automatically retried. The original immutable lifecycle projection remains
 `terminal-sealed-retained`; `retired-sealed` is a later observed owner/pointer
 lifecycle, not a rewrite of the proof result.
+
+### Cargo output placement
+
+Physical build storage and proof evidence are separate authorities. Use
+`--cargo-output-root` (submission field `cargo_output_root`) to select an existing
+absolute output directory for a Cargo proof. The selection is frozen at
+admission and survives queued or detached execution. Without an explicit
+selection, the existing result-root layout is unchanged. A missing selected
+volume is an error, never a request to fall back to the system drive.
+
+The selected tier holds Cargo target bytes, temporary outputs, run scratch,
+selection scratch and native-supervisor build intermediates. Queue state,
+generation owners and locks, immutable receipts, content-addressed evidence,
+source and toolchain custody remain at their existing canonical locations.
+The supervisor executable is copied into the existing evidence CAS before
+execution; relocating its intermediate build does not relocate that authority.
+
+Capacity admission measures the actual build-output volume against the same
+25 GiB default floor. Root identity, exact generation paths and ownership are
+validated independently; a drive-letter substitution, source/evidence overlap,
+link or conflicting output override cannot authorize writes or retirement.
+Selection does not move existing artifacts or adopt unknown generations.
+
+Placement is independent of lifetime: a `test --no-run` producer can retain its
+images on the selected tier, while a proof-only test can declare
+`terminal-success`. Cargo target retirement does not imply that supervisor
+intermediates or every other scratch namespace has been retired.
+In particular, guard-owned helper scratch remains under its existing custody
+and retention authority; relocating Cargo temporary paths does not move guard
+markers, guard payloads or their terminal records.
+Shared build-slot locks and persistent compiler/package caches likewise keep
+their existing owners and locations; per-volume placement must not split host
+resource arbitration into independent lock namespaces.
+
+Choose storage by workload. An SSD is preferable for iterative builds with many
+small files; a slower high-capacity volume can support explicitly selected large
+proofs when the fast tier lacks headroom. Record actual build, publication and
+retirement timings before making a speed claim. Changing the selected volume
+does not enable warm reuse without an enforced complete Cargo input closure.
+
+### Cargo output lifetime
+
+Declare physical output consumption before launching a proof with
+`--cargo-output-lifetime retain|terminal-success`, or `cargo_output_lifetime`
+in a submission specification or named recipe. The default is `retain`.
+This declaration belongs to the immutable admitted command, not mutable cleanup
+configuration; queued and detached execution must preserve the same contract.
+
+`terminal-success` declares that no later consumer needs the Cargo target after
+this proof completes. It is admitted only for a parsed `cargo check` or actual
+`cargo test` execution. Build-only `test --no-run`, queries, builds, documentation,
+run commands and unknown operations do not qualify. Keep `retain` for standalone
+test-image producers, symbolization, deferred execution and replay artifacts.
+Command arguments forwarded to a test harness cannot change Cargo semantics.
+
+Only after the parent commits a passing queue outcome does finalization reload
+and validate the persisted proof, then retire its sealed non-reusable target
+through the existing exclusive lease and evidence-preservation transaction.
+A zero child exit alone is insufficient: failed, non-evidence, incomplete or
+ambiguous outcomes keep their outputs. Retirement intent and outcome are separate
+append-only records; they never rewrite the command result or proof digest.
+Cleanup failure must remain visible even when the proof itself passed.
+An interrupted finalization that has not begun disposal may resume from its
+exact admitted contract; `retire-blocked` is not an automatic retry.
+Recovery selects a bounded pending cohort before the next proof, not every
+historical artifact. Queue status exposes unresolved dispositions. An old
+cleanup failure does not block unrelated work; capacity admission still checks
+real free bytes and never credits planned reclamation. The originating command
+reports a disposal failure separately from its unchanged persisted proof result.
+Disposition findings include `disposition_elapsed_s` for the locked preservation
+and retirement work, separate from the immutable proof duration, so a slower
+storage tier cannot hide its cleanup cost inside an unrelated timing claim.
+
+For example, use `proof_queue.py cargo --id check --reason "type-check only"
+--cargo-output-lifetime terminal-success -- check -p molt-ir` when no later
+consumer needs the target. Use the normal retaining lifetime for a standalone
+`test --no-run` producer whose images will be executed later.
+
+This lifetime prevents successful disposable proofs from accumulating full
+targets indefinitely. It is not a disk reservation, a bound on retained failures,
+or permission to reuse an incompletely captured Cargo input closure. Existing
+generations and unknown legacy owners are not retroactively opted in. Source,
+toolchains, terminal receipts, output inventories and timing evidence are retained.
+Capacity admission still measures actual free space against its unchanged floor.
+
+Guard markers and terminal receipts are custody metadata, not disposable build
+payloads. A new guard does not prune earlier markers by age or count: unresolved
+ownership and terminal parent/child closure evidence must remain available.
+Legacy unbound markers remain conservative protection, not a license to infer
+process death or artifact ownership from their age, PID or command text.
 
 Each Cargo generation owns an `owner.json` under its exclusive identity lease;
 `state.json` is only a latest-generation navigation pointer. Closing a lease

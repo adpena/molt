@@ -660,6 +660,42 @@ def test_active_guard_marker_records_death_capsule(
     assert updated["child_process"]["pid"] == 123
 
 
+def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
+    marker_dir = tmp_path / "active"
+    marker_dir.mkdir()
+    prior: dict[Path, bytes] = {}
+    states = ("child_running", "guard_exception", "completed", "finalizer_completed")
+    # Exceed the former 128-record cache cap. Unresolved and terminal parent
+    # records are both evidence; neither age nor a newer launch supersedes them.
+    for index in range(140):
+        marker = marker_dir / f"guard-{index + 1}-{index:032x}.json"
+        content = json.dumps(
+            {
+                "pid": index + 1,
+                "token": f"{index:032x}",
+                "status": states[index % len(states)],
+                "termination_reports": [{"watched_pids": [index + 1000]}],
+            }
+        ).encode()
+        marker.write_bytes(content)
+        os.utime(marker, (index + 1, index + 1))
+        prior[marker] = content
+    unreadable = marker_dir / "guard-999-unresolved.json"
+    unreadable.write_bytes(b"{incomplete")
+    prior[unreadable] = b"{incomplete"
+
+    _, new_marker = memory_guard._write_active_guard_marker(
+        os.getpid(),
+        command=("python", "-c", "pass"),
+        cwd=tmp_path,
+        environ={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
+    )
+
+    assert new_marker not in prior
+    assert set(marker_dir.iterdir()) == {*prior, new_marker}
+    assert {path: path.read_bytes() for path in prior} == prior
+
+
 def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     artifact_root = tmp_path / "artifacts"

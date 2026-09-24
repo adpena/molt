@@ -47,10 +47,10 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
     )
     envelope = {"toolchains": ["cargo"]}
     monkeypatch.setattr(
-        command_admission, "admission_envelope", lambda command: envelope
+        command_admission, "admission_envelope", lambda command, **kwargs: envelope
     )
     monkeypatch.setattr(
-        command_admission, "envelope_for_command", lambda command: envelope
+        command_admission, "envelope_for_command", lambda command, **kwargs: envelope
     )
     monkeypatch.setattr(policy, "_proof_command_policy_error", lambda command: None)
     monkeypatch.setattr(
