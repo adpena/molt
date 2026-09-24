@@ -327,6 +327,7 @@ def execute_guarded_request(request_path: Path) -> int:
         requested_cargo_target = inherited_env.get("CARGO_TARGET_DIR")
         applied_cargo_policies: tuple[str, ...] = ()
         if "cargo" in envelope.get("toolchains", []):
+            output_layout.admit_target_path()
             result["disk_capacity_admission"] = disk_capacity.require_build_capacity(
                 output_layout.capacity_paths()
                 if output_layout.declaration is not None

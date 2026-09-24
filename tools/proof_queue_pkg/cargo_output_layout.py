@@ -18,10 +18,33 @@ import sys
 from typing import Mapping, Sequence
 
 from molt import file_publication
-from molt.exact_json import canonical_json_bytes
+from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 
 
 ROOT_SCHEMA = "molt.proof-cargo-output-root.v1"
+TARGET_LAYOUT = "molt.proof-cargo-target.v2"
+_HISTORICAL_TARGET_LAYOUT = "molt.proof-cargo-target.v1"
+
+
+def recorded_target_layout(record: Mapping[str, object]) -> str:
+    """Absent means the historical nested address, never current acquisition."""
+    version = record.get("cargo_target_layout", _HISTORICAL_TARGET_LAYOUT)
+    if version not in (_HISTORICAL_TARGET_LAYOUT, TARGET_LAYOUT):
+        raise ValueError("Cargo target layout version is unknown")
+    return str(version)
+
+
+def target_layout_fields(record: Mapping[str, object]) -> dict[str, str]:
+    version = recorded_target_layout(record)
+    # Do not change the shape of a historical immutable lifecycle projection.
+    return {"cargo_target_layout": version} if "cargo_target_layout" in record else {}
+
+
+def require_same_target_layout(
+    left: Mapping[str, object], right: Mapping[str, object]
+) -> None:
+    if recorded_target_layout(left) != recorded_target_layout(right):
+        raise ValueError("Cargo target layout binding mismatch")
 
 
 def declare_root(raw: object) -> dict[str, object]:
@@ -220,7 +243,22 @@ class CargoOutputLayout:
         )
         self.validate(protected_roots=protected)
 
-    def target(self, input_sha256: str, generation_id: str) -> Path:
+    @property
+    def targets_root(self) -> Path:
+        root = (
+            self.result_root
+            if self.declaration is None
+            else Path(str(self.declaration["path"]))
+        )
+        return file_publication.resolve_owned_path(root / "cargo-target")
+
+    def target(
+        self,
+        input_sha256: str,
+        generation_id: str,
+        *,
+        version: str = TARGET_LAYOUT,
+    ) -> Path:
         if (
             re.fullmatch(r"[0-9a-f]{64}", input_sha256) is None
             or re.fullmatch(r"[0-9a-f]{16}", generation_id) is None
@@ -228,9 +266,47 @@ class CargoOutputLayout:
             raise ValueError(
                 "Cargo output target requires canonical generation identity"
             )
-        return file_publication.resolve_owned_path(
-            self.payload_root / "cargo-cache" / input_sha256 / generation_id / "target"
+        recorded_target_layout({"cargo_target_layout": version})
+        if version == _HISTORICAL_TARGET_LAYOUT:
+            return file_publication.resolve_owned_path(
+                self.payload_root
+                / "cargo-cache"
+                / input_sha256
+                / generation_id
+                / "target"
+            )
+        # Physical addresses need one complete identity, not each identity
+        # repeated as another directory. Metadata retains the explicit parts.
+        # Keep native path spelling: normcase can alias case-sensitive roots.
+        address = canonical_json_sha256(
+            {
+                "schema": TARGET_LAYOUT,
+                "result_root": str(self.result_root),
+                "input_sha256": input_sha256,
+                "generation_id": generation_id,
+            }
         )
+        return file_publication.resolve_owned_path(self.targets_root / address)
+
+    def admit_target_path(self, *, platform: str | None = None) -> None:
+        """Reserve a documented tool-descendant budget before expensive capture.
+
+        Relative MSVC inputs remain MAX_PATH-limited even when the same file
+        opens by absolute path. This is a queue target-root admission budget,
+        not a claim that every possible generated filename fits it.
+        """
+        if (sys.platform if platform is None else platform) != "win32":
+            return
+        target = self.target("0" * 64, "0" * 16)
+        units = len(str(target).encode("utf-16-le", "surrogatepass")) // 2
+        descendant_budget = 128
+        if units + descendant_budget >= 260:
+            raise ValueError(
+                "Cargo target exceeds Windows tool path budget: "
+                f"target={target}; target_utf16_units={units}; "
+                f"reserved_descendant_units={descendant_budget}; limit=259; "
+                "select a shorter --cargo-output-root; no fallback is permitted"
+            )
 
     @property
     def selection(self) -> Path:
@@ -258,6 +334,7 @@ class CargoOutputLayout:
     def capacity_paths(self) -> tuple[Path, ...]:
         self.validate()
         return (
+            self.targets_root,
             self.payload_root / "cargo-cache",
             self.supervisor_target,
             self.temporary,
