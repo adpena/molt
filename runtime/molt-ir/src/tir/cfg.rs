@@ -93,7 +93,13 @@ fn is_block_leader(kind: &str) -> bool {
 /// Returns `true` if the op ends a block and the next instruction should start
 /// a new block (even if it's not itself a leader type).
 fn is_block_ender(kind: &str) -> bool {
-    simpleir_kind_is_block_ender(kind)
+    // An explicit exception transfer has two executable continuations even
+    // though its normal continuation is fallthrough and its handler edge is
+    // carried separately. End the block here so later definitions cannot be
+    // attributed to the transfer's source program point by dominance/liveness.
+    // Reuse the same generated transfer authority as compute_exception_edges,
+    // including wire aliases such as async_work_poll.
+    simpleir_kind_is_block_ender(kind) || is_simple_exception_transfer_kind(kind)
 }
 
 /// Returns `true` if the op is a conditional branch that causes a block split
@@ -998,6 +1004,58 @@ mod tests {
         // ret_void is not in our terminator list so it falls through, but
         // there's no next block so successors should be empty.
         assert_eq!(cfg.loop_depth[0], 0);
+    }
+
+    #[test]
+    fn exception_transfer_family_ends_blocks_at_the_transfer_program_point() {
+        for kind in ["check_exception", "async_work_poll", "try_start"] {
+            let ops = vec![
+                op_val("trace_enter_slot", 0),
+                op_val(kind, 41),
+                op("const"),
+                op_val(kind, 41),
+                op("const"),
+                op("ret_void"),
+                op_val("label", 41),
+                op("ret_void"),
+            ];
+            let cfg = CFG::build(&ops);
+            let first = block_containing(&cfg.blocks, 1).unwrap();
+            let second = block_containing(&cfg.blocks, 3).unwrap();
+            let success = block_containing(&cfg.blocks, 4).unwrap();
+            let handler = block_containing(&cfg.blocks, 6).unwrap();
+            assert_eq!(
+                cfg.blocks[first].start_op, 0,
+                "{kind}: preserve checked entry pair"
+            );
+            assert_eq!(cfg.blocks[first].end_op, 2, "{kind}: early transfer source");
+            assert_eq!(cfg.blocks[second].start_op, 2);
+            assert_eq!(
+                cfg.blocks[second].end_op, 4,
+                "{kind}: later transfer source"
+            );
+            assert_ne!(first, second);
+            assert_ne!(second, success);
+            assert_eq!(cfg.successors[first], vec![second]);
+            assert_eq!(cfg.successors[second], vec![success]);
+            assert_eq!(
+                cfg.exception_edges,
+                vec![(first, handler), (second, handler)]
+            );
+            assert_eq!(
+                cfg.execution_op_dominators(&ops)[6],
+                Some(1),
+                "{kind}: later definitions cannot dominate the early handler edge"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_exception_producers_do_not_invent_transfer_boundaries() {
+        let ops = vec![op("call"), op("add"), op("ret_void")];
+        let cfg = CFG::build(&ops);
+        assert_eq!(cfg.blocks.len(), 1);
+        assert!(cfg.exception_edges.is_empty());
     }
 
     #[test]

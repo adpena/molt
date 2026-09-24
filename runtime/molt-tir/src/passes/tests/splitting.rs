@@ -1027,6 +1027,7 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
     original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
     assert_eq!(typed.return_abi, original.return_abi);
     let original_entry = original.ops[..2].to_vec();
+    let entry_failure_label = original_entry[1].value.expect("checked entry target");
     let original_failure_tail = original.ops[original.ops.len() - 3..].to_vec();
     original.ops.splice(
         0..0,
@@ -1091,7 +1092,7 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
                 !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit")
                     && (!crate::tir::op_kinds_generated::simpleir_kind_uses_function_label_id(
                         &op.kind,
-                    ) || op.value != Some(0))
+                    ) || op.value != Some(entry_failure_label))
             })
     }));
     for (index, op) in stub.ops.iter().enumerate() {
@@ -1119,6 +1120,13 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
             (ExecutionContextPolicy::Inherited, true),
         ] {
             let mut original = checked_local_split_fixture(has_payload);
+            // Every return protocol must exercise a real later-chunk read,
+            // including payload-free owners that otherwise need no split frame.
+            let body_exit = original.ops.len() - 5;
+            original.ops.insert(
+                body_exit,
+                make_arith("eq", &["value_1", "value_1"], "later_comparison"),
+            );
             original.return_abi = owner_abi;
             original.execution_context = context;
             if context == ExecutionContextPolicy::Inherited {
@@ -1130,12 +1138,24 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
                 let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
                 original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
             }
+            let drop_markers = [
+                make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                make_op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+            ];
+            original.ops.splice(0..0, drop_markers.clone());
             let (stub, chunks) = split_for_test(original, 3)
                 .expect("checked entry must survive both source and SSA roundtrip");
             assert_eq!(stub.return_abi, owner_abi);
             assert!(
                 chunks.len() > 1,
                 "exercise intermediate and terminal chunks"
+            );
+            assert!(!stub.ops.iter().any(is_drop_fact_marker_op));
+            assert!(
+                chunks
+                    .iter()
+                    .any(|chunk| chunk.ops.iter().any(|op| op.kind == "index")),
+                "every protocol/context case must exercise frame-load placement"
             );
             assert_eq!(stub.ops.last().unwrap().kind, "ret_void");
             assert_eq!(
@@ -1153,6 +1173,20 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
                 .collect::<Vec<_>>();
             assert_eq!(calls.len(), chunks.len());
             for (index, (chunk, call)) in chunks.iter().zip(calls).enumerate() {
+                assert_eq!(
+                    chunk.ops[..drop_markers.len()],
+                    drop_markers,
+                    "ownership facts must precede generated frame loads for {context:?}, {owner_abi:?}, payload={has_payload}, roundtrip={roundtrip}"
+                );
+                assert_eq!(
+                    chunk
+                        .ops
+                        .iter()
+                        .filter(|op| is_drop_fact_marker_op(op))
+                        .count(),
+                    drop_markers.len(),
+                    "each chunk carries the ownership prefix exactly once"
+                );
                 assert_eq!(call.s_value.as_deref(), Some(chunk.name.as_str()));
                 let result = call.out.as_ref().expect("chunk call result");
                 let expected_abi = if has_payload && index + 1 != chunks.len() {

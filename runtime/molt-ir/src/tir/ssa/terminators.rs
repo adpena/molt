@@ -256,31 +256,12 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
-            "check_exception" => {
-                // check_exception terminates the block with an implicit branch
-                // to both the fallthrough (no exception) and the exception
-                // handler. The check_exception OP itself (emitted in the block
-                // body) carries the handler branch args via its operands
-                // (see translate_op). The terminator only needs to branch to
-                // the fallthrough successor — the handler edge is implicit.
-                //
-                // We also store args for the handler block here so that when
-                // lower_to_simple emits the fallthrough jump, the handler
-                // block's arguments are still correct.
-                if !succs.is_empty() {
-                    let target_bid = succs[0];
-                    let args = self.collect_branch_args(target_bid, var_stacks);
-                    Terminator::Branch {
-                        target: BlockId(target_bid as u32),
-                        args,
-                    }
-                } else {
-                    Terminator::Unreachable
-                }
-            }
-
             _ => {
-                // Default: fall-through to successor(s).
+                // Default: fall-through to successor(s). This also owns the
+                // normal continuation of every exception-transfer kind:
+                // translate_op already serialized its handler environment in
+                // the operation's operands. No spelling-specific terminator
+                // lane is needed for check_exception, its aliases or try_start.
                 match succs.len() {
                     0 => Terminator::Unreachable,
                     1 => {
