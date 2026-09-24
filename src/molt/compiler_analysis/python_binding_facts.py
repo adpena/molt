@@ -8,12 +8,13 @@ hash, and share across compiler consumers.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntFlag
 from types import MappingProxyType
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
 
+from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import python_node_source_key
@@ -110,6 +111,28 @@ class PythonStringAlternatives:
 PythonStaticValue: TypeAlias = (
     str | int | tuple[str, ...] | PythonParameterRef | PythonStringAlternatives | None
 )
+
+
+def python_static_value_key(value: PythonStaticValue) -> tuple[object, ...]:
+    """Exact identity of a static fact; never Python's bool/int equality.
+
+    Symbolic facts belong to this authority. Literal facts delegate to the
+    compiler's shared literal identity, including recursively typed tuples.
+    """
+    if isinstance(value, PythonParameterRef):
+        return ("parameter", value.name)
+    if isinstance(value, PythonStringAlternatives):
+        return ("string-alternatives", value.values)
+    key = literal_identity_key(value)
+    if key is None:
+        raise TypeError("static binding values require immutable literal facts")
+    return ("literal", key)
+
+
+def same_python_static_value(left: PythonStaticValue, right: PythonStaticValue) -> bool:
+    return left is right or python_static_value_key(left) == python_static_value_key(
+        right
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,13 +333,19 @@ class PythonExpressionFact:
     scope_id: int
     identities: IdentityMask
     effects: EffectMask
-    static_value: PythonStaticValue = None
+    static_value: PythonStaticValue = field(default=None, compare=False)
+    _static_identity: tuple[object, ...] = field(init=False, repr=False)
     binding_invalidated: bool = False
     binding_is_bound: bool = False
     result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     module_namespace_observable: bool = False
     truth_effects: EffectMask = 0
     name_lookup: PythonNameLookup = "none"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "_static_identity", python_static_value_key(self.static_value)
+        )
 
     @property
     def exposes_module_globals(self) -> bool:
@@ -704,6 +733,19 @@ class PythonBindingTelemetry:
     structural_diff_cache_entries: int
     structural_diff_node_visits: int
     structural_diff_shared_subtrees_skipped: int
+    join_parent_inputs: int = 0
+    join_max_parents: int = 0
+    join_two_way_slots: int = 0
+    join_wide_slots: int = 0
+    join_wide_alternatives: int = 0
+    join_payload_identity_skips: int = 0
+    join_payload_absence_skips: int = 0
+    join_payload_algebra_calls: int = 0
+    join_payload_absorptions: int = 0
+    join_custody_identity_skips: int = 0
+    observation_fold_calls: int = 0
+    observation_fold_new_parents: int = 0
+    observation_fold_rebuilds: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -874,4 +916,6 @@ __all__ = [
     "identity_fact_may_be",
     "identity_fact_names",
     "possible_identity",
+    "python_static_value_key",
+    "same_python_static_value",
 ]
