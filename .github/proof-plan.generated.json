@@ -153,6 +153,7 @@
     "tests/test_proof_plan.py",
     "tests/test_harness_memory_guard.py",
     "tests/test_memory_guard_tool.py",
+    "tests/test_python_external_custody.py",
     "tests/process_guard_common.py",
     "tests/native_process_guard.py",
     "tests/wasm_linked_runner.py",
@@ -183,7 +184,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "5c4899893a5c69fa48b7cf4447c713858cbe85bdae90e3bf3f4d972294e03b3a",
+  "authority_sha256": "bfecc9d0d08e265630ff82cffc2821debf73173de0568e05393b523a03c3e80d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",

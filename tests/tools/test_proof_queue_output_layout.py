@@ -574,18 +574,26 @@ def test_named_spec_propagates_root_independently_of_retention(
     assert result["cargo_output_lifetime"] == "retain"
 
 
-def test_toml_submission_freezes_root_without_declaring_disposal(tmp_path, monkeypatch):
+@pytest.mark.parametrize("submission", ["toml", "inline"])
+@pytest.mark.parametrize("lifetime", ["retain", "terminal-success"])
+def test_submission_log_projects_immutable_storage_contract(
+    tmp_path, monkeypatch, submission, lifetime
+):
     root = _root(tmp_path)
     source = tmp_path / "source"
     source.mkdir()
     metadata = tmp_path / "receipts"
-    command = policy._canonical_cargo_proof_command(["test", "--no-run"])
+    command = policy._canonical_cargo_proof_command(
+        ["test", "--lib", *(["--no-run"] if lifetime == "retain" else [])]
+    )
     dsl = tmp_path / "proof.toml"
     dsl.write_text(
         "[[proof]]\nid = 'retained'\nreason = 'retained producer'\ncommand = "
         + json.dumps(command)
         + "\ncargo_output_root = "
         + json.dumps(str(root))
+        + "\ncargo_output_lifetime = "
+        + json.dumps(lifetime)
         + "\n"
     )
     args = argparse.Namespace(
@@ -595,12 +603,41 @@ def test_toml_submission_freezes_root_without_declaring_disposal(tmp_path, monke
         repo_root=str(source),
     )
     monkeypatch.setattr(policy, "_proof_command_policy_error", lambda command: None)
-    commands._cmd_submit(args)
+    monkeypatch.setattr(
+        commands.evidence, "_try_write_marimo_notebook", lambda *args, **kwargs: None
+    )
+    if submission == "toml":
+        assert commands._cmd_submit(args) == 0
+    else:
+        rc, run_id = runner._queue_one(
+            args,
+            logical_id="storage-projection",
+            reason="persisted storage declaration",
+            command=command,
+            resource_family="rust",
+            contention_key="cargo:workspace",
+            scopes=[],
+            env_overrides={},
+            initial_notes=["declared output placement and lifetime"],
+            cargo_output_root=str(root),
+            cargo_output_lifetime=lifetime,
+        )
+        assert rc == 0 and run_id is not None
     with closing(state._connect(Path(args.db))) as conn:
-        row = conn.execute("SELECT command_envelope_json FROM proof_runs").fetchone()
+        row = conn.execute(
+            "SELECT command_envelope_json, log_path FROM proof_runs"
+        ).fetchone()
         envelope = json.loads(row[0])
     assert envelope["cargo_output_root"] == layout.declare_root(str(root))
-    assert "cargo_output_lifetime" not in envelope
+    assert envelope.get("cargo_output_lifetime", "retain") == lifetime
+    if lifetime == "retain":
+        assert "cargo_output_lifetime" not in envelope
+    logged = next(
+        line.removeprefix("command_envelope=")
+        for line in Path(row[1]).read_text().splitlines()
+        if line.startswith("command_envelope=")
+    )
+    assert json.loads(logged) == envelope
 
 
 @pytest.mark.parametrize(

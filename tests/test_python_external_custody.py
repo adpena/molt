@@ -8,6 +8,7 @@ import hashlib
 import importlib.machinery as machinery
 from pathlib import Path, PurePosixPath
 import sys
+import tomllib
 from types import ModuleType
 import unicodedata
 import zipimport
@@ -19,6 +20,90 @@ from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_environment_custody import _canonical_external_roots
 from molt.python_identity_common import PythonEnvironmentIdentityError
+
+
+def _assert_locked_startup_provenance(policies, packages):
+    """Reviewed bytes are an explicit subset of the canonical dependency lock."""
+    for capability, policy in policies.items():
+        distribution = policy["distribution"]
+        if distribution is None:
+            # uv bootstrap is owned by its immutable Git blob, not a wheel.
+            continue
+        locked = [package for package in packages if package["name"] == distribution]
+        assert len(locked) == 1, (
+            capability,
+            "ambiguous or missing locked distribution",
+        )
+        package = locked[0]
+        assert policy["version"] == package["version"], (
+            capability,
+            "owner version drift",
+        )
+        artifacts = list(policy["declaration_artifacts"])
+        assert artifacts, (capability, "missing reviewed startup declaration")
+        assert all(artifact["path"] == policy["declaration"] for artifact in artifacts)
+        if policy["module_artifact"] is not None:
+            assert policy["module_artifact"]["path"] == policy["module_path"]
+            artifacts.append(policy["module_artifact"])
+        wheel_identities = {
+            (wheel["url"], wheel["hash"]) for wheel in package["wheels"]
+        }
+        for artifact in artifacts:
+            assert artifact["version"] == package["version"], (
+                capability,
+                "artifact version drift",
+            )
+            assert (
+                artifact["url"],
+                "sha256:" + artifact["artifact_sha256"],
+            ) in wheel_identities, (capability, "reviewed wheel is absent from lock")
+
+
+def _locked_packages():
+    return tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "uv.lock").read_text(encoding="utf-8")
+    )["package"]
+
+
+def test_distribution_startup_provenance_is_coherent_with_uv_lock():
+    _assert_locked_startup_provenance(
+        external._STARTUP_CAPABILITIES, _locked_packages()
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "owner-version",
+        "declaration-version",
+        "declaration-url",
+        "declaration-digest",
+        "module-version",
+        "module-url",
+        "module-digest",
+    ],
+)
+def test_startup_lock_coherence_rejects_every_distribution_provenance_drift(fault):
+    policies = deepcopy(external._STARTUP_CAPABILITIES)
+    policy = policies[
+        "setuptools-local-distutils.v1"
+        if fault.startswith("module-")
+        else "coverage-inactive.v1"
+    ]
+    if fault == "owner-version":
+        policy["version"] = "unreviewed"
+    else:
+        artifact = (
+            policy["module_artifact"]
+            if fault.startswith("module-")
+            else policy["declaration_artifacts"][0]
+        )
+        field = {"version": "version", "url": "url", "digest": "artifact_sha256"}[
+            fault.split("-", 1)[1]
+        ]
+        artifact[field] = "unreviewed"
+    with pytest.raises(AssertionError):
+        _assert_locked_startup_provenance(policies, _locked_packages())
 
 
 @pytest.fixture
@@ -496,9 +581,10 @@ def test_bounded_startup_consumer_needs_owned_reviewed_inactive_bytes(
     source = b"import synthetic_coverage_startup\n"
     path.write_bytes(source if fault != "bytes" else source + b"# changed\n")
     policies = deepcopy(external._STARTUP_CAPABILITIES)
+    reviewed_version = policies["coverage-inactive.v1"]["version"]
     artifact = {
         "project": "synthetic",
-        "version": "7.14.3",
+        "version": reviewed_version,
         "path": "a1_coverage.pth",
         "sha256": hashlib.sha256(source).hexdigest(),
         "size": len(source),
@@ -523,7 +609,7 @@ def test_bounded_startup_consumer_needs_owned_reviewed_inactive_bytes(
     owners = [
         {
             "name": "other" if fault == "ownership" else "coverage",
-            "version": "0" if fault == "version" else "7.14.3",
+            "version": "0" if fault == "version" else reviewed_version,
             "installed_files": [{"path": "site/a1_coverage.pth", "node": node}],
         }
     ]

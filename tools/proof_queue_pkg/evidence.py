@@ -485,20 +485,20 @@ def _write_failed_run_log(
             print(line, file=log)
 
 
-def _write_queued_submission_log(
-    log_path: Path,
-    *,
-    run_id: str,
-    logical_id: str,
-    reason: str,
-    repo_root: Path,
-    command: list[str],
-    resource_family: str,
-    contention_key: str,
-    scopes: Sequence[str],
-    env_overrides: Mapping[str, str],
-    depends_on: Sequence[str],
-) -> None:
+def _write_queued_submission_log(conn: sqlite3.Connection, run_id: str) -> None:
+    """Project admitted facts, including storage, from their persisted authority."""
+    row = state._row_by_run_id(conn, run_id)
+    if row is None:
+        raise ValueError(f"unknown queued proof run {run_id!r}")
+    log_path = Path(row["log_path"])
+    command = loads_exact(row["command_json"])
+    envelope = loads_exact(row["command_envelope_json"])
+    scopes = loads_exact(row["scopes_json"])
+    env_overrides = loads_exact(row["env_json"])
+    depends_on = [
+        edge["parent_run_id"]
+        for edge in state._edges_for_run_ids(conn, [run_id])[run_id]["parents"]
+    ]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     append = log_path.exists() and log_path.stat().st_size > 0
     with log_path.open("a" if append else "w", encoding="utf-8") as log:
@@ -506,15 +506,17 @@ def _write_queued_submission_log(
             print("\n--- proof_queue queued submission ---", file=log)
         print(f"proof_queue run_id={run_id}", file=log)
         print("status=queued", file=log)
-        print(f"logical_id={logical_id}", file=log)
-        print(f"reason={reason}", file=log)
-        print(f"cwd={repo_root}", file=log)
-        print(f"resource_family={resource_family}", file=log)
-        print(f"contention_key={contention_key}", file=log)
+        for name in (
+            "logical_id",
+            "reason",
+            "cwd",
+            "resource_family",
+            "contention_key",
+        ):
+            print(f"{name}={row[name]}", file=log)
         print(f"command={shlex.join(command)}", file=log)
         print(
-            "command_envelope="
-            + json.dumps(command_admission.admission_envelope(command), sort_keys=True),
+            "command_envelope=" + json.dumps(envelope, sort_keys=True),
             file=log,
         )
         if scopes:

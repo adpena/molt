@@ -161,6 +161,7 @@ authority_inputs = [
   "tests/test_proof_plan.py",
   "tests/test_harness_memory_guard.py",
   "tests/test_memory_guard_tool.py",
+  "tests/test_python_external_custody.py",
   "tests/process_guard_common.py",
   "tests/native_process_guard.py",
   "tests/wasm_linked_runner.py",
