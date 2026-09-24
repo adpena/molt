@@ -334,7 +334,10 @@ explicit environmental conditions, never by filename or class name alone. This
 is input/import custody, not an operating-system sandbox or a guarantee about
 arbitrary future file I/O. The bootstrap policies and provenance belong to
 `molt.python_external_custody`; unknown templates require review rather than
-post-failure fallback. Full environment capture is not a location operation.
+post-failure fallback. Distribution-owned startup versions and reviewed wheel
+URL/hash identities are checked against `uv.lock`; dependency upgrades must carry
+independently verified provenance while preserving exact member/RECORD ownership
+and live inactivity gates. Full environment capture is not a location operation.
 
 Native dependency admission currently proves the **loaded import closure**, not
 all possible future lazy imports. Its capability vector gates CPython >=3.12,

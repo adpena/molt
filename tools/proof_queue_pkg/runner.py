@@ -1208,19 +1208,7 @@ def _queue_one(
             policy_error=policy_error,
         )
         return rc, run_id
-    evidence._write_queued_submission_log(
-        log_path,
-        run_id=run_id,
-        logical_id=logical_id,
-        reason=reason,
-        repo_root=repo_root,
-        command=command,
-        resource_family=resource_family,
-        contention_key=contention_key,
-        scopes=scopes,
-        env_overrides=env_overrides,
-        depends_on=depends_on or [],
-    )
+    evidence._write_queued_submission_log(conn, run_id)
     if initial_notes or depends_on:
         evidence._try_write_marimo_notebook(
             args,

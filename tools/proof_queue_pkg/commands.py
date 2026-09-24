@@ -321,19 +321,7 @@ def _cmd_submit(args: argparse.Namespace) -> int:
                 exc=exc,
                 phase="submission metadata",
             )
-        evidence._write_queued_submission_log(
-            log_path,
-            run_id=run_id,
-            logical_id=str(item["logical_id"]),
-            reason=str(item["reason"]),
-            repo_root=state._repo_root(args),
-            command=list(item["command"]),
-            resource_family=str(item["resource_family"]),
-            contention_key=str(item["contention_key"]),
-            scopes=list(item["scope"]),
-            env_overrides=dict(item["env_overrides"]),
-            depends_on=[str(dependency) for dependency in item["depends_on"]],
-        )
+        evidence._write_queued_submission_log(conn, run_id)
         if item["initial_notes"] or item["depends_on"]:
             evidence._try_write_marimo_notebook(
                 args,
