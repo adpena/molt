@@ -31,6 +31,8 @@ _GLOBAL_OPTIONS_WITH_VALUES = frozenset(
 
 _PROOF_COMMAND_OPTIONS_WITH_VALUES = frozenset(
     {
+        "--cargo-output-lifetime",
+        "--cargo-output-root",
         "--id",
         "--reason",
         "--resource-family",
@@ -154,6 +156,7 @@ def _add_dependency_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> None:
+    _add_cargo_output_lifetime_arg(parser, default=None)
     parser.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument(
         "--note",
@@ -171,6 +174,21 @@ def _add_named_lane_args(parser: argparse.ArgumentParser, *, note_help: str) -> 
     )
     execution.add_argument("--detach", action="store_true")
     parser.add_argument("--print-spec", action="store_true")
+
+
+def _add_cargo_output_lifetime_arg(
+    parser: argparse.ArgumentParser, *, default: str | None = "retain"
+) -> None:
+    parser.add_argument(
+        "--cargo-output-root",
+        help="explicit existing output directory; canonical metadata stays in the result root",
+    )
+    parser.add_argument(
+        "--cargo-output-lifetime",
+        choices=("retain", "terminal-success"),
+        default=default,
+        help="retain Cargo outputs, or declare no output consumer after a successful check/test",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -228,6 +246,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="submit and run one inline proof",
     )
     exec_p.add_argument("--id", required=True)
+    _add_cargo_output_lifetime_arg(exec_p)
     exec_p.add_argument("--reason", required=True)
     exec_p.add_argument("--resource-family", default="generic")
     exec_p.add_argument("--contention-key")
@@ -256,6 +275,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     cargo_p.add_argument("--id", required=True)
+    _add_cargo_output_lifetime_arg(cargo_p)
     cargo_p.add_argument("--reason", required=True)
     cargo_p.add_argument("--contention-key")
     cargo_p.add_argument("--scope", action="append", default=[])

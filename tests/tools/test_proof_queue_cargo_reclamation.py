@@ -15,6 +15,8 @@ from molt import disk_capacity
 from tools.proof_queue_pkg import (
     cargo_cache_custody as cache,
     cargo_output_environment,
+    cargo_output_lifecycle,
+    cargo_output_layout,
     command_admission,
     cli,
     commands,
@@ -31,7 +33,17 @@ from tools.proof_queue_pkg import (
 def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     parameters = getattr(request, "param", (101, True))
     command_rc, source_eligible = parameters[:2]
-    sealed = len(parameters) == 3 and parameters[2]
+    sealed = len(parameters) >= 3 and parameters[2]
+    lifetime = parameters[3] if len(parameters) >= 4 else "retain"
+    external = len(parameters) >= 5 and parameters[4]
+    external_root = tmp_path / "external-output"
+    if external:
+        external_root.mkdir()
+    envelope = command_admission.envelope_for_command(
+        ["cargo", "test"],
+        cargo_output_lifetime=lifetime,
+        cargo_output_root=str(external_root) if external else None,
+    )
     nonce = "reclamation-fixture"
     nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
     monkeypatch.setattr(
@@ -54,13 +66,13 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
         hash_workers=1,
     )
     lease = cache.acquire(
+        cargo_output_lifetime=lifetime,
+        cargo_output_root=envelope.get("cargo_output_root"),
         result_root=result_root,
         source_root=source,
         toolchains={},
         command=["cargo", "test"],
-        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
-            command_admission.envelope_for_command(["cargo", "test"])
-        ),
+        outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope),
         env={},
         requested_target="unused",
         timeout_s=0.0,
@@ -87,6 +99,8 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     with closing(state._connect(Path(args.db))) as conn:
         scheduling._insert_run(
             conn,
+            cargo_output_lifetime=lifetime,
+            cargo_output_root=str(external_root) if external else None,
             run_id=args.run_id,
             logical_id="reclaim-unit",
             reason="fixture",
@@ -254,6 +268,10 @@ def test_retirement_cli_preserves_terminal_receipt_and_records_disposition(
     assert commands._cmd_retire_terminal_sealed_generation(args) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["state"] == "retired-sealed"
+    assert (
+        isinstance(result["disposition_elapsed_s"], float)
+        and result["disposition_elapsed_s"] >= 0
+    )
     assert not lease.target.exists()
     assert json.loads(lease.owner_path.read_text())["lifecycle"] == "retired-sealed"
     assert json.loads(lease.pointer.read_text())["state"] == "retired-sealed"
@@ -490,3 +508,419 @@ def test_post_delete_note_error_does_not_claim_artifacts_were_retained(
     result = json.loads(capsys.readouterr().out)
     assert result["state"] == expected_state and "error" in result
     assert not lease.target.exists()
+
+
+def _persisted_terminal_bytes(args):
+    with closing(state._connect(Path(args.db))) as conn:
+        row = state._row_by_run_id(conn, args.run_id)
+        return row["status"], row["returncode"], row["receipt_context_json"]
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_declared_success_retires_after_commit_without_rewriting_receipt(generation):
+    args, lease, context = generation
+    before = _persisted_terminal_bytes(args)
+    receipt = (Path(args.logs_root) / "unit.execution.json").read_bytes()
+    result = cargo_output_lifecycle.finalize_declared_success(
+        Path(args.db), args.run_id
+    )
+    assert result["state"] == "retired-sealed"
+    assert isinstance(result["disposition_elapsed_s"], float)
+    assert result["disposition_elapsed_s"] >= 0
+    assert not lease.target.exists()
+    assert _persisted_terminal_bytes(args) == before
+    assert (Path(args.logs_root) / "unit.execution.json").read_bytes() == receipt
+    assert context["cargo_generation_lifecycle"]["state"] == "terminal-sealed-retained"
+    with closing(state._connect(Path(args.db))) as conn:
+        notes = state._notes_for_run_ids(conn, [args.run_id])[args.run_id]
+        assert [json.loads(note["body"])["state"] for note in notes] == [
+            "requested",
+            "retired-sealed",
+        ]
+        assert json.loads(notes[-1]["body"])["disposition_elapsed_s"] >= 0
+    assert (
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)[
+            "state"
+        ]
+        == "retired-sealed"
+    )
+    # Completed history is not reopened on the next launch.
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert _persisted_terminal_bytes(args) == before
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success", True)], indirect=True
+)
+def test_external_retirement_preserves_metadata_siblings_and_offline_receipt(
+    generation, monkeypatch
+):
+    args, lease, context = generation
+    declaration = lease.provenance["cargo_output_root"]
+    root = Path(declaration["path"])
+    assert lease.target.is_relative_to(root)
+    owner = Path(lease.provenance["generation_owner"])
+    assert owner.is_relative_to(Path(args.logs_root))
+    sibling = lease.target.parent.parent / "retained-sibling"
+    sibling.mkdir()
+    (sibling / "keep.rlib").write_bytes(b"retained")
+    before = _persisted_terminal_bytes(args)
+    cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    assert not lease.target.exists()
+    assert (sibling / "keep.rlib").read_bytes() == b"retained"
+    assert owner.exists() and (owner.parent.parent / "target.lock").exists()
+    assert (Path(args.logs_root) / "custody-cas").is_dir()
+    assert _persisted_terminal_bytes(args) == before
+
+    def absent(raw):
+        raise OSError("volume offline")
+
+    monkeypatch.setattr(cargo_output_layout, "declare_root", absent)
+    with closing(state._connect(Path(args.db))) as conn:
+        row = state._row_by_run_id(conn, args.run_id)
+        evidence._validate_terminal_evidence(row, context)
+        evidence._cargo_generation_terminal(row, context, required=True)
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success", True)], indirect=True
+)
+@pytest.mark.parametrize("lifecycle", ["terminal-sealed-retained", "retiring-sealed"])
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_missing_or_replaced_external_root_never_authorizes_retirement(
+    generation, monkeypatch, lifecycle, unavailable
+):
+    args, lease, _ = generation
+    owner_path = Path(lease.provenance["generation_owner"])
+    owner = json.loads(owner_path.read_text())
+    owner["lifecycle"] = lifecycle
+    owner_path.write_text(json.dumps(owner))
+    original = cargo_output_layout.declare_root
+
+    def replaced(raw):
+        if unavailable:
+            raise OSError("selected volume offline")
+        value = original(raw)
+        return {**value, "inode": value["inode"] + 1}
+
+    monkeypatch.setattr(cargo_output_layout, "declare_root", replaced)
+    monkeypatch.setattr(
+        cache,
+        "delete_path",
+        lambda path: pytest.fail("unavailable root reached deletion"),
+    )
+    with pytest.raises(ValueError, match="unavailable|replaced or remounted"):
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    assert lease.target.exists()
+    assert json.loads(owner_path.read_text())["lifecycle"] == lifecycle
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_caught_disposition_error_persists_elapsed_metric(generation, monkeypatch):
+    args, lease, _ = generation
+
+    def fail(**kwargs):
+        raise OSError("fixture disposal error")
+
+    monkeypatch.setattr(cache, "retire_terminal_sealed", fail)
+    with pytest.raises(OSError, match="fixture disposal error"):
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    with closing(state._connect(Path(args.db))) as conn:
+        notes = [
+            json.loads(note["body"])
+            for note in state._notes_for_run_ids(conn, [args.run_id])[args.run_id]
+        ]
+    finding = next(
+        note for note in notes if note.get("state") == "retirement-indeterminate"
+    )
+    assert isinstance(finding["disposition_elapsed_s"], float)
+    assert finding["disposition_elapsed_s"] >= 0
+    assert lease.target.exists()
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success", True)], indirect=True
+)
+def test_external_root_is_revalidated_after_identity_lock_wait(generation, monkeypatch):
+    args, lease, context = generation
+    acquire_lock = cache._acquire_file_lock
+    declare_root = cargo_output_layout.declare_root
+    locked = False
+
+    def acquire(*args, **kwargs):
+        nonlocal locked
+        handle = acquire_lock(*args, **kwargs)
+        locked = True
+        return handle
+
+    def root(raw):
+        value = declare_root(raw)
+        return {**value, "inode": value["inode"] + 1} if locked else value
+
+    monkeypatch.setattr(cache, "_acquire_file_lock", acquire)
+    monkeypatch.setattr(cargo_output_layout, "declare_root", root)
+    monkeypatch.setattr(
+        cache, "delete_path", lambda path: pytest.fail("replaced root reached deletion")
+    )
+    with pytest.raises(ValueError, match="replaced or remounted"):
+        cache.retire_terminal_sealed(
+            result_root=Path(args.logs_root),
+            provenance=lease.provenance,
+            projection=context["cargo_generation_lifecycle"],
+            allow_passed=True,
+        )
+    assert locked and lease.target.exists()
+
+
+@pytest.mark.parametrize(
+    "generation",
+    [
+        (0, True, True),
+        (101, True, True, "terminal-success"),
+        (0, False, True, "terminal-success"),
+    ],
+    indirect=True,
+)
+def test_defaults_failures_and_non_evidence_are_retained(generation):
+    args, lease, _ = generation
+    before = _persisted_terminal_bytes(args)
+    assert (
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+        is None
+    )
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert lease.target.exists()
+    assert _persisted_terminal_bytes(args) == before
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_interruption_before_finalization_is_resumed_from_committed_run(generation):
+    args, lease, _ = generation
+    before = _persisted_terminal_bytes(args)
+    assert lease.target.exists()
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert not lease.target.exists()
+    assert _persisted_terminal_bytes(args) == before
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_manual_policy_refusal_does_not_consume_declared_finalization(
+    generation, capsys
+):
+    args, lease, _ = generation
+    before = _persisted_terminal_bytes(args)
+    args.apply = True
+    args.allow_passed = False
+    commands._cmd_terminal_cargo_disposition(args, retire=True)
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["state"] == "not-retirable"
+    assert lease.target.exists()
+    with closing(state._connect(Path(args.db))) as conn:
+        assert cargo_output_lifecycle.unresolved_dispositions(conn) == []
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert not lease.target.exists()
+    assert _persisted_terminal_bytes(args) == before
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_finalizer_never_deletes_before_terminal_commit(generation):
+    args, lease, _ = generation
+    with closing(state._connect(Path(args.db))) as conn:
+        state._update_run(
+            conn, args.run_id, status="running", returncode=None, finished_at=None
+        )
+        conn.execute(
+            "UPDATE proof_runs SET status='passed', returncode=0, finished_at='2026-01-01T00:00:00Z' WHERE run_id=?",
+            (args.run_id,),
+        )
+        # A separate persisted-authority reader cannot observe an uncommitted
+        # success. A failed commit/rollback must never authorize deletion.
+        assert (
+            cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+            is None
+        )
+        conn.rollback()
+    assert (
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+        is None
+    )
+    assert lease.target.exists()
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_disposition_failure_is_loud_separate_and_never_automatically_retried(
+    generation, monkeypatch
+):
+    args, lease, _ = generation
+    before = _persisted_terminal_bytes(args)
+    attempts = []
+
+    def refuse(path):
+        attempts.append(path)
+        return False, "fixture target in use"
+
+    monkeypatch.setattr(cache, "delete_path", refuse)
+    with pytest.raises(RuntimeError, match="finalization failed"):
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    assert len(attempts) == 1 and lease.target.exists()
+    assert _persisted_terminal_bytes(args) == before
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert len(attempts) == 1
+    with closing(state._connect(Path(args.db))) as conn:
+        unresolved = cargo_output_lifecycle.unresolved_dispositions(conn)
+    assert unresolved[0]["state"] == "finalization-unresolved"
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+@pytest.mark.parametrize("lifecycle", ["retire-blocked", "retiring-sealed"])
+def test_pending_recovery_records_but_does_not_retry_partial_retirement(
+    generation, lifecycle, monkeypatch, capsys
+):
+    args, lease, _ = generation
+    owner_path = Path(lease.provenance["generation_owner"])
+    owner = json.loads(owner_path.read_text())
+    owner["lifecycle"] = lifecycle
+    cache._write_owner(owner_path, owner)
+    monkeypatch.setattr(
+        cache, "delete_path", lambda path: pytest.fail("partial deletion retried")
+    )
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert "finalization unresolved" in capsys.readouterr().err
+    assert lease.target.exists()
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert not capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_retired_tombstone_closes_interrupted_append_only_outcome(generation):
+    args, lease, context = generation
+    cache.retire_terminal_sealed(
+        result_root=Path(args.logs_root),
+        provenance=lease.provenance,
+        projection=context["cargo_generation_lifecycle"],
+        allow_passed=True,
+    )
+    assert not lease.target.exists()
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    with closing(state._connect(Path(args.db))) as conn:
+        notes = state._notes_for_run_ids(conn, [args.run_id])[args.run_id]
+    assert json.loads(notes[-1]["body"])["state"] == "retired-sealed"
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_owner_lifetime_substitution_cannot_authorize_or_hide_disposal(generation):
+    args, lease, _ = generation
+    owner_path = Path(lease.provenance["generation_owner"])
+    owner = json.loads(owner_path.read_text())
+    owner["cargo_output_lifetime"] = "retain"
+    cache._write_owner(owner_path, owner)
+    with pytest.raises(ValueError, match="lifetime mismatch"):
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    assert lease.target.exists()
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+def test_recovery_batch_can_be_bounded_without_reading_completed_artifacts(
+    generation, monkeypatch
+):
+    args, lease, _ = generation
+    with pytest.raises(ValueError, match="batch limit"):
+        cargo_output_lifecycle.resume_declared_successes(Path(args.db), limit=0)
+    assert lease.target.exists()
+    cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    monkeypatch.setattr(
+        cargo_output_lifecycle,
+        "finalize_declared_success",
+        lambda *args: pytest.fail("completed artifact reread"),
+    )
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+
+
+@pytest.mark.parametrize(
+    "generation", [(0, True, True, "terminal-success")], indirect=True
+)
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"schema": "unrelated"},
+        {
+            "schema": "molt.proof-cargo-generation-sealed-retirement.v1",
+            "run_id": "someone-else",
+        },
+    ],
+)
+def test_unrelated_findings_do_not_suppress_pending_cleanup_or_pollute_status(
+    generation, extra
+):
+    args, lease, _ = generation
+    with closing(state._connect(Path(args.db))) as conn:
+        state._insert_note(
+            conn,
+            run_id=args.run_id,
+            kind="finding",
+            body=json.dumps(
+                {
+                    "cargo_output_lifetime": "terminal-success",
+                    "state": "finalization-unresolved",
+                    **extra,
+                }
+            ),
+        )
+        state._insert_note(
+            conn,
+            run_id=args.run_id,
+            kind="finding",
+            body="ordinary non-JSON observation",
+        )
+        assert cargo_output_lifecycle.unresolved_dispositions(conn) == []
+    cargo_output_lifecycle.resume_declared_successes(Path(args.db))
+    assert not lease.target.exists()
+
+
+@pytest.mark.parametrize("limit", [-1, 0, True, 101, 1.5, "8"])
+def test_recovery_and_status_limits_cannot_become_unbounded(tmp_path, limit):
+    with pytest.raises(ValueError, match="batch limit"):
+        cargo_output_lifecycle.resume_declared_successes(
+            tmp_path / "missing.sqlite3", limit=limit
+        )
+    with closing(sqlite3.connect(":memory:")) as conn:
+        with pytest.raises(ValueError, match="batch limit"):
+            cargo_output_lifecycle.unresolved_dispositions(conn, limit=limit)
+
+
+@pytest.mark.parametrize("generation", [(0, True, True)], indirect=True)
+def test_non_opted_in_failure_does_not_fabricate_disposition_notes(
+    generation, monkeypatch
+):
+    args, lease, _ = generation
+
+    def fail(*args):
+        raise ValueError("fixture malformed retained receipt")
+
+    monkeypatch.setattr(cargo_output_lifecycle, "_finalize_declared_success", fail)
+    with pytest.raises(ValueError, match="fixture malformed"):
+        cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
+    with closing(state._connect(Path(args.db))) as conn:
+        assert state._notes_for_run_ids(conn, [args.run_id]).get(args.run_id, []) == []
+    assert lease.target.exists()

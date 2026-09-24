@@ -73,6 +73,39 @@ def _inputs(tmp_path: Path) -> dict:
     return inputs
 
 
+def test_output_lifetime_is_provenance_not_compilation_input_identity(tmp_path):
+    inputs = _inputs(tmp_path)
+    first = cache.acquire(**inputs)
+    first.close()
+    second = cache.acquire(**inputs, cargo_output_lifetime="terminal-success")
+    try:
+        assert first.provenance["input_sha256"] == second.provenance["input_sha256"]
+        assert first.provenance["cargo_output_lifetime"] == "retain"
+        assert second.provenance["cargo_output_lifetime"] == "terminal-success"
+        arguments = {
+            key: inputs[key]
+            for key in (
+                "command",
+                "outputs",
+                "toolchains",
+                "source_snapshot",
+                "source_content",
+            )
+        }
+        arguments.update(
+            cas_root=inputs["result_root"] / "custody-cas",
+            env=second.environment,
+            source_root=str(inputs["source_root"]),
+        )
+        with pytest.raises(ValueError, match="output lifetime differs"):
+            cache.validate_prelaunch(second.provenance, **arguments)
+        cache.validate_prelaunch(
+            second.provenance, **arguments, cargo_output_lifetime="terminal-success"
+        )
+    finally:
+        second.close()
+
+
 @pytest.mark.parametrize(
     "name",
     [

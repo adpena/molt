@@ -26,6 +26,7 @@ class CargoOutputEnvironment:
     """
 
     documentation: bool
+    external_placement: bool = False
 
     @classmethod
     def for_envelope(cls, envelope: Mapping[str, object]) -> CargoOutputEnvironment:
@@ -35,6 +36,7 @@ class CargoOutputEnvironment:
         The delegated envelope retains the original Cargo operation; reparsing
         that transformed transport would invent a second admission boundary.
         """
+        external_placement = envelope.get("cargo_output_root") is not None
         delegated = envelope.get("delegated")
         if delegated is not None:
             if not isinstance(delegated, Mapping):
@@ -43,7 +45,13 @@ class CargoOutputEnvironment:
         argv = envelope.get("argv")
         if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
             raise ValueError("Cargo output policy has no admitted argv")
-        return cls.for_invocation(command_admission.parse_cargo_invocation(argv))
+        invocation = command_admission.parse_cargo_invocation(argv)
+        policy = cls.for_invocation(invocation)
+        if external_placement and any(
+            name == "--artifact-dir" for name, _value in invocation.option_values
+        ):
+            raise ValueError("Cargo --artifact-dir bypasses declared output placement")
+        return cls(policy.documentation, external_placement=external_placement)
 
     @classmethod
     def for_invocation(
@@ -58,6 +66,12 @@ class CargoOutputEnvironment:
 
     @property
     def names(self) -> tuple[str, ...]:
+        if self.external_placement:
+            return (
+                "CARGO_TARGET_DIR",
+                *TEMPORARY_VARIABLE_NAMES,
+                "PYTHONPYCACHEPREFIX",
+            )
         return (
             ("CARGO_TARGET_DIR", *TEMPORARY_VARIABLE_NAMES)
             if self.documentation

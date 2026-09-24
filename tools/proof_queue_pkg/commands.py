@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 import json
 import sqlite3
 import time
@@ -13,6 +12,8 @@ from pathlib import Path
 
 from tools.proof_queue_pkg import (
     cargo_cache_custody,
+    cargo_output_lifecycle,
+    command_admission,
     custody,
     evidence,
     policy,
@@ -39,6 +40,8 @@ def _cmd_exec(args: argparse.Namespace) -> int:
             logical_id=args.id,
             reason=args.reason,
             command=command,
+            cargo_output_lifetime=getattr(args, "cargo_output_lifetime", "retain"),
+            cargo_output_root=getattr(args, "cargo_output_root", None),
             resource_family=args.resource_family,
             contention_key=contention_key,
             scopes=args.scope,
@@ -68,6 +71,8 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         logical_id=args.id,
         reason=args.reason,
         command=command,
+        cargo_output_lifetime=getattr(args, "cargo_output_lifetime", "retain"),
+        cargo_output_root=getattr(args, "cargo_output_root", None),
         resource_family=args.resource_family,
         contention_key=contention_key,
         scopes=args.scope,
@@ -107,6 +112,8 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
             logical_id=args.id,
             reason=args.reason,
             command=command,
+            cargo_output_lifetime=getattr(args, "cargo_output_lifetime", "retain"),
+            cargo_output_root=getattr(args, "cargo_output_root", None),
             resource_family="rust",
             contention_key=contention_key,
             scopes=args.scope,
@@ -137,6 +144,8 @@ def _cmd_cargo(args: argparse.Namespace) -> int:
         logical_id=args.id,
         reason=args.reason,
         command=command,
+        cargo_output_lifetime=getattr(args, "cargo_output_lifetime", "retain"),
+        cargo_output_root=getattr(args, "cargo_output_root", None),
         resource_family="rust",
         contention_key=contention_key,
         scopes=args.scope,
@@ -183,6 +192,17 @@ def _cmd_submit(args: argparse.Namespace) -> int:
         policy_error = policy._proof_command_policy_error(list(command))
         if policy_error is not None:
             raise SystemExit(f"proof {logical_id!r}: {policy_error}")
+        lifetime = spec.get("cargo_output_lifetime", "retain")
+        output_root = spec.get("cargo_output_root")
+        envelope = command_admission.envelope_for_command(
+            command, cargo_output_lifetime=lifetime, cargo_output_root=output_root
+        )
+        if output_root is not None:
+            command_admission.cargo_output_layout.CargoOutputLayout.for_envelope(
+                envelope,
+                result_root=state._logs_root(args),
+                source_root=state._repo_root(args),
+            )
         edge_kind = str(spec.get("edge_kind") or state.DEFAULT_EDGE_KIND)
         if edge_kind not in state.EDGE_KINDS:
             allowed = ", ".join(sorted(state.EDGE_KINDS))
@@ -209,6 +229,8 @@ def _cmd_submit(args: argparse.Namespace) -> int:
             {
                 "logical_id": logical_id,
                 "command": list(command),
+                "cargo_output_lifetime": lifetime,
+                "cargo_output_root": output_root,
                 "reason": str(spec.get("reason") or logical_id),
                 "resource_family": str(spec.get("resource_family") or "generic"),
                 "contention_key": str(spec.get("contention_key") or "generic:default"),
@@ -258,6 +280,10 @@ def _cmd_submit(args: argparse.Namespace) -> int:
             logical_id=str(item["logical_id"]),
             reason=str(item["reason"]),
             command=list(item["command"]),
+            cargo_output_root=item["cargo_output_root"],
+            cargo_output_lifetime=command_admission.parse_cargo_output_lifetime(
+                item["cargo_output_lifetime"]
+            ),
             cwd=state._repo_root(args),
             resource_family=str(item["resource_family"]),
             contention_key=str(item["contention_key"]),
@@ -498,6 +524,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         conn, [row["run_id"] for row in [*active, *recent]]
     )
     print("proof queue")
+    unresolved = cargo_output_lifecycle.unresolved_dispositions(conn)
+    if unresolved:
+        print("Cargo output finalization unresolved (proof results unchanged):")
+        for finding in unresolved:
+            print("- " + json.dumps(finding, sort_keys=True))
     print("active:")
     if not active:
         print("- none")
@@ -541,19 +572,10 @@ def _load_terminal_cargo_generation(
 ) -> tuple[Path, dict[str, object], dict[str, object], Path]:
     """Load one exact terminal generation without provisioning queue state."""
     db = state._db_path(args).resolve()
-    with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
-        row = state._row_by_run_id(conn, args.run_id)
-    if row is None:
-        raise ValueError(f"unknown proof run {args.run_id!r}")
-    raw = state._row_value(row, "receipt_context_json")
-    context = json.loads(raw) if isinstance(raw, str) else None
-    if not isinstance(context, dict):
-        raise ValueError("proof run has no persisted terminal receipt context")
-    evidence._validate_terminal_evidence(row, context)
-    generation = evidence._cargo_generation_terminal(row, context, required=True)
-    assert generation is not None
-    provenance, projection = generation
-    return db, provenance, projection, Path(str(row["log_path"])).parent
+    _row, _context, provenance, projection, result_root = (
+        cargo_output_lifecycle.load_terminal_generation(db, args.run_id)
+    )
+    return db, provenance, projection, result_root
 
 
 def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -> int:
@@ -564,11 +586,6 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
         cargo_cache_custody.inspect_terminal_sealed_retirement
         if retire
         else cargo_cache_custody.inspect_terminal_generation
-    )
-    apply = (
-        cargo_cache_custody.retire_terminal_sealed
-        if retire
-        else cargo_cache_custody.reclaim_terminal_unsealed
     )
     allow_passed = args.allow_passed if retire else False
     payload: dict[str, object] = {
@@ -583,48 +600,25 @@ def _cmd_terminal_cargo_disposition(args: argparse.Namespace, *, retire: bool) -
         )
     try:
         db, provenance, projection, result_root = _load_terminal_cargo_generation(args)
+        if (
+            retire
+            and allow_passed
+            and provenance.get("cargo_output_lifetime") == "terminal-success"
+        ):
+            # Manual disposition can close a previously unresolved declaration;
+            # eligibility still comes from exact persisted receipt validation.
+            payload["cargo_output_lifetime"] = "terminal-success"
         if args.apply:
-            if retire:
-                # Bind the intent note to the same validated persisted receipt
-                # used by dry-run inspection. Apply repeats this policy under
-                # the generation identity lock before evidence or deletion.
-                intent = inspect(
-                    result_root=result_root,
-                    provenance=provenance,
-                    projection=projection,
-                    allow_passed=allow_passed,
-                )
-                payload["retirement_policy"] = intent["retirement_policy"]
-                payload["terminal_status"] = intent["terminal_status"]
-            # Persist intent before touching artifacts; the owner retains the
-            # result even if a later queue-note write is interrupted.
-            conn = state._connect(db)
-            try:
-                state._insert_note(
-                    conn,
-                    run_id=args.run_id,
-                    kind="decision",
-                    body=json.dumps(
-                        {**payload, "state": "requested", "generation": projection},
-                        sort_keys=True,
-                    ),
-                )
-                payload["state"] = f"{action}-in-progress"
-                outcome = apply(
-                    result_root=result_root,
-                    provenance=provenance,
-                    projection=projection,
-                    **({"allow_passed": allow_passed} if retire else {}),
-                )
-                payload.update(outcome)
-                state._insert_note(
-                    conn,
-                    run_id=args.run_id,
-                    kind="finding",
-                    body=json.dumps(payload, sort_keys=True),
-                )
-            finally:
-                conn.close()
+            cargo_output_lifecycle.apply_disposition(
+                db=db,
+                run_id=args.run_id,
+                provenance=provenance,
+                projection=projection,
+                result_root=result_root,
+                payload=payload,
+                retire=retire,
+                allow_passed=allow_passed,
+            )
         else:
             payload.update(
                 inspect(

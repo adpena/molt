@@ -457,10 +457,20 @@ class ProofPlan:
             for field in REQUIRED_NAMED_LANE_FIELDS:
                 if field not in lane.data:
                     errors.append(f"{lane.id}: missing {field}")
-            extra = set(lane.data) - set(REQUIRED_NAMED_LANE_FIELDS) - {"id"}
+            extra = (
+                set(lane.data)
+                - set(REQUIRED_NAMED_LANE_FIELDS)
+                - {"id", "cargo_output_lifetime"}
+            )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
             argv = lane.argv
+            # Named recipes currently own Python payloads, whose downstream
+            # Cargo consumers are not statically closed by this declaration.
+            if lane.data.get("cargo_output_lifetime", "retain") != "retain":
+                errors.append(
+                    f"{lane.id}: Python named lanes must retain Cargo outputs"
+                )
             raw_argv = lane.data.get("argv")
             if (
                 not isinstance(raw_argv, list)
