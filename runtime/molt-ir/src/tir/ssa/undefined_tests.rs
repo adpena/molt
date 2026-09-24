@@ -127,6 +127,99 @@ fn later_exception_edge_materializes_its_missing_environment_locally() {
 }
 
 #[test]
+fn transfer_family_keeps_point_specific_handler_values_and_join_arguments() {
+    for kind in ["check_exception", "async_work_poll", "try_start"] {
+        let ops = vec![
+            op_val_out("const", 1, "x"),
+            op_val(kind, 100),
+            op_val_out("const", 2, "x"),
+            op_val(kind, 100),
+            op_val_out("const", 3, "x"),
+            op_val("jump", 200),
+            op_val("label", 100),
+            op_val("jump", 200),
+            op_val("label", 200),
+            op_args("ret", &["x"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let bid_at = |index| {
+            cfg.blocks
+                .iter()
+                .position(|block| block.start_op <= index && index < block.end_op)
+                .unwrap()
+        };
+        let first = bid_at(1);
+        let second = bid_at(3);
+        let success = bid_at(4);
+        let handler = bid_at(6);
+        let join = bid_at(8);
+        let mut context = SsaContext::new("transfer_snapshots", &cfg, &ops, &[]);
+        context.run();
+        assert_ne!(first, second, "{kind}: distinct transfer program points");
+        assert_ne!(
+            second, success,
+            "{kind}: definitions follow the later transfer"
+        );
+        assert_eq!(
+            context.aug_dominators[handler],
+            Some(first),
+            "{kind}: later definitions must not dominate the handler"
+        );
+        assert_eq!(
+            context.aug_dominators[join],
+            Some(first),
+            "{kind}: the join can be reached through the early handler"
+        );
+        let output = context.into_output();
+        let handler_block = &output.blocks[handler];
+        let join_block = &output.blocks[join];
+        assert_eq!(handler_block.args.len(), 1, "{kind}: handler environment");
+        assert_eq!(join_block.args.len(), 1, "{kind}: normal/exception merge");
+        for (bid, expected_literal) in [(first, 1), (second, 2)] {
+            let block = &output.blocks[bid];
+            let definition = block
+                .ops
+                .iter()
+                .find(|op| {
+                    op.opcode == OpCode::ConstInt
+                        && op.attrs.get("value") == Some(&AttrValue::Int(expected_literal))
+                })
+                .expect("definition preceding this transfer");
+            let transfer = block.ops.last().expect("transfer ends block");
+            assert!(crate::tir::dominators::is_exception_transfer_edge(
+                transfer.opcode
+            ));
+            assert_eq!(
+                transfer.operands, definition.results,
+                "{kind}: handler receives the definition at this transfer, not a later one"
+            );
+        }
+        let normal_definition = output.blocks[success]
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::ConstInt)
+            .unwrap()
+            .results[0];
+        assert!(matches!(&output.blocks[success].terminator,
+            Terminator::Branch { target, args }
+                if *target == join_block.id && args == &[normal_definition]));
+        assert!(matches!(&handler_block.terminator,
+            Terminator::Branch { target, args }
+                if *target == join_block.id && args == &[handler_block.args[0].id]));
+        assert!(matches!(&join_block.terminator,
+            Terminator::Return { values } if values == &[join_block.args[0].id]));
+        assert!(
+            output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .all(|op| op.opcode != OpCode::ConstNone)
+        );
+        assert_no_placeholder(&output);
+    }
+}
+
+#[test]
 fn missing_operands_and_return_share_only_their_local_definition() {
     let ops = vec![
         op_val_out("const", 3, "seed"),

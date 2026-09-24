@@ -117,6 +117,9 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   Empty owner exits remain empty until machine lowering. Live-out
   frame stores belong on the normal path before the synthetic jump that skips a
   cloned suffix, never after terminal cleanup code.
+  All chunk-return protocols share that frame-transport placement. Existing
+  ownership/drop facts remain exactly once at the start of each chunk, before
+  generated frame loads; the replacement owner stub does not inherit them.
   The planner indexes borrowed per-name read/definition positions instead of
   retaining a whole live/defined set at every operation. Same-operation reads
   precede writes; refusal leaves both the input contract and occupied symbol
