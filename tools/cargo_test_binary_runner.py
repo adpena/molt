@@ -27,18 +27,30 @@ import tempfile
 import time
 import uuid
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.libtest_results import (  # noqa: E402
+    ACCOUNTING_SCHEMA,
+    BINARY_RECEIPT_SCHEMA,
+    LibtestReport,
+    accounting_problem,
+    parse_libtest,
+)
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -53,8 +65,6 @@ MAX_DIAGNOSTIC_COMMAND_CHARS = 30_000
 RECEIPT_TAIL_BYTES = 16_384
 _ACTIVE_EVIDENCE_DIR: Path | None = None
 _FALLBACK_EVIDENCE_TEMP: tempfile.TemporaryDirectory[str] | None = None
-_TEST_RESULT_RE = re.compile(r"^test (.+?) \.\.\. (ok|FAILED)(?:\s|$)", re.MULTILINE)
-_STARTED_TEST_RE = re.compile(r"^test (.+?) \.\.\.\s*$", re.MULTILINE)
 _WINDOWS_EXCEPTION_NAMES = {
     0x40000015: "STATUS_FATAL_APP_EXIT",
     0xC0000005: "STATUS_ACCESS_VIOLATION",
@@ -137,6 +147,9 @@ class BinaryExecution:
     stderr_evidence: Path | None = None
     child_returncode: int | None = None
     infrastructure_failure: GuardInfrastructureFailure | None = None
+    _parsed_libtest: LibtestReport | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def succeeded(self) -> bool:
@@ -193,6 +206,9 @@ class BinaryExecution:
             else str(self.stderr_evidence),
             "stdout_tail": self.stdout[-RECEIPT_TAIL_BYTES:],
             "stderr_tail": self.stderr[-RECEIPT_TAIL_BYTES:],
+            "libtest": (
+                None if "--list" in self.argv else _libtest_report(self).payload()
+            ),
         }
         return payload
 
@@ -227,16 +243,29 @@ def _publish_fallback_evidence(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def _execution_lines(execution: BinaryExecution):
-    for path, fallback in (
-        (execution.stdout_evidence, execution.stdout),
-        (execution.stderr_evidence, execution.stderr),
-    ):
-        if path is None:
-            yield from fallback.splitlines(keepends=True)
-        else:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                yield from handle
+def _libtest_report(execution: BinaryExecution) -> LibtestReport:
+    if execution._parsed_libtest is not None:
+        return execution._parsed_libtest
+    if execution.stdout_evidence is None:
+        report = parse_libtest(StringIO(execution.stdout), execution.argv)
+    else:
+        with execution.stdout_evidence.open(
+            "r", encoding="utf-8", errors="replace"
+        ) as handle:
+            report = parse_libtest(handle, execution.argv)
+    # BinaryExecution is published only after stream capture has closed. Cache
+    # its immutable interpretation, not a live stream or mutable receipt.
+    object.__setattr__(execution, "_parsed_libtest", report)
+    return report
+
+
+def _test_execution_succeeded(execution: BinaryExecution) -> bool:
+    report = _libtest_report(execution)
+    return (
+        execution.succeeded
+        and report.complete
+        and all(row["status"] in {"pass", "ignored"} for row in report.rows())
+    )
 
 
 def execute_binary(argv: list[str], timeout_seconds: float) -> BinaryExecution:
@@ -360,35 +389,13 @@ def _exact_test_timeout(total_timeout: float, deadline: float) -> float:
     return required if remaining >= required else 0.0
 
 
-def _test_results(output: str, status: str) -> list[str]:
-    return [
-        identity
-        for identity, found in _TEST_RESULT_RE.findall(output)
-        if found == status
-    ]
-
-
-def _structured_test_results(output: str) -> list[dict[str, str]]:
-    return [
-        {
-            "identity": identity,
-            "status": "pass" if status == "ok" else "fail",
-        }
-        for identity, status in _TEST_RESULT_RE.findall(output)
-    ]
-
-
 def _test_results_for_execution(execution: BinaryExecution, status: str) -> list[str]:
-    if execution.infrastructure_failure is not None:
-        return []
-    rows: list[str] = []
-    for line in _execution_lines(execution):
-        rows.extend(
-            identity
-            for identity, found in _TEST_RESULT_RE.findall(line)
-            if found == status
-        )
-    return rows
+    wanted = {"ok": "pass", "FAILED": "fail"}[status]
+    return [
+        row["identity"]
+        for row in _structured_results_for_execution(execution)
+        if row["status"] == wanted
+    ]
 
 
 def _structured_results_for_execution(
@@ -396,17 +403,18 @@ def _structured_results_for_execution(
 ) -> list[dict[str, str]]:
     if execution.infrastructure_failure is not None:
         return []
-    rows: list[dict[str, str]] = []
-    for line in _execution_lines(execution):
-        rows.extend(_structured_test_results(line))
-    return rows
+    return _libtest_report(execution).rows()
 
 
 def _started_tests_for_execution(execution: BinaryExecution) -> list[str]:
-    rows: list[str] = []
-    for line in _execution_lines(execution):
-        rows.extend(_STARTED_TEST_RE.findall(line))
-    return rows
+    report = _libtest_report(execution)
+    if (
+        execution.infrastructure_failure is not None
+        or report.issues
+        or not report.serial
+    ):
+        return []
+    return list(report.pending)
 
 
 def _confirmed_failure_identities(
@@ -436,11 +444,53 @@ def _canonical_test_results(
             identity = execution.argv[exact_index + 1]
         except (ValueError, IndexError):
             continue
-        if execution.succeeded:
-            results.append({"identity": identity, "status": "pass"})
+        observed = _structured_results_for_execution(execution)
+        if len(observed) == 1 and observed[0]["identity"] == identity:
+            results.extend(observed)
         elif _exact_reproduction_kind(execution, identity) is not None:
             results.append({"identity": identity, "status": "fail"})
     return results
+
+
+def _result_accounting(
+    executions: list[BinaryExecution],
+    *,
+    resource_isolation: bool,
+    results: list[dict[str, str]],
+    diagnosis: dict[str, object] | None,
+) -> dict[str, object]:
+    selected = executions[1:] if resource_isolation else executions[:1]
+    reports = [_libtest_report(execution) for execution in selected]
+    issues = [
+        f"execution {index + (1 if resource_isolation else 0)}: {issue}"
+        for index, report in enumerate(reports)
+        for issue in report.issues
+    ]
+    for index, execution in enumerate(selected):
+        if execution.infrastructure_failure is not None:
+            issues.append(f"execution {index}: infrastructure failure")
+        elif execution.timed_out:
+            issues.append(f"execution {index}: timeout")
+        elif execution.termination["kind"] != "exit":
+            issues.append(f"execution {index}: abnormal process termination")
+    if resource_isolation and diagnosis is not None:
+        if diagnosis.get("structural_failures"):
+            issues.append("resource isolation has unresolved structural failures")
+        if diagnosis.get("unexecuted_tests"):
+            issues.append("resource isolation did not execute the complete selection")
+    return {
+        "schema": ACCOUNTING_SCHEMA,
+        "complete": bool(reports)
+        and not issues
+        and all(report.complete for report in reports),
+        "observed_results": len(results),
+        "declared_results": (
+            sum(report.declared for report in reports if report.declared is not None)
+            if reports and all(report.declared is not None for report in reports)
+            else None
+        ),
+        "issues": issues,
+    }
 
 
 def listed_tests(
@@ -660,7 +710,7 @@ def _diagnose_serial_last_started(
         return {
             "kind": (
                 "parallel-or-order-interaction"
-                if serial.succeeded
+                if _test_execution_succeeded(serial)
                 else "unattributed-serial-abnormal-exit"
             ),
             "candidate_tests": candidates,
@@ -684,7 +734,7 @@ def _diagnose_serial_last_started(
             return exact.infrastructure_diagnosis
     if exact is None:
         kind = "budget-exhausted"
-    elif exact.succeeded:
+    elif _test_execution_succeeded(exact):
         kind = "prior-state-interaction"
     elif exact.timed_out:
         kind = "exact-timeout"
@@ -772,7 +822,7 @@ def diagnose_abnormal_exit(
                         "unknown until an exact test reproduces within its full budget"
                     ),
                 }, executions
-            if not execution.succeeded:
+            if not _test_execution_succeeded(execution):
                 failed_partition = partition
                 break
         if failed_partition is None:
@@ -816,7 +866,7 @@ def diagnose_abnormal_exit(
             return exact.infrastructure_diagnosis, executions
     if exact is None:
         kind = "budget-exhausted"
-    elif exact.succeeded:
+    elif _test_execution_succeeded(exact):
         kind = "prior-state-interaction"
     elif exact.timed_out:
         kind = "exact-timeout"
@@ -882,11 +932,19 @@ def run_resource_tests(
                 f"termination={json.dumps(process.termination, sort_keys=True)}"
             )
             failed.append(identity)
-        elif not process.succeeded:
+        elif not (
+            _test_execution_succeeded(process)
+            and _structured_results_for_execution(process)
+            in (
+                [{"identity": identity, "status": "pass"}],
+                [{"identity": identity, "status": "ignored"}],
+            )
+        ):
             structural.append(
                 {
                     "identity": identity,
                     "termination": process.termination,
+                    "libtest": _libtest_report(process).payload(),
                 }
             )
     return (
@@ -1006,6 +1064,15 @@ def main(argv: list[str] | None = None) -> int:
                 diagnosis = baseline.infrastructure_diagnosis
             else:
                 reported_failures = _test_results_for_execution(baseline, "FAILED")
+                report = _libtest_report(baseline)
+                if report.issues or (
+                    baseline.succeeded and not _test_execution_succeeded(baseline)
+                ):
+                    returncode = 2
+                    diagnosis = {
+                        "kind": "libtest-accounting-error",
+                        "libtest": report.payload(),
+                    }
             if returncode != 0 and not reported_failures and diagnosis is None:
                 diagnosis, diagnostic_executions = diagnose_abnormal_exit(
                     executable,
@@ -1044,8 +1111,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     failure_identities = _confirmed_failure_identities(reported_failures, diagnosis)
     resource_isolation = is_resource_test_binary(executable)
+    results = _canonical_test_results(executions, resource_isolation=resource_isolation)
+    accounting = _result_accounting(
+        executions,
+        resource_isolation=resource_isolation,
+        results=results,
+        diagnosis=diagnosis,
+    )
     receipt = {
-        "schema": "molt.cargo-test-binary.v1",
+        "schema": BINARY_RECEIPT_SCHEMA,
         "run_id": args.run_id,
         "source_identity": source_identity,
         "invocation_id": invocation_id,
@@ -1073,13 +1147,18 @@ def main(argv: list[str] | None = None) -> int:
         "returncode": returncode,
         "reported_failures": sorted(set(reported_failures)),
         "failure_identities": sorted(failure_identities),
-        "test_results": _canonical_test_results(
-            executions, resource_isolation=resource_isolation
-        ),
+        "test_results": results,
+        "result_accounting": accounting,
         "diagnosis": diagnosis,
         "baseline_termination": executions[0].termination if executions else None,
         "executions": [execution.receipt() for execution in executions],
     }
+    problem = accounting_problem(receipt)
+    if returncode == 0 and problem is not None:
+        returncode = 2
+        receipt["status"] = "failed"
+        receipt["returncode"] = returncode
+        receipt["diagnosis"] = {"kind": "libtest-accounting-error", "error": problem}
     receipt_path = _receipt_path(args.receipt_dir, executable, invocation_id)
     write_receipt(receipt_path, receipt)
     print(f"cargo-test-binary-runner: receipt={receipt_path}")
