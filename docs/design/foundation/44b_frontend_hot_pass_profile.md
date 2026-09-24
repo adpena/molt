@@ -38,7 +38,38 @@ Artifact schema:
 - `sources`: per-source status, elapsed time, source hash, function count, op
   count, pass stats, and policy outcomes.
 
-## Current Evidence
+## Attribution integrity and measurement scope
+
+The corpus command measures lowering and serialization. A real import-plan or
+package-discovery bottleneck must also be measured through its actual consumer;
+the corpus and its `src/molt/frontend/**` function filter do not cover the whole
+CLI/import/binding-analysis critical path.
+
+Keep uninstrumented consumer latency, profiled latency, process-tree CPU/RSS,
+and function attribution separate. Record the exact interpreter, profiler and
+clock, source/input identities, cache state, target/profile and guard policy.
+Self time under a wall-clock profiler includes descheduling; it is not CPU time.
+Cumulative timings, concurrent thread durations and overlapping Cargo units
+must never be summed as independent costs.
+
+Validate the profiler on the selected interpreter before trusting a call graph.
+In particular, a whole-process cProfile run on CPython 3.12 can mix background
+sentinel activity with compiler calls. Impossible callers, false recursion or
+missing calls invalidate attribution, including derived percentages; a passing
+test and valid outer wall/memory receipt do not repair that data. Preserve the
+raw artifact with an explicit invalid-attribution classification, then replay
+with a validated thread-aware profiler or sampler. Keep the outer guard and
+in-process sentinel enabled, retain thread-separated data, and verify a known
+call-count/caller workload. Retain native profiler data and validate any export
+adapter's total-versus-primitive call convention before aggregation.
+
+Rust unit timings locate a build bottleneck but do not necessarily distinguish
+compiler frontend, code generation and linking. Record unavailable phases and
+unexplained residuals explicitly. Add missing attribution to the next required
+build; do not infer disk I/O from page faults, relabel nested hashing as an
+additional phase, or rebuild solely to repeat already captured timings.
+
+## Historical Evidence
 
 Command:
 
