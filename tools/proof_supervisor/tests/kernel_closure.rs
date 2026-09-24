@@ -107,7 +107,7 @@ fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
     assert!(receipt.complete, "{receipt:#?}");
     assert!(receipt.violations.is_empty(), "{receipt:#?}");
     let event_file = receipt_path.with_file_name(&receipt.event_log.as_ref().unwrap().file);
-    let runtime = fs::canonicalize(&runtime).unwrap();
+    let runtime = dunce::canonicalize(&runtime).unwrap();
     let observed_runtime = fs::read_to_string(event_file)
         .unwrap()
         .lines()
