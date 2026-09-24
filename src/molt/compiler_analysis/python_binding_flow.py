@@ -428,6 +428,8 @@ class _StatePool:
         self.mutation_frontier_slot_visits = 0
 
     def set_taint_domain(self, slots: int) -> None:
+        if slots < 0:
+            raise ValueError("binding taint domain cannot be negative")
         if slots & self._taint_domain_mask != self._taint_domain_mask:
             raise RuntimeError("binding taint domain can only grow")
         if slots != self._taint_domain_mask:
@@ -1271,9 +1273,26 @@ class _StatePool:
                     )
         return self._publish_updates(state_id, updates)
 
+    @staticmethod
+    def _slot_mask_reaches_subtree(slots: int, chunk_prefix: int, level: int) -> bool:
+        """Intersect a sparse slot frontier without materializing a huge range mask.
+
+        Level zero is one chunk; each higher level spans one radix branch.
+        A domain may extend far beyond either stored environment.
+        """
+        suffix = slots >> (chunk_prefix << _BINDING_CHUNK_SHIFT)
+        width = 1 << (level * _BINDING_TREE_SHIFT + _BINDING_CHUNK_SHIFT)
+        return bool(suffix) and (suffix & -suffix).bit_length() <= width
+
     def _changed_chunks(
-        self, previous: int, current: int, *, visit_shared: bool = False
-    ) -> Iterator[tuple[int, _BindingChunk, _BindingChunk]]:
+        self, previous: int, current: int, *, shared_slots: int = 0
+    ) -> Iterator[tuple[int, _BindingChunk, _BindingChunk, int]]:
+        """Yield raw-storage changes plus the explicit shared projection frontier.
+
+        Equal raw storage only changes meaning for namespace-domain slots when
+        epochs differ. Both semantic facts and ownership consume this frontier;
+        the structural-only diff supplies no shared slots.
+        """
         before = self._binding_environments[previous]
         after = self._binding_environments[current]
         depth = max(before.depth, after.depth)
@@ -1288,7 +1307,10 @@ class _StatePool:
         while pending:
             left, right, level, prefix = pending.pop()
             self.structural_diff_node_visits += 1
-            if left is right and (not visit_shared or not left.children):
+            if left is right and (
+                not left.children
+                or not self._slot_mask_reaches_subtree(shared_slots, prefix, level + 1)
+            ):
                 self.structural_diff_shared_skips += 1
                 continue
             count = max(len(left.children), len(right.children))
@@ -1303,12 +1325,15 @@ class _StatePool:
                 right_child = (
                     right.children[offset] if offset < len(right.children) else filler
                 )
+                child_prefix = prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if left_child is right_child and (
-                    not visit_shared or left_child is filler
+                    left_child is filler
+                    or not self._slot_mask_reaches_subtree(
+                        shared_slots, child_prefix, level
+                    )
                 ):
                     self.structural_diff_shared_skips += 1
                     continue
-                child_prefix = prefix | (offset << (level * _BINDING_TREE_SHIFT))
                 if level:
                     pending.append(
                         (
@@ -1319,11 +1344,20 @@ class _StatePool:
                         )
                     )
                 else:
-                    yield (
-                        child_prefix,
-                        cast(_BindingChunk, left_child),
-                        cast(_BindingChunk, right_child),
+                    left_chunk = cast(_BindingChunk, left_child)
+                    right_chunk = cast(_BindingChunk, right_child)
+                    candidates = (
+                        left_chunk.active_mask
+                        | left_chunk.clean_mask
+                        | right_chunk.active_mask
+                        | right_chunk.clean_mask
                     )
+                    if left_chunk is right_chunk:
+                        candidates &= shared_slots >> (
+                            child_prefix << _BINDING_CHUNK_SHIFT
+                        )
+                    if candidates:
+                        yield child_prefix, left_chunk, right_chunk, candidates
 
     def _binding_differences(
         self, previous: int, current: int, *, semantic: bool
@@ -1333,15 +1367,11 @@ class _StatePool:
         current_epoch = self._states[current].taint_epoch
         epochs_differ = previous_epoch != current_epoch
         stored_domain = 0
-        for chunk_index, left, right in self._changed_chunks(
-            previous, current, visit_shared=semantic and epochs_differ
+        for chunk_index, left, right, remaining in self._changed_chunks(
+            previous,
+            current,
+            shared_slots=self._taint_domain_mask if semantic and epochs_differ else 0,
         ):
-            remaining = (
-                left.active_mask
-                | left.clean_mask
-                | right.active_mask
-                | right.clean_mask
-            )
             if semantic and epochs_differ:
                 stored_domain |= remaining << (chunk_index << _BINDING_CHUNK_SHIFT)
             while remaining:
@@ -1358,10 +1388,10 @@ class _StatePool:
                     yield slot, new.identities
         if semantic and epochs_differ:
             remaining = self._taint_domain_mask & ~stored_domain
-            while remaining:
-                bit = remaining & -remaining
-                remaining ^= bit
-                slot = bit.bit_length() - 1
+            if remaining:
+                # All absent live-domain slots share the same public projection.
+                # Resolve once through the canonical rule, not once per slot.
+                slot = (remaining & -remaining).bit_length() - 1
                 old = self._resolve_chunk_binding(
                     _EMPTY_BINDING_CHUNK, slot, previous_epoch
                 ).public()
@@ -1369,7 +1399,10 @@ class _StatePool:
                     _EMPTY_BINDING_CHUNK, slot, current_epoch
                 ).public()
                 if old.identities != new.identities:
-                    yield slot, new.identities
+                    while remaining:
+                        bit = remaining & -remaining
+                        remaining ^= bit
+                        yield bit.bit_length() - 1, new.identities
 
     def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
         """Project exact differences on structurally changed storage only.
@@ -1603,15 +1636,11 @@ class _StatePool:
             return True
         left_epoch = self._states[left_id].taint_epoch
         right_epoch = self._states[right_id].taint_epoch
-        for chunk_index, left, right in self._changed_chunks(
-            left_id, right_id, visit_shared=left_epoch != right_epoch
+        for chunk_index, left, right, remaining in self._changed_chunks(
+            left_id,
+            right_id,
+            shared_slots=self._taint_domain_mask if left_epoch != right_epoch else 0,
         ):
-            remaining = (
-                left.active_mask
-                | left.clean_mask
-                | right.active_mask
-                | right.clean_mask
-            )
             while remaining:
                 bit = remaining & -remaining
                 remaining ^= bit

@@ -275,9 +275,13 @@ environments never authorize returning an existing state in place of a join; all
 ancestor writes and same-shaped/owner-only transitions survive.
 
 Storage diffs deliberately skip shared storage, even across different epochs.
-Semantic equality and join-history fallback instead share an exact public
-projection diff that visits shared storage when epochs differ and includes
-absent live-domain slots. Closure history therefore cannot depend on whether
+Semantic equality, join-history fallback and ownership comparison instead share
+one changed-slot frontier: all structurally changed slots, plus only live-domain
+slots in shared storage when epochs differ. Shared radix subtrees outside that
+frontier are skipped without projecting their bindings. Absent live-domain slots
+share one canonical empty-slot projection per epoch; they are still emitted
+individually when that projection changes. Domain masks must be nonnegative;
+invalid masks are rejected before mutation or traversal. Closure history cannot depend on whether
 equivalent chunks happen to share an allocation. Deferred module activation
 uses full module history or a nonempty explicit activation tuple; no synthetic
 module-exit join or empty-tuple fallback supplies another authority.

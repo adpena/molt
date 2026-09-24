@@ -493,3 +493,118 @@ def test_history_summary_refreshes_domain_dependent_events_and_initial_projectio
     assert summary.properties(2) == flow._HistorySummary.build(
         pool, history
     ).properties(2)
+
+
+@pytest.mark.parametrize("admitted", [(), (1, 33), tuple(range(64))])
+def test_projection_frontier_matches_full_slot_oracle_across_storage_and_epochs(
+    admitted: tuple[int, ...],
+) -> None:
+    pool = flow._StatePool()
+    stored = (0, 1, 2, 31, 32, 33, 63, 64, 1023, 1024, 32768)
+    slots = tuple(sorted(set(stored) | set(admitted) | {129, 65537}))
+    base = pool.set_bindings(
+        0,
+        tuple(
+            (slot, INERT, slot, StaticExpressionResult.scalar(slot), 7)
+            for slot in stored
+        ),
+    )
+    exposed = pool.taint_module_bindings(base)
+    twice = pool.taint_module_bindings(exposed)
+    updated = pool.set_binding(exposed, 1, INERT, 19, owner_token=8)
+    wide = pool.set_binding(updated, 65537, INERT, 21, owner_token=9)
+    states = (0, base, exposed, twice, updated, wide, pool.join(base, wide))
+    # Admit only after all states exist: no cache may encode an earlier domain.
+    pool.set_taint_domain(sum(1 << slot for slot in (*admitted, 129)))
+    for previous, current in product(states, repeat=2):
+        expected = tuple(
+            (slot, pool.binding(current, slot))
+            for slot in slots
+            if _projection(pool, previous, slot)[:3]
+            != _projection(pool, current, slot)[:3]
+        )
+        actual = tuple(
+            sorted(pool._binding_differences(previous, current, semantic=True))
+        )
+        assert actual == expected
+        assert pool.equivalent(previous, current) is (not expected)
+        assert pool.owner_tokens_equal(previous, current) is all(
+            pool.owner_token(previous, slot) == pool.owner_token(current, slot)
+            for slot in slots
+        )
+
+
+def test_taint_domain_rejects_negative_masks_without_changing_projection() -> None:
+    pool = flow._StatePool()
+    pool.set_taint_domain(1)
+    base = pool.set_binding(0, 0, INERT, 7)
+    exposed = pool.taint_module_bindings(base)
+    generation = pool.taint_domain_generation
+    for invalid in (-1, -2, -(1 << 4096)):
+        with pytest.raises(ValueError, match="taint domain cannot be negative"):
+            pool.set_taint_domain(invalid)
+        assert pool._taint_domain_mask == 1
+        assert pool.taint_domain_generation == generation
+        assert dict(pool._binding_differences(base, exposed, semantic=True)) == {
+            0: INERT | OTHER_IDENTITY,
+        }
+
+
+def test_sparse_epoch_frontier_prunes_shared_subtrees_and_unaffected_slots() -> None:
+    pool = flow._StatePool()
+    far = (1 << (flow._BINDING_TREE_SHIFT * 3 + flow._BINDING_CHUNK_SHIFT)) + 7
+    base = pool.set_bindings(
+        0,
+        tuple(
+            (slot, INERT, slot, UNKNOWN_EXPRESSION_RESULT, 13)
+            for slot in (*range(256), far)
+        ),
+    )
+    exposed = pool.taint_module_bindings(base)
+    pool.set_taint_domain((1 << 33) | (1 << far) | (1 << (far + 1)))
+    before = pool.structural_diff_node_visits
+    chunks = list(
+        pool._changed_chunks(base, exposed, shared_slots=pool._taint_domain_mask)
+    )
+    visited = {
+        (chunk_index << flow._BINDING_CHUNK_SHIFT) + offset
+        for chunk_index, _left, _right, mask in chunks
+        for offset in range(flow._BINDING_CHUNK_SIZE)
+        if mask & (1 << offset)
+    }
+    assert visited == {33, far}
+    assert pool.structural_diff_node_visits - before < 12
+    assert list(pool._changed_chunks(base, exposed)) == []
+    assert dict(pool._binding_differences(base, exposed, semantic=True)) == {
+        33: INERT | OTHER_IDENTITY,
+        far: INERT | OTHER_IDENTITY,
+        far + 1: UNBOUND_IDENTITY | OTHER_IDENTITY,
+    }
+
+
+def test_absent_domain_projection_is_resolved_once_not_per_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = flow._StatePool()
+    pool.set_taint_domain((1 << 1024) - 1)
+    exposed = pool.taint_module_bindings(0)
+    twice = pool.taint_module_bindings(exposed)
+    resolve = pool._resolve_chunk_binding
+    resolutions = 0
+
+    def record(
+        chunk: flow._BindingChunk, slot: int, epoch: int
+    ) -> flow._BindingResolution:
+        nonlocal resolutions
+        resolutions += 1
+        return resolve(chunk, slot, epoch)
+
+    monkeypatch.setattr(pool, "_resolve_chunk_binding", record)
+    events = tuple(pool._binding_differences(0, exposed, semantic=True))
+    assert events == tuple(
+        (slot, UNBOUND_IDENTITY | OTHER_IDENTITY) for slot in range(1024)
+    )
+    assert resolutions == 2
+    resolutions = 0
+    assert tuple(pool._binding_differences(exposed, twice, semantic=True)) == ()
+    assert resolutions == 2
