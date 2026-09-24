@@ -296,7 +296,7 @@ fn recurrence_sites_keep_failed_guard_body_and_escaping_copy_facts_distinct() {
 fn recurrence_exception_exits_do_not_transfer_guard_facts_to_bypasses() {
     for nsw in [false, true] {
         for target_kind in 0..3 {
-            let (mut func, header, body, _, iv) = ranged_counter(0, 10, 1, nsw);
+            let (mut func, header, body, array, iv) = ranged_counter(0, 10, 1, nsw);
             let target = if target_kind == 0 {
                 let handler = func.fresh_block();
                 let observed = func.fresh_value();
@@ -324,12 +324,24 @@ fn recurrence_exception_exits_do_not_transfer_guard_facts_to_bypasses() {
                 assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
                 assert_eq!(vr.range_at(target, iv), IntRange::new(0, 10));
                 assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
+                assert!(vr.proves_index_in_bounds(body, array, iv));
             } else {
                 assert!(
                     vr.range_of(iv).is_full(),
                     "exception bypass/reentry cannot license recurrence hull"
                 );
-                assert!(vr.range_at(body, iv).is_full());
+                assert!(vr.range_at(header, iv).is_full());
+                if target_kind == 1 {
+                    // Exceptional entry skips the normal comparison entirely.
+                    assert!(vr.range_at(body, iv).is_full());
+                } else {
+                    // Header reentry invalidates the recurrence, but reaching
+                    // the body still proves iv < 10 through a fresh guard.
+                    // That upper bound does not prove a nonnegative index.
+                    assert_eq!(vr.range_at(body, iv), IntRange::new(i64::MIN, 9));
+                }
+                assert!(!vr.proves_index_in_bounds(body, array, iv));
+                assert!(!vr.proves_index_lt_len_symbolically(body, array, iv));
             }
         }
     }
