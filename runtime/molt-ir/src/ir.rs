@@ -2017,9 +2017,9 @@ mod json_parse_tests {
 
     #[test]
     fn execution_context_policy_validates_the_complete_generated_frame_op_family() {
-        let parse = |policy: &str, ops: &str| {
+        let parse = |policy: &str, return_abi: &str, ops: &str| {
             SimpleIR::from_json_str(&format!(
-                r#"{{"functions":[{{"return_abi": "void", "name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
+                r#"{{"functions":[{{"return_abi":"{return_abi}","name":"frame_policy","params":["locals"],"execution_context":"{policy}","ops":[{ops}]}}]}}"#
             ))
         };
         let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
@@ -2029,11 +2029,13 @@ mod json_parse_tests {
 
         parse(
             "local",
+            "void",
             &format!("{enter},{line},{locals},{exit},{{\"kind\":\"ret_void\"}}"),
         )
         .expect("a Local frame owns one enter, frame state, and lifecycle exits");
         parse(
             "local",
+            "void",
             &format!(
                 r#"{{"kind":"const_none","out":"setup"}},{{"kind":"check_exception","value":1}},{enter},{locals},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
             ),
@@ -2043,12 +2045,14 @@ mod json_parse_tests {
         );
         let pre_entry_frame_op = parse(
             "local",
+            "void",
             &format!(r#"{locals},{enter},{exit},{{"kind":"ret_void"}}"#),
         )
         .expect_err("frame state reachable before entry must fail closed");
         assert!(pre_entry_frame_op.contains("reachable before trace_enter_slot"));
         parse(
             "local",
+            "void",
             &format!(
                 r#"{enter},{{"kind":"check_exception","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{exit},{{"kind":"ret_void"}}"#
             ),
@@ -2056,22 +2060,24 @@ mod json_parse_tests {
         .expect("entry-owned frames must dominate and exit implicit exception handlers");
         parse(
             "local",
+            "void",
             &format!(r#"{enter},{exit},{{"kind":"ret_void"}},{exit},{{"kind":"ret_void"}}"#),
         )
         .expect("well-formed unreachable lifecycle tails do not execute before entry");
         let missing_handler_exit = parse(
             "local",
+            "void",
             &format!(
                 r#"{enter},{{"kind":"check_exception","value":1}},{exit},{{"kind":"ret_void"}},{{"kind":"label","value":1}},{{"kind":"ret_void"}}"#
             ),
         )
         .expect_err("an entered exception path cannot return without frame exit");
         assert!(missing_handler_exit.contains("immediately preceding trace_exit"));
-        parse("inherited", &format!("{line},{locals}"))
+        parse("inherited", "void", &format!("{line},{locals}"))
             .expect("Inherited consumes only the bound context's non-lifecycle frame state");
 
         for lifecycle in [enter, exit] {
-            let error = parse("inherited", lifecycle)
+            let error = parse("inherited", "void", lifecycle)
                 .expect_err("Inherited must not create or destroy its caller's frame");
             assert!(
                 error.contains("inherit") || error.contains("lifecycle"),
@@ -2079,7 +2085,7 @@ mod json_parse_tests {
             );
         }
         for frame_op in [enter, line, locals, exit] {
-            let error = parse("none", frame_op)
+            let error = parse("none", "void", frame_op)
                 .expect_err("None must reject every generated execution-frame operation");
             assert!(
                 error.contains("execution context") || error.contains("trace_enter_slot"),
@@ -2087,7 +2093,7 @@ mod json_parse_tests {
             );
         }
         for ops in [line.to_string(), format!("{enter},{enter}")] {
-            let error = parse("local", &ops)
+            let error = parse("local", "void", &ops)
                 .expect_err("Local requires exactly one generated trace_enter_slot");
             assert!(error.contains("exactly one trace_enter_slot"), "{error}");
         }
@@ -2108,12 +2114,14 @@ mod json_parse_tests {
                 "stray trace_exit",
             ),
         ] {
-            let error = parse("local", &ops).expect_err("invalid Local lifecycle must fail");
+            let error =
+                parse("local", "void", &ops).expect_err("invalid Local lifecycle must fail");
             assert!(error.contains(expected), "{error}");
         }
 
         parse(
             "local",
+            "value",
             &format!(
                 r#"{enter},{{"kind":"if","args":["condition"]}},{exit},{{"kind":"ret_void"}},{{"kind":"else"}},{exit},{{"kind":"ret","args":["condition"]}},{{"kind":"end_if"}}"#
             ),

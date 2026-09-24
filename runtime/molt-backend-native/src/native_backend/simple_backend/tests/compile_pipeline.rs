@@ -1377,7 +1377,11 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
                         ..FunctionIR::default()
                     },
                     FunctionIR {
-                        return_abi: molt_ir::FunctionReturnAbi::Value,
+                        return_abi: if returns_value {
+                            molt_ir::FunctionReturnAbi::Value
+                        } else {
+                            molt_ir::FunctionReturnAbi::Void
+                        },
                         name: "closure_target".into(),
                         params: vec!["environment".into(), "value".into()],
                         ops: vec![OpIR {

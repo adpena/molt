@@ -187,6 +187,7 @@ fn native_join_planning_uses_semantic_copy_sources_not_metadata() {
 #[test]
 fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
     let mut input = super::cleanup_roots::token_test_ir();
+    input.return_abi = molt_ir::FunctionReturnAbi::Value;
     input.ops = vec![
         OpIR {
             kind: "copy".into(),

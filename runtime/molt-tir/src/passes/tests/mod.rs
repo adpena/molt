@@ -98,3 +98,4 @@ mod deforest_dispatch;
 mod manifest;
 mod rc_and_dead_functions;
 mod splitting;
+mod splitting_control;
