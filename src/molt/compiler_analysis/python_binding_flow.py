@@ -15,7 +15,7 @@ import struct
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from threading import Event, RLock
 from typing import Final, Literal, Sequence, cast
 
@@ -49,6 +49,8 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonStaticValue,
     exact_identity,
     possible_identity,
+    python_static_value_key,
+    same_python_static_value,
 )
 from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
@@ -112,7 +114,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 29
+_ANALYSIS_SCHEMA: Final = 30
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -190,7 +192,7 @@ _BINDING_TREE_SIZE: Final = 1 << _BINDING_TREE_SHIFT
 _BINDING_TREE_MASK: Final = _BINDING_TREE_SIZE - 1
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class _BindingChunk:
     identities: tuple[IdentityMask, ...]
     static_values: tuple[PythonStaticValue, ...]
@@ -280,6 +282,7 @@ class _BindingResolution:
     result: StaticExpressionResult
     clean: bool
     owner_token: int = 0
+    namespace_clean: bool = False
 
     def public(self) -> _BindingResolution:
         if self.clean:
@@ -298,25 +301,52 @@ def _join_binding_payloads(
     alternatives: Sequence[
         tuple[IdentityMask, PythonStaticValue, StaticExpressionResult]
     ],
+    *,
+    telemetry: _StatePool | None = None,
 ) -> tuple[PythonStaticValue, StaticExpressionResult]:
-    """Join facts for normal bound values; absence only contributes raising."""
-
-    normal = tuple(
-        (static_value, result)
-        for identities, static_value, result in alternatives
-        if identities & ~UNBOUND_IDENTITY
-    )
-    if not normal:
-        return None, UNKNOWN_EXPRESSION_RESULT
-    first_static = normal[0][0]
-    static_value = (
-        first_static
-        if all(candidate == first_static for candidate, _result in normal[1:])
-        else None
-    )
-    return static_value, join_static_expression_results(
-        tuple(result for _static_value, result in normal)
-    )
+    """Join normal payloads through one exact, ordered static/result authority."""
+    if len(alternatives) == 2:
+        left, right = alternatives
+        left_normal = bool(left[0] & ~UNBOUND_IDENTITY)
+        right_normal = bool(right[0] & ~UNBOUND_IDENTITY)
+        if not left_normal or not right_normal:
+            if telemetry is not None:
+                telemetry.join_payload_absence_skips += 1
+            normal = left if left_normal else right if right_normal else None
+            return (None, UNKNOWN_EXPRESSION_RESULT) if normal is None else normal[1:]
+        if left[1] is right[1] and left[2] is right[2]:
+            if telemetry is not None:
+                telemetry.join_payload_identity_skips += 1
+            return left[1:]
+        first_static, first_result = left[1:]
+        static_value = (
+            first_static if same_python_static_value(first_static, right[1]) else None
+        )
+        results = (first_result, right[2])
+    else:
+        normal_payloads = tuple(
+            (static_value, result)
+            for identities, static_value, result in alternatives
+            if identities & ~UNBOUND_IDENTITY
+        )
+        if not normal_payloads:
+            return None, UNKNOWN_EXPRESSION_RESULT
+        first_static = normal_payloads[0][0]
+        static_value = (
+            first_static
+            if all(
+                same_python_static_value(candidate, first_static)
+                for candidate, _result in normal_payloads[1:]
+            )
+            else None
+        )
+        results = tuple(result for _static_value, result in normal_payloads)
+    if telemetry is not None:
+        telemetry.join_payload_algebra_calls += 1
+    result = join_static_expression_results(results)
+    if telemetry is not None and any(result is candidate for candidate in results):
+        telemetry.join_payload_absorptions += 1
+    return static_value, result
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,17 +356,38 @@ class _BindingState:
     parents: tuple[int, ...] = ()
     updated_slot: int = -1
     updated_value: IdentityMask = UNBOUND_IDENTITY
-    updated_static_value: PythonStaticValue = None
+    updated_static_value: PythonStaticValue = field(default=None, compare=False)
     updated_result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     updated_owner_token: int = 0
     updated_clean: bool | None = None
     updated_bindings: tuple[
         tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int, bool],
         ...,
-    ] = ()
+    ] = field(default=(), compare=False)
+    _static_identity: tuple[object, ...] = field(init=False, repr=False)
     taint_epoch: int = 0
     maybe_invalidated_members: MemberMask = 0
     definitely_invalidated_members: MemberMask = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_static_identity",
+            (
+                python_static_value_key(self.updated_static_value),
+                tuple(
+                    (
+                        slot,
+                        identities,
+                        python_static_value_key(static),
+                        result,
+                        owner,
+                        clean,
+                    )
+                    for slot, identities, static, result, owner, clean in self.updated_bindings
+                ),
+            ),
+        )
 
 
 class _StatePool:
@@ -348,6 +399,20 @@ class _StatePool:
             _EMPTY_BINDING_ENVIRONMENT
         ]
         self._taint_domain_mask = 0
+        self.taint_domain_generation = 0
+        self.join_parent_inputs = 0
+        self.join_max_parents = 0
+        self.join_two_way_slots = 0
+        self.join_wide_slots = 0
+        self.join_wide_alternatives = 0
+        self.join_payload_identity_skips = 0
+        self.join_payload_absence_skips = 0
+        self.join_payload_algebra_calls = 0
+        self.join_payload_absorptions = 0
+        self.join_custody_identity_skips = 0
+        self.observation_fold_calls = 0
+        self.observation_fold_new_parents = 0
+        self.observation_fold_rebuilds = 0
         self.structural_diff_node_visits = 0
         self.structural_diff_shared_skips = 0
         self.binding_lookups = 0
@@ -365,7 +430,9 @@ class _StatePool:
     def set_taint_domain(self, slots: int) -> None:
         if slots & self._taint_domain_mask != self._taint_domain_mask:
             raise RuntimeError("binding taint domain can only grow")
-        self._taint_domain_mask = slots
+        if slots != self._taint_domain_mask:
+            self._taint_domain_mask = slots
+            self.taint_domain_generation += 1
 
     @staticmethod
     def _chunk_at(environment: _BindingEnvironment, chunk_index: int) -> _BindingChunk:
@@ -399,16 +466,25 @@ class _StatePool:
         offset = slot & _BINDING_CHUNK_MASK
         bit = 1 << offset
         present = bool((chunk.active_mask | chunk.clean_mask) & bit)
-        clean = self._slot_is_clean(
+        namespace_clean = self._slot_is_clean(
             present=present,
             stored_clean=bool(chunk.clean_mask & bit),
-            in_taint_domain=self.slot_in_taint_domain(slot),
+            in_taint_domain=True,
             state_epoch=state_epoch,
             clean_epoch=chunk.clean_epochs[offset],
         )
+        clean = (
+            namespace_clean
+            if self.slot_in_taint_domain(slot)
+            else not present or bool(chunk.clean_mask & bit)
+        )
         if not present:
             return _BindingResolution(
-                UNBOUND_IDENTITY, None, UNKNOWN_EXPRESSION_RESULT, clean
+                UNBOUND_IDENTITY,
+                None,
+                UNKNOWN_EXPRESSION_RESULT,
+                clean,
+                namespace_clean=namespace_clean,
             )
         return _BindingResolution(
             chunk.identities[offset],
@@ -416,6 +492,7 @@ class _StatePool:
             chunk.results[offset],
             clean,
             chunk.owner_tokens[offset],
+            namespace_clean,
         )
 
     @staticmethod
@@ -449,6 +526,39 @@ class _StatePool:
         """Construct storage and both frontiers from the canonical expiry."""
         if not (active_mask or clean_mask):
             return _EMPTY_BINDING_CHUNK
+        # Reuse each exact field tuple, including custody-only publications.
+        identities = (
+            previous.identities if identities == previous.identities else identities
+        )
+        static_values = (
+            previous.static_values
+            if all(
+                same_python_static_value(new, old)
+                for new, old in zip(static_values, previous.static_values, strict=True)
+            )
+            else static_values
+        )
+        results = previous.results if results == previous.results else results
+        owner_tokens = (
+            previous.owner_tokens
+            if owner_tokens == previous.owner_tokens
+            else owner_tokens
+        )
+        clean_epochs = (
+            previous.clean_epochs
+            if clean_epochs == previous.clean_epochs
+            else clean_epochs
+        )
+        if (
+            identities is previous.identities
+            and static_values is previous.static_values
+            and results is previous.results
+            and owner_tokens is previous.owner_tokens
+            and clean_epochs is previous.clean_epochs
+            and active_mask == previous.active_mask
+            and clean_mask == previous.clean_mask
+        ):
+            return previous
         payload = (
             identities,
             static_values,
@@ -458,16 +568,6 @@ class _StatePool:
             active_mask,
             clean_mask,
         )
-        if payload == (
-            previous.identities,
-            previous.static_values,
-            previous.results,
-            previous.owner_tokens,
-            previous.clean_epochs,
-            previous.active_mask,
-            previous.clean_mask,
-        ):
-            return previous
         candidates = active_mask & clean_mask
         ordinary = previous.mutation_mask & candidates
         preserved = previous.owner_mutation_mask & candidates
@@ -623,6 +723,11 @@ class _StatePool:
             self._root_at_depth(environment, depth) for environment in environments
         )
         parent_epochs = tuple(self._states[parent].taint_epoch for parent in parents)
+        joined_epoch = max(parent_epochs)
+        # Raw custody is independent of the live domain. clean_mask joins
+        # outside-domain cleanliness; clean_epochs records the joined epoch only
+        # when every parent is hypothetically clean inside the domain, else -1.
+        # Monotone state epochs make shared-subtree reuse equivalent to this join.
 
         def merge_chunks(
             chunks: tuple[_BindingChunk, ...], chunk_index: int
@@ -660,9 +765,6 @@ class _StatePool:
             clean_epochs = list(_EMPTY_BINDING_CHUNK.clean_epochs)
             active_mask = 0
             clean_mask = 0
-            taint_mask = (
-                self._taint_domain_mask >> (chunk_index << _BINDING_CHUNK_SHIFT)
-            ) & _BINDING_CHUNK_BITS_MASK
             if len(chunks) == 2:
                 left, right = chunks
                 left_epoch, right_epoch = chunk_epochs
@@ -673,6 +775,35 @@ class _StatePool:
                     slot_bit = remaining & -remaining
                     chunk_offset = slot_bit.bit_length() - 1
                     remaining ^= slot_bit
+                    self.join_two_way_slots += 1
+                    if (
+                        left_epoch == right_epoch == taint_epoch
+                        and bool(left_present & slot_bit)
+                        == bool(right_present & slot_bit)
+                        and bool(left.clean_mask & slot_bit)
+                        == bool(right.clean_mask & slot_bit)
+                        and left.identities[chunk_offset]
+                        == right.identities[chunk_offset]
+                        and left.static_values[chunk_offset]
+                        is right.static_values[chunk_offset]
+                        and left.results[chunk_offset] is right.results[chunk_offset]
+                        and left.owner_tokens[chunk_offset]
+                        == right.owner_tokens[chunk_offset]
+                        and left.clean_epochs[chunk_offset]
+                        == right.clean_epochs[chunk_offset]
+                        == taint_epoch
+                    ):
+                        # Keep the left raw payload/custody. The state join itself
+                        # is still interned: equal storage never erases path writes.
+                        self.join_custody_identity_skips += 1
+                        identities[chunk_offset] = left.identities[chunk_offset]
+                        static_values[chunk_offset] = left.static_values[chunk_offset]
+                        results[chunk_offset] = left.results[chunk_offset]
+                        owner_tokens[chunk_offset] = left.owner_tokens[chunk_offset]
+                        clean_epochs[chunk_offset] = left.clean_epochs[chunk_offset]
+                        active_mask |= left.active_mask & slot_bit
+                        clean_mask |= left.clean_mask & slot_bit
+                        continue
                     left_identity = (
                         left.identities[chunk_offset]
                         if left_present & slot_bit
@@ -708,24 +839,41 @@ class _StatePool:
                         (
                             (left_identity, left_static, left_result),
                             (right_identity, right_static, right_result),
-                        )
+                        ),
+                        telemetry=self,
                     )
-                    in_taint_domain = bool(taint_mask & slot_bit)
                     left_clean = self._slot_is_clean(
                         present=bool(left_present & slot_bit),
                         stored_clean=bool(left.clean_mask & slot_bit),
-                        in_taint_domain=in_taint_domain,
+                        in_taint_domain=False,
                         state_epoch=left_epoch,
                         clean_epoch=left.clean_epochs[chunk_offset],
                     )
                     right_clean = self._slot_is_clean(
                         present=bool(right_present & slot_bit),
                         stored_clean=bool(right.clean_mask & slot_bit),
-                        in_taint_domain=in_taint_domain,
+                        in_taint_domain=False,
                         state_epoch=right_epoch,
                         clean_epoch=right.clean_epochs[chunk_offset],
                     )
                     clean = left_clean and right_clean
+                    inside_clean = (
+                        clean
+                        and self._slot_is_clean(
+                            present=bool(left_present & slot_bit),
+                            stored_clean=bool(left.clean_mask & slot_bit),
+                            in_taint_domain=True,
+                            state_epoch=left_epoch,
+                            clean_epoch=left.clean_epochs[chunk_offset],
+                        )
+                        and self._slot_is_clean(
+                            present=bool(right_present & slot_bit),
+                            stored_clean=bool(right.clean_mask & slot_bit),
+                            in_taint_domain=True,
+                            state_epoch=right_epoch,
+                            clean_epoch=right.clean_epochs[chunk_offset],
+                        )
+                    )
                     left_owner = left.owner_tokens[chunk_offset]
                     right_owner = right.owner_tokens[chunk_offset]
                     identities[chunk_offset] = identity
@@ -736,7 +884,7 @@ class _StatePool:
                         if clean and left_owner != 0 and left_owner == right_owner
                         else 0
                     )
-                    clean_epochs[chunk_offset] = taint_epoch
+                    clean_epochs[chunk_offset] = joined_epoch if inside_clean else -1
                     if (
                         identity != UNBOUND_IDENTITY
                         or static_value is not None
@@ -762,11 +910,14 @@ class _StatePool:
                 slot_bit = remaining & -remaining
                 chunk_offset = slot_bit.bit_length() - 1
                 remaining ^= slot_bit
+                self.join_wide_slots += 1
+                self.join_wide_alternatives += len(chunks)
                 identity = NO_IDENTITIES
                 alternatives: list[
                     tuple[IdentityMask, PythonStaticValue, StaticExpressionResult]
                 ] = []
                 clean = True
+                inside_clean = True
                 owner_token: int | None = None
                 for chunk, parent_epoch in zip(chunks, chunk_epochs, strict=True):
                     present = bool((chunk.active_mask | chunk.clean_mask) & slot_bit)
@@ -788,11 +939,18 @@ class _StatePool:
                     parent_clean = self._slot_is_clean(
                         present=present,
                         stored_clean=bool(chunk.clean_mask & slot_bit),
-                        in_taint_domain=bool(taint_mask & slot_bit),
+                        in_taint_domain=False,
                         state_epoch=parent_epoch,
                         clean_epoch=chunk.clean_epochs[chunk_offset],
                     )
                     clean = clean and parent_clean
+                    inside_clean = inside_clean and self._slot_is_clean(
+                        present=present,
+                        stored_clean=bool(chunk.clean_mask & slot_bit),
+                        in_taint_domain=True,
+                        state_epoch=parent_epoch,
+                        clean_epoch=chunk.clean_epochs[chunk_offset],
+                    )
                     candidate_owner = chunk.owner_tokens[chunk_offset]
                     owner_token = (
                         candidate_owner
@@ -802,13 +960,15 @@ class _StatePool:
                         else 0
                     )
                 identities[chunk_offset] = identity
-                static_value, result = _join_binding_payloads(alternatives)
+                static_value, result = _join_binding_payloads(
+                    alternatives, telemetry=self
+                )
                 static_values[chunk_offset] = static_value
                 results[chunk_offset] = result
                 owner_tokens[chunk_offset] = (
                     owner_token if clean and owner_token is not None else 0
                 )
-                clean_epochs[chunk_offset] = taint_epoch
+                clean_epochs[chunk_offset] = joined_epoch if inside_clean else -1
                 if (
                     identity != UNBOUND_IDENTITY
                     or static_value is not None
@@ -868,6 +1028,13 @@ class _StatePool:
         return _BindingEnvironment(root, depth)
 
     def intern(self, state: _BindingState) -> int:
+        # Epochs are monotone along every state edge. Shared raw chunks can
+        # therefore project at the max parent epoch without re-materialization.
+        if state.taint_epoch < 0 or any(
+            self._states[parent].taint_epoch > state.taint_epoch
+            for parent in state.parents
+        ):
+            raise ValueError("binding namespace epochs cannot regress")
         known = self._ids.get(state)
         if known is not None:
             return known
@@ -959,6 +1126,8 @@ class _StatePool:
         ] = []
         # This map exists only during this call. It transports preceding writes,
         # never cached projections of an immutable state across domain growth.
+        # A default write also refreshes hypothetical in-domain custody, even
+        # when its public payload outside the current domain is unchanged.
         staged: dict[int, _BindingResolution] = {}
         for slot, value, static_value, result, owner_token in bindings:
             if slot < 0:
@@ -970,14 +1139,15 @@ class _StatePool:
                     staged[slot] = current
                 if (
                     current.identities == value
-                    and current.static_value == static_value
+                    and same_python_static_value(current.static_value, static_value)
                     and current.result == result
                     and current.owner_token == owner_token
                     and current.clean
+                    and current.namespace_clean
                 ):
                     continue
                 staged[slot] = _BindingResolution(
-                    value, static_value, result, True, owner_token
+                    value, static_value, result, True, owner_token, True
                 )
             updates.append((slot, value, static_value, result, owner_token, True))
         return self._publish_updates(state_id, updates)
@@ -1155,36 +1325,65 @@ class _StatePool:
                         cast(_BindingChunk, right_child),
                     )
 
-    def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
-        """Project differences on structurally changed storage only.
-
-        Shared storage with a different namespace epoch is intentionally skipped.
-        equivalent() checks the live taint domain, including absent slots;
-        history carries namespace exposure through its separate epoch events.
-        """
-        changed: list[int] = []
+    def _binding_differences(
+        self, previous: int, current: int, *, semantic: bool
+    ) -> Iterator[tuple[int, IdentityMask]]:
+        """One exact projection comparison, with explicit storage/public scope."""
         previous_epoch = self._states[previous].taint_epoch
         current_epoch = self._states[current].taint_epoch
-        for chunk_index, left, right in self._changed_chunks(previous, current):
+        epochs_differ = previous_epoch != current_epoch
+        stored_domain = 0
+        for chunk_index, left, right in self._changed_chunks(
+            previous, current, visit_shared=semantic and epochs_differ
+        ):
             remaining = (
                 left.active_mask
                 | left.clean_mask
                 | right.active_mask
                 | right.clean_mask
             )
+            if semantic and epochs_differ:
+                stored_domain |= remaining << (chunk_index << _BINDING_CHUNK_SHIFT)
             while remaining:
                 bit = remaining & -remaining
                 remaining ^= bit
                 slot = (chunk_index << _BINDING_CHUNK_SHIFT) | (bit.bit_length() - 1)
                 old = self._resolve_chunk_binding(left, slot, previous_epoch).public()
                 new = self._resolve_chunk_binding(right, slot, current_epoch).public()
-                if (old.identities, old.static_value, old.result) != (
-                    new.identities,
-                    new.static_value,
-                    new.result,
+                if (
+                    old.identities != new.identities
+                    or not same_python_static_value(old.static_value, new.static_value)
+                    or old.result != new.result
                 ):
-                    changed.append(slot)
-        return tuple(changed)
+                    yield slot, new.identities
+        if semantic and epochs_differ:
+            remaining = self._taint_domain_mask & ~stored_domain
+            while remaining:
+                bit = remaining & -remaining
+                remaining ^= bit
+                slot = bit.bit_length() - 1
+                old = self._resolve_chunk_binding(
+                    _EMPTY_BINDING_CHUNK, slot, previous_epoch
+                ).public()
+                new = self._resolve_chunk_binding(
+                    _EMPTY_BINDING_CHUNK, slot, current_epoch
+                ).public()
+                if old.identities != new.identities:
+                    yield slot, new.identities
+
+    def changed_slots_between(self, previous: int, current: int) -> tuple[int, ...]:
+        """Project exact differences on structurally changed storage only.
+
+        Shared storage with a different namespace epoch is intentionally skipped.
+        Semantic equality and history fallback use _binding_differences with
+        semantic=True, including shared storage and absent live-domain slots.
+        """
+        return tuple(
+            slot
+            for slot, _value in self._binding_differences(
+                previous, current, semantic=False
+            )
+        )
 
     def transition_binding_events(
         self, previous: int, current: int
@@ -1210,8 +1409,7 @@ class _StatePool:
         if cursor == previous:
             return tuple(sorted(direct.items()))
         return tuple(
-            (slot, self.binding(current, slot))
-            for slot in self.changed_slots_between(previous, current)
+            sorted(self._binding_differences(previous, current, semantic=True))
         )
 
     def slot_updated_between(self, previous: int, current: int, slot: int) -> bool:
@@ -1355,10 +1553,15 @@ class _StatePool:
         return bool(self._taint_domain_mask & (1 << slot))
 
     def join(self, *state_ids: int) -> int:
+        return self._join_parents(tuple(sorted(set(state_ids))))
+
+    def _join_parents(self, parents: tuple[int, ...]) -> int:
+        """One join primitive; callers establish deterministic representative order."""
         self.join_calls += 1
-        if not state_ids:
+        self.join_parent_inputs += len(parents)
+        self.join_max_parents = max(self.join_max_parents, len(parents))
+        if not parents:
             return 0
-        parents = tuple(sorted(set(state_ids)))
         if len(parents) == 1:
             return parents[0]
         maybe_invalidated = 0
@@ -1389,19 +1592,10 @@ class _StatePool:
             != right.definitely_invalidated_members
         ):
             return False
-        if self.changed_slots_between(left_id, right_id):
-            return False
-        remaining = self._taint_domain_mask
-        while remaining:
-            slot_bit = remaining & -remaining
-            remaining ^= slot_bit
-            slot = slot_bit.bit_length() - 1
-            if (
-                self._binding_details(left_id, slot)[:3]
-                != self._binding_details(right_id, slot)[:3]
-            ):
-                return False
-        return True
+        return (
+            next(self._binding_differences(left_id, right_id, semantic=True), None)
+            is None
+        )
 
     def owner_tokens_equal(self, left_id: int, right_id: int) -> bool:
         """Compare custody separately, including epoch changes on shared storage."""
@@ -1613,6 +1807,8 @@ class _HistorySummary:
         ],
     ]
     initial_values: dict[int, IdentityMask]
+    domain_generation: int
+    state_count: int
 
     @classmethod
     def build(cls, pool: _StatePool, states: Sequence[int]) -> _HistorySummary:
@@ -1669,7 +1865,19 @@ class _HistorySummary:
             tuple(taint_indices),
             slot_events,
             {},
+            pool.taint_domain_generation,
+            count,
         )
+
+    def refresh(self, pool: _StatePool) -> None:
+        if (
+            self.domain_generation == pool.taint_domain_generation
+            and self.state_count == len(self.states)
+        ):
+            return
+        current = type(self).build(pool, self.states)
+        for item in fields(self):
+            setattr(self, item.name, getattr(current, item.name))
 
     def properties(self, start: int) -> tuple[MemberMask, MemberMask, int]:
         return (
@@ -1679,6 +1887,7 @@ class _HistorySummary:
         )
 
     def binding(self, pool: _StatePool, start: int, slot: int) -> IdentityMask:
+        self.refresh(pool)
         rows = self.slot_events.get(slot)
         if slot not in self.initial_values:
             self.initial_values[slot] = pool.binding(self.states[0], slot)
@@ -1719,6 +1928,47 @@ class _ConditionalStatementFrame:
     position: int = 0
 
 
+@dataclass(slots=True)
+class _ObservedStateFrame:
+    """Full lexical observations plus a raw-custody incremental exceptional fold.
+
+    The list is never coalesced: closure-history positions and original ancestors
+    remain authoritative. An accumulator is a normal state with all path writes.
+    """
+
+    states: list[int]
+    folded_count: int = 0
+    accumulator: int | None = None
+    folded_ids: set[int] = field(default_factory=set)
+    largest_parent: int = -1
+
+    def exceptional_state(self, pool: _StatePool) -> int:
+        pool.observation_fold_calls += 1
+        rebuild = False
+        pending = sorted(set(self.states[self.folded_count :]) - self.folded_ids)
+        # An old interned state can be observed later (alternative/loop entry).
+        # It must precede newer originals, not an opaque accumulated representative.
+        rebuild |= bool(pending and pending[0] < self.largest_parent)
+        if rebuild:
+            if self.accumulator is not None:
+                pool.observation_fold_rebuilds += 1
+            self.accumulator = None
+            self.folded_ids.clear()
+            self.largest_parent = -1
+            pending = sorted(set(self.states))
+        if pending:
+            parents = tuple(pending)
+            if self.accumulator is not None:
+                parents = (self.accumulator, *parents)
+            self.accumulator = pool._join_parents(parents)
+            pool.observation_fold_new_parents += len(pending)
+            self.folded_ids.update(pending)
+            self.largest_parent = pending[-1]
+        self.folded_count = len(self.states)
+        assert self.accumulator is not None, "observations require an entry state"
+        return self.accumulator
+
+
 class _Analyzer:
     def __init__(self, policy: PythonBindingPolicy, source_digest: str) -> None:
         self.policy = policy
@@ -1747,7 +1997,7 @@ class _Analyzer:
         self.module_slots: list[int] = []
         self.module_slot_mask = 0
         self.callback_slot_mask = 0
-        self._observed_stack: list[list[int]] = []
+        self._observed_stack: list[_ObservedStateFrame] = []
         self._module_history: list[int] = [0]
         self._active_module_states: tuple[int, ...] | None = None
         self._module_import_flow_required = False
@@ -2281,7 +2531,7 @@ class _Analyzer:
         # later republishes its summary. Replaying old exceptional states after
         # a definition would fabricate impossible future closure environments.
         for observed in self._observed_stack:
-            observed.append(state_id)
+            observed.states.append(state_id)
         if self._active_module_states is None:
             self._module_history.append(state_id)
 
@@ -2359,7 +2609,8 @@ class _Analyzer:
             | (previous.identities if previous is not None else NO_IDENTITIES),
             effects | (previous.effects if previous is not None else NO_EFFECTS),
             static_value
-            if previous is None or previous.static_value == static_value
+            if previous is None
+            or same_python_static_value(previous.static_value, static_value)
             else None,
             binding_invalidated
             or (previous is not None and previous.binding_invalidated),
@@ -4119,7 +4370,7 @@ class _Analyzer:
         if effects & ALLOCATES:
             effects |= RAISES
         exceptional = (
-            self.states.join(*self._observed_stack[-1], state_id)
+            self._observed_stack[-1].exceptional_state(self.states)
             if effects & RAISES
             else None
         )
@@ -4149,7 +4400,7 @@ class _Analyzer:
                         frame.position += 1
                         incoming = frame.flow.normal
                         observation_before = self._namespace_observation_epoch
-                        self._observed_stack.append([incoming])
+                        self._observed_stack.append(_ObservedStateFrame([incoming]))
                         if isinstance(node, ast.If):
                             test = self._eval_truth_test(node.test, incoming, scope)
                             truth = self._known_expression_result(node.test).truth
@@ -4623,7 +4874,7 @@ class _Analyzer:
                 )
             self._record_state(state_id)
             return PythonCompletionFlow(
-                raised=self.states.join(*self._observed_stack[-1], state_id),
+                raised=self._observed_stack[-1].exceptional_state(self.states),
                 effects=effects,
             )
         elif isinstance(node, ast.Assert):
@@ -5014,7 +5265,7 @@ class _Analyzer:
                     PythonParameterRef(parameter),
                 )
         observed: list[int] = [state_id]
-        self._observed_stack.append(observed)
+        self._observed_stack.append(_ObservedStateFrame(observed))
         previous_history = self._active_lexical_history
         self._active_lexical_history = observed
         try:
@@ -5037,6 +5288,7 @@ class _Analyzer:
         if summary is None or summary.states is not summary_states:
             summary = _HistorySummary.build(self.states, summary_states)
             self._history_summaries[history_key] = summary
+        summary.refresh(self.states)
         maybe, definitely, taint_epoch = summary.properties(summary_start)
         state_id = self.states.overlay_summary_properties(
             state_id,
@@ -5086,13 +5338,10 @@ class _Analyzer:
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
         self.states.set_taint_domain(self.module_slot_mask)
         observed: list[int] = [0]
-        self._observed_stack.append(observed)
+        self._observed_stack.append(_ObservedStateFrame(observed))
         self._active_lexical_history = observed
         try:
-            module_flow = self.exec_statements(tree.body, 0, module)
-            module_exit = self.states.join(
-                *(state for _kind, state in module_flow.successors()), *observed
-            )
+            self.exec_statements(tree.body, 0, module)
         finally:
             self._observed_stack.pop()
         self._active_lexical_history = None
@@ -5111,8 +5360,8 @@ class _Analyzer:
                     job.module_history_start, len(self._module_history)
                 )
             else:
-                if not module_states:
-                    module_states = (module_exit,)
+                # Only (job_outer,) and unions of such nonempty tuples are minted.
+                assert module_states, "deferred module-state authority is nonempty"
                 module_state_start = 0
             job_outer = self._overlay_future_states(
                 job.outer_state_id,
@@ -5221,6 +5470,19 @@ class _Analyzer:
                 join_node_visits=self.states.join_node_visits,
                 join_shared_subtrees_skipped=(self.states.join_shared_subtrees_skipped),
                 join_chunk_merges=self.states.join_chunk_merges,
+                join_parent_inputs=self.states.join_parent_inputs,
+                join_max_parents=self.states.join_max_parents,
+                join_two_way_slots=self.states.join_two_way_slots,
+                join_wide_slots=self.states.join_wide_slots,
+                join_wide_alternatives=self.states.join_wide_alternatives,
+                join_payload_identity_skips=self.states.join_payload_identity_skips,
+                join_payload_absence_skips=self.states.join_payload_absence_skips,
+                join_payload_algebra_calls=self.states.join_payload_algebra_calls,
+                join_payload_absorptions=self.states.join_payload_absorptions,
+                join_custody_identity_skips=self.states.join_custody_identity_skips,
+                observation_fold_calls=self.states.observation_fold_calls,
+                observation_fold_new_parents=self.states.observation_fold_new_parents,
+                observation_fold_rebuilds=self.states.observation_fold_rebuilds,
                 structural_diff_cache_entries=0,
                 structural_diff_node_visits=(self.states.structural_diff_node_visits),
                 structural_diff_shared_subtrees_skipped=(

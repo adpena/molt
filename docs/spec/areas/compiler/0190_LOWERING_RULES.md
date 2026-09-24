@@ -258,6 +258,39 @@ to that slot, so an A-to-B-to-A sequence preserves both effective writes while
 publishing A. Explicit `record_writes` also retains same-shaped writes. This
 staging exists only within one publication call, never across taint-domain growth.
 
+Exceptional observations retain their complete, ordered lexical histories.
+Their incremental joins fold only newly observed distinct states, in original
+state order, and restart only when an earlier original state is observed out of
+order. Joined raw custody is domain-independent: the clean bit records conjunction
+of outside-domain cleanliness, and the clean epoch is the joined namespace epoch
+only if every parent would be clean inside the domain, otherwise -1. Parent/child
+namespace epochs are nonnegative and monotone. Shared storage and re-materialized
+storage therefore project identically after any later domain admission, including
+nested joins and point transfers. No domain-dependent join key or fold rebuild is
+needed. Default writes refresh stale namespace custody even when their current
+outside-domain payload is unchanged; staged duplicate writes remain no-ops.
+Domain-dependent lexical-history summaries refresh their event and initial
+projection caches on domain growth or appended history before reuse. Equal
+environments never authorize returning an existing state in place of a join; all
+ancestor writes and same-shaped/owner-only transitions survive.
+
+Storage diffs deliberately skip shared storage, even across different epochs.
+Semantic equality and join-history fallback instead share an exact public
+projection diff that visits shared storage when epochs differ and includes
+absent live-domain slots. Closure history therefore cannot depend on whether
+equivalent chunks happen to share an allocation. Deferred module activation
+uses full module history or a nonempty explicit activation tuple; no synthetic
+module-exit join or empty-tuple fallback supplies another authority.
+
+Static binding facts use canonical typed literal identity (plus their existing
+symbolic parameter/string-alternative identities), including in state interning,
+publication, expression facts, joins and projection comparisons. Python numeric
+equality must not conflate boolean and integer facts. Result joins use the same
+semantic-key authority as result construction, preserve normal-only absence
+semantics, and absorb an equal existing result in deterministic input order.
+NaN conservatism, signed-zero bits, graph edges, release stability and source
+write history are not weakened by payload or custody fast paths.
+
 `PythonCallSiteFact` separates evaluated callee/argument effects, invocation
 effects and post-invocation cleanup. A known normal-result kind does not imply
 a callback-free invocation. `callee_elision_safe` is the authorization for

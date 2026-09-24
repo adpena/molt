@@ -69,6 +69,26 @@ unexplained residuals explicitly. Add missing attribution to the next required
 build; do not infer disk I/O from page faults, relabel nested hashing as an
 additional phase, or rebuild solely to repeat already captured timings.
 
+## Binding join work counters
+
+The binding telemetry dataclass owns the schema projected by
+`tools/profile_python_binding_flow.py`. In addition to join calls and radix
+visits, record submitted parent inputs/max fan-in, two-way versus wide slot
+joins and their alternatives, payload identity/absence skips, canonical algebra
+calls and absorption, custody-identity skips, and observation-fold calls/new
+parents/rebuilds. Fold rebuilds reflect out-of-order original parents, not domain
+growth: raw joined custody is domain-independent. Full lexical histories remain
+intact; only projected history-summary caches need domain-generation refresh.
+
+These counters describe particular boundaries, not allocations or speedup.
+A payload-algebra call can return an existing result, a chunk constructor can
+reuse storage, and generator profiler entries include resumptions. Separate
+direct invalidation expiry from classification-at-publication work. Keep exact
+consumer/module counts and exported-index equality alongside the counters;
+do not infer skipped compiler work or a universal complexity bound from one
+lower total. Before/after profiles must use the same validated thread-aware
+method, and uninstrumented latency remains separate.
+
 ## Historical Evidence
 
 Command:
