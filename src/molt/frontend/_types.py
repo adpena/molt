@@ -29,6 +29,7 @@ from molt.compat import CompatibilityError, CompatibilityReporter, FallbackPolic
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
 from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
+from molt.source_root import compiler_source_root
 
 if TYPE_CHECKING:
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
@@ -998,7 +999,7 @@ _INTRINSIC_DEFAULTS_CACHE: dict[str, tuple[object, ...]] | None = None
 def _intrinsic_signature_paths() -> list[Path]:
     return [
         Path(__file__).resolve().parent.parent / "_intrinsics.pyi",
-        Path(__file__).resolve().parents[3]
+        compiler_source_root()
         / "runtime"
         / "molt-runtime"
         / "src"
@@ -1162,7 +1163,7 @@ def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
 
         cache: dict[str, str] = {}
         generated_path = (
-            Path(__file__).resolve().parents[3]
+            compiler_source_root()
             / "runtime"
             / "molt-runtime"
             / "src"

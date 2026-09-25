@@ -15,6 +15,7 @@ from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
+from molt.cli.output import success as _success
 from molt.cli.runtime_paths import _molt_session_id
 from molt.llvm_toolchain import LlvmToolchainConfigError, mlir_toolchain_environment
 
@@ -198,6 +199,6 @@ def _run_mlir_backend_pipeline(
         payload = _json_payload("build", "ok", data=data)
         _emit_json(payload, json_output)
     else:
-        print(f"Wrote MLIR output: {output_artifact}", file=sys.stderr)
+        _success(f"Wrote MLIR output: {output_artifact}", file=sys.stderr)
 
     return 0

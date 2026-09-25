@@ -194,6 +194,14 @@ jobs:
             cargo build --locked --profile release-output -p molt-worker \
             --target-dir dist/worker-secondary
 
+      - name: Build independent production compilers
+        shell: bash
+        run: |
+          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            uv run --no-sync python -m tools.release.build_compiler --target-dir dist/compiler-primary
+          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE -- \
+            uv run --no-sync python -m tools.release.build_compiler --target-dir dist/compiler-secondary
+
       - name: Assemble immutable reproducible candidate
         shell: bash
         env:
@@ -203,7 +211,11 @@ jobs:
           wheel="$(uv run --no-sync python -m tools.release.release_authority select-one \
             --root dist/wheel --pattern '*.whl')"
           worker="molt-worker"
-          if [ "${{ matrix.platform }}" = "windows" ]; then worker="molt-worker.exe"; fi
+          compiler="molt-backend"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            worker="molt-worker.exe"
+            compiler="molt-backend.exe"
+          fi
           uv run --no-sync python -m tools.release.release_authority candidate \
             --target "${{ matrix.id }}" \
             --version "$VERSION" \
@@ -212,9 +224,11 @@ jobs:
             --wheel "$wheel" \
             --primary-worker "dist/worker-primary/release-output/$worker" \
             --secondary-worker "dist/worker-secondary/release-output/$worker" \
+            --primary-compiler "dist/compiler-primary/release/$compiler" \
+            --secondary-compiler "dist/compiler-secondary/release/$compiler" \
             --output dist/candidate
 
-      - name: Verify clean install, CLI, native compile, execution, and uninstall
+      - name: Verify installed canonical Python and guest-profile closure
         shell: bash
         run: >-
           uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE --

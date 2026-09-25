@@ -63,6 +63,7 @@ def test_every_configured_stdlib_uses_locked_snapshot_admission(
 
     monkeypatch.setattr(link_pipeline, "_stage_shared_stdlib_object_for_link", stage)
     prepared, failure = link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=artifacts / "app.a",
         resolved_capability_policy=None,
         artifacts_root=artifacts,

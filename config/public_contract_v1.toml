@@ -3,8 +3,10 @@ schema = "molt.public-contract.v1"
 # Artifact and receipt formats a downstream consumer may depend on.
 public_schemas = [
   "molt.release-supply-chain.v1",
-  "molt.release-candidate.v1",
-  "molt.release-manifest.v2",
+  "molt.release-candidate.v2",
+  "molt.release-manifest.v3",
+  "molt.release-consumer-proof.v3",
+  "molt.release-compiler-source.v3",
   "molt.release-targets.v1",
   "molt-release-exit/3",
   "molt-pact-witness-acceptance/2",
@@ -32,7 +34,7 @@ python_target_range = ">=3.12"
 stable_within = "major"
 preview_may_change_within = "minor"
 deprecation = "time-bounded public transition recorded in config/legacy_inventory.toml with a removal_release; no silent removal"
-release_gate = "tools/release/release_authority.py refuses a v1+ tag without a green H0 phase-exit manifest for the tagged commit"
+release_gate = "tools/release/release_authority.py index refuses a v1+ payload without an authenticated green H0 phase-exit manifest for the tagged commit"
 
 # Core product surface.
 [[command]]

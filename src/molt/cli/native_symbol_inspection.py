@@ -23,6 +23,7 @@ from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.llvm_wasi_tools import llvm_tool_candidates
 from molt.file_hashing import content_change_time_ns
+from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_executable_probe,
@@ -37,7 +38,6 @@ from molt.llvm_toolchain import (
 
 
 _NativeObjectSymbolSets = tuple[set[str], set[str]]
-_MOLT_ROOT = Path(__file__).resolve().parents[3]
 _NATIVE_SYMBOL_FACTS_PROTOCOL = "molt.native-symbol-facts.v1"
 
 
@@ -133,16 +133,18 @@ class _NativeSymbolReader:
 
 @functools.lru_cache(maxsize=8)
 def _cached_wasm_llvm_nm_verification(
+    source_root: Path,
     environment_items: tuple[tuple[str, str], ...],
 ) -> WasmLlvmNmVerification:
-    return verify_wasm_llvm_nm(_MOLT_ROOT, environ=dict(environment_items))
+    return verify_wasm_llvm_nm(source_root, environ=dict(environment_items))
 
 
 def _verified_wasm_llvm_nm(
     environment: dict[str, str],
 ) -> WasmLlvmNmVerification:
     environment_items = tuple(sorted(environment.items()))
-    verification = _cached_wasm_llvm_nm_verification(environment_items)
+    source_root = compiler_source_root()
+    verification = _cached_wasm_llvm_nm_verification(source_root, environment_items)
     try:
         with stable_executable_probe(
             verification.path,
@@ -152,7 +154,7 @@ def _verified_wasm_llvm_nm(
             pass
     except (OSError, ValueError):
         _cached_wasm_llvm_nm_verification.cache_clear()
-        verification = _cached_wasm_llvm_nm_verification(environment_items)
+        verification = _cached_wasm_llvm_nm_verification(source_root, environment_items)
     return verification
 
 

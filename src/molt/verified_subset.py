@@ -12,14 +12,13 @@ from typing import Any
 from molt.file_publication import is_link_like
 from molt.portable_paths import portable_relative_path
 from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
+from molt.source_root import compiler_source_root
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
-POLICY_PATH = ROOT / "config" / "verified_subset.toml"
 SCHEMA = "molt.verified-subset.v1"
 _POLICY_KEYS = frozenset(
     {
@@ -159,14 +158,19 @@ def _exact_suite_list(value: object) -> tuple[VerifiedSubsetSuite, ...]:
     return ordered
 
 
-def load_verified_subset_policy(path: Path = POLICY_PATH) -> VerifiedSubsetPolicy:
+def load_verified_subset_policy(path: Path | None = None) -> VerifiedSubsetPolicy:
     return capture_verified_subset_policy(path)[0]
 
 
 def capture_verified_subset_policy(
-    path: Path = POLICY_PATH,
+    path: Path | None = None,
 ) -> tuple[VerifiedSubsetPolicy, StableRegularFileIdentity]:
     """Parse and identify one policy generation from the same stable bytes."""
+    path = (
+        path
+        if path is not None
+        else compiler_source_root() / "config/verified_subset.toml"
+    )
     identity, raw = capture_stable_regular_file(path, label="verified-subset policy")
     document = tomllib.loads(raw.decode("utf-8"))
     if set(document) != _POLICY_KEYS or document.get("schema") != SCHEMA:
@@ -303,13 +307,14 @@ def verified_subset_coordinate_by_id(
     return matches[0]
 
 
-def current_host_coordinate() -> tuple[str, str]:
+def host_coordinate(system: str, machine: str) -> tuple[str, str]:
+    """Normalize observed host facts into the canonical release coordinate."""
     platform_name = {
         "darwin": "macos",
         "linux": "linux",
         "windows": "windows",
-    }.get(platform_module.system().strip().lower())
-    raw_arch = platform_module.machine().strip().lower()
+    }.get(system.strip().lower())
+    raw_arch = machine.strip().lower()
     architecture = {
         "amd64": "x86_64",
         "x86_64": "x86_64",
@@ -319,13 +324,17 @@ def current_host_coordinate() -> tuple[str, str]:
     if platform_name is None or architecture is None:
         raise ValueError(
             "current host is outside the verified-subset release matrix: "
-            f"platform={platform_module.system()!r}, arch={raw_arch!r}"
+            f"platform={system!r}, arch={raw_arch!r}"
         )
     if platform_name in {"macos", "windows"} and architecture == "aarch64":
         architecture = "arm64"
     if platform_name == "linux" and architecture == "arm64":
         architecture = "aarch64"
     return platform_name, architecture
+
+
+def current_host_coordinate() -> tuple[str, str]:
+    return host_coordinate(platform_module.system(), platform_module.machine())
 
 
 def require_current_host(coordinate: VerifiedSubsetCoordinate) -> None:

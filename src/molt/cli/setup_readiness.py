@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
+from molt.source_root import compiler_source_root
 from molt.dx import DX_ENV_KEYS, DxProject
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
@@ -173,7 +174,7 @@ def _llvm_backend_advice(
         "Install the complete SDK: "
         + " ".join(
             llvm_debian_dev_packages(
-                Path(__file__).resolve().parents[3],
+                compiler_source_root(),
                 major,
             )
         ),

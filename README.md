@@ -86,6 +86,19 @@ uv run --python 3.12 molt compare examples/hello.py
 macOS, and Linux invocation, see
 [build and run](docs/getting-started.md#build-and-run-hello-world).
 
+These profiles select optimization of **your program**, not the compiler itself.
+Release bundles ship a production-optimized compiler that is reused for both
+profiles, alongside the matching runtime sources. Compiler developers can opt
+into a development host build with `MOLT_BACKEND_PROFILE=dev` in a source checkout.
+`--diagnostics` reports the compiler identity/profile separately from the program
+and runtime profiles, together with build-phase and cache information.
+
+Build/run progress adapts to stderr: an interactive indicator on terminals,
+bounded phase lines in logs. Use `--headless` or `--progress plain` for plain
+status, `--progress off` to disable status, or `--quiet` to suppress successful
+compiler notices too. Errors and guest output remain visible; JSON mode emits
+no progress chatter.
+
 ## Install
 
 - Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)

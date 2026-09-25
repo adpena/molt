@@ -12,9 +12,105 @@ with descriptive labels retained as metadata so linker intermediate filenames
 do not inherit unbounded path lengths. Commands use lossless owner-relative
 arguments through the same helper on Windows, macOS and Linux.
 
+## Test quality and agent-written tests
+
+This is the shared test-authoring contract for human and agent contributions.
+Optimize for distinct defects detected and trustworthy claims per unit of
+maintenance and execution cost, not generated lines, test counts, or coverage
+percentages. Required conformance and release matrix gates still apply.
+
+- **Start with a contract and an independent oracle.** Identify the observable
+  behavior and plausible defect the test distinguishes. Derive expected results
+  from the specification, a version/platform-matched CPython run, an independently
+  justified invariant, or a reviewed fixture. Do not compute the expectation
+  with the implementation being tested or record its current output as truth.
+- **Reuse the owning suite.** Search existing cases and fixtures before adding
+  another test file, harness, helper, or matrix. Extend or parameterize cases
+  when they exercise the same contract; retain distinct boundaries and failure
+  modes. Small diffs still need tests when their semantic risk warrants them;
+  reversible low-impact edits do not need implementation-mirroring tests.
+- **Establish that a regression test can fail for the intended reason.** Prefer
+  observing it fail on the old behavior, then pass after the fix. For already
+  implemented changes, use a bounded negative control or relevant mutation when
+  practical. An import error or broken fixture is not the desired red phase.
+  Do not revert shared WIP to manufacture one, or claim sensitivity you did not
+  establish. Passing current tests alone does not establish it.
+- **Exercise the consumer named in the claim.** Mock external or expensive
+  boundaries only when the mocked behavior is outside that claim. Keep the
+  decision under test real. A stub compiler can test payload transport, but
+  cannot prove compilation; calling bootstrap directly cannot prove a shipped
+  launcher works. Component tests complement installed CLI, ABI, native and WASM
+  execution, never substitute for those acceptance paths. Static source checks
+  are appropriate for structural contracts, not evidence of runtime behavior.
+- **Use assertions with consequences.** Check results, relevant side effects,
+  error type/diagnostic, and state preservation or cleanup where contractual.
+  "Did not crash", truthiness, or a mock being called is insufficient when the
+  result is the contract. Assert interaction order/count only when that is the
+  invariant. Do not weaken assertions, regenerate expectations, swallow errors,
+  or add skips/xfails merely to make an implementation pass; changes to expected
+  behavior need an independently justified contract change.
+- **Make failures reproducible.** Control randomness, time and environment at
+  their real boundaries; use bounded synchronization rather than sleep-based
+  timing assumptions. Preserve minimized fuzz/differential inputs, seed and
+  applicable target coordinates in existing replay evidence. Normalize only
+  differences the contract allows; do not normalize away semantic mismatches.
+- **Make fixtures and claims portable.** Cover Windows, macOS and Linux,
+  applicable architectures, CPython versions, native/WASM, and claimed
+  backends/profiles through the canonical matrices. Distinguish the host running
+  a test from the compilation target. Reuse capability/version authorities for
+  gates; avoid host-derived target expectations, path/shell/word-size assumptions,
+  and blanket skips that hide supported cells. Simulated coordinates test policy
+  selection, not execution on that OS/architecture/interpreter. Unexecuted cells
+  remain unverified; explicit exclusions need a contract reason.
+- **Budget the execution, not the coverage.** Use the smallest fixture and
+  dependency closure that preserves the invariant. Profile slow setup/build/run
+  stages before optimizing. Reuse immutable fixture inputs without sharing
+  mutable state across tests; batch integration builds and keep them out of the
+  fast unit loop. Run required checks, then repeat or widen only for changed
+  inputs, failures, or unresolved claims. Timing assertions belong in controlled
+  performance lanes, not noisy functional tests.
+
+During review, ask: which realistic defect would pass unnoticed, is the oracle
+independent, and does this add distinct signal beyond existing tests? Remove or
+merge redundant cases without losing their unique contract coverage. Report the
+actual checks, results, omitted surfaces and evidence paths through the existing
+handoff/proof records; do not add a second checklist or per-test receipt system.
+
+### Sources and limits
+
+- OpenAI's [Astra prompting guidance](https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra#testing-and-verification)
+  recommends meaningful, task-appropriate tests and reruns only when justified.
+  [Rethinking skills and prompts](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra)
+  explains how older testing instructions can induce unnecessary verification.
+- Simon Willison's [Red/green TDD](https://simonwillison.net/guides/agentic-engineering-patterns/red-green-tdd/)
+  motivates observing the intended failure to avoid tests that pass without
+  exercising the new behavior. Use that sensitivity check where useful, not as
+  a mandatory full-suite or test-first ritual for every edit.
+- Meta's [TestGen-LLM study](https://arxiv.org/abs/2402.09171) filters generated
+  tests for build validity, reliable execution and incremental coverage. It
+  supports reviewing generated tests as candidates, not accepting their volume
+  as quality; coverage alone does not prove a correct oracle or semantic adequacy.
+
+The Meta study concerns earlier models; it does not measure Astra's defect rate.
+These sources inform the engineering policy, not a claim that one model always
+writes bad tests. Prompt effectiveness must be judged from actual contributions.
+
 ## Version Policy
-Molt targets **Python 3.12+** semantics only. When 3.12/3.13/3.14 diverge,
-document the chosen target in specs/tests and keep the differential suite aligned.
+
+Molt targets **CPython 3.12+** semantics within the verified subset. Use
+`TargetPythonVersion` in `src/molt/target_python.py` for target-version decisions,
+not the host interpreter's version. Release OS/architecture coordinates are
+declared in `config/release_targets.toml` and projected by `tools/gen_release_matrix.py`;
+`src/molt/verified_subset.py` binds their conformance closure. Extend those
+authorities and their proofs when admitting a future Python version, OS or
+architecture; do not fork local support lists or equate parseable future versions
+with verified support.
+
+For differential cases, express version/platform/architecture/backend
+applicability through `MOLT_META` consumed by `tools/compat/test_policy.py`.
+Compare with the matching CPython reference and document intentional differences.
+Portability policy applies to test fixtures and developer/release tools as well
+as generated programs; a pass on one host cannot establish the whole matrix.
 
 ## 1. Differential Testing: The `molt-diff` Harness
 `molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `molt build` with `--build-profile dev` (Molt dev profile maps to Cargo `dev-fast` by default).

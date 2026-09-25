@@ -26,7 +26,7 @@ def _positive_queue_size(value: object) -> str:
 
 
 def _queue_repo_root() -> Path:
-    return _find_molt_root(Path.cwd()) or Path(__file__).resolve().parents[3]
+    return _find_molt_root(Path.cwd())
 
 
 def _queue_args_define_queue_size(queue_args: list[str]) -> bool:

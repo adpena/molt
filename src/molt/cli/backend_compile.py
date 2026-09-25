@@ -238,6 +238,7 @@ def _prepare_backend_setup(
     cache_setup_start = time.perf_counter()
     try:
         cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
+            backend_bin=backend_bin,
             cache_enabled=cache,
             ir=ir,
             target=target,

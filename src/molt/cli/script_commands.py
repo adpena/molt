@@ -55,6 +55,8 @@ from molt.cli.models import (
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
+from molt.cli.output import success as _success
+from molt.cli.progress import notice as _notice
 from molt.cli.project_roots import (
     _find_molt_root,
     _find_project_root,
@@ -228,7 +230,7 @@ def _run_script_cross(
         target_label = (
             "WASM" if target == "wasm" else "MLIR" if target == "mlir" else "Luau"
         )
-        print(f"Building for {target_label}...", file=sys.stderr)
+        _notice(f"Building for {target_label}...")
     try:
         build_contract, t_build, build_error = _run_wrapper_build(
             file_path=file_path,
@@ -305,7 +307,7 @@ def _run_script_cross(
                 command="run",
             )
         if not json_output:
-            print(f"MLIR output: {mlir_artifact}", file=sys.stderr)
+            _success(f"MLIR output: {mlir_artifact}", file=sys.stderr)
         if timing and not json_output:
             print(
                 f"\n--- timing: build {t_build:.3f}s ---",

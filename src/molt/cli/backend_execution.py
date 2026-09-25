@@ -16,6 +16,7 @@ import uuid
 
 from molt import backend_daemon_custody as _daemon_custody
 from molt.build_state_layout import build_state_root
+from molt.compiler_distribution import installed_compiler
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.toolchain_identity import executable_content_identity
@@ -178,6 +179,9 @@ def _backend_bin_path(
     cargo_profile: str,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> Path:
+    installed = installed_compiler(project_root)
+    if installed is not None:
+        return installed.binary
     return _backend_bin_path_cached(
         os.fspath(project_root),
         cargo_profile,

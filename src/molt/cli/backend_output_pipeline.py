@@ -26,6 +26,7 @@ from molt.cli.models import (
 from molt.cli.native_toolchain import _run_bolt_post_link
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_before_link
+from molt.toolchain_identity import executable_content_identity
 
 
 def _emit_backend_pipeline_outputs(
@@ -78,6 +79,21 @@ def _emit_backend_pipeline_outputs(
     def snapshot_build_diagnostics() -> tuple[Any, Path | None]:
         nonlocal diagnostics_payload, diagnostics_path
         diagnostics_payload, diagnostics_path = build_diagnostics_payload()
+        if diagnostics_payload is not None:
+            diagnostics_payload["compiler"] = {
+                "path": str(prepared_backend_runtime_context.backend_bin),
+                **executable_content_identity(
+                    prepared_backend_runtime_context.backend_bin,
+                    label="selected compiler diagnostics",
+                ),
+                "cargo_profile": prepared_build_config.backend_cargo_profile,
+                "fingerprint": prepared_backend_runtime_context.backend_compiler_fingerprint,
+            }
+            diagnostics_payload["program"] = {
+                "profile": profile,
+                "runtime_cargo_profile": prepared_build_config.runtime_cargo_profile,
+                "target": target,
+            }
         return diagnostics_payload, diagnostics_path
 
     def return_after_build_diagnostics(result: int) -> int:
@@ -259,6 +275,7 @@ def _emit_backend_pipeline_outputs(
     prepared_native_link, prepared_native_link_error = (
         _link_pipeline._prepare_native_link(
             output_artifact=output_layout.output_artifact,
+            backend_bin=prepared_backend_runtime_context.backend_bin,
             resolved_capability_policy=prepared_build_config.resolved_capability_policy,
             artifacts_root=artifacts_root,
             json_output=json_output,

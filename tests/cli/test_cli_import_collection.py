@@ -2978,6 +2978,7 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
         module_deps=frontend_analysis.module_deps,
     )
     backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir={"functions": []},
         target="native",
@@ -11630,6 +11631,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11694,6 +11696,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     )
 
     first, first_error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11728,6 +11731,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
 
     second, second_error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11794,6 +11798,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -11940,6 +11945,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -12056,6 +12062,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
     artifacts_root.mkdir()
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -19807,12 +19814,12 @@ def test_expand_module_chain_ignores_invalid_module_names() -> None:
     assert cli_module_dependencies._expand_module_chain("/.Volumes.bad.mod") == []
 
 
-def test_resolve_backend_profile_defaults_to_selected_build_profile(
+def test_resolve_backend_profile_defaults_to_production_compiler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_BACKEND_PROFILE", "")
-    profile, error = cli._resolve_backend_profile("dev")
-    assert profile == "dev"
+    profile, error = cli._resolve_backend_profile()
+    assert profile == "release"
     assert error is None
 
 
@@ -19821,13 +19828,13 @@ def test_resolve_backend_profile_env_override_and_validation(
 ) -> None:
     cli._resolve_backend_profile_cached.cache_clear()
     monkeypatch.setenv("MOLT_BACKEND_PROFILE", "release")
-    profile, error = cli._resolve_backend_profile("dev")
+    profile, error = cli._resolve_backend_profile()
     assert profile == "release"
     assert error is None
 
     monkeypatch.setenv("MOLT_BACKEND_PROFILE", "invalid")
-    profile, error = cli._resolve_backend_profile("dev")
-    assert profile == "dev"
+    profile, error = cli._resolve_backend_profile()
+    assert profile == "release"
     assert error == "Invalid MOLT_BACKEND_PROFILE value: invalid"
 
 
@@ -19864,12 +19871,12 @@ def test_resolve_backend_cargo_profile_name_defaults_and_validation(
     monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     profile, error = cli._resolve_backend_cargo_profile_name("release")
-    assert profile == "release-fast"
+    assert profile == "release"
     assert error is None
 
     monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "release-iter")
     profile, error = cli._resolve_backend_cargo_profile_name("release")
-    assert profile == "release-iter"
+    assert profile == "release"
     assert error is None
 
     monkeypatch.setenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", "backend-prod")
@@ -19879,7 +19886,7 @@ def test_resolve_backend_cargo_profile_name_defaults_and_validation(
 
     monkeypatch.setenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", "bad profile")
     profile, error = cli._resolve_backend_cargo_profile_name("release")
-    assert profile == "release-fast"
+    assert profile == "release"
     assert error == "Invalid MOLT_RELEASE_BACKEND_CARGO_PROFILE value: bad profile"
 
 
@@ -30711,12 +30718,14 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
         output_artifact=tmp_path / "dummy_split.a",
         **common,
     )
 
     setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
         output_artifact=tmp_path / "dummy_mono.o",
         **common,
@@ -30755,6 +30764,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=tiny_ir,
         target="native",
@@ -30804,6 +30814,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir=tiny_ir,
         target="native",

@@ -620,10 +620,12 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
     )
 
     setup_base = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "base.o",
         **common,
     )
     setup_caps = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "caps.o",
         resolved_capability_policy=CapabilityManifest(allow=["fs.read"]).resolve(),
         **common,
@@ -736,6 +738,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     )
 
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -848,11 +851,13 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     )
 
     default = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "default.o",
         **common,
     )
     selected = ("native-backend", "free-threaded")
     free_threaded = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "free-threaded.o",
         **common,
     )
@@ -940,11 +945,13 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
 
     first_timings: dict[str, float] = {}
     first = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         stage_timings_ms=first_timings,
         **common,
     )
     second_timings: dict[str, float] = {}
     second = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         stage_timings_ms=second_timings,
         **common,
     )
@@ -1002,6 +1009,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
 
     def prepare(*, backend_compiler_fingerprint: str, output_name: str):
         return cli_backend_cache_setup._prepare_backend_cache_setup(
+            backend_bin=tmp_path / "molt-backend",
             cache_enabled=True,
             ir=ir,
             target="native",
@@ -1079,11 +1087,13 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
 
     monkeypatch.delenv("MOLT_CAPABILITIES", raising=False)
     setup_without_env = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "without-env.o",
         **common,
     )
     monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,fs.write,env.read")
     setup_with_env = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "with-env.o",
         **common,
     )

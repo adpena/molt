@@ -24,10 +24,11 @@ from typing import TYPE_CHECKING, Callable
 from molt.cargo_workspace import workspace_package_names
 from molt.dx import development_artifact_env
 from molt.harness_report import LayerResult, LayerStatus
+from molt.source_root import compiler_source_root
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_SOURCE_ROOT = compiler_source_root()
+if str(_SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SOURCE_ROOT))
 
 # ``tools.harness_memory_guard`` lives beside the repo, not inside the installed
 # ``molt`` package, so an installed-without-repo deployment imports this module
@@ -60,7 +61,7 @@ def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if env:
         run_env.update(env)
     return development_artifact_env(
-        _REPO_ROOT,
+        compiler_source_root(),
         run_env,
         session_prefix="harness",
         create_dirs=False,

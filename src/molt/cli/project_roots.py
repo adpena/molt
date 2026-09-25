@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import functools
-import os
 from pathlib import Path
 
 from molt.cli.output import fail as _fail
+from molt.compiler_distribution import installed_compiler
+from molt.source_root import (
+    MOLT_SOURCE_ROOT_ENV,
+    compiler_source_root_override,
+    resolve_path_override,
+)
 
 
 def _is_path_within(path: Path, container: Path) -> bool:
@@ -23,21 +28,24 @@ def _is_path_within(path: Path, container: Path) -> bool:
 
 
 def _resolve_root_override(var: str) -> Path | None:
-    override = os.environ.get(var)
-    if not override:
+    path = resolve_path_override(var)
+    if path is None:
         return None
-    path = Path(override).expanduser()
-    if not path.is_absolute():
-        path = (Path.cwd() / path).absolute()
     if path.exists():
         return path
     return None
 
 
 def _has_molt_repo_markers(path: Path) -> bool:
-    return (path / "runtime/molt-runtime/Cargo.toml").exists() and (
-        path / "src/molt/cli/__init__.py"
-    ).exists()
+    return all(
+        (path / marker).is_file()
+        for marker in (
+            "Cargo.toml",
+            "runtime/molt-runtime/Cargo.toml",
+            "runtime/molt-backend/Cargo.toml",
+            "src/molt/cli/__init__.py",
+        )
+    )
 
 
 def _has_project_markers(path: Path) -> bool:
@@ -73,9 +81,7 @@ def _find_molt_root_cached(
     override_text: str | None,
 ) -> Path:
     if override_text:
-        override = Path(override_text)
-        if override.exists():
-            return override
+        return Path(override_text)
     candidates = tuple(Path(text) for text in candidate_texts)
     for candidate in candidates:
         for parent in [candidate] + list(candidate.parents):
@@ -91,7 +97,7 @@ def _find_molt_root_cached(
 
 
 def _find_molt_root(*candidates: Path) -> Path:
-    override = _resolve_root_override("MOLT_PROJECT_ROOT")
+    override = compiler_source_root_override()
     override_text = str(override) if override is not None else None
     return _find_molt_root_cached(
         tuple(str(candidate) for candidate in candidates),
@@ -104,12 +110,21 @@ def _require_molt_root(
     json_output: bool,
     command: str,
 ) -> int | None:
-    runtime_toml = molt_root / "runtime/molt-runtime/Cargo.toml"
-    backend_toml = molt_root / "runtime/molt-backend/Cargo.toml"
-    if runtime_toml.exists() and backend_toml.exists():
+    if _has_molt_repo_markers(molt_root):
+        try:
+            installed = installed_compiler(molt_root)
+            if installed is not None:
+                installed.verify_sources()
+        except (OSError, ValueError) as exc:
+            return _fail(
+                f"Molt installed compiler sources are invalid: {exc}",
+                json_output,
+                command=command,
+            )
         return None
     message = (
-        f"Molt runtime sources not found under {molt_root}. "
-        "Set MOLT_PROJECT_ROOT to the Molt repo root or run from within the Molt repo."
+        f"Molt compiler/runtime sources not found under {molt_root}. "
+        f"Set {MOLT_SOURCE_ROOT_ENV} to the compiler source root or use a "
+        "release bundle with its verified source payload."
     )
     return _fail(message, json_output, command=command)

@@ -15,6 +15,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import progress as _progress
 from molt.cli.backend_diagnostics import (
     _env_requests_backend_diagnostics,
     _forward_compilation_warnings,
@@ -571,6 +572,7 @@ def _emit_wrapper_build_failure(
     return _fail(detail, json_output=False, code=returncode, command=command)
 
 
+@_progress.finish_after
 def _run_wrapper_build(
     *,
     file_path: str | None,
@@ -602,7 +604,7 @@ def _run_wrapper_build(
     # Show progress when building (no silent hangs).
     if not json_output and not verbose:
         _source = Path(file_path).name if file_path else module or "module"
-        print(f"Compiling {_source}...", file=sys.stderr, flush=True)
+        _progress.notice(f"Compiling {_source}...")
 
     build_cmd = [sys.executable, "-m", "molt.cli", "build"]
     if not _build_args_has_json_flag(build_args):

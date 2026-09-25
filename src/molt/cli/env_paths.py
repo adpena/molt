@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from molt.cli.deps import _molt_venv_path
+from molt.source_root import MOLT_SOURCE_ROOT_ENV
 
 
 def _vendor_roots(project_root: Path) -> list[Path]:
@@ -52,7 +53,7 @@ def _base_env(
     env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     env.setdefault("PYTHONHASHSEED", "0")
     if molt_root is not None:
-        env.setdefault("MOLT_PROJECT_ROOT", str(molt_root))
+        env.setdefault(MOLT_SOURCE_ROOT_ENV, str(molt_root))
     return env
 
 

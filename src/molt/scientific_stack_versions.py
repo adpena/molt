@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
 from typing import Any
 
+from molt.source_root import compiler_source_root
 from molt.cli.source_extension_set_registry import (
     SourceExtensionRegistry,
     SourceExtensionSet,
@@ -24,8 +25,6 @@ from molt.target_python import (
     require_supported_target_python,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = ROOT / "config" / "scientific_stack_versions.toml"
 CONFIG_ENV = "MOLT_SCIENTIFIC_STACK_CONFIG"
 SCIENTIFIC_WITNESS_TARGET_TRIPLE = "wasm32-wasip1"
 SCIENTIFIC_WITNESS_ABI_TIER = "cpython-abi"
@@ -83,7 +82,11 @@ def _config_path(config_path: Path | None) -> Path:
     if config_path is not None:
         return config_path
     override = os.environ.get(CONFIG_ENV)
-    return Path(override) if override else DEFAULT_CONFIG_PATH
+    return (
+        Path(override)
+        if override
+        else compiler_source_root() / "config" / "scientific_stack_versions.toml"
+    )
 
 
 def _require_exact_keys(

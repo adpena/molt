@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 import copy
 import json
 from pathlib import Path
@@ -13,6 +14,9 @@ import zipfile
 
 import pytest
 
+from molt.exact_json import canonical_json_sha256
+from molt.verified_subset import host_coordinate
+
 from tools.release import build_bundle
 from tools.release import fetch_pinned_tool
 from tools.release import release_authority
@@ -22,6 +26,7 @@ from tools import release_exit_gate
 from tools.git_identity import clean_checkout_status_arguments
 from tools.release import update_manifests
 from tools.release import verify_consumer
+from tools.release import compiler_payload
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -262,8 +267,51 @@ def test_release_input_selection_requires_exact_cardinality(tmp_path: Path) -> N
         release_authority.select_one(tmp_path, "*.whl")
 
 
+@pytest.fixture
+def release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    return _prepare_release_source(tmp_path, monkeypatch)
+
+
+def _prepare_release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "source-repo"
+    root.mkdir()
+    for name in compiler_payload.REQUIRED_MARKERS:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# fixture\n", encoding="utf-8")
+    for args in (
+        ("init",),
+        ("add", "."),
+        (
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "source",
+        ),
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+    snapshot = compiler_payload.source_snapshot(root, commit)
+    # Synthetic transport identities are not semantic/release acceptance proof.
+    snapshot = replace(snapshot, source_sha="a" * 40)
+    monkeypatch.setattr(build_bundle, "ROOT", root)
+    monkeypatch.setattr(
+        compiler_payload, "validate_native_binary_architecture", lambda *_: None
+    )
+    monkeypatch.setattr(release_authority, "source_snapshot", lambda *_: snapshot)
+
+    return snapshot
+
+
 @pytest.mark.parametrize("platform", ["linux", "windows"])
-def test_bundle_archives_are_byte_reproducible(tmp_path: Path, platform: str) -> None:
+def test_bundle_archives_are_byte_reproducible(
+    tmp_path: Path, platform: str, release_source
+) -> None:
     wheel = _wheel(tmp_path / "molt-0.0.001-py3-none-any.whl")
     worker = tmp_path / ("molt-worker.exe" if platform == "windows" else "molt-worker")
     worker.write_bytes(b"worker-binary")
@@ -279,6 +327,9 @@ def test_bundle_archives_are_byte_reproducible(tmp_path: Path, platform: str) ->
             kind="molt",
             output=output,
             source_date_epoch=1_700_000_000,
+            arch="x86_64",
+            compiler=worker,
+            snapshot=release_source,
         )
     assert first.read_bytes() == second.read_bytes()
 
@@ -293,7 +344,7 @@ def test_consumer_extraction_rejects_archive_escape(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def release_inputs(
+def release_evidence_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, object]:
@@ -334,6 +385,16 @@ def release_inputs(
         source_date_epoch=1_700_000_000,
         output=archive,
     )
+    return dict(
+        version="0.0.001",
+        source_sha="a" * 40,
+        source_date_epoch=1_700_000_000,
+        release_exit_archive=archive,
+        release_exit_sha256=release_model.sha256_file(archive),
+    )
+
+
+def _assemble_transport_inputs(tmp_path: Path):
     wheel = _wheel(tmp_path / "molt-0.0.001-py3-none-any.whl")
     candidate_root = tmp_path / "candidates"
     candidate_root.mkdir()
@@ -353,32 +414,176 @@ def release_inputs(
             wheel=wheel,
             primary_worker=primary,
             secondary_worker=secondary,
+            primary_compiler=primary,
+            secondary_compiler=secondary,
             output=output,
         )
         release_model.write_json(
             output / "consumer-verification.json",
-            {
-                "schema": "molt.release-consumer-proof.v1",
-                "target": candidate["target"],
-                "source_sha": "a" * 40,
-                "selected": 1,
-                "executed": 1,
-                "passed": 1,
-                "failed": 0,
-                "errors": 0,
-                "uninstall_verified": True,
-            },
+            _consumer_transport_receipt(candidate),
         )
 
-    return dict(
-        candidate_root=candidate_root,
-        wheel=wheel,
-        version="0.0.001",
-        source_sha="a" * 40,
-        source_date_epoch=1_700_000_000,
-        release_exit_archive=archive,
-        release_exit_sha256=release_model.sha256_file(archive),
+    return wheel, candidate_root
+
+
+@pytest.fixture(scope="module")
+def release_transport_files(tmp_path_factory):
+    """Assemble once; expose only immutable bytes, never shared mutable paths."""
+    root = tmp_path_factory.mktemp("release-transport")
+    with pytest.MonkeyPatch.context() as patch:
+        _prepare_release_source(root, patch)
+        wheel, candidates = _assemble_transport_inputs(root)
+    paths = [wheel, *sorted(path for path in candidates.rglob("*") if path.is_file())]
+    return tuple(
+        (path.relative_to(root).as_posix(), path.read_bytes()) for path in paths
     )
+
+
+@pytest.fixture
+def release_inputs(tmp_path: Path, release_evidence_inputs, release_transport_files):
+    # Every test receives independent files, including receipts and archives it
+    # may deliberately corrupt. No hardlinks or mutable session objects escape.
+    for relative, content in release_transport_files:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+    return dict(
+        candidate_root=tmp_path / "candidates",
+        wheel=tmp_path / "molt-0.0.001-py3-none-any.whl",
+        **release_evidence_inputs,
+    )
+
+
+def _consumer_transport_receipt(candidate):
+    """Simulated transport transcript; never evidence of compiler execution."""
+    windows = candidate["target"]["platform"] == "windows"
+    root = "C:/consumer" if windows else "/consumer"
+    bin_dir = f"{root}/bundle/molt-{candidate['version']}/bin"
+    launcher = [f"{bin_dir}/molt.cmd" if windows else f"{bin_dir}/molt"]
+    policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
+    references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
+    python_proofs = []
+    for reference in references:
+        minor = ".".join(reference.split(".")[:2])
+        coordinate_root = f"{root}/python-{minor}"
+        python = f"{coordinate_root}/venv/" + (
+            "Scripts/python.exe" if windows else "bin/python"
+        )
+        commands = []
+
+        def command(role, argv, stdout=""):
+            commands.append(
+                {
+                    "role": role,
+                    "argv": argv,
+                    "returncode": 0,
+                    "duration_seconds": 0.125,
+                    "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
+                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                }
+            )
+
+        command(
+            "environment",
+            [
+                "uv",
+                "venv",
+                "--no-config",
+                "--python",
+                reference,
+                f"{coordinate_root}/venv",
+            ],
+        )
+        command("cli_help", [*launcher, "--help"])
+        if windows:
+            command(
+                "cli_help_powershell",
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    f"{bin_dir}/molt.ps1",
+                    "--help",
+                ],
+            )
+        worker = "molt-worker.exe" if windows else "molt-worker"
+        command("worker_help", [f"{bin_dir}/{worker}", "--help"])
+        for profile in ("dev", "release"):
+            output = f"{coordinate_root}/project/release_consumer_{profile}" + (
+                ".exe" if windows else ""
+            )
+            command(
+                f"build_{profile}",
+                [
+                    *launcher,
+                    "build",
+                    "--target",
+                    "native",
+                    "--profile",
+                    profile,
+                    "--python-version",
+                    minor,
+                    "--diagnostics-file",
+                    f"{coordinate_root}/project/{profile}.json",
+                    "--output",
+                    output,
+                    f"{coordinate_root}/project/release_consumer.py",
+                ],
+            )
+            command(f"run_{profile}", [output], "MOLT_RELEASE_CONSUMER_OK\n")
+        python_proofs.append(
+            {
+                "python": minor,
+                "reference_python": reference,
+                "execution": {
+                    "host": {
+                        "platform": candidate["target"]["platform"],
+                        "arch": candidate["target"]["arch"],
+                        "pointer_bits": 64,
+                    },
+                    "python": {
+                        "implementation": "CPython",
+                        "version": reference,
+                        "executable": python,
+                        "sha256": "d" * 64,
+                        "size": 4096,
+                        "gil_disabled": False,
+                    },
+                },
+                "commands": commands,
+                "profile_proofs": [
+                    {
+                        "profile": profile,
+                        "compiler_sha256": candidate["compiler"]["sha256"],
+                        "compiler_fingerprint": "b" * 64,
+                    }
+                    for profile in ("dev", "release")
+                ],
+            }
+        )
+    count = len(references) * 2
+    return {
+        "schema": "molt.release-consumer-proof.v3",
+        "candidate": "candidate.json",
+        "candidate_sha256": canonical_json_sha256(candidate),
+        "target": candidate["target"],
+        "source_sha": candidate["source_sha"],
+        "selected": count,
+        "executed": count,
+        "passed": count,
+        "failed": 0,
+        "errors": 0,
+        "uninstall_verified": True,
+        "compiler": candidate["compiler"],
+        "guest_profiles": ["dev", "release"],
+        "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "python_proofs": python_proofs,
+        "standalone_native_output": "MOLT_RELEASE_CONSUMER_OK",
+    }
 
 
 def test_candidate_matrix_builds_one_collision_free_signed_index(
@@ -417,7 +622,7 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     invalid = json.loads(receipt.read_text())
     invalid["passed"] = 0
     release_model.write_json(receipt, invalid)
-    with pytest.raises(ValueError, match="clean-consumer proof is invalid"):
+    with pytest.raises(ValueError, match="release consumer proof header is invalid"):
         release_authority.assemble_index(
             **release_inputs,
             output=tmp_path / "rejected-publish",
@@ -502,8 +707,6 @@ def test_release_topology_has_one_atomic_promotion_and_separate_deployments() ->
     assert "python -m build --wheel --no-isolation" in release
     assert "release_authority verify-wheel" in release
     assert "verify_consumer" in release
-    consumer = (ROOT / "tools/release/verify_consumer.py").read_text(encoding="utf-8")
-    assert '_run([str(worker), "--help"]' in consumer
     attestation_action = "uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
     assert release.count(attestation_action) == 3
     subset = (ROOT / ".github/workflows/verified-subset.yml").read_text(
@@ -632,14 +835,16 @@ def test_evidence_cli_rejects_epoch_different_from_commit(
     assert not output.exists()
 
 
-def test_plan_admits_original_evidence_digest_and_exact_matrix(release_inputs):
+def test_plan_admits_original_evidence_digest_and_exact_matrix(release_evidence_inputs):
     result = release_authority.plan_release(
         "v0.0.001",
         "a" * 40,
-        release_exit_archive=release_inputs["release_exit_archive"],
+        release_exit_archive=release_evidence_inputs["release_exit_archive"],
     )
     assert len(json.loads(result["matrix"])["include"]) == 6
-    assert result["release_exit_sha256"] == release_inputs["release_exit_sha256"]
+    assert (
+        result["release_exit_sha256"] == release_evidence_inputs["release_exit_sha256"]
+    )
 
 
 def test_index_rejects_plan_archive_drift_without_publishing(tmp_path, release_inputs):
@@ -717,6 +922,155 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         assert not output.exists()
 
 
+def test_consumer_admission_requires_bound_profile_and_command_evidence(release_inputs):
+    candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
+    candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
+    receipt_path = candidate_dir / "consumer-verification.json"
+    valid = json.loads(receipt_path.read_text())
+
+    def admit(payload):
+        release_model.write_json(receipt_path, payload)
+        return release_authority._admit_candidate(
+            candidate,
+            candidate_dir,
+            version=release_inputs["version"],
+            source_sha=release_inputs["source_sha"],
+            source_date_epoch=release_inputs["source_date_epoch"],
+            wheel_record=candidate["wheel"],
+        )
+
+    assert admit(valid) == candidate["artifacts"]
+    # Mutate independent transport transcripts, never validator expectations.
+    variants = []
+    cell = valid["python_proofs"][0]
+    for field in ("profile_proofs", "commands", "execution", "reference_python"):
+        payload = copy.deepcopy(valid)
+        del payload["python_proofs"][0][field]
+        variants.append(payload)
+    for proofs in ([], cell["profile_proofs"][:1], [cell["profile_proofs"][0]] * 2):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"][0]["profile_proofs"] = proofs
+        variants.append(payload)
+    for key, value in (
+        ("compiler_sha256", "f" * 64),
+        ("compiler_fingerprint", "c" * 64),
+        ("compiler_fingerprint", ""),
+        ("compiler_fingerprint", None),
+        ("compiler_fingerprint", True),
+        ("compiler_fingerprint", "z" * 64),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"][0]["profile_proofs"][1][key] = value
+        variants.append(payload)
+    for key, value in (
+        ("role", "build_dev"),
+        ("returncode", False),
+        ("returncode", 1),
+        ("duration_seconds", True),
+        ("duration_seconds", -1),
+        ("stdout_sha256", "invalid"),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"][0]["commands"][-1][key] = value
+        variants.append(payload)
+    for mutate in (
+        lambda p: p["commands"].pop(),
+        lambda p: p["commands"][-1].update(argv=["/another/executable"]),
+        lambda p: p["commands"][-1].update(
+            stdout_sha256=hashlib.sha256(b"wrong\n").hexdigest()
+        ),
+        lambda p: p["commands"][-2]["argv"].__setitem__(5, "dev"),
+        lambda p: p["commands"][1]["argv"].__setitem__(0, "/consumer/bootstrap.py"),
+        lambda p: p["commands"][2].update(argv=["/other/molt-worker", "--help"]),
+        lambda p: p["commands"][2].update(
+            argv=[p["commands"][2]["argv"][0], "--version"]
+        ),
+        lambda p: p["commands"][0]["argv"].__setitem__(4, "3.12"),
+        lambda p: p["commands"][-2]["argv"].__setitem__(7, "3.11"),
+        lambda p: p["commands"][-2]["argv"].__delitem__(slice(6, 8)),
+    ):
+        payload = copy.deepcopy(valid)
+        mutate(payload["python_proofs"][0])
+        variants.append(payload)
+    for proofs in (
+        [],
+        valid["python_proofs"][:-1],
+        [valid["python_proofs"][0]] * len(valid["python_proofs"]),
+        list(reversed(valid["python_proofs"])),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"] = proofs
+        variants.append(payload)
+    payload = copy.deepcopy(valid)
+    del payload["python_proofs"]
+    variants.append(payload)
+    for key, value in (
+        ("python", "3.99"),
+        ("reference_python", "3.12.0"),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"][0][key] = value
+        variants.append(payload)
+    for section, key, value in (
+        ("host", "platform", "macos"),
+        ("host", "arch", "aarch64"),
+        ("host", "pointer_bits", 32),
+        ("host", "pointer_bits", True),
+        ("python", "version", "3.12.0"),
+        ("python", "implementation", "PyPy"),
+        ("python", "gil_disabled", True),
+        ("python", "gil_disabled", 0),
+        ("python", "executable", "relative/python"),
+        ("python", "sha256", "invalid"),
+        ("python", "size", True),
+        ("python", "size", 0),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["python_proofs"][0]["execution"][section][key] = value
+        variants.append(payload)
+    for key, value in (
+        ("schema", "molt.release-consumer-proof.v2"),
+        ("python_policy_sha256", "f" * 64),
+        ("candidate_sha256", "f" * 64),
+        ("passed", True),
+        ("selected", 2),
+        ("executed", 6.0),
+    ):
+        payload = copy.deepcopy(valid)
+        payload[key] = value
+        variants.append(payload)
+    payload = copy.deepcopy(valid)
+    for proof in payload["python_proofs"][1]["profile_proofs"]:
+        proof["compiler_fingerprint"] = "c" * 64
+    variants.append(payload)
+    payload = copy.deepcopy(valid)
+    first, second = payload["python_proofs"][:2]
+    second["execution"]["python"]["executable"] = first["execution"]["python"][
+        "executable"
+    ]
+    second["commands"][0]["argv"][-1] = first["commands"][0]["argv"][-1]
+    variants.append(payload)
+    for payload in variants:
+        with pytest.raises(ValueError, match="release consumer"):
+            admit(payload)
+    assert admit(valid) == candidate["artifacts"]
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "expected"),
+    [
+        ("Linux", "AMD64", ("linux", "x86_64")),
+        ("Linux", "arm64", ("linux", "aarch64")),
+        ("Darwin", "aarch64", ("macos", "arm64")),
+        ("Windows", "AMD64", ("windows", "x86_64")),
+        ("Windows", "ARM64", ("windows", "arm64")),
+    ],
+)
+def test_consumer_host_normalization_policy(system, machine, expected):
+    # Alias policy only: this does not claim execution on these foreign hosts.
+    assert host_coordinate(system, machine) == expected
+
+
 def test_index_rehashes_all_staged_destinations_before_publication(
     tmp_path, monkeypatch, release_inputs
 ):
@@ -741,9 +1095,11 @@ def test_index_rehashes_all_staged_destinations_before_publication(
 
 
 def test_extract_rejects_noncanonical_zip_and_preserves_foreign_destination(
-    tmp_path, release_inputs
+    tmp_path, release_evidence_inputs
 ):
-    archive = tmp_path / "noncanonical" / release_inputs["release_exit_archive"].name
+    archive = (
+        tmp_path / "noncanonical" / release_evidence_inputs["release_exit_archive"].name
+    )
     archive.parent.mkdir()
     with zipfile.ZipFile(archive, "w") as handle:
         handle.writestr("release-exit.json", json.dumps({"source_sha": "a" * 40}))

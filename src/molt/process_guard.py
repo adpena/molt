@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .cargo_execution_policy import cargo_subprocess_environment
+from .source_root import compiler_source_root
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
@@ -36,14 +37,14 @@ GuardLoader = Callable[[Path | None], Any]
 
 
 def _molt_repo_root() -> Path:
-    root = Path(__file__).resolve().parents[2]
+    root = compiler_source_root()
     if (
         not (root / "pyproject.toml").is_file()
         or not (root / "tools" / "harness_memory_guard.py").is_file()
     ):
         raise RuntimeError(
-            "guarded execution requires the Molt source checkout owning "
-            f"{__file__}; its repository guard tools are unavailable"
+            "guarded execution requires the selected Molt compiler sources; "
+            f"guard tools are unavailable under {root}"
         )
     return root
 

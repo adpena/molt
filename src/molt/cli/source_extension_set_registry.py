@@ -11,12 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from molt.source_root import compiler_source_root
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.dx import checkout_custody
 from molt.process_guard import run_completed_command
 
-ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CONFIG_PATH = ROOT / "config" / "source_extension_package_sets.toml"
 CONFIG_ENV = "MOLT_SOURCE_EXTENSION_SET_REGISTRY_CONFIG"
 SOURCE_EXTENSION_EXEC_CAPABILITY = "module.extension.exec"
 
@@ -140,7 +139,11 @@ def _config_path(config_path: Path | None) -> Path:
     if config_path is not None:
         return config_path
     override = os.environ.get(CONFIG_ENV)
-    return Path(override) if override else DEFAULT_CONFIG_PATH
+    return (
+        Path(override)
+        if override
+        else compiler_source_root() / "config" / "source_extension_package_sets.toml"
+    )
 
 
 def _require_exact_keys[K](
@@ -607,7 +610,7 @@ def source_extension_set_expected_identity(
 
 
 def source_extension_custody_root() -> Path:
-    return checkout_custody(ROOT, os.environ).custody_root
+    return checkout_custody(compiler_source_root(), os.environ).custody_root
 
 
 def source_extension_set_root(
@@ -691,11 +694,12 @@ def verify_source_extension_checkout(
 
 
 def verify_source_extension_abi_headers(
-    variant: SourceExtensionVariant, *, repo_root: Path = ROOT
+    variant: SourceExtensionVariant, *, repo_root: Path | None = None
 ) -> None:
     if variant.abi_tier != "cpython-abi":
         return
-    python_h = repo_root / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
+    source_root = repo_root if repo_root is not None else compiler_source_root()
+    python_h = source_root / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
     text = python_h.read_text(encoding="utf-8")
     major_match = re.search(r"^#define PY_MAJOR_VERSION ([0-9]+)$", text, re.MULTILINE)
     minor_match = re.search(r"^#define PY_MINOR_VERSION ([0-9]+)$", text, re.MULTILINE)
