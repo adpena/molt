@@ -14,6 +14,7 @@ from molt.frontend import SimpleTIRGenerator
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
+from tests.cli.native_link_test_support import static_archive_bytes
 
 
 def _load_wasm_link():
@@ -28,6 +29,16 @@ def _load_wasm_link():
 
 wasm_link = _load_wasm_link()
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = wasm_link._make_rust_wasm_facts_provider
+
+
+def _build_compiler_rt_provider_archive() -> bytes:
+    symbol = "__trunctfdf2"
+    module = wasm_link._append_linking_function_symbols(
+        _build_exported_function_module(symbol),
+        [(symbol, 0, wasm_link.FLAG_BINDING_GLOBAL | wasm_link.FLAG_EXPLICIT_NAME)],
+    )
+    assert module is not None
+    return static_archive_bytes(module)
 
 
 def test_loaded_linker_facades_retain_typed_dependency_custody() -> None:
@@ -2344,15 +2355,47 @@ def test_strip_debug_sections_removes_all_dwarf_custom_sections() -> None:
         ]
     )
 
-    stripped = wasm_link._strip_debug_sections(module)
+    stripped = wasm_link.strip_wasm_publication_sections(
+        module, final_artifact=False, preserve_debug=False
+    )
 
-    assert stripped is not None
+    assert stripped != module
     custom_names = [
         wasm_link._parse_custom_section(payload)[0]
         for section_id, payload in wasm_link._parse_sections(stripped)
         if section_id == 0
     ]
     assert custom_names == ["molt.keep"]
+    assert (
+        wasm_link.strip_wasm_publication_sections(
+            module, final_artifact=False, preserve_debug=True
+        )
+        == module
+    )
+
+
+def test_post_link_optimizer_leaves_debug_for_final_publication() -> None:
+    app = _build_split_runtime_app_module([])
+    app = wasm_link._build_sections(
+        wasm_link._parse_sections(app)
+        + [(0, wasm_link._build_custom_section(".debug_info", b"source"))]
+    )
+    optimized = wasm_link._post_link_optimize(
+        app,
+        preserve_exports=wasm_link._split_runtime_contract_export_names("app"),
+        facts_provider=_facts_provider,
+    )
+    assert ".debug_info" in wasm_artifact.wasm_custom_section_names(optimized)
+    assert ".debug_info" in wasm_artifact.wasm_custom_section_names(
+        wasm_link.strip_wasm_publication_sections(
+            optimized, final_artifact=True, preserve_debug=True
+        )
+    )
+    assert ".debug_info" not in wasm_artifact.wasm_custom_section_names(
+        wasm_link.strip_wasm_publication_sections(
+            optimized, final_artifact=True, preserve_debug=False
+        )
+    )
 
 
 def test_publication_strip_removes_link_metadata_after_export_rewrite() -> None:
@@ -2695,8 +2738,8 @@ def test_validate_wasm_structural_falls_back_when_debug_strip_fails(
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "wasm-tools")
     monkeypatch.setattr(
         wasm_link,
-        "_strip_debug_sections",
-        lambda _data: (_ for _ in ()).throw(ValueError("bad debug section")),
+        "strip_wasm_publication_sections",
+        lambda _data, **_kwargs: (_ for _ in ()).throw(ValueError("bad debug section")),
     )
     monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
 
@@ -2722,7 +2765,9 @@ def test_validate_wasm_structural_fails_closed_on_validator_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(wasm_link.shutil, "which", lambda _name: "wasm-tools")
-    monkeypatch.setattr(wasm_link, "_strip_debug_sections", lambda _data: None)
+    monkeypatch.setattr(
+        wasm_link, "strip_wasm_publication_sections", lambda data, **_kwargs: data
+    )
     monkeypatch.setattr(
         wasm_link,
         "_run_external_tool",
@@ -3025,6 +3070,28 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
     assert next((cache_root / "wasm_link").rglob("artifact.wasm")).read_bytes() == cold
     assert not (tmp_path / "session-a" / ".molt_state" / "wasm_link_cache").exists()
     assert not (tmp_path / "session-b" / ".molt_state" / "wasm_link_cache").exists()
+
+
+def test_debug_policy_partitions_split_app_and_runtime_cache_keys() -> None:
+    app_kwargs = {
+        "app_data": b"app",
+        "reference_data": None,
+        "optimize": False,
+        "optimize_level": "O1",
+        "contract_keep_set": {"molt_main"},
+        "facts_authority_digest": "facts",
+    }
+    assert wasm_link._split_app_optimize_cache_key(
+        **app_kwargs, preserve_debug=False
+    ) != wasm_link._split_app_optimize_cache_key(**app_kwargs, preserve_debug=True)
+    runtime_kwargs = {
+        "runtime_data": b"runtime",
+        "normalized_required_exports": {"molt_main"},
+        "facts_authority_digest": "facts",
+    }
+    assert wasm_link._tree_shake_runtime_cache_key(
+        **runtime_kwargs, preserve_debug=False
+    ) != wasm_link._tree_shake_runtime_cache_key(**runtime_kwargs, preserve_debug=True)
 
 
 def test_split_app_optimizer_failure_is_fail_closed_and_not_cached(
@@ -4509,7 +4576,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     )
     compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
     compiler_rt_provider.parent.mkdir()
-    compiler_rt_provider.write_bytes(b"!<arch>\ncompiler-rt")
+    compiler_rt_provider.write_bytes(_build_compiler_rt_provider_archive())
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -4714,12 +4781,15 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
         converge,
         required_exports,
         apply_level,
+        preserve_debug,
     ):
         seen["input_path"] = input_path
         seen["level"] = level
         seen["converge"] = converge
         seen["required_exports"] = set(required_exports)
         seen["apply_level"] = apply_level
+        seen["preserve_debug"] = preserve_debug
+        seen["extra_passes"] = tuple(extra_passes)
         output_path.write_bytes(input_path.read_bytes())
         return {
             "ok": True,
@@ -4736,6 +4806,11 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
     assert wasm_link._run_wasm_opt_via_optimize(linked, level="Oz")
     assert seen["required_exports"] == {"molt_main", "molt_host_init"}
     assert seen["apply_level"] is True
+    assert seen["preserve_debug"] is False
+
+    assert wasm_link._run_wasm_opt_via_optimize(linked, level="Oz", preserve_debug=True)
+    assert seen["preserve_debug"] is True
+    assert "--strip-debug" not in seen["extra_passes"]
 
 
 def test_oz_publication_pipeline_is_bounded_and_size_focused() -> None:
@@ -6587,7 +6662,7 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
     provider = tmp_path / "rustlib" / "wasm32-wasip1" / "libcompiler_builtins-x.rlib"
     native.write_bytes(_build_env_function_import_module(["__trunctfdf2", "malloc"]))
     provider.parent.mkdir(parents=True)
-    provider.write_bytes(b"!<arch>\ncompiler-rt")
+    provider.write_bytes(_build_compiler_rt_provider_archive())
 
     monkeypatch.setattr(
         wasm_link.wasm_link_inputs,

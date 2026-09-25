@@ -30,3 +30,17 @@ def test_dev_link_policy_runs_one_nonconverging_o1_level() -> None:
 def test_optimizer_pipeline_rejects_unknown_level() -> None:
     with pytest.raises(ValueError, match="unsupported wasm-opt level"):
         wasm_opt_pipeline("O99")
+
+
+@pytest.mark.parametrize("level", WASM_OPT_LEVELS)
+def test_debug_preserving_link_policy_emits_names_without_stripping(level: str) -> None:
+    policy = wasm_link_policy(level, preserve_debug=True)
+
+    assert "-g" in policy.pipeline
+    assert "--strip-debug" not in policy.pipeline
+    assert "--remove-unused-names" not in policy.pipeline
+
+
+def test_debug_preserving_pipeline_rejects_conflicting_passes() -> None:
+    with pytest.raises(ValueError, match="cannot strip debug names"):
+        wasm_opt_pipeline("Oz", extra_passes=("--strip-debug",), preserve_debug=True)

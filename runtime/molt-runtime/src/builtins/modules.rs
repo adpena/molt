@@ -2051,6 +2051,8 @@ fn sys_modules_set_canonical_name(
     }
 }
 
+/// Publish a borrowed module without transferring either argument's ownership.
+/// Every successful path returns None, including first-init-wins publication.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -2111,10 +2113,8 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 // ModuleTable slot while its ensure transaction is open
                 // (publish-before-exec, invariant I6).
                 crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
-                if suppress_sys_modules {
-                    return existing;
-                }
-                return if let Some(sys_bits) = sys_bits_out
+                if !suppress_sys_modules
+                    && let Some(sys_bits) = sys_bits_out
                     && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
                     if let Err(err) =
@@ -2122,15 +2122,15 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                     {
                         return err;
                     }
-                    existing
-                } else {
-                    existing
-                };
+                }
+                return MoltObject::none().bits();
             }
+            // Acquire the cache's new owner before releasing its old one: the
+            // borrowed input may be the same object held solely by this entry.
+            inc_ref_bits(_py, module_bits);
             if let Some(old) = guard.insert(name.clone(), module_bits) {
                 dec_ref_bits(_py, old);
             }
-            inc_ref_bits(_py, module_bits);
             if is_sys {
                 let entries = guard
                     .iter()
@@ -3897,6 +3897,84 @@ mod tests {
     }
 
     #[test]
+    fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let refcount = |bits| {
+                let ptr = obj_from_bits(bits).as_ptr().expect("module object");
+                unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+            };
+            // Exercise both bootstrap publication without sys.modules and the
+            // ordinary mirrored publication path.
+            for mirror_sys_modules in [false, true] {
+                let sys_name = MoltObject::from_ptr(alloc_string(py, b"sys")).bits();
+                let sys_restore = ModuleCacheRestore::new(py, sys_name);
+                let sys_bits = if mirror_sys_modules {
+                    let bits = molt_module_new(sys_restore.name_bits());
+                    assert!(!obj_from_bits(bits).is_none());
+                    assert!(obj_from_bits(molt_module_cache_set(sys_name, bits)).is_none());
+                    bits
+                } else {
+                    MoltObject::none().bits()
+                };
+                let name =
+                    MoltObject::from_ptr(alloc_string(py, b"_molt_publication_ownership")).bits();
+                let cache_restore = ModuleCacheRestore::new(py, name);
+                let first = molt_module_new(name);
+                let duplicate = molt_module_new(name);
+                assert!(!obj_from_bits(first).is_none());
+                assert!(!obj_from_bits(duplicate).is_none());
+                assert_ne!(first, duplicate);
+                assert!(obj_from_bits(molt_module_cache_set(name, first)).is_none());
+                assert!(!exception_pending(py));
+                let first_owners = refcount(first);
+                let duplicate_owners = refcount(duplicate);
+
+                for _ in 0..3 {
+                    let result = molt_module_cache_set(name, duplicate);
+                    assert!(
+                        obj_from_bits(result).is_none(),
+                        "duplicate publication must not return a borrowed cache owner"
+                    );
+                    // Model an unbound owned-result sink, as used by WASM.
+                    dec_ref_bits(py, result);
+                    assert!(!exception_pending(py));
+                    assert_eq!(refcount(first), first_owners);
+                    assert_eq!(refcount(duplicate), duplicate_owners);
+                    let cached = molt_module_cache_get(name);
+                    assert_eq!(cached, first, "first initialization keeps its identity");
+                    dec_ref_bits(py, cached);
+                    if mirror_sys_modules {
+                        let dict =
+                            sys_modules_dict_ptr(py, sys_bits).expect("published sys.modules");
+                        assert_eq!(unsafe { dict_get_in_place(py, dict, name) }, Some(first));
+                    }
+                }
+
+                dec_ref_bits(py, duplicate);
+                dec_ref_bits(py, first);
+                let cache_owners = refcount(first);
+                if !mirror_sys_modules {
+                    assert_eq!(cache_owners, 1, "the cache is now the sole owner");
+                }
+                // The argument is borrowed from the live cache entry. A
+                // release-before-retain replacement would destroy it here.
+                for _ in 0..3 {
+                    let result = molt_module_cache_set(name, first);
+                    assert!(obj_from_bits(result).is_none());
+                    dec_ref_bits(py, result);
+                    assert!(!exception_pending(py));
+                    assert_eq!(refcount(first), cache_owners);
+                }
+                drop(cache_restore);
+                dec_ref_bits(py, sys_bits);
+                drop(sys_restore);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -3909,15 +3987,8 @@ mod tests {
             let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
             let result_bits = molt_module_cache_set(cache_restore.name_bits(), module_bits);
-            // Contract: a successful registration leaves no pending exception.
-            // The return value is either:
-            //   - None (fresh insert succeeded), or
-            //   - the previously-cached `existing` module bits (first-init-wins
-            //     skip path; only when a different module was already cached
-            //     under the same name).
-            // The "no pending exception" invariant is the public success
-            // criterion; the return value is an internal handoff that callers
-            // dec_ref unconditionally.
+            // Publication is a mutator, never a borrowed module handoff.
+            assert!(obj_from_bits(result_bits).is_none());
             assert!(
                 !exception_pending(_py),
                 "sys module registration must not leave a pending exception"

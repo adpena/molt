@@ -13,12 +13,18 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
-from typing import TypedDict
+from typing import Protocol, TypedDict
 
 from molt.cli.wasm_link_cache import WasmLinkCacheEntry, WasmLinkCacheRead
 from molt.wasm_artifact import WasmImport
 from molt.wasm_optimization import WasmOptPolicy
 from wasm_link_format import WasmModuleFacts
+
+
+class WasmLinkPolicyFactory(Protocol):
+    def __call__(
+        self, level: str, *, preserve_debug: bool = False
+    ) -> WasmOptPolicy: ...
 
 
 @dataclass(frozen=True)
@@ -49,7 +55,7 @@ class WasmValidationContext(WasmSplitContractContext):
     parse_wasm_module_facts: Callable[[bytes], WasmModuleFacts]
     _validate_wasm_structural: Callable[..., bool]
     _standard_section_order_error: Callable[[bytes], str | None]
-    _strip_debug_sections: Callable[[bytes], bytes | None]
+    strip_wasm_publication_sections: Callable[..., bytes]
     _run_external_tool: Callable[..., subprocess.CompletedProcess[str]]
     is_call_indirect_import_name: Callable[[str], bool]
     _validate_linked_table_import_contract: Callable[
@@ -123,7 +129,7 @@ class WasmOptimizerContext(WasmBinaryContext):
     _split_app_optimize_cache_key: Callable[..., str | None]
     _SPLIT_APP_OPTIMIZE_CACHE_SCHEMA: str
     _strip_unused_module_function_imports: Callable[..., bytes | None]
-    wasm_link_policy: Callable[[str], WasmOptPolicy]
+    wasm_link_policy: WasmLinkPolicyFactory
     _run_wasm_opt_via_optimize: Callable[..., bool]
     _record_wasm_opt_attestation_cache_metrics: Callable[
         [dict[str, int | float] | None, str, Mapping[str, object]], None

@@ -13033,7 +13033,7 @@ BASE_IMPORTS = """\
       }
     }
     frameStackPush(codeBits, globalsBits, builtinsBits);
-    return codeBits;
+    return boxNone();
   },
   trace_set_line: (lineBits) => {
     const lineRaw = isIntLike(lineBits) ? Number(unboxIntLike(lineBits)) : 0;
