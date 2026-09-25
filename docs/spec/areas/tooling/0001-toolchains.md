@@ -234,6 +234,10 @@ root. Package-manager interpreter bindings are explicit; a broken binding fails
 without falling through to a different interpreter. Setup/doctor report active
 source/Python and PATH ambiguity using the shared executable search authority;
 they neither infer package-manager ownership nor automatically remove a copy.
+Python import-graph analysis uses the same mutable `MOLT_CACHE`/platform-cache
+authority as other compiler caches, with separate project namespaces. It never
+stores graph hints in compiler source directories. Cached requests remain
+validated against source bytes, import policy and analysis implementation.
 After sealed source admission, installed compilation does not re-resolve the
 compiler's Python dependencies with ambient project configuration. The shared
 native/WASM runtime Cargo plan always uses `--locked`, independent of guest
