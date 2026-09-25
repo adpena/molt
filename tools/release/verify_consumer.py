@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sys
+import shutil
 import tarfile
 import tempfile
 import time
@@ -16,12 +16,32 @@ import time
 from tools.command_execution import CommandExecutor
 
 from .archive import extract_zip_strict
+from .build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY
+from .release_authority import (
+    CONSUMER_EXPECTED_OUTPUT,
+    CONSUMER_SCHEMA,
+    consumer_python_policy,
+    _load_candidate,
+    validate_consumer_proof,
+)
+from molt.compiler_distribution import InstalledCompiler, installed_compiler
+from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.file_publication import durable_remove_path
+from molt.python_interpreter import probe_python_command
+from molt.toolchain_identity import executable_content_identity
+from molt.verified_subset import current_host_coordinate, host_coordinate
 from .release_model import sha256_file, write_json
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
+EXPECTED_OUTPUT = CONSUMER_EXPECTED_OUTPUT
+_HOST_PROBE = (
+    "import json,platform,struct,sysconfig;"
+    "print(json.dumps({'system':platform.system(),'machine':platform.machine(),"
+    "'pointer_bits':struct.calcsize('P')*8,"
+    "'gil_disabled':bool(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)}))"
+)
 
 
 def _safe_destination(root: Path, member: str) -> Path:
@@ -43,7 +63,7 @@ def _extract(archive: Path, output: Path) -> None:
                     )
             handle.extractall(output, filter="data")
     elif archive.suffix == ".zip":
-        extract_zip_strict(archive, output)
+        extract_zip_strict(archive, output, policy=RELEASE_BUNDLE_ARCHIVE_POLICY)
     else:
         raise ValueError(f"unsupported release archive: {archive}")
 
@@ -52,8 +72,22 @@ def _venv_python(root: Path) -> Path:
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _venv_molt(root: Path) -> Path:
-    return root / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
+def _launchers(bundle_root: Path) -> tuple[list[str], list[str] | None]:
+    if os.name != "nt":
+        return [str(bundle_root / "bin" / "molt")], None
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        raise ValueError("Windows release verification requires PowerShell")
+    return [str(bundle_root / "bin" / "molt.cmd")], [
+        powershell,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(bundle_root / "bin" / "molt.ps1"),
+    ]
 
 
 def _run(
@@ -62,6 +96,7 @@ def _run(
     cwd: Path,
     env: dict[str, str],
     timeout: int,
+    role: str,
     expected_output: str | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
@@ -81,11 +116,12 @@ def _run(
             f"consumer command failed ({result.returncode}): {argv!r}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
-    if expected_output is not None and result.stdout.strip() != expected_output:
+    if expected_output is not None and result.stdout != expected_output + "\n":
         raise RuntimeError(
             f"consumer command returned {result.stdout!r}; expected {expected_output!r}"
         )
     return {
+        "role": role,
         "argv": argv,
         "returncode": result.returncode,
         "duration_seconds": duration,
@@ -94,9 +130,259 @@ def _run(
     }
 
 
+def _capture_python_execution(
+    python: Path,
+    *,
+    env: dict[str, str],
+    cwd: Path,
+    target: dict[str, object],
+    reference_python: str,
+) -> dict[str, object]:
+    interpreter = probe_python_command((str(python), "-I", "-B"), env=env, cwd=cwd)
+    result = _COMMANDS.run(
+        [str(python), "-I", "-B", "-c", _HOST_PROBE],
+        env=env,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    observed = loads_exact(result.stdout)
+    if (
+        not isinstance(observed, dict)
+        or set(observed) != {"system", "machine", "pointer_bits", "gil_disabled"}
+        or not isinstance(observed["system"], str)
+        or not isinstance(observed["machine"], str)
+        or type(observed["pointer_bits"]) is not int
+        or observed["pointer_bits"] != 64
+        or observed["gil_disabled"] is not False
+        or interpreter.version != reference_python
+        or Path(interpreter.executable).absolute() != python.absolute()
+    ):
+        raise ValueError("release consumer selected Python differs from its coordinate")
+    platform, arch = host_coordinate(observed["system"], observed["machine"])
+    if (platform, arch) != (target["platform"], target["arch"]):
+        raise ValueError("release consumer selected Python host differs from candidate")
+    identity = executable_content_identity(python, label="release consumer Python")
+    return {
+        "host": {"platform": platform, "arch": arch, "pointer_bits": 64},
+        "python": {
+            "implementation": interpreter.implementation,
+            "version": interpreter.version,
+            "executable": str(python),
+            "sha256": identity["sha256"],
+            "size": identity["size"],
+            "gil_disabled": False,
+        },
+    }
+
+
+def _absent_probe(python: Path, *, env: dict[str, str], cwd: Path) -> None:
+    _COMMANDS.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "import importlib.util; assert importlib.util.find_spec('molt') is None",
+        ],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+
+
+def _consumer_environment(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "MOLT_BUNDLE_ROOT",
+        "MOLT_SOURCE_ROOT",
+        "MOLT_BACKEND_PROFILE",
+        "MOLT_DEV_BACKEND_CARGO_PROFILE",
+        "MOLT_RELEASE_BACKEND_CARGO_PROFILE",
+        "MOLT_DEV_CARGO_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_SKIP_RUNTIME_REBUILD",
+    ):
+        env.pop(name, None)
+    env["MOLT_HOME"] = str(root / "molt-home")
+    env["MOLT_PROJECT_ROOT"] = str(root / "project")
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    return env
+
+
+def _verify_python_coordinate(
+    *,
+    root: Path,
+    bundle_root: Path,
+    compiler: InstalledCompiler,
+    target: dict[str, object],
+    minor: str,
+    reference: str,
+) -> dict[str, object]:
+    project = root / "project"
+    project.mkdir(parents=True)
+    env = _consumer_environment(root)
+    venv = root / "venv"
+    commands = [
+        _run(
+            ["uv", "venv", "--no-config", "--python", reference, str(venv)],
+            cwd=root,
+            env=env,
+            timeout=600,
+            role="environment",
+        )
+    ]
+    python = _venv_python(venv)
+    execution = _capture_python_execution(
+        python,
+        env=env,
+        cwd=root,
+        target=target,
+        reference_python=reference,
+    )
+    _absent_probe(python, env=env, cwd=root)
+    env["PYTHON"] = str(python)
+    launcher, powershell = _launchers(bundle_root)
+    commands.append(
+        _run(
+            [*launcher, "--help"],
+            cwd=project,
+            env=env,
+            timeout=600,
+            role="cli_help",
+        )
+    )
+    if powershell is not None:
+        commands.append(
+            _run(
+                [*powershell, "--help"],
+                cwd=project,
+                env=env,
+                timeout=600,
+                role="cli_help_powershell",
+            )
+        )
+    worker = (
+        bundle_root / "bin" / ("molt-worker.exe" if os.name == "nt" else "molt-worker")
+    )
+    commands.append(
+        _run(
+            [str(worker), "--help"],
+            cwd=root,
+            env=env,
+            timeout=60,
+            role="worker_help",
+        )
+    )
+    source = project / "release_consumer.py"
+    major, minor_number = (int(part) for part in minor.split("."))
+    source.write_text(
+        f"import sys\nassert sys.version_info[:2] == ({major}, {minor_number})\n"
+        f"print({EXPECTED_OUTPUT!r})\n",
+        encoding="utf-8",
+    )
+    profiles = []
+    for profile in ("dev", "release"):
+        executable = project / (
+            f"release_consumer_{profile}" + (".exe" if os.name == "nt" else "")
+        )
+        diagnostics = project / f"diagnostics-{profile}.json"
+        commands.append(
+            _run(
+                [
+                    *launcher,
+                    "build",
+                    "--target",
+                    "native",
+                    "--profile",
+                    profile,
+                    "--python-version",
+                    minor,
+                    "--diagnostics-file",
+                    str(diagnostics),
+                    "--output",
+                    str(executable),
+                    str(source),
+                ],
+                cwd=project,
+                env=env,
+                timeout=2700,
+                role=f"build_{profile}",
+            )
+        )
+        if not executable.is_file():
+            raise RuntimeError(
+                f"Molt did not produce the requested binary: {executable}"
+            )
+        observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
+        selected = observed.get("compiler", {})
+        if (
+            selected.get("sha256") != compiler.record["sha256"]
+            or selected.get("cargo_profile") != "release"
+            or Path(str(selected.get("path", ""))).resolve()
+            != compiler.binary.resolve()
+            or observed.get("program", {}).get("profile") != profile
+        ):
+            raise ValueError(
+                f"{minor}/{profile}: guest coordinate changed production compiler"
+            )
+        compiler.verify_binary(("native-backend",), "release")
+        runtime_env = env.copy()
+        runtime_env.pop("PYTHON", None)
+        commands.append(
+            _run(
+                [str(executable)],
+                cwd=project,
+                env=runtime_env,
+                timeout=60,
+                expected_output=EXPECTED_OUTPUT,
+                role=f"run_{profile}",
+            )
+        )
+        profiles.append(
+            {
+                "profile": profile,
+                "compiler_sha256": selected["sha256"],
+                "compiler_fingerprint": selected["fingerprint"],
+            }
+        )
+    if (
+        _capture_python_execution(
+            python,
+            env=env,
+            cwd=root,
+            target=target,
+            reference_python=reference,
+        )
+        != execution
+    ):
+        raise ValueError(
+            "release consumer interpreter identity changed during verification"
+        )
+    return {
+        "python": minor,
+        "reference_python": reference,
+        "execution": execution,
+        "commands": commands,
+        "profile_proofs": profiles,
+    }
+
+
 def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
     candidate_path = candidate_dir / "candidate.json"
-    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate = _load_candidate(candidate_path)
+    if current_host_coordinate() != (
+        candidate["target"]["platform"],
+        candidate["target"]["arch"],
+    ):
+        raise ValueError("release consumer must run on its candidate host")
+    coordinates, policy_sha256 = consumer_python_policy()
     artifacts = candidate.get("artifacts", [])
     if not isinstance(artifacts, list):
         raise ValueError("candidate artifacts must be a list")
@@ -111,7 +397,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         raise ValueError("candidate must contain exactly one Molt bundle")
     bundle = candidate_dir / str(molt_records[0]["filename"])
 
-    with tempfile.TemporaryDirectory(prefix="molt-release-consumer-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="molt release consumer ") as temporary:
         root = Path(temporary).resolve()
         extracted = root / "bundle"
         _extract(bundle, extracted)
@@ -131,133 +417,71 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         if not worker.is_file() or worker.stat().st_size == 0:
             raise ValueError(f"release bundle is missing {worker_name}")
 
-        venv_root = root / "venv"
-        clean_env = os.environ.copy()
-        for name in (
-            "PYTHONPATH",
-            "PYTHONHOME",
-            "VIRTUAL_ENV",
-            "MOLT_BUNDLE_ROOT",
-            "MOLT_VENV",
+        compiler = installed_compiler(bundle_root / "source")
+        if compiler is None or compiler.source_sha != candidate["source_sha"]:
+            raise ValueError("Bundle compiler source differs from candidate")
+        if compiler.record != candidate["compiler"]:
+            raise ValueError("Bundle compiler identity differs from candidate")
+        compiler.verify_sources()
+        compiler.verify_binary(("native-backend", "wasm-backend"), "release")
+        if consumer_python_policy(
+            bundle_root / "source/config/verified_subset.toml"
+        ) != (
+            coordinates,
+            policy_sha256,
         ):
-            clean_env.pop(name, None)
-        clean_env["MOLT_HOME"] = str(root / "molt-home")
-        clean_env["MOLT_PROJECT_ROOT"] = str(root / "project")
-        clean_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-        (root / "project").mkdir()
-        commands: list[dict[str, object]] = []
-        commands.append(
-            _run(
-                [sys.executable, "-m", "venv", str(venv_root)],
-                cwd=root,
-                env=clean_env,
-                timeout=120,
+            raise ValueError("Bundle Python policy differs from release authority")
+        proofs = [
+            _verify_python_coordinate(
+                root=root / f"python-{minor}",
+                bundle_root=bundle_root,
+                compiler=compiler,
+                target=candidate["target"],
+                minor=minor,
+                reference=reference,
             )
-        )
-        python = _venv_python(venv_root)
-        import_probe = _COMMANDS.run(
-            [str(python), "-c", "import molt"],
-            cwd=root,
-            env=clean_env,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        if import_probe.returncode == 0:
-            raise RuntimeError("clean consumer environment already imports Molt")
-        commands.append(
-            _run(
-                [
-                    str(python),
-                    "-m",
-                    "pip",
-                    "install",
-                    "--no-input",
-                    str(wheels[0]),
-                ],
-                cwd=root,
-                env=clean_env,
-                timeout=600,
+            for minor, reference in coordinates
+        ]
+        compiler.verify_sources()
+        # Remove both the portable bundle and its private installed environments;
+        # checking only the untouched bootstrap interpreter would miss residue.
+        durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
+        for minor, _ in coordinates:
+            coordinate_root = root / f"python-{minor}"
+            home = coordinate_root / "molt-home"
+            durable_remove_path(home, retirement_scope="consumer-uninstall")
+            if home.exists():
+                raise RuntimeError(
+                    "Molt's private environment remained after uninstall"
+                )
+            _absent_probe(
+                _venv_python(coordinate_root / "venv"),
+                env=_consumer_environment(coordinate_root),
+                cwd=coordinate_root,
             )
-        )
-        molt = _venv_molt(venv_root)
-        commands.append(
-            _run([str(molt), "--help"], cwd=root, env=clean_env, timeout=60)
-        )
-        commands.append(
-            _run([str(worker), "--help"], cwd=root, env=clean_env, timeout=60)
-        )
-        source = root / "project" / "release_consumer.py"
-        source.write_text(f'print("{EXPECTED_OUTPUT}")\n', encoding="utf-8")
-        executable = (
-            root
-            / "project"
-            / ("release_consumer.exe" if os.name == "nt" else "release_consumer")
-        )
-        commands.append(
-            _run(
-                [
-                    str(molt),
-                    "build",
-                    "--target",
-                    "native",
-                    "--output",
-                    str(executable),
-                    str(source),
-                ],
-                cwd=root / "project",
-                env=clean_env,
-                timeout=1800,
-            )
-        )
-        if not executable.is_file():
-            raise RuntimeError(
-                f"Molt did not produce the requested binary: {executable}"
-            )
-        runtime_env = clean_env.copy()
-        runtime_env.pop("PYTHON", None)
-        commands.append(
-            _run(
-                [str(executable)],
-                cwd=root / "project",
-                env=runtime_env,
-                timeout=60,
-                expected_output=EXPECTED_OUTPUT,
-            )
-        )
-        commands.append(
-            _run(
-                [str(python), "-m", "pip", "uninstall", "--yes", "molt"],
-                cwd=root,
-                env=clean_env,
-                timeout=120,
-            )
-        )
-        removed_probe = _COMMANDS.run(
-            [str(python), "-c", "import molt"],
-            cwd=root,
-            env=clean_env,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        if removed_probe.returncode == 0 or molt.exists():
-            raise RuntimeError("Molt remained importable or executable after uninstall")
+        if bundle_root.exists():
+            raise RuntimeError("Molt remained installed after portable bundle removal")
 
+        count = len(coordinates) * 2
         payload: dict[str, object] = {
-            "schema": "molt.release-consumer-proof.v1",
+            "schema": CONSUMER_SCHEMA,
             "candidate": candidate_path.name,
+            "candidate_sha256": canonical_json_sha256(candidate),
             "target": candidate["target"],
             "source_sha": candidate["source_sha"],
-            "selected": 1,
-            "executed": 1,
-            "passed": 1,
+            "selected": count,
+            "executed": count,
+            "passed": count,
             "failed": 0,
             "errors": 0,
-            "commands": commands,
+            "compiler": compiler.record,
+            "guest_profiles": ["dev", "release"],
+            "python_policy_sha256": policy_sha256,
+            "python_proofs": proofs,
             "standalone_native_output": EXPECTED_OUTPUT,
             "uninstall_verified": True,
         }
+        validate_consumer_proof(payload, candidate)
         write_json(receipt, payload)
         return payload
 

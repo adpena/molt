@@ -13,6 +13,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.output import fail as _fail
+from molt.source_root import compiler_source_root_override
 from molt.target_python import TargetPythonVersion
 from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
 
@@ -35,20 +36,12 @@ _stdlib_module_static_imports = _stdlib_intrinsic_policy.stdlib_module_static_im
 
 
 @functools.lru_cache(maxsize=8)
-def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
+def _stdlib_allowlist_cached(source_root_text: str | None) -> frozenset[str]:
     allowlist: set[str] = set()
-    spec_path = Path("docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md")
-    if not spec_path.exists():
-        if project_root_text:
-            spec_path = (
-                Path(project_root_text)
-                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
-            )
-        else:
-            spec_path = (
-                _compiler_root()
-                / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
-            )
+    source_root = Path(source_root_text) if source_root_text else _compiler_root()
+    spec_path = (
+        source_root / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+    )
     if not spec_path.exists():
         return frozenset(allowlist)
     for line in spec_path.read_text().splitlines():
@@ -70,8 +63,10 @@ def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
 
 
 def _stdlib_allowlist() -> set[str]:
-    project_root = os.environ.get("MOLT_PROJECT_ROOT")
-    return set(_stdlib_allowlist_cached(project_root))
+    source_root = compiler_source_root_override()
+    return set(
+        _stdlib_allowlist_cached(os.fspath(source_root) if source_root else None)
+    )
 
 
 def _enforce_intrinsic_stdlib(

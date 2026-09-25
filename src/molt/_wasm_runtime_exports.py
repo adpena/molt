@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ._intrinsic_symbols import intrinsic_runtime_symbol_name
+from .source_root import compiler_source_root
 from ._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -256,7 +257,7 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
 ) -> tuple[str, ...]:
     if not resolved_modules:
         return ()
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = compiler_source_root()
     dynamic_modules = tuple(
         module_name
         for module_name in resolved_modules
@@ -272,9 +273,14 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
     return tuple(sorted(names))
 
 
-@lru_cache(maxsize=1)
 def _all_dynamic_runtime_owned_intrinsic_exports() -> tuple[str, ...]:
-    repo_root = Path(__file__).resolve().parents[2]
+    return _all_dynamic_runtime_owned_intrinsic_exports_for_root(compiler_source_root())
+
+
+@lru_cache(maxsize=8)
+def _all_dynamic_runtime_owned_intrinsic_exports_for_root(
+    repo_root: Path,
+) -> tuple[str, ...]:
     package_root = repo_root / "src" / "molt"
     dynamic_roots = (package_root / "gpu",)
     names: set[str] = set()

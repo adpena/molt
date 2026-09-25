@@ -8,12 +8,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from molt.source_root import compiler_source_root
+
 
 BROWSER_WASM_ENTRY_ASSETS = "browser-wasm"
 BROWSER_HOST_ENTRY_ASSETS = "browser-host"
 NODE_RUNNER_ENTRY_ASSETS = "node-runner"
 _GRAPH_NAME = "browser_asset_graph.generated.json"
-_CANONICAL_WASM_ROOT = Path(__file__).resolve().parents[2] / "wasm"
 _CANONICAL_TEXT_SUFFIXES = frozenset({".js", ".json", ".mjs"})
 
 
@@ -199,5 +200,5 @@ def wasm_loader_asset_scope_paths(
 
     return tuple(
         f"wasm/{asset}"
-        for asset in wasm_loader_asset_closure(_CANONICAL_WASM_ROOT, entries)
+        for asset in wasm_loader_asset_closure(compiler_source_root() / "wasm", entries)
     )

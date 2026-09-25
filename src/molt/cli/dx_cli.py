@@ -17,7 +17,7 @@ from molt.cli.project_roots import _find_molt_root
 
 
 def _dx_project_from_cwd() -> DxProject:
-    root = _find_molt_root(Path.cwd()) or Path(__file__).resolve().parents[3]
+    root = _find_molt_root(Path.cwd())
     return DxProject(root)
 
 

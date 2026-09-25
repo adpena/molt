@@ -10,11 +10,10 @@ from pathlib import Path
 import re
 import tomllib
 
+from molt.source_root import compiler_source_root
+
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
-DEFAULT_CI_CARGO_POLICY = (
-    Path(__file__).resolve().parents[2] / "config" / "ci_resource_policy.toml"
-)
 SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
@@ -247,8 +246,13 @@ def _measurement_command(value: object, *, label: str) -> str:
 
 
 def load_ci_cargo_policy(
-    path: Path = DEFAULT_CI_CARGO_POLICY,
+    path: Path | None = None,
 ) -> CiCargoPolicy:
+    path = (
+        path
+        if path is not None
+        else compiler_source_root() / "config/ci_resource_policy.toml"
+    )
     try:
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:

@@ -185,6 +185,15 @@ def _emit_build_diagnostics(
     runtime_wasm_cache = diagnostics.get("runtime_wasm_cache", {})
     runtime_wasm_build = diagnostics.get("runtime_wasm_build", {})
     print("Build diagnostics:", file=sys.stderr)
+    compiler = diagnostics.get("compiler")
+    program = diagnostics.get("program")
+    if isinstance(compiler, dict) and isinstance(program, dict):
+        print(
+            f"- compiler: {compiler.get('cargo_profile')} | "
+            f"program: {program.get('profile')} ({program.get('target')}) | "
+            f"runtime: {program.get('runtime_cargo_profile')}",
+            file=sys.stderr,
+        )
     if isinstance(total_sec, (int, float)):
         print(f"- total_sec: {total_sec:.6f}", file=sys.stderr)
     if isinstance(module_count, int):

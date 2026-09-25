@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
+from molt.source_root import compiler_source_root
 from molt.path_custody import (
     CustodyPathRole,
     PathCustodyError,
@@ -521,7 +522,7 @@ def _maybe_register_lane_target(ext_root: Path, target_dir: Path) -> None:
             return
         if _running_under_pytest():
             return
-        tools_dir = Path(__file__).resolve().parent.parent.parent / "tools"
+        tools_dir = compiler_source_root() / "tools"
         if str(tools_dir.parent) not in sys.path:
             sys.path.insert(0, str(tools_dir.parent))
         from tools import disk_guard  # noqa: PLC0415 - lazy, best-effort
@@ -1676,7 +1677,7 @@ class DxProject:
 
     @classmethod
     def from_current_repo(cls) -> "DxProject":
-        return cls(Path(__file__).resolve().parents[2])
+        return cls(compiler_source_root())
 
     def load_config(self) -> dict[str, object]:
         pyproject = self.root / "pyproject.toml"

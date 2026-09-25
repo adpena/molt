@@ -151,7 +151,7 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
         seen_runtime_features.append(tuple(runtime_features))  # type: ignore[arg-type]
         return [runtime_source]
 
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
@@ -183,7 +183,7 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
     def runtime_source_paths(*args: object, **kwargs: object) -> list[Path]:
         raise AssertionError("runtime sources are not backend object cache inputs")
 
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
@@ -207,7 +207,7 @@ def test_cache_fingerprint_custodies_backend_concurrency_feature(
     backend_source = root / "runtime" / "molt-backend-native" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True)
     backend_source.write_text("pub fn backend_marker() {}\n", encoding="utf-8")
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
@@ -408,7 +408,7 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
     cli_source.write_text("CLI_MARKER = 1\n", encoding="utf-8")
     frontend_source.write_text("FRONTEND_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
@@ -432,7 +432,7 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text(f"{source.stem.upper()}_MARKER = 1\n", encoding="utf-8")
 
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
@@ -463,7 +463,7 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"marker-1\n")
 
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
@@ -532,7 +532,7 @@ def test_cache_tooling_fingerprint_tracks_each_helper_under_metadata_collision(
     # A metadata-only content-digest cache key served a stale digest here.
     root = tmp_path / "repo"
     sources = _write_frontend_tree(root)
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
@@ -556,7 +556,7 @@ def test_cache_tooling_fingerprint_stable_for_unrelated_source(
     unrelated = root / "src" / "molt" / "runtime_only" / "unrelated.py"
     unrelated.parent.mkdir(parents=True, exist_ok=True)
     unrelated.write_text("UNRELATED_MARKER = 1\n", encoding="utf-8")
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
@@ -841,7 +841,7 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
     )
     target = package / "target_python.py"
     target.write_text("TARGET = 312\n", encoding="utf-8")
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", tmp_path)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path))
     monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", site_packages)
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
@@ -878,7 +878,7 @@ def test_selected_compiler_root_does_not_relocate_captured_package_layout(
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n", encoding="utf-8")
     monkeypatch.setattr(COMPILER_METADATA, "_SRC_ROOT", installed_sources)
-    monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", checkout)
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(checkout))
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_compiler_clean_pathspec_source_state",

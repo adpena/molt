@@ -79,6 +79,10 @@ Apply those findings through the existing hierarchy:
   Prompt simplification cannot turn a unit result into native/WASM acceptance.
 - Stop repeating successful checks when inputs and claims have not changed.
   Carry authorized implementation through its named integration outcome.
+- Test-authoring policy and its research sources live in
+  [the testing strategy](../spec/areas/testing/0007-testing.md#test-quality-and-agent-written-tests).
+  The root constitution routes test work there; `CLAUDE.md` inherits the same
+  route through its import, without another prompt body or forced document load.
 - Audit a skill when its trigger, permission rule, or procedure actually affects
   the task. Keep descriptions narrow and route supporting material on demand;
   do not modify installed third-party skills as part of repository maintenance.

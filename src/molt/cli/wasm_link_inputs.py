@@ -20,6 +20,7 @@ from molt.toolchain_identity import (
     stable_executable_probe,
 )
 from molt.rust_toolchain import resolve_rustup_proxy
+from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import (
     WASI_TARGET_INCLUDE_DIRS as _WASI_TARGET_INCLUDE_DIRS,
     WASI_TARGET_LIB_DIRS as _WASI_SYSROOT_LIB_SUBDIRS,
@@ -378,9 +379,9 @@ def wasm_builtins_vendor_dir() -> Path:
     """Repo-vendored wasm long-double link archives (durable build inputs).
 
     A committed home for the wasm reloc-runtime long-double link inputs, resolved
-    relative to this module so an editable checkout finds it without env hunting.
+    from the selected compiler sources, independently of the guest project.
     """
-    return Path(__file__).resolve().parents[3] / "vendor" / "wasm-builtins"
+    return compiler_source_root() / "vendor" / "wasm-builtins"
 
 
 def _vendored_wasm_lib_archive(name: str) -> Path | None:

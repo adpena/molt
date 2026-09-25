@@ -12,22 +12,19 @@ _CARGO_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 @functools.lru_cache(maxsize=32)
 def _resolve_backend_profile_cached(
-    default_profile: BuildProfile,
     raw: str | None,
 ) -> tuple[BuildProfile, str | None]:
     if not raw:
-        return default_profile, None
+        return "release", None
     value = raw.strip().lower()
     if value not in {"dev", "release"}:
-        return default_profile, f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
+        return "release", f"Invalid MOLT_BACKEND_PROFILE value: {raw}"
     return value, None
 
 
-def _resolve_backend_profile(
-    default_profile: BuildProfile,
-) -> tuple[BuildProfile, str | None]:
+def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
+    """Select the host compiler independently of the guest build profile."""
     return _resolve_backend_profile_cached(
-        default_profile,
         os.environ.get("MOLT_BACKEND_PROFILE"),
     )
 
@@ -48,8 +45,7 @@ def _resolve_cargo_profile_name_cached(
     # produces a much larger binary.
     # release-output is the release default for the runtime staticlib: it uses
     # panic=abort and opt-level "z" for minimal binary size. The backend daemon
-    # uses release-fast via _resolve_backend_cargo_profile_name for fast
-    # optimized rebuilds.
+    # has its own independent profile authority below.
     default_profile = "dev-fast" if build_profile == "dev" else "release-output"
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
@@ -75,28 +71,17 @@ def _resolve_cargo_profile_name(
 def _resolve_backend_cargo_profile_name_cached(
     build_profile: BuildProfile,
     backend_raw: str,
-    generic_raw: str,
 ) -> tuple[str, str | None]:
     backend_env_var = (
         "MOLT_DEV_BACKEND_CARGO_PROFILE"
         if build_profile == "dev"
         else "MOLT_RELEASE_BACKEND_CARGO_PROFILE"
     )
-    generic_env_var = (
-        "MOLT_DEV_CARGO_PROFILE"
-        if build_profile == "dev"
-        else "MOLT_RELEASE_CARGO_PROFILE"
-    )
     normalized_backend = backend_raw.strip()
-    normalized_generic = generic_raw.strip()
-    default_profile = "dev-fast" if build_profile == "dev" else "release-fast"
-    profile_name = normalized_backend or normalized_generic
-    if not profile_name:
-        profile_name = default_profile
+    default_profile = "dev-fast" if build_profile == "dev" else "release"
+    profile_name = normalized_backend or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
-        if normalized_backend:
-            return default_profile, f"Invalid {backend_env_var} value: {backend_raw}"
-        return default_profile, f"Invalid {generic_env_var} value: {generic_raw}"
+        return default_profile, f"Invalid {backend_env_var} value: {backend_raw}"
     return profile_name, None
 
 
@@ -108,15 +93,9 @@ def _resolve_backend_cargo_profile_name(
         if build_profile == "dev"
         else "MOLT_RELEASE_BACKEND_CARGO_PROFILE"
     )
-    generic_env_var = (
-        "MOLT_DEV_CARGO_PROFILE"
-        if build_profile == "dev"
-        else "MOLT_RELEASE_CARGO_PROFILE"
-    )
     return _resolve_backend_cargo_profile_name_cached(
         build_profile,
         os.environ.get(backend_env_var, ""),
-        os.environ.get(generic_env_var, ""),
     )
 
 

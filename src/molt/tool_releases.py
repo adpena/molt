@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.dx import TOOLCHAINS_DIRNAME
+from molt.source_root import compiler_source_root
 
 TOOL_RELEASES_PATH = "config/tool_releases.toml"
 TOOL_RELEASES_SCHEMA_VERSION = 2
@@ -127,7 +128,7 @@ class ToolDiscovery:
 
 
 def tool_releases_path(root: Path | None = None) -> Path:
-    base = Path(__file__).resolve().parents[2] if root is None else Path(root)
+    base = compiler_source_root() if root is None else Path(root)
     return base / TOOL_RELEASES_PATH
 
 

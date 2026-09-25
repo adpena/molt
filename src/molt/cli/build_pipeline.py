@@ -9,6 +9,7 @@ from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import progress as _progress
 from molt.cli import factgraph as _factgraph
 from molt.cli.backend_daemon_paths import (
     _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
@@ -93,6 +94,7 @@ def _run_build_pipeline(
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
     )
+    _progress.phase("frontend")
     frontend_run_start = time.perf_counter()
     frontend_layer_error = _run_frontend_pipeline(
         prepared_frontend_run_ticket=prepared_frontend_run_ticket,
@@ -106,6 +108,8 @@ def _run_build_pipeline(
         )
     if frontend_layer_error is not None:
         return frontend_layer_error
+
+    _progress.phase("backend_pipeline")
 
     # MLIR target: run the frontend to produce TIR, then shell out to the
     # standalone molt-backend-mlir binary. This bypasses the standard backend

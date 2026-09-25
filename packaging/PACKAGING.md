@@ -34,14 +34,23 @@ These remain release blockers, not implicit passes from packaging success.
    pins. Admission requires the complete source-bound E1-E4 evidence closure.
 2. One Linux job builds the pure-Python wheel. It builds twice from independent
    `git archive` exports and admits exactly one byte-identical wheel.
-3. Every target independently builds `molt-worker` twice with locked Cargo input
-   and the shipped `release-output` profile. Byte identity is mandatory.
+3. Every target independently builds `molt-worker` and the production compiler
+   twice with locked Cargo inputs. The worker uses `release-output`; the compiler
+   uses the independent `release` profile, enforced by `build_compiler.py`.
+   Byte identity is mandatory for both binaries.
 4. `tools/release/release_authority.py candidate` creates deterministic Molt and
    worker archives twice, compares them, and emits a target candidate receipt.
 5. `tools/release/verify_consumer.py` extracts that immutable candidate into a
-   clean temporary root, installs its bundled wheel, invokes the CLI, compiles
-   and executes a standalone native program, uninstalls Molt, and proves the
-   import and console script are gone.
+   clean temporary root and runs the shipped launcher for every Python version
+   in the candidate source's verified-subset policy. Each cell selects its exact
+   reference interpreter and explicit guest Python semantics, then builds and
+   executes a standalone native program with both `dev` and `release` profiles.
+   All cells must use the same production compiler. The source-bound v3 consumer
+   receipt binds observed interpreter/host identities, build/run commands and
+   outputs to the exact candidate. Windows additionally checks PowerShell help;
+   that is launcher transport evidence, not a second semantic matrix. Installation
+   is private to the consumer; uninstall checks prove no ambient import or
+   console script remains.
 6. Only after every target passes does one index job create the collision-free
    v3 manifest, SHA256SUMS, and SPDX 2.3 SBOM, including the evidence ZIP and any
    required H0 manifest and signature bundle. GitHub's pinned attestation action

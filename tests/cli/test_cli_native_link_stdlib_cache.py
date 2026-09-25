@@ -148,6 +148,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
@@ -230,6 +231,7 @@ def test_prepare_native_link_snapshots_same_root_stdlib_input(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,
