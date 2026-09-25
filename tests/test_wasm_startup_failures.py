@@ -320,16 +320,22 @@ def test_node_runner_rejects_startup_error_before_host_exports(tmp_path: Path) -
         "const runMainSource = "
         + json.dumps(run_main)
         + ";\n"
+        + "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
-async function exercise(failure, split) {
+const {combinedError, formatTraceError} = require(lifecyclePath);
+async function exercise(primary, split, fails, cleanupErrors = []) {
   const events = [];
+  const traces = [];
   const runtime = {};
   const context = {
     appInstanceForHostCalls: null, appInstanceForExceptions: null,
-    runtimeInstance: runtime, initWasmAssets() {}, traceMark() {}, traceRun: false,
+    runtimeInstance: runtime, initWasmAssets() {}, traceMark: mark => traces.push(mark), traceRun: false,
+    formatTraceError,
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
     runtimeManifest: {mode: split ? 'split-runtime' : 'linked'},
     outputImports: null, inputHasRuntimeImports: false, runtimeImportsDesc: null,
@@ -341,35 +347,61 @@ async function exercise(failure, split) {
     },
     runLinked: async () => {
       events.push('startup');
-      if (failure) throw new Error(failure);
+      if (fails) throw primary;
     },
     runDirectLink: async () => {
       events.push('startup');
-      if (failure) throw new Error(failure);
+      if (fails) throw primary;
     },
     runHostExportCalls: async () => events.push('host-export'),
-    pendingRuntimeExceptionMessage(instance) { return instance === runtime ? failure : null; },
     wasiExitCode: null, maybeDumpRuntimeProfile() {},
     disposeRuntimeAndHost: async () => {
       events.push('dispose', 'shutdown');
-      return [];
+      return cleanupErrors;
     },
-    combinedError: errors => errors.length === 1 ? errors[0] : new AggregateError(errors),
+    combinedError,
   };
   vm.createContext(context);
   vm.runInContext(runMainSource + '\nthis.invoke = runMain;', context);
-  if (failure) {
-    await assert.rejects(context.invoke(), error => error.message === failure);
-    assert.deepEqual(events, ['startup', 'dispose', 'shutdown']);
+  if (fails || cleanupErrors.length) {
+    let caught = false;
+    try { await context.invoke(); } catch (error) {
+      caught = true;
+      const expected = fails ? [primary, ...cleanupErrors] : cleanupErrors;
+      if (expected.length === 1) assert.equal(error, expected[0]);
+      else {
+        assert.deepEqual(error.errors, expected);
+        assert.equal(error.cause, expected[0]);
+      }
+    }
+    assert(caught, 'guest and cleanup failures must remain observable');
   } else {
     assert.equal(await context.invoke(), 0);
-    assert.deepEqual(events, ['startup', 'host-export', 'dispose', 'shutdown']);
   }
+  if (fails) {
+    assert.deepEqual(events, ['startup', 'dispose', 'shutdown']);
+    assert.equal(traces.filter(mark => mark.startsWith('runMain:primary_error:')).length, 1);
+    assert(traces.findIndex(mark => mark.startsWith('runMain:primary_error:')) <
+      traces.indexOf('runMain:dispose:enter'));
+    assert(!traces.includes('runMain:runner_completed'));
+  } else {
+    assert.deepEqual(events, ['startup', 'host-export', 'dispose', 'shutdown']);
+    assert(traces.indexOf('runMain:runner_completed') < traces.indexOf('runMain:dispose:enter'));
+  }
+  assert.equal(traces.at(-1), 'runMain:dispose:completed');
 }
 (async () => {
+  const hostile = {toJSON() { throw new Error('JSON diagnostic failed'); },
+    [Symbol.toPrimitive]() { throw new Error('string diagnostic failed'); }};
+  const revoked = Proxy.revocable({}, {}); revoked.revoke();
   for (const split of [false, true]) {
-    await exercise('RuntimeError: original bootstrap diagnostic', split);
-    await exercise(null, split);
+    await exercise(undefined, split, false);
+    await exercise(undefined, split, false, [new Error('shutdown only')]);
+    for (const primary of [new Error('original bootstrap diagnostic'), null, undefined,
+      false, 0, '', hostile, revoked.proxy]) {
+      await exercise(primary, split, true);
+      await exercise(primary, split, true, [new Error('shutdown failed'), new Error('host close failed')]);
+    }
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
@@ -806,24 +838,34 @@ def test_node_finite_exit_records_status_without_abandoning_owners(
         "const terminalSource = "
         + json.dumps(terminal)
         + ";\n"
+        + "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
         + r"""
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const {EventEmitter} = require('node:events');
+const {formatTraceError, combinedError} = require(lifecyclePath);
 (async () => {
-  for (const mode of ['success', 'nonzero', 'failure', 'wasi', 'signal']) {
+  const hostile = {toJSON() { throw 1; }, [Symbol.toPrimitive]() { throw 2; }};
+  const revoked = Proxy.revocable({}, {}); revoked.revoke();
+  const failures = [new Error('guest failure'), null, undefined, false, 0, '', hostile,
+    revoked.proxy, combinedError([hostile, new Error('shutdown failure')])];
+  const cases = ['success', 'nonzero', 'wasi', 'signal'].map(mode => [mode, failures[0]]);
+  cases.push(...failures.map(failure => ['failure', failure]));
+  for (const [mode, failure] of cases) {
     const process = new EventEmitter();
     process.exit = () => { throw new Error('forced exit abandons owned children'); };
     const module = {};
-    const failure = new Error('guest failure');
     const diagnostics = [];
+    const traces = [];
     let cleanups = 0;
     const context = {process, module, require: {main: module}, IS_DB_WORKER: false,
-      IS_SOCKET_WORKER: false, traceRun: false, traceMark() {},
-      console: {error: error => diagnostics.push(error)}, formatTraceError: String,
+      IS_SOCKET_WORKER: false, traceRun: false, traceMark: mark => traces.push(mark),
+      console: {error: error => diagnostics.push(error)}, formatTraceError,
       isWasiExitSymbol: error => mode === 'wasi' && error === failure,
       wasiExitCode: 7, maybeDumpRuntimeProfile() {},
-      combinedError: errors => errors[0],
+      combinedError,
       disposeRuntimeAndHost: async () => { cleanups++; return [failure]; },
       runMain: () => mode === 'signal' ? new Promise(() => {})
         : ['failure', 'wasi'].includes(mode) ? Promise.reject(failure)
@@ -836,6 +878,10 @@ const {EventEmitter} = require('node:events');
     assert.equal(process.exitCode, {success: undefined, nonzero: 17, failure: 1, wasi: 7, signal: 143}[mode]);
     assert.equal(cleanups, mode === 'signal' ? 1 : 0);
     if (['failure', 'signal'].includes(mode)) assert.ok(diagnostics.includes(failure));
+    if (mode === 'failure') {
+      assert(traces.some(mark => mark.startsWith('runMain:catch_err:')));
+      assert.equal(traces.at(-1), 'runMain:exit_1');
+    }
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
@@ -1318,6 +1364,88 @@ async function exercise(status) {
 """,
         tmp_path,
     )
+
+
+def test_shared_runtime_diagnostics_are_total_and_browser_safe(tmp_path: Path) -> None:
+    lifecycle = ROOT / "wasm/runtime_lifecycle.js"
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(lifecycle))
+        + ";\nconst lifecycleSource = "
+        + json.dumps(lifecycle.read_text(encoding="utf-8"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const browser = vm.createContext({});
+vm.runInContext(lifecycleSource, browser);
+for (const api of [require(lifecyclePath), browser.MoltRuntimeLifecycle]) {
+  const {formatTraceError, combinedError} = api;
+  for (const [value, expected] of [[undefined, 'undefined'], [null, 'null'],
+    [false, 'false'], [0, '0'], ['', '""'], [7n, '7'], [Symbol('failure'), 'Symbol(failure)']]) {
+    assert.equal(formatTraceError(value), expected);
+  }
+  const hostile = {toJSON() { throw new Error('toJSON failed'); },
+    [Symbol.toPrimitive]() { throw new Error('coercion failed'); }};
+  const revoked = Proxy.revocable({}, {}); revoked.revoke();
+  const getterError = new Error('hidden message');
+  Object.defineProperties(getterError, {
+    stack: {get() { throw new Error('stack getter failed'); }},
+    message: {get() { throw new Error('message getter failed'); }},
+    toJSON: {value: hostile.toJSON},
+    [Symbol.toPrimitive]: {value: hostile[Symbol.toPrimitive]},
+  });
+  const cyclic = {}; cyclic.self = cyclic;
+  for (const primary of [hostile, revoked.proxy, getterError, cyclic, null, undefined, false, 0, '']) {
+    assert.equal(typeof formatTraceError(primary), 'string');
+    assert.equal(combinedError([primary]), primary);
+    const secondary = new Error('cleanup failed');
+    const aggregate = combinedError([primary, secondary, hostile]);
+    assert.equal(aggregate.errors.length, 3);
+    assert.equal(aggregate.errors[0], primary);
+    assert.equal(aggregate.errors[1], secondary);
+    assert.equal(aggregate.errors[2], hostile);
+    assert.equal(aggregate.cause, primary);
+    assert.equal(typeof formatTraceError(aggregate), 'string');
+  }
+  assert.equal(formatTraceError(hostile), '<unformattable thrown value>');
+  assert.equal(formatTraceError(revoked.proxy), '<unformattable thrown value>');
+}
+""",
+        tmp_path,
+    )
+
+
+def test_node_runner_trace_milestones_cover_linked_and_direct_boundaries() -> None:
+    source = (ROOT / "wasm/run_wasm.js").read_text(encoding="utf-8")
+    for name, end_name, stages in (
+        ("runDirectLink", "runLinked", ("runtime_instantiate", "app_instantiate")),
+        ("runLinked", "runMain", ("instantiate",)),
+    ):
+        body = source[
+            source.index(f"const {name} = async () => {{") : source.index(
+                f"const {end_name} = async () => {{"
+            )
+        ]
+        prefix = "direct" if name == "runDirectLink" else "linked"
+        marks = [
+            f"traceMark('{prefix}:{stage}:{edge}');"
+            for stage in (*stages, "bootstrap", "execution", "guest")
+            for edge in ("enter", "completed")
+        ]
+        # Execution owns guest entry, pending checks and leave. A guest return
+        # alone must not be mistaken for a completed execution boundary.
+        marks.remove(f"traceMark('{prefix}:execution:completed');")
+        marks.append(f"traceMark('{prefix}:execution:completed');")
+        offsets = [body.index(mark) for mark in marks]
+        assert offsets == sorted(offsets)
+        assert body.index(f"traceMark('{prefix}:guest:enter');") < body.index(
+            "molt_main();"
+        )
+        assert body.index("molt_main();") < body.index(
+            f"traceMark('{prefix}:guest:completed');"
+        )
+        assert body.count("WebAssembly.instantiate(") == len(stages)
 
 
 def test_shared_runtime_lifetime_custody_and_failure_ordering(tmp_path: Path) -> None:

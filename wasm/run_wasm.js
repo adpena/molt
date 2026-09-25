@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const wasmAbiGenerated = require('./wasm_abi_generated.json');
-const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = require('./runtime_lifecycle.js');
+const { createRuntimeLifetime, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError, formatTraceError } = require('./runtime_lifecycle.js');
 const {
   WEBGPU_DISPATCH_HOST_IMPORT,
 } = require('./target_feature_manifest.json').constants;
@@ -157,19 +157,6 @@ const runtimeLifetime = (runtimeInst) => {
 const withRuntimeExecution = (runtimeInst, operation) => runtimeLifetime(runtimeInst).execute(operation);
 let activeReservedRuntimeCallables = reservedRuntimeCallables;
 let activeReservedRuntimeCallableCount = RESERVED_RUNTIME_CALLABLE_COUNT;
-const formatTraceError = (err) => {
-  if (err instanceof Error) {
-    return err.stack || err.message || String(err);
-  }
-  if (typeof err === 'symbol') {
-    return String(err);
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return String(err);
-  }
-};
 const traceMark = (message) => {
   if (!traceRunFile) return;
   try {
@@ -5676,7 +5663,9 @@ const runDirectLink = async () => {
     runtimeImportsDesc,
     externalNativeLinkImports,
   );
+  traceMark('direct:runtime_instantiate:enter');
   const runtimeModule = await WebAssembly.instantiate(runtimeBuffer, runtimeImportObject);
+  traceMark('direct:runtime_instantiate:completed');
   const runtimeInst = runtimeModule.instance;
   runtimeInstance = runtimeInst;
   runtimeLifetime(runtimeInst).admit();
@@ -5716,7 +5705,9 @@ const runDirectLink = async () => {
     outputImports,
     externalNativeLinkImports,
   );
+  traceMark('direct:app_instantiate:enter');
   const outputModule = await WebAssembly.instantiate(wasmBuffer, outputImportObject);
+  traceMark('direct:app_instantiate:completed');
   outputInstance = outputModule.instance;
   appInstanceForHostCalls = outputInstance;
   if (traceRun) {
@@ -5734,10 +5725,13 @@ const runDirectLink = async () => {
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }
+  traceMark('direct:bootstrap:enter');
   runtimeLifetime(runtimeInst).initialize(() => {
     initializeWasiContextForInstance(outputWasi.wasi, outputInstance, outputMemory);
     initializeWasiForInstance(runtimeInst, memory);
   });
+  traceMark('direct:bootstrap:completed');
+  traceMark('direct:execution:enter');
   withRuntimeExecution(runtimeInst, () => {
     if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
       if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
@@ -5751,9 +5745,12 @@ const runDirectLink = async () => {
       console.error('[molt wasm] direct: call molt_main');
     }
     runMainWithWasiExit(() => {
+      traceMark('direct:guest:enter');
       molt_main();
     });
+    traceMark('direct:guest:completed');
   });
+  traceMark('direct:execution:completed');
 };
 
 const runLinked = async () => {
@@ -5883,7 +5880,9 @@ const runLinked = async () => {
     externalNativeLinkImports,
   );
 
+  traceMark('linked:instantiate:enter');
   const linkedModule = await WebAssembly.instantiate(linkedBuffer, importObject);
+  traceMark('linked:instantiate:completed');
   runtimeInstance = linkedModule.instance;
   runtimeLifetime(runtimeInstance).admit();
   const { molt_main } = linkedModule.instance.exports;
@@ -5903,15 +5902,21 @@ const runLinked = async () => {
   if (linkedMemory) {
     setWasmMemory(linkedMemory);
   }
+  traceMark('linked:bootstrap:enter');
   runtimeLifetime(linkedModule.instance).initialize(() => {
     if (linkedMemory) initializeWasiForInstance(linkedModule.instance, linkedMemory);
   });
+  traceMark('linked:bootstrap:completed');
+  traceMark('linked:execution:enter');
   withRuntimeExecution(linkedModule.instance, () => {
     // The generated molt_main wrapper is the sole normal-startup authority.
     runMainWithWasiExit(() => {
+      traceMark('linked:guest:enter');
       molt_main();
     });
+    traceMark('linked:guest:completed');
   });
+  traceMark('linked:execution:completed');
 };
 
 const runMain = async () => {
@@ -5986,8 +5991,11 @@ const runMain = async () => {
     return 0;
   } catch (error) {
     errors.push(error);
+    traceMark(`runMain:primary_error:${formatTraceError(error).replaceAll('\n', '\\n')}`);
   } finally {
+    traceMark('runMain:dispose:enter');
     errors.push(...await disposeRuntimeAndHost());
+    traceMark('runMain:dispose:completed');
     if (errors.length) throw combinedError(errors);
   }
 };

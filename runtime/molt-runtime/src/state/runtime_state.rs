@@ -1220,29 +1220,8 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
             molt_cpython_abi::api::object::attach_runtime_execution_thread();
             let state = unsafe { &*ptr };
             let py = gil.token();
-            crate::object::ops::profile_dump_with_gil(&py);
-            // RC drop-insertion substrate (design 20). Two distinct gates for
-            // two distinct properties:
-            //
-            // 1. Pre-teardown RUNAWAY guard. Runs here, while the full working
-            //    set is resident — a coarse peak-live/OOM canary at
-            //    EXPECTED_LIVE_OBJECTS (a reachable high-water-mark, not a leak;
-            //    teardown below reclaims every reachable acyclic graph).
-            crate::object::ops::assert_no_leak_at_exit(&py);
-            // Run the cyclic collector before module teardown so unreachable
-            // cycles are finalized and reclaimed in CPython's shutdown position.
-            unsafe {
-                let outcome = crate::object::gc::collect_cycles(&py);
-                match outcome.status {
-                    crate::object::gc::GcCollectStatus::Completed
-                    | crate::object::gc::GcCollectStatus::ReentrantNoop => {}
-                    failure => {
-                        eprintln!("molt gc: process-exit collection failed closed: {failure:?}")
-                    }
-                }
-            }
             runtime_teardown_for_process_exit(&py, state);
-            // 2. Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
+            // Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
             //    §2.4). Teardown above has reclaimed every reachable acyclic
             //    graph and the collector has reclaimed unreachable cycles, so the
             //    only survivors now are the immortal floor + genuine leaks. GIL

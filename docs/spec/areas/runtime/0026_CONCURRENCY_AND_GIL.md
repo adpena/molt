@@ -141,7 +141,12 @@ Late atexit registrations are released without starting a second exit phase.
 
 Late callbacks may refill either ownership domain; a separate early C-state
 cleanup is not sufficient. Only embedding teardown asserts the process-wide
-retained-thread count is zero. WASM shutdown custody authorizes C bridge
+retained-thread count is zero. Shared teardown owns execution custody before
+process-exit collection or the first pending/atexit/stdio callback, not only
+during the late root drain. Inheritance requires an actual lifecycle lease or
+shutdown-drain capability; C-extension context depth is not a substitute.
+The GIL must still be held at each nested public entry. WASM shutdown custody
+authorizes C bridge
 callbacks without fabricating an ordinary application execution frame or
 lifecycle lease. Process-static pending-call admission and its queue retire
 only when the lifecycle authority identifies the owning runtime; isolate

@@ -1,15 +1,15 @@
 Title: Runtime State Lifecycle and Shutdown
-Status: Draft
+Status: Active
 Owner: runtime
-Last Updated: 2026-09-20
+Last Updated: 2026-09-25
 
 ## Summary
-Molt's runtime uses process-global caches (builtins, interned names, module and
-exception caches, capability state, and async registries). These
-live for the life of the process and cannot be reclaimed, which blocks Miri
-from passing leak checks and makes long-running processes accumulate memory.
-This document defines a production-grade lifecycle with explicit init/shutdown,
-full teardown of global caches, and a path to auditability.
+`RuntimeState` owns builtins, interned names, module and exception caches,
+capability state, and async registries. Explicit initialization publishes this
+state; finalization revokes ordinary admission before retiring its owners.
+This contract defines shared native/WASM callback custody, embedding state
+reclamation, and executable process exit. Implementation and individual proof
+cells do not by themselves establish leak-free or release-wide conformance.
 
 ## Goals
 - Provide explicit `molt_runtime_init()` and `molt_runtime_shutdown()`.
@@ -19,11 +19,11 @@ full teardown of global caches, and a path to auditability.
   C/Rust allocator or TLS destructor teardown.
 - Preserve current fast paths (minimal overhead for steady-state execution).
 - Enable Miri leak checks to pass without suppressing leaks.
-- Prepare for optional allocation tracking and future GC/cycle collection.
+- Integrate allocation diagnostics and cyclic collection with lifecycle custody.
 
-## Non-Goals (Phase 1)
+## Non-Goals
 - Replace ref counting with a tracing GC.
-- Introduce a full cycle collector.
+- Replace the existing cyclic collector with a second reclamation authority.
 - Require pervasive API changes in generated code or wasm ABI (unless unavoidable).
 
 ## Performance + Concurrency Constraints
@@ -32,7 +32,7 @@ full teardown of global caches, and a path to auditability.
 - Async/coroutine and channel paths must remain zero-cost at runtime when the
   lifecycle is already initialized.
 
-## Current Leak Sources (Non-Exhaustive)
+## Owned Teardown Roots (Non-Exhaustive)
 - Builtin classes (`BuiltinClasses`) and their `__bases__`/`__mro__` tuples.
 - Interned names (`INTERN_*`) and method tables (OnceLock values).
 - Module cache, exception cache, last-exception tracking.
@@ -40,9 +40,9 @@ full teardown of global caches, and a path to auditability.
 - Capability cache and hash secret storage.
 - Async registries (task exception stacks, cancel tokens, per-task maps).
 
-## Proposed Architecture
+## Architecture
 ### RuntimeState
-Introduce a `RuntimeState` struct that owns all runtime-global state:
+`RuntimeState` owns runtime-global state:
 - Builtin classes and method table caches.
 - Interned names and attribute name caches.
 - Module/exception caches and last-exception tracking.
@@ -61,18 +61,32 @@ Introduce a `RuntimeState` struct that owns all runtime-global state:
 - C-API extension module metadata and per-module state registries.
 - Call binding provenance state for heap-backed `CallArgs` builders.
 
-Expose a single global pointer (fast path) to the active RuntimeState:
+The lifecycle publishes a single ready-state pointer for the fast path:
 - `molt_runtime_init()` allocates and initializes the state, then publishes
   the pointer.
 - `molt_runtime_shutdown()` revokes the pointer and tears down all state.
 
 ### Initialization
 - Idempotent initialization (multiple calls return success).
+- Finalizing and permanently shut-down runtimes cannot be reinitialized;
+  runtime restart is available only to serialized test fixtures.
 - Strict ordering: intern base names first, then builtin classes, then caches.
 - Fail fast if initialization fails; do not leave partial global state.
 
 ### Shutdown
 - Requires runtime quiescence (no running tasks/threads).
+- Shared teardown acquires shutdown-drain execution custody before its first
+  callback-capable operation, or inherits an actual ordinary lifecycle lease or
+  existing drain capability. A raw GIL or C-extension context is not that
+  capability. It remains held through the final callback-free release tail.
+- The boundary includes process-exit profiling and cycle collection, pending
+  calls, worker/task owner destruction, `atexit`, live stdio flushing, class
+  retirement and the C/Molt TLS fixed-point drain. All modes share this order;
+  isolates do not consume the primary runtime's process-owned pending calls.
+- Nested callbacks inherit the owner's capability without reopening ordinary
+  admission, creating a new lifecycle lease, or fabricating WASM execution
+  depth. Temporarily releasing the GIL to join workers does not transfer this
+  thread-local capability to another thread.
 - Drains caches (module/exception, intern tables, method caches).
 - Flushes TLS caches.
 - Decrefs builtin classes, tuples, and method objects.
@@ -325,7 +339,7 @@ contract; passing one host lane does not establish a cross-target matrix claim.
   not an optional runner capability. Explicit WASI commands retain their own
   `_start`/`proc_exit` semantics and do not acquire a Molt runtime lifetime.
 
-## Implementation Status (2026-04-30)
+## Implementation
 - `molt_runtime_init()` is wired into generated entrypoints; executable exits
   route through `molt_runtime_exit()` for Python-level finalization plus
   hard-exit, while `molt_runtime_shutdown()` remains the explicit embedding
@@ -413,12 +427,14 @@ Add an optional allocation registry for full teardown validation:
 - Release builds can opt-in for diagnostics.
 - Registry supports leak detection and per-type summaries.
 
-## GC/Cycle Collection Guidance
-Ref counting remains the primary strategy in Phase 1. A cycle collector or
-tracing GC is a separate milestone, because it would touch object layouts,
-write barriers, and reachability semantics. This plan explicitly prepares the
-groundwork (allocation registry + lifecycle control) to make that evolution
-safe and measurable.
+## GC/Cycle Collection
+Reference counting and `object/gc.rs` share object ownership and finalizer
+semantics. Process-exit collection runs under the shared teardown capability,
+before pending callbacks and module retirement, so unreachable-cycle finalizers
+can reenter public runtime APIs without ordinary admission. Collection failures
+remain explicit diagnostics; finalization must not silently claim collection
+completed. The post-teardown leak gauge reads counters only and cannot reenter
+the retired runtime.
 
 ## Safety and Concurrency
 - `molt_runtime_shutdown()` must acquire a global runtime lock (GIL or
@@ -427,19 +443,14 @@ safe and measurable.
   shutdown (scheduler/sleep worker threads now participate in shutdown cleanup).
 - WASM host environments must wire lifecycle entrypoints where applicable.
 
-## Implementation Plan
-1. Create `RuntimeState` and move high-risk globals first (builtin classes,
-   interned names, module cache, exception cache).
-2. Provide init/shutdown entrypoints and wire in CLI/tests.
-3. Migrate TLS caches into runtime-managed registries.
-4. Add optional allocation registry and leak reports.
-5. Gate all runtime entrypoints on a valid RuntimeState pointer.
-
-## Test Plan
-- Unit tests invoke init/shutdown and assert that caches are cleared.
-- Miri runs with leak checks must pass (no `alloc` leaks).
-- Stress tests exercise init/shutdown in loops (no growth).
-
-## Open Questions
-- Should shutdown be required or optional in production binaries?
-- Do we need a per-runtime allocator arena for fast teardown?
+## Verification
+- Cold lifecycle tests start without an ordinary lease and prove custody before
+  the earliest callback enters a public runtime API. Native raw-GIL nesting must
+  not mask missing shutdown custody.
+- Test ordinary-lease and nested-drain inheritance, process-exit collection,
+  pending/atexit/stdio callbacks, isolate ownership, and late TLS repopulation.
+- Active ordinary owners must still refuse embedding shutdown; recursive and
+  racing admission must not reopen a finalizing or permanently retired runtime.
+- Rebuilt native and WASM consumers prove output, exit and disposal together.
+  Runtime unit tests, Miri leak checks and target execution are distinct proof
+  cells, not interchangeable claims.
