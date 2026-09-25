@@ -10,8 +10,6 @@ release, descriptors, iteration, context managers, or comparison callbacks.
 from __future__ import annotations
 
 import ast
-import hashlib
-import struct
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
@@ -21,6 +19,7 @@ from types import MappingProxyType
 from typing import Final, Literal, Sequence, cast
 
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_source_keys import python_source_digest
 
 from molt.compiler_analysis.python_binding_facts import (
     ALL_INVALID_MEMBERS,
@@ -5661,129 +5660,6 @@ def python_binding_core_computations() -> int:
     return _CORE_CACHE.computation_count()
 
 
-def python_source_digest(source: str) -> str:
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True, slots=True)
-class _AstDigestBoundary:
-    kind: bytes
-    labels: tuple[bytes, ...]
-    owner: object
-    unordered: bool = False
-
-
-def python_ast_digest(tree: ast.AST) -> str:
-    """Return a stack-safe, typed AST/spans key, independent of filename/id.
-
-    Iterative postorder hashing avoids both ast.dump's recursive traversal and
-    its repeated construction of enclosing subtree strings. The v2 domain
-    invalidates old textual keys. Source attributes remain identity-bearing:
-    shifted trees must not reuse facts indexed by the old source locations.
-    Shared subtrees have value identity; cycles in synthetic inputs are rejected.
-    """
-    if not isinstance(tree, ast.AST):
-        raise TypeError("Python AST identity requires an AST root")
-    domain = b"molt.python-ast.v2\0"
-    pending: list[tuple[object, bool]] = [(tree, False)]
-    digests: list[bytes] = []
-    active: set[int] = set()
-    while pending:
-        value, finishing = pending.pop()
-        if finishing:
-            assert isinstance(value, _AstDigestBoundary)
-            active.remove(id(value.owner))
-            count = len(value.labels)
-            children = digests[-count:] if count else []
-            if count:
-                del digests[-count:]
-            if value.unordered:
-                children.sort()
-            digest = hashlib.sha256(domain + value.kind + b"\0")
-            digest.update(count.to_bytes(8, "big"))
-            for label, child in zip(value.labels, children, strict=True):
-                digest.update(len(label).to_bytes(8, "big"))
-                digest.update(label)
-                digest.update(child)
-            digests.append(digest.digest())
-            continue
-        if isinstance(value, ast.AST) or type(value) in (list, tuple, frozenset):
-            identity = id(value)
-            if identity in active:
-                raise ValueError(
-                    f"cyclic Python AST identity value: {type(value).__name__}"
-                )
-            # The finishing boundary retains its owner until all descendants
-            # finish, preventing identity reuse without rejecting shared siblings.
-            active.add(identity)
-        if isinstance(value, ast.AST):
-            fields = [
-                (group + name.encode("utf-8"), getattr(value, name))
-                for group, names in (
-                    (b"field:", value._fields),
-                    (b"attr:", value._attributes),
-                )
-                for name in names
-                if hasattr(value, name)
-            ]
-            pending.append(
-                (
-                    _AstDigestBoundary(
-                        b"ast:" + type(value).__name__.encode("utf-8"),
-                        tuple(name for name, _child in fields),
-                        value,
-                    ),
-                    True,
-                )
-            )
-            pending.extend((child, False) for _name, child in reversed(fields))
-            continue
-        if type(value) in (list, tuple, frozenset):
-            values = cast(list[object] | tuple[object, ...] | frozenset[object], value)
-            pending.append(
-                (
-                    _AstDigestBoundary(
-                        type(value).__name__.encode("ascii"),
-                        (b"",) * len(values),
-                        value,
-                        type(value) is frozenset,
-                    ),
-                    True,
-                )
-            )
-            pending.extend((child, False) for child in reversed(tuple(values)))
-            continue
-        kind = type(value)
-        if value is None or value is Ellipsis:
-            payload = b""
-        elif kind is bool:
-            payload = b"1" if value else b"0"
-        elif kind is int:
-            integer = cast(int, value)
-            payload = (b"-" if integer < 0 else b"+") + abs(integer).to_bytes(
-                max(1, (abs(integer).bit_length() + 7) // 8), "big"
-            )
-        elif kind is float:
-            payload = struct.pack("!d", cast(float, value))
-        elif kind is complex:
-            number = cast(complex, value)
-            payload = struct.pack("!dd", number.real, number.imag)
-        elif kind is str:
-            payload = cast(str, value).encode("utf-8", errors="surrogatepass")
-        elif kind is bytes:
-            payload = cast(bytes, value)
-        else:
-            raise TypeError(f"unsupported Python AST identity value: {kind.__name__}")
-        digests.append(
-            hashlib.sha256(
-                domain + b"scalar:" + kind.__name__.encode("ascii") + b"\0" + payload
-            ).digest()
-        )
-    if len(digests) != 1:
-        raise AssertionError("AST identity traversal lost its root")
-    return digests[0].hex()
-
-
 def analyze_python_bindings(
     tree: ast.Module,
     *,
@@ -5864,7 +5740,5 @@ __all__ = [
     "analyze_python_binding_facts",
     "analyze_python_bindings",
     "analyze_python_source_bindings",
-    "python_ast_digest",
     "python_binding_core_computations",
-    "python_source_digest",
 ]

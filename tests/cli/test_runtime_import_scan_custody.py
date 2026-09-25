@@ -20,7 +20,10 @@ from molt.cli.module_import_scanner import (
     _sealed_import_modules,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
-from molt.compiler_analysis.python_binding_flow import python_ast_digest
+from molt.compiler_analysis.python_source_keys import (
+    _PythonAstDigestAdmission,
+    python_ast_digest,
+)
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     ModuleImportState,
@@ -28,7 +31,6 @@ from molt.compiler_analysis.python_imports import (
     StaticMetadataValue,
     UnresolvedStaticImportError,
     UNKNOWN_VALUE,
-    _PythonAstDigestAdmission,
 )
 
 

@@ -16,6 +16,23 @@ requirements; context sharing never relaxes version, platform, or provenance
 gates. Persisted compiler/tooling closure identity includes the complete binding policy,
 analysis schema, and parser version.
 
+`compiler_analysis/python_source_keys.py` owns source-text digests, typed AST
+digests, source-span keys, and exact-tree digest admission. AST identity streams
+prefix-free v3 framing into SHA-256, with separate sorted member digests only for
+unordered constants. Class module/qualified name, field and attribute schemas,
+absent versus present slots, exact scalar types/bits, and source spans all remain
+identity-bearing. Explicit traversal frames reject active-path cycles while
+allowing shared subtrees by value; deeply nested ordered and unordered values
+do not consume the Python call stack. Buffering is bounded, and ordered container
+width does not require retaining all child hashes.
+
+One admission retains the exact tree and its captured digest only for a read-only
+scan generation. It rejects a substituted tree; it is not a mutation detector or
+a process-wide AST cache. A new operation after mutation must create a new
+admission. Binding analysis, import scans, frontend lowering, and profiling use
+this same identity authority; internal digest versions are not a stable public
+serialization contract.
+
 The binding profiler measures cold analysis and same-source context batches
 separately. Fact telemetry describes the computation that created shared facts;
 it is not work performed again on a cache hit. The process-lifetime fixpoint

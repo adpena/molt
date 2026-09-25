@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 import ast
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_effects import (
     expression_may_execute_python,
 )
 from molt.compiler_analysis.python_source_keys import (
+    _PythonAstDigestAdmission,
     PythonSourceKey,
     python_node_source_key,
     python_pattern_capture_names,
@@ -51,35 +52,6 @@ ImportResolutionError = Literal[
     "unknown_name",
     "missing_globals",
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class _PythonAstDigestAdmission:
-    """Digest fact for one exact, read-only scan generation.
-
-    Retaining the tree rejects substitution; this fact does not make a mutable
-    AST immutable and must not outlive the non-mutating scan that created it.
-    """
-
-    tree: ast.AST = field(repr=False, compare=False)
-    digest: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        from molt.compiler_analysis.python_binding_flow import python_ast_digest
-
-        object.__setattr__(self, "digest", python_ast_digest(self.tree))
-
-    @classmethod
-    def for_tree(
-        cls,
-        tree: ast.AST,
-        admission: _PythonAstDigestAdmission | None = None,
-    ) -> _PythonAstDigestAdmission:
-        if admission is None:
-            return cls(tree)
-        if admission.tree is not tree:
-            raise ValueError("AST digest admission belongs to a different tree")
-        return admission
 
 
 @dataclass(frozen=True, slots=True)

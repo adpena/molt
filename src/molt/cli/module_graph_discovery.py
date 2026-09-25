@@ -25,7 +25,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
 )
-from molt.compiler_analysis.python_imports import _PythonAstDigestAdmission
+from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,

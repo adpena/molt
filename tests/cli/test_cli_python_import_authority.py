@@ -20,7 +20,7 @@ from molt.cli.python_import_resolution import (
     local_import_targets,
 )
 from molt.compiler_analysis import python_imports
-from molt.compiler_analysis import python_binding_flow
+from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis import python_effects
 from molt.compiler_analysis.python_imports import (
     INVALID_VALUE,
@@ -257,7 +257,7 @@ def test_python_source_snapshot_caches_its_ast_digest(
 ) -> None:
     path = tmp_path / "entry.py"
     path.write_text("from pkg import child\n", encoding="utf-8")
-    digest = python_binding_flow.python_ast_digest
+    digest = python_source_keys.python_ast_digest
     calls = 0
 
     def record_digest(tree: ast.AST) -> str:
@@ -265,7 +265,7 @@ def test_python_source_snapshot_caches_its_ast_digest(
         calls += 1
         return digest(tree)
 
-    monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
+    monkeypatch.setattr(python_source_keys, "python_ast_digest", record_digest)
     snapshot = LocalPythonModuleResolver((tmp_path,)).capture_source(path)
     assert snapshot.ast_digest == snapshot.ast_digest
     assert calls == 1

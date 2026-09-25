@@ -50,7 +50,7 @@ from molt.target_python import (
     _parse_source_for_target,
 )
 from molt.compiler_analysis import native_support_slice as _native_support_slice
-from molt.compiler_analysis.python_binding_flow import python_ast_digest
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
@@ -2004,8 +2004,6 @@ def _prepare_entry_module_graph(
     if entry_snapshot is None:
         # Bare caller trees carry no byte provenance. Validate once, and never
         # publish them as strict scan records.
-        from molt.compiler_analysis.python_binding_flow import python_ast_digest
-
         entry_snapshot = _module_source.PythonSourceSnapshot.capture(source_path)
         captured_tree = _parse_source_for_target(
             entry_snapshot.text, filename=str(source_path), target_python=target_python

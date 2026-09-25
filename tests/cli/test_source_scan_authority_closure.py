@@ -782,7 +782,7 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
     cache = _ModuleResolutionCache()
     calls = []
 
-    from molt.compiler_analysis.python_imports import _PythonAstDigestAdmission
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 
     def collector(
         tree: ast.AST,
