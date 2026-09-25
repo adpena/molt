@@ -3019,6 +3019,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-launcher"
+version = "0.1.0"
+
+[[package]]
 name = "molt-passes"
 version = "0.1.0"
 dependencies = [

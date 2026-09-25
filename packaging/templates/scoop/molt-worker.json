@@ -13,9 +13,11 @@
       "hash": "{{WIN_ARM_SHA256}}"
     }
   },
+  "extract_dir": "molt-worker-{{VERSION}}",
   "bin": ["bin\\molt-worker.exe"],
   "checkver": "github",
   "autoupdate": {
+    "extract_dir": "molt-worker-$version",
     "architecture": {
       "64bit": {"url": "https://github.com/adpena/molt/releases/download/v$version/molt-worker-$version-windows-x86_64.zip"},
       "arm64": {"url": "https://github.com/adpena/molt/releases/download/v$version/molt-worker-$version-windows-arm64.zip"}

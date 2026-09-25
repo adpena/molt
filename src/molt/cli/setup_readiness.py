@@ -15,6 +15,7 @@ from molt.dx import DX_ENV_KEYS, DxProject
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.cli.default_paths import _default_molt_cache
+from molt.cli.installation_diagnostics import installation_checks
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
@@ -361,8 +362,12 @@ def _collect_setup_actions(checks: Sequence[Mapping[str, Any]]) -> list[dict[str
 
 
 def _build_toolchain_report(root: Path) -> _ToolchainReport:
-    checks: list[dict[str, Any]] = []
-    warnings: list[str] = []
+    checks = installation_checks(root)
+    warnings = [
+        f"{check['name']}: {check['detail']}. See advice."
+        for check in checks
+        if not check["ok"]
+    ]
     errors: list[str] = []
     system = platform.system()
 
@@ -392,7 +397,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     record(
         "python",
         python_ok,
-        f"{sys.version.split()[0]} (requires >=3.12)",
+        f"{sys.version.split()[0]} at {sys.executable} (requires >=3.12)",
         level="error",
         advice=_python_setup_advice(system) if not python_ok else None,
     )

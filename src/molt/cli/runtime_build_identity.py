@@ -894,19 +894,10 @@ def _runtime_build_environment_identity(
 
 def runtime_build_tooling_paths(project_root: Path) -> tuple[Path, ...]:
     """Project the canonical implementation closure into a source checkout."""
-    implementation_root = Path(__file__).resolve().parents[3]
-    relative_paths = set(_RUNTIME_BUILD_TOOLING_RELPATHS)
-    for path in python_capture_authority_paths():
-        try:
-            relative_paths.add(
-                path.resolve().relative_to(implementation_root).as_posix()
-            )
-        except ValueError as exc:
-            raise ValueError(
-                f"Python capture authority escaped implementation root: {path}"
-            ) from exc
     root = project_root.resolve(strict=False)
-    return tuple(root / relative for relative in sorted(relative_paths))
+    paths = {root / relative for relative in _RUNTIME_BUILD_TOOLING_RELPATHS}
+    paths.update(python_capture_authority_paths(source_root=root))
+    return tuple(sorted(paths))
 
 
 def runtime_build_tooling_authority(project_root: Path) -> dict[str, object]:

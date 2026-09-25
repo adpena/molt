@@ -185,7 +185,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "538a6d9f59bdcc95437ddcdbdc0752dc8da5c8fb6e2d44649bbfe9bef8181d7a",
+  "authority_sha256": "a1ce4a46556eb70d9ba5e5bd67a63604415329e2cfdff75e39cdc43b00b753f0",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -5407,7 +5407,7 @@
           "local.public-contract.0",
           "local.public-contract.1"
         ],
-        "description": "Every CLI command carries a declared stability tier and the generated public surface snapshot (CLI tree, target Python range, release targets, verified-subset matrix digest, native callable ABI) has not drifted without an explicit --update.",
+        "description": "Every CLI command carries a declared stability tier, public schema declarations match executable producers, and the generated public surface snapshot has not drifted without an explicit --update.",
         "gates": [
           "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
           "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py"
@@ -5421,6 +5421,15 @@
           "src/molt/cli/__init__.py",
           "src/molt/release_matrix.py",
           "src/molt/target_python.py",
+          "src/molt/compiler_distribution.py",
+          "src/molt/verified_subset.py",
+          "tools/gen_release_matrix.py",
+          "tools/legacy_inventory.py",
+          "tools/pact_witness_receipt.py",
+          "tools/phase_exit_manifest.py",
+          "tools/release_exit_gate.py",
+          "tools/release/release_authority.py",
+          "tools/release/release_model.py",
           "tools/public_contract_gate.py",
           "tests/tools/test_public_contract_gate.py"
         ],

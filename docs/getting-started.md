@@ -25,6 +25,9 @@ Platform details and pitfalls live in:
 Installer and package-manager definitions live in
 [packaging](../packaging/README.md). Templates in this repository do not by
 themselves establish that a release is available or accepted for your target.
+Follow the [binary installation guide](../packaging/INSTALL.md) for explicit
+private-dependency setup. `molt doctor --json` reports the active source,
+interpreter and competing PATH installations; it does not remove or repair them.
 
 ### Local repo workflow
 

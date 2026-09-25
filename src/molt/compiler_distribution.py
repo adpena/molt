@@ -22,7 +22,7 @@ from molt.toolchain_identity import stable_regular_file_content_identity
 from molt.verified_subset import current_host_coordinate
 
 MANIFEST_NAME = "release-compiler-source.json"
-MANIFEST_SCHEMA = "molt.release-compiler-source.v3"
+MANIFEST_SCHEMA = "molt.release-compiler-source.v4"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "luau-backend",
@@ -32,6 +32,14 @@ PRODUCTION_COMPILER_FEATURES = (
 )
 MAX_SOURCE_FILES = 25_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _source_mode_matches_git(actual: int, recorded: int) -> bool:
+    actual &= 0o7777
+    expected = recorded & 0o777
+    # The archive/install umask may remove access, but not add permissions or
+    # erase the owner's Git-tracked executable bit.
+    return not (actual & ~expected) and bool(actual & 0o100) == bool(expected & 0o100)
 
 
 def verify_source_inventory(
@@ -87,7 +95,9 @@ def verify_source_inventory(
         identity = stable_regular_file_content_identity(path, label="compiler source")
         if any(identity[key] != entry[key] for key in ("size", "sha256")):
             raise ValueError(f"Compiler source content changed: {name}")
-        if check_modes and path.stat().st_mode & 0o777 != entry["mode"] & 0o777:
+        if check_modes and not _source_mode_matches_git(
+            path.stat().st_mode, entry["mode"]
+        ):
             raise ValueError(f"Compiler source mode changed: {name}")
 
     with ThreadPoolExecutor(
@@ -125,17 +135,48 @@ def validate_compiler_record(record: object) -> dict[str, Any]:
     return record
 
 
+def validate_launcher_record(record: object) -> dict[str, Any]:
+    if (
+        not isinstance(record, dict)
+        or set(record) != {"path", "sha256", "size", "platform", "arch"}
+        or not _digest(record.get("sha256"))
+        or type(record.get("size")) is not int
+        or record["size"] <= 0
+        or not isinstance(record.get("platform"), str)
+        or not isinstance(record.get("arch"), str)
+        or (record.get("platform"), record.get("arch")) not in RUST_TARGET_BY_COORDINATE
+        or record["path"]
+        != ("bin/molt.exe" if record["platform"] == "windows" else "bin/molt")
+    ):
+        raise ValueError("invalid production launcher identity")
+    return record
+
+
 @dataclass(frozen=True)
 class InstalledCompiler:
     source_root: Path
     source_sha: str
     record: dict[str, Any]
+    launcher: dict[str, Any]
     files: tuple[dict[str, Any], ...]
-    wheel: dict[str, Any]
 
     @property
     def binary(self) -> Path:
         return self.source_root.parent / self.record["path"]
+
+    def verify_launcher(self) -> dict[str, str | int]:
+        if current_host_coordinate() != (
+            self.launcher["platform"],
+            self.launcher["arch"],
+        ):
+            raise ValueError("Installed launcher does not match this host")
+        identity = stable_regular_file_content_identity(
+            resolve_owned_path(self.source_root.parent / self.launcher["path"]),
+            label="installed launcher",
+        )
+        if any(identity[key] != self.launcher[key] for key in ("sha256", "size")):
+            raise ValueError("Installed launcher differs from its release manifest")
+        return identity
 
     def verify_binary(
         self, features: tuple[str, ...], cargo_profile: str
@@ -164,6 +205,7 @@ class InstalledCompiler:
         return identity
 
     def verify_sources(self) -> None:
+        self.verify_launcher()
         verify_source_inventory(
             self.source_root, self.files, manifest_name=MANIFEST_NAME
         )
@@ -184,7 +226,7 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
     )
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"schema", "git", "files", "compiler", "wheel"}
+        or set(payload) != {"schema", "git", "files", "compiler", "launcher"}
         or payload["schema"] != MANIFEST_SCHEMA
     ):
         raise ValueError("Invalid installed compiler manifest")
@@ -234,22 +276,10 @@ def installed_compiler(source_root: Path) -> InstalledCompiler | None:
             raise ValueError("Installed compiler source exceeds size policy")
         seen.add(identity)
         last = path
-    wheel = payload["wheel"]
-    if (
-        not isinstance(wheel, dict)
-        or set(wheel) != {"filename", "sha256", "size"}
-        or not _digest(wheel["sha256"])
-        or type(wheel["size"]) is not int
-        or wheel["size"] <= 0
-    ):
-        raise ValueError("Invalid installed compiler wheel identity")
-    wheel_path = portable_relative_path(wheel["filename"])
-    if len(wheel_path.parts) != 1 or wheel_path.suffix != ".whl":
-        raise ValueError("Invalid installed compiler wheel filename")
     return InstalledCompiler(
         source_root,
         git["commit"],
         validate_compiler_record(payload["compiler"]),
+        validate_launcher_record(payload["launcher"]),
         tuple(files),
-        wheel,
     )

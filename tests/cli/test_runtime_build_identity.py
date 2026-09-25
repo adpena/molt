@@ -538,6 +538,26 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     assert after_owned["digest"] != before["digest"]
 
 
+def test_runtime_tooling_source_projection_is_independent_of_install_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import python_environment_identity as capture
+
+    source = tmp_path / "compiler-source"
+    expected = identity.runtime_build_tooling_paths(source)
+    package = tmp_path / "environment/Lib/site-packages/molt"
+    monkeypatch.setattr(
+        identity, "__file__", str(package / "cli/runtime_build_identity.py")
+    )
+    monkeypatch.setattr(
+        capture, "__file__", str(package / "python_environment_identity.py")
+    )
+    assert identity.runtime_build_tooling_paths(source) == expected
+    assert source / "src/molt/python_environment_identity.py" in expected
+    assert source / "src/sitecustomize.py" in expected
+    assert source / "pyproject.toml" in expected
+
+
 def test_ambient_c_and_cxx_flags_are_family_identity_inputs(
     identity_root: Path,
 ) -> None:

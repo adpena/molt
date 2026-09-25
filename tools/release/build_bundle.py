@@ -14,6 +14,7 @@ import tempfile
 from .archive import ArchivePolicy, write_reproducible_zip
 from .compiler_payload import (
     compiler_record,
+    launcher_record,
     materialize_sources,
 )
 from .git_source_snapshot import GitSourceSnapshot
@@ -22,85 +23,6 @@ from molt.compiler_distribution import MAX_SOURCE_FILES
 
 ROOT = Path(__file__).resolve().parents[2]
 RELEASE_BUNDLE_ARCHIVE_POLICY = ArchivePolicy(max_members=MAX_SOURCE_FILES * 2)
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", newline="")
-
-
-def _make_unix_wrapper(path: Path) -> None:
-    script = """#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -z "${MOLT_HOME:-}" ]; then
-  if [ -w "$ROOT" ]; then
-    export MOLT_HOME="$ROOT"
-  else
-    export MOLT_HOME="$HOME/.molt"
-  fi
-fi
-export MOLT_PROJECT_ROOT="${MOLT_PROJECT_ROOT:-$PWD}"
-PYTHON_BIN="${PYTHON:-}"
-if [ -z "$PYTHON_BIN" ]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN=python3
-  elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN=python
-  else
-    echo "molt: Python 3.12+ not found" >&2
-    exit 1
-  fi
-fi
-exec "$PYTHON_BIN" -I -B "$ROOT/lib/molt/bootstrap.py" "$@"
-"""
-    _write_text(path, script)
-    path.chmod(0o755)
-
-
-def _make_windows_wrapper(root: Path) -> None:
-    cmd = (
-        "@echo off\r\n"
-        "setlocal DisableDelayedExpansion\r\n"
-        'set "ROOT=%~dp0.."\r\n'
-        'if not defined MOLT_HOME set "MOLT_HOME=%USERPROFILE%\\.molt"\r\n'
-        'if not defined MOLT_PROJECT_ROOT set "MOLT_PROJECT_ROOT=%CD%"\r\n'
-        'set "BOOT=%ROOT%\\lib\\molt\\bootstrap.py"\r\n'
-        'if not exist "%BOOT%" (\r\n'
-        "  echo molt: bootstrap not found at %BOOT%\r\n"
-        "  exit /b 1\r\n"
-        ")\r\n"
-        "if defined PYTHON goto selected\r\n"
-        "where py >nul 2>nul\r\n"
-        "if errorlevel 1 goto python\r\n"
-        'py -3 -I -B "%BOOT%" %*\r\n'
-        "exit /b %ERRORLEVEL%\r\n"
-        ":python\r\n"
-        'python -I -B "%BOOT%" %*\r\n'
-        "exit /b %ERRORLEVEL%\r\n"
-        ":selected\r\n"
-        '"%PYTHON%" -I -B "%BOOT%" %*\r\n'
-        "exit /b %ERRORLEVEL%\r\n"
-    )
-    ps1 = (
-        '$ErrorActionPreference = "Stop"\n'
-        "$root = Split-Path -Parent $MyInvocation.MyCommand.Path\n"
-        '$root = (Resolve-Path -LiteralPath (Join-Path $root "..")).Path\n'
-        'if (-not $env:MOLT_HOME) { $env:MOLT_HOME = Join-Path $env:USERPROFILE ".molt" }\n'
-        "if (-not $env:MOLT_PROJECT_ROOT) { $env:MOLT_PROJECT_ROOT = (Get-Location).Path }\n"
-        '$boot = Join-Path $root "lib\\molt\\bootstrap.py"\n'
-        'if (-not (Test-Path -LiteralPath $boot)) { throw "molt: bootstrap not found at $boot" }\n'
-        "if ($env:PYTHON) {\n"
-        "  & $env:PYTHON -I -B $boot @args\n"
-        "} elseif (Get-Command py -ErrorAction SilentlyContinue) {\n"
-        "  py -3 -I -B $boot @args\n"
-        "} else {\n"
-        "  python -I -B $boot @args\n"
-        "}\n"
-        "exit $LASTEXITCODE\n"
-    )
-    _write_text(root / "bin" / "molt.cmd", cmd)
-    _write_text(root / "bin" / "molt.ps1", ps1)
 
 
 def _copy_file(src: Path, dst: Path, *, executable: bool = False) -> None:
@@ -113,34 +35,33 @@ def _copy_file(src: Path, dst: Path, *, executable: bool = False) -> None:
 
 def _bundle_molt(
     root: Path,
-    wheel: Path,
-    worker_bin: Path | None,
     *,
     compiler: Path,
+    launcher: Path,
     snapshot: GitSourceSnapshot,
     platform: str,
     arch: str,
 ) -> None:
     record = compiler_record(compiler, platform=platform, arch=arch)
+    entry = launcher_record(launcher, platform=platform, arch=arch)
     source = materialize_sources(
-        root, repo_root=ROOT, snapshot=snapshot, compiler=record, wheel=wheel
+        root,
+        repo_root=ROOT,
+        snapshot=snapshot,
+        compiler=record,
+        launcher=entry,
     )
     _copy_file(compiler, root / record["path"], executable=True)
-    _copy_file(
-        source / "packaging" / "bootstrap.py", root / "lib" / "molt" / "bootstrap.py"
-    )
+    _copy_file(launcher, root / entry["path"], executable=True)
     _copy_file(
         source / "packaging" / "INSTALL.md", root / "share" / "molt" / "INSTALL.md"
     )
     _copy_file(source / "LICENSE", root / "share" / "molt" / "LICENSE")
-    _copy_file(wheel, root / "share" / "molt" / "wheels" / wheel.name)
-    if worker_bin is not None:
-        _copy_file(worker_bin, root / "bin" / worker_bin.name, executable=True)
 
 
 def _bundle_worker(root: Path, worker_bin: Path) -> None:
     _copy_file(worker_bin, root / "bin" / worker_bin.name, executable=True)
-    _copy_file(ROOT / "LICENSE", root / "share" / "molt" / "LICENSE")
+    _copy_file(ROOT / "LICENSE", root / "share" / "molt-worker" / "LICENSE")
 
 
 def _normalized_mode(path: Path) -> int:
@@ -188,22 +109,20 @@ def build_bundle(
     *,
     version: str,
     platform: str,
-    wheel: Path | None,
     worker: Path | None,
     kind: str,
     output: Path,
     source_date_epoch: int,
     arch: str,
     compiler: Path | None = None,
+    launcher: Path | None = None,
     snapshot: GitSourceSnapshot | None = None,
 ) -> None:
     if source_date_epoch <= 0:
         raise ValueError("source date epoch must be positive")
-    if kind == "molt" and wheel is None:
-        raise ValueError("wheel is required for molt bundles")
-    if kind == "molt" and (compiler is None or snapshot is None):
+    if kind == "molt" and (compiler is None or launcher is None or snapshot is None):
         raise ValueError(
-            "production compiler and committed source are required for molt bundles"
+            "production compiler, launcher and committed source are required for molt bundles"
         )
     if kind == "molt-worker" and worker is None:
         raise ValueError("worker is required for molt-worker bundles")
@@ -214,21 +133,17 @@ def build_bundle(
         root_dir = Path(temporary) / f"{kind}-{version}"
         root_dir.mkdir(parents=True)
         if kind == "molt":
-            assert wheel is not None
-            assert compiler is not None and snapshot is not None
+            assert (
+                compiler is not None and launcher is not None and snapshot is not None
+            )
             _bundle_molt(
                 root_dir,
-                wheel,
-                worker,
                 compiler=compiler,
+                launcher=launcher,
                 snapshot=snapshot,
                 platform=platform,
                 arch=arch,
             )
-            if platform == "windows":
-                _make_windows_wrapper(root_dir)
-            else:
-                _make_unix_wrapper(root_dir / "bin" / "molt")
         else:
             assert worker is not None
             _bundle_worker(root_dir, worker)
@@ -259,9 +174,9 @@ def main() -> None:
         "--platform", choices=["macos", "linux", "windows"], required=True
     )
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--wheel", type=Path)
     parser.add_argument("--worker", type=Path)
     parser.add_argument("--compiler", type=Path)
+    parser.add_argument("--launcher", type=Path)
     parser.add_argument("--source-sha")
     parser.add_argument("--kind", choices=["molt", "molt-worker"], default="molt")
     parser.add_argument("--output", type=Path, required=True)
@@ -276,13 +191,13 @@ def main() -> None:
     build_bundle(
         version=args.version,
         platform=args.platform,
-        wheel=args.wheel,
         worker=args.worker,
         kind=args.kind,
         output=args.output,
         source_date_epoch=args.source_date_epoch,
         arch=args.arch,
         compiler=args.compiler,
+        launcher=args.launcher,
         snapshot=source_snapshot(ROOT, args.source_sha) if args.source_sha else None,
     )
 

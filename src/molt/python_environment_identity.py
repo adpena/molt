@@ -118,8 +118,15 @@ def python_identity_probe_arguments(
     ]
 
 
-def python_capture_authority_paths() -> tuple[Path, ...]:
-    """The single source closure for selected-Python capture and validation."""
+def python_capture_authority_paths(
+    *, source_root: Path | None = None
+) -> tuple[Path, ...]:
+    """Capture implementation inputs, optionally projected into compiler sources.
+
+    The loaded probe may live in site-packages. Source-based build identities
+    select their source root explicitly instead of deriving a repository layout
+    from that installation's physical import path.
+    """
     names = (
         "__init__",
         "_version",
@@ -151,7 +158,11 @@ def python_capture_authority_paths() -> tuple[Path, ...]:
         "file_publication",
         "portable_paths",
     )
-    root = Path(__file__).resolve().parent
+    root = (
+        Path(__file__).resolve().parent
+        if source_root is None
+        else source_root / "src" / "molt"
+    )
     # Standalone probes import the package bootstrap too. Its version resolver
     # consults this source-tree marker even when the proof's cwd is another repo.
     return (

@@ -208,20 +208,41 @@ native linking, build diagnostics, and the installed-consumer receipt.
 root manifest and pinned toolchain: developer profile/CPU flags and compiler
 wrappers cannot change the distributed compiler. Cargo configuration that
 overrides this policy is rejected, not silently combined with it. The installed
-consumer runs the shipped launcher for both guest profiles and binds each
-build/run command and compiler identity into admission; Windows also exercises
-PowerShell help. That additional launcher check is not a second native/WASM
-semantic matrix. Source and transport fixtures do not establish release acceptance.
+consumer runs the shipped native launcher for both guest profiles and binds each
+build/run command and compiler/launcher identity into admission. The same
+executable entry point serves direct invocation and package-manager links; there
+is no separate shell/batch launcher policy. Source and transport fixtures do not
+establish release acceptance.
 
-The shipped bootstrap consumes the committed `uv.lock` directly with a frozen uv
-sync, preserving artifact hashes and Python/platform markers. It verifies the
-wheel and lock inputs first, then installs only the bundled wheel using uv's
-hash-required, dependency-free installer. Environment generations are keyed by
-release inputs and interpreter identity under `MOLT_HOME`; uv owns creation,
-locking and warm reuse. The dependency sync is inexact only to retain that
-separately installed wheel in this private environment. Ambient project and uv
-resolver/install overrides cannot select another dependency closure. There is no
-exported-requirements resolver or independent Molt venv/locking implementation.
+The native launcher embeds the bootstrap from the same frozen source revision.
+It executes the CLI exclusively from `source/src`; neither a copied bootstrap nor
+a second installed Molt wheel is an execution authority. The separately published
+wheel is independent of the native bundle. The bootstrap verifies locked inputs
+and the stdlib-only default-path authority before reusing its home selection.
+Environment generations are keyed by source/dependency and interpreter identity
+under `MOLT_HOME`, outside the installation prefix. Normal launches use uv's
+offline synchronization check without modifying the environment. Explicit
+`molt setup --install-cli-dependencies` authorizes frozen, exact dependency-only
+sync, including removal of unrequested packages only inside that private
+environment. It explains the source, destination and scope; it never installs
+Python/toolchains, edits PATH or changes another installation. Rustup automatic
+toolchain installation is disabled for the installed CLI. Ambient project and uv
+resolver/install overrides cannot select another dependency closure. There is
+no exported-requirements resolver or independent Molt venv/locking implementation.
+Python re-entry (including the REPL) inherits only the selected source import
+root. Package-manager interpreter bindings are explicit; a broken binding fails
+without falling through to a different interpreter. Setup/doctor report active
+source/Python and PATH ambiguity using the shared executable search authority;
+they neither infer package-manager ownership nor automatically remove a copy.
+After sealed source admission, installed compilation does not re-resolve the
+compiler's Python dependencies with ambient project configuration. The shared
+native/WASM runtime Cargo plan always uses `--locked`, independent of guest
+determinism settings. Installed metadata identifies the bundled source commit
+and compiler toolchain, not a containing guest Git repository or toolchain.
+Installed dependency-update commands cannot rewrite sealed source inputs; use
+the package manager or a new bundle to upgrade the compiler. Package SBOMs do
+not infer a built artifact's Rust toolchain from a probe on the packaging host;
+build/release receipts own that provenance.
 
 Development dependency symbols have one Cargo-native owner:
 `[profile.dev.package."*"] debug = 0`. The wildcard covers non-workspace

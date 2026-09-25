@@ -13,13 +13,14 @@ from typing import Any
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.compiler_distribution import installed_compiler
 from molt.source_root import compiler_source_root
 
 
 _CLI_PACKAGE_ROOT = Path(__file__).resolve().parent
 _MOLT_PACKAGE_ROOT = _CLI_PACKAGE_ROOT.parent
 _SRC_ROOT = _MOLT_PACKAGE_ROOT.parent
-_RUSTC_VERSION_CACHE_SCHEMA_VERSION = 1
+_RUSTC_VERSION_CACHE_SCHEMA_VERSION = 2
 _GIT_CLEAN_SOURCE_STATE_SCHEMA_VERSION = 1
 _GIT_CLEAN_PATHSPEC_SOURCE_STATE_SCHEMA_VERSION = 1
 _GIT_CLEAN_SOURCE_STATUS_TIMEOUT_SEC = 5.0
@@ -44,6 +45,9 @@ def _compiler_python_source_root(project_root: Path) -> Path:
 
 
 def _git_rev(root: Path) -> str | None:
+    installed = installed_compiler(root)
+    if installed is not None:
+        return installed.source_sha
     try:
         result = _run_completed_command(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
@@ -61,6 +65,9 @@ def _git_rev(root: Path) -> str | None:
 
 
 def _git_clean_head(root: Path) -> str | None:
+    if installed_compiler(root) is not None:
+        # A bundle inside a guest Git worktree is not that worktree's source.
+        return None
     try:
         result = _run_completed_command(
             [
@@ -140,7 +147,7 @@ def _git_clean_pathspec_state(
     root: Path,
     pathspecs: tuple[str, ...],
 ) -> dict[str, str | int] | None:
-    if not pathspecs:
+    if not pathspecs or installed_compiler(root) is not None:
         return None
     try:
         status = _run_completed_command(
@@ -360,7 +367,7 @@ def _rustc_version() -> str | None:
             ["rustc", "-Vv"],
             capture_output=True,
             env=None,
-            cwd=None,
+            cwd=_compiler_root(),
             memory_guard_prefix="MOLT_BUILD",
         )
     except OSError:

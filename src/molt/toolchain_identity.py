@@ -300,12 +300,12 @@ def executable_search_directories(
     return tuple(dict.fromkeys(roots))
 
 
-def find_executable(
+def executable_candidates(
     command: str, *, environment: Mapping[str, str], cwd: Path | None = None
-) -> Path | None:
-    """Select one executable using only explicit paths or captured search inputs."""
+) -> Iterator[Path]:
+    """Yield search-ordered executables without running or modifying any of them."""
     if not command or "\x00" in command:
-        return None
+        return
     cwd = Path.cwd() if cwd is None else cwd
     candidate = expand_user_path(command, environment=environment)
     if candidate.is_absolute() or any(separator in command for separator in "/\\"):
@@ -319,8 +319,14 @@ def find_executable(
         for name in names:
             candidate = directory / name
             if candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK):
-                return candidate.absolute()
-    return None
+                yield candidate.absolute()
+
+
+def find_executable(
+    command: str, *, environment: Mapping[str, str], cwd: Path | None = None
+) -> Path | None:
+    """Select one executable using only explicit paths or captured search inputs."""
+    return next(executable_candidates(command, environment=environment, cwd=cwd), None)
 
 
 def resolve_executable(

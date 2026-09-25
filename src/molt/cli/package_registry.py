@@ -9,7 +9,7 @@ from typing import Any
 import urllib.parse
 import uuid
 
-from molt.cli.compiler_metadata import _compiler_metadata
+from molt._version import version
 
 
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
@@ -216,7 +216,7 @@ def _upload_registry_file(
     upload_headers = {
         "Content-Type": _registry_content_type(source),
         "Content-Length": str(content_length),
-        "User-Agent": f"molt/{_compiler_metadata()[0] or 'unknown'}",
+        "User-Agent": f"molt/{version()}",
         "X-Molt-Upload-Id": str(uuid.uuid4()),
     }
     upload_headers.update(headers)

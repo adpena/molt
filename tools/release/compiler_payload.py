@@ -14,6 +14,7 @@ from molt.compiler_distribution import (
     PRODUCTION_COMPILER_PROFILE,
     PRODUCTION_COMPILER_FEATURES,
     validate_compiler_record,
+    validate_launcher_record,
 )
 from molt.exact_json import write_exact
 from molt.toolchain_identity import (
@@ -127,13 +128,31 @@ def compiler_record(binary: Path, *, platform: str, arch: str) -> dict[str, Any]
     )
 
 
+def launcher_record(binary: Path, *, platform: str, arch: str) -> dict[str, Any]:
+    validate_native_binary_architecture(
+        binary, RUST_TARGET_BY_COORDINATE[(platform, arch)]
+    )
+    identity = stable_regular_file_content_identity(
+        binary, label="production launcher input"
+    )
+    return validate_launcher_record(
+        {
+            "path": "bin/molt.exe" if platform == "windows" else "bin/molt",
+            "sha256": identity["sha256"],
+            "size": identity["size"],
+            "platform": platform,
+            "arch": arch,
+        }
+    )
+
+
 def materialize_sources(
     root: Path,
     *,
     repo_root: Path,
     snapshot: GitSourceSnapshot,
     compiler: dict[str, Any],
-    wheel: Path,
+    launcher: dict[str, Any],
 ) -> Path:
     env = source_environment()
     source = materialize_git_source_snapshot(
@@ -143,7 +162,6 @@ def materialize_sources(
         git=resolve_executable("git", environment=env, label="release source Git"),
         environment=env,
     )
-    wheel_identity = stable_regular_file_content_identity(wheel, label="release wheel")
     write_exact(
         source / MANIFEST_NAME,
         {
@@ -155,11 +173,7 @@ def materialize_sources(
             },
             "files": [entry.as_record() for entry in snapshot.files],
             "compiler": compiler,
-            "wheel": {
-                "filename": wheel.name,
-                "sha256": wheel_identity["sha256"],
-                "size": wheel_identity["size"],
-            },
+            "launcher": launcher,
         },
     )
     return source

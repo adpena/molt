@@ -78,6 +78,8 @@ def load_declaration(path: Path = DECLARATION_PATH) -> dict[str, Any]:
         isinstance(s, str) and s for s in schemas
     ):
         raise ValueError(f"{path}: public_schemas must be a list of identifiers")
+    if len(set(schemas)) != len(schemas):
+        raise ValueError(f"{path}: public_schemas must be unique")
     policy = document.get("policy")
     if not isinstance(policy, Mapping):
         raise ValueError(f"{path}: policy table is required")
@@ -85,6 +87,37 @@ def load_declaration(path: Path = DECLARATION_PATH) -> dict[str, Any]:
 
 
 # --- live surface -------------------------------------------------------------
+
+
+def live_public_schemas() -> list[str]:
+    """Read schema identifiers from their executable owners, not the declaration."""
+    from molt import compiler_distribution, verified_subset
+    from tools import (
+        gen_release_matrix,
+        legacy_inventory,
+        pact_witness_receipt,
+        release_exit_gate,
+    )
+    from tools.release import release_authority, release_model
+
+    return sorted(
+        (
+            release_model.CONFIG_SCHEMA,
+            release_authority.CANDIDATE_SCHEMA,
+            release_model.MANIFEST_SCHEMA,
+            release_authority.CONSUMER_SCHEMA,
+            compiler_distribution.MANIFEST_SCHEMA,
+            gen_release_matrix.SCHEMA,
+            f"{release_exit_gate.KIND}/{release_exit_gate.SCHEMA_VERSION}",
+            f"{pact_witness_receipt.KIND}/{pact_witness_receipt.SCHEMA_VERSION}",
+            pem.MANIFEST_SCHEMA,
+            pem.REQUIREMENTS_SCHEMA,
+            legacy_inventory.SCHEMA,
+            DECLARATION_SCHEMA,
+            SURFACE_SCHEMA,
+            verified_subset.SCHEMA,
+        )
+    )
 
 
 def _action_record(action: argparse.Action) -> dict[str, Any] | None:
@@ -166,7 +199,7 @@ def live_surface(declaration: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "verified_subset_matrix_digest": pem.generated_matrix_digest(),
         "native_callable_abi": native_callable_abi_tokens(),
-        "public_schemas": list(declaration["public_schemas"]),
+        "public_schemas": live_public_schemas(),
     }
 
 
@@ -186,6 +219,12 @@ def declaration_problems(
     for name in sorted(tiers):
         if name not in commands:
             problems.append(f"declared command {name!r} does not exist in the CLI")
+    declared = set(declaration["public_schemas"])
+    produced = set(live_public_schemas())
+    for schema in sorted(produced - declared):
+        problems.append(f"public schema {schema!r} has no reviewed declaration")
+    for schema in sorted(declared - produced):
+        problems.append(f"declared public schema {schema!r} has no matching producer")
     return problems
 
 

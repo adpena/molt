@@ -21,6 +21,7 @@ from tools.git_identity import require_git_object_id
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
+CONFIG_SCHEMA = "molt.release-supply-chain.v1"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 MANIFEST_SCHEMA = "molt.release-manifest.v3"
 SPDX_VERSION = "2.3"
@@ -73,7 +74,7 @@ class ReleaseTarget:
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("rb") as handle:
         document = tomllib.load(handle)
-    if document.get("schema") != "molt.release-supply-chain.v1":
+    if document.get("schema") != CONFIG_SCHEMA:
         raise ValueError("release supply-chain manifest schema is not supported")
     return document
 

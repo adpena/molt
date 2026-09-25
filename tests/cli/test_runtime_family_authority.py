@@ -247,6 +247,28 @@ def test_environment_linker_overrides_config_and_cli_overrides_environment(
     )
 
 
+@pytest.mark.parametrize("target", [None, "wasm32-wasip1"])
+@pytest.mark.parametrize("locked", [(), ("--locked",)])
+def test_runtime_plan_locks_compiler_dependencies_before_rustc_passthrough(
+    plan_root: Path, target: str | None, locked: tuple[str, ...]
+) -> None:
+    plan = _plan(
+        plan_root,
+        args=(
+            *(("--target", target) if target is not None else ()),
+            *locked,
+            "--",
+            "--print",
+            "native-static-libs",
+        ),
+        target=target,
+        env={"MOLT_SKIP_CARGO_LOCK": "1"},
+    )
+    separator = plan.command.index("--")
+    assert plan.command[:separator].count("--locked") == 1
+    assert plan.command[separator:] == ("--", "--print", "native-static-libs")
+
+
 @pytest.mark.parametrize(
     "target",
     [

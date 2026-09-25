@@ -924,6 +924,13 @@ def _dispatch_entrypoint_command(
     if args.command == "lint":
         return _quality_commands.lint(args.json, args.verbose)
     if args.command == "setup":
+        if args.install_cli_dependencies:
+            return _fail(
+                "Use the packaged molt launcher with 'setup --install-cli-dependencies' "
+                "and no other flags; source checkouts manage dependencies with uv sync.",
+                json_output=args.json,
+                command="setup",
+            )
         return setup(args.json, args.verbose, args.strict)
     if args.command == "doctor":
         return doctor(args.json, args.verbose, args.strict)

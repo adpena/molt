@@ -79,7 +79,8 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     env = production_environment(root, os.environ)
-    CommandExecutor.for_file(__file__).run(
+    commands = CommandExecutor.for_file(__file__)
+    commands.run(
         [
             "cargo",
             "build",
@@ -94,6 +95,26 @@ def main() -> None:
             "--no-default-features",
             "--features",
             ",".join(PRODUCTION_COMPILER_FEATURES),
+            "--target-dir",
+            str(args.target_dir),
+        ],
+        cwd=root,
+        env=env,
+        check=True,
+    )
+    # The public entry point is part of the same pinned source/toolchain build,
+    # but has no backend features or runtime dependencies.
+    commands.run(
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "--profile",
+            PRODUCTION_COMPILER_PROFILE,
+            "-p",
+            "molt-launcher",
+            "--bin",
+            "molt",
             "--target-dir",
             str(args.target_dir),
         ],
