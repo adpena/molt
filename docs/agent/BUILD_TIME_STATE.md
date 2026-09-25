@@ -33,6 +33,11 @@
 
 ### BUILD-TIME-R10 - native-support import-scan reuse
 
+Current contract: the persisted hit reuses source-only requests, not completed
+filesystem edges. Native-support consumers complete package-star and loader
+requests against the current resolution context. The historical timings below
+are not measurements of this revised cache schema.
+
 - Warm re-attribution row `20260712T063806-pact-witness-acceptance-2360b9d2baf44bb6` confirmed module graph as the dominant leaf phase: 263.006s / 40.78%, ahead of wasm link at 163.084s / 25.29%; frontend lowering remained 145/145 cache hits.
 - Root cause: native extension support-source closure supplied precomputed imports by reparsing all 91 no-prune support files on every build, bypassing the existing persisted import-scan authority. This made warm graph discovery O(total support-source bytes) instead of O(91 metadata/content validations).
 - Fix: one native-support slice authority now owns import extraction and optional pruned-source materialization. No-root support sources read/write the canonical persisted import-scan cache; the superseded unconditional warm AST parse lane is deleted. Build diagnostics publish machine-checkable iteration, request, persisted-hit/miss, parse, and prune counts.

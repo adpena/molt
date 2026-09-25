@@ -68,7 +68,7 @@ from molt.cli.module_resolution import (
     _resolve_module_path,
     _stdlib_root_path,
 )
-from molt.cli.module_source import _read_module_source
+from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
 from molt.cli.project_roots import (
@@ -380,7 +380,8 @@ def _resolve_build_entry(
             command=command,
         )
     try:
-        entry_source = _read_module_source(source_path)
+        entry_snapshot = PythonSourceSnapshot.capture(source_path)
+        entry_source = entry_snapshot.text
     except (SyntaxError, UnicodeDecodeError) as exc:
         return None, _fail(
             f"Syntax error in {source_path}: {exc}",
@@ -411,6 +412,7 @@ def _resolve_build_entry(
         module_roots=list(dict.fromkeys(root.resolve() for root in module_roots)),
         entry_source=entry_source,
         entry_tree=entry_tree,
+        entry_snapshot=entry_snapshot,
         target_python=target_python,
         external_module_roots=external_module_roots,
         image_scope=_BinaryImageScope.from_entry(

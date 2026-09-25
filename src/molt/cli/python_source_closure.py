@@ -14,6 +14,7 @@ import tomllib
 from typing import Literal, cast
 
 from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
     LocalPythonModuleSource,
@@ -21,7 +22,6 @@ from molt.cli.python_import_resolution import (
     LocalPythonImportDiagnostic,
     LocalPythonImportRequest,
     PythonImportPolicy,
-    PythonSourceSnapshot,
     analyze_local_imports,
     local_import_analysis_identity,
     resolve_local_import_requests,

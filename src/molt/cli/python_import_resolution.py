@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import sys
 from dataclasses import asdict, dataclass, field, replace
-from functools import cached_property
 from pathlib import Path
 from threading import RLock
 from typing import Literal
 
+from molt.cli.module_source import PythonSourceSnapshot
 from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
     analyze_python_bindings,
-    python_ast_digest,
 )
 
 from molt.compiler_analysis.python_imports import (
@@ -59,32 +57,6 @@ def local_import_analysis_identity() -> tuple[object, ...]:
         python_binding_flow._ANALYSIS_SCHEMA,
         asdict(_local_import_binding_policy()),
     )
-
-
-@dataclass(frozen=True)
-class PythonSourceSnapshot:
-    """One captured byte generation supplies both the graph key and its AST."""
-
-    path: Path
-    content: bytes
-
-    @cached_property
-    def sha256(self) -> str:
-        return hashlib.sha256(self.content).hexdigest()
-
-    @cached_property
-    def tree(self) -> ast.Module:
-        try:
-            # Parsing bytes honors PEP 263 without a second file read.
-            return ast.parse(self.content, filename=str(self.path))
-        except (SyntaxError, UnicodeError, ValueError) as exc:
-            raise ValueError(
-                f"cannot parse local Python source {self.path}: {exc}"
-            ) from exc
-
-    @cached_property
-    def ast_digest(self) -> str:
-        return python_ast_digest(self.tree)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +143,7 @@ class LocalPythonModuleResolver:
 
     def capture_source(self, path: Path) -> PythonSourceSnapshot:
         try:
-            return PythonSourceSnapshot(path, path.read_bytes())
+            return PythonSourceSnapshot.capture(path)
         except OSError as exc:
             raise ValueError(f"cannot read local Python source {path}: {exc}") from exc
 

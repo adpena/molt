@@ -1268,8 +1268,9 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
 	  dependencies use module-init closure so lazy function-body imports
 	  (including upstream tinygrad backend/autogen families) stay runtime/device
 	  obligations instead of compile-time graph bloat. Runtime-import support
-	  detection follows the same split, graph/import-scan caches include the
-	  scan policy and stdlib allowlist digest, and Darwin memory-guard sizing now
+	  detection follows the same split. Source-only scan records bind scan policy;
+	  each graph walk resolves live filesystem candidates and the stdlib allowlist.
+	  Completed graphs and derived imports are not persisted. Darwin memory-guard sizing now
 	  uses `vm_stat` free/inactive/speculative/purgeable pages as the live
 	  available-memory source instead of falling back to physical-RAM-only
 	  budgeting. Import graph

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import hashlib
-import json
 import re
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from pathlib import Path
@@ -19,6 +17,7 @@ from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
+    _ImportScanRequests,
     _DiscoveredModuleGraph,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
@@ -43,11 +42,12 @@ PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 class _LoadedModuleImportScan(NamedTuple):
     """One complete scan plus its operation-local source/parse outcome."""
 
-    scan: _module_graph_cache._PersistedImportScan
+    scan: _CompleteImportScan
     cache_hit: bool
     source_parsed: bool
     source: str | None
     tree: ast.AST | None
+    snapshot: _module_source.PythonSourceSnapshot | None = None
 
 
 def _bind_precomputed_module_import_scan(
@@ -56,13 +56,13 @@ def _bind_precomputed_module_import_scan(
     module_name: str,
     import_scan_mode: ImportScanMode,
     scan: _CompleteImportScan,
+    snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
     target_python: TargetPythonVersion,
     capability_config_digest: str = "",
 ) -> _PrecomputedModuleImportScan:
-    digest = _module_source._source_content_sha256(path, path.stat())
-    if digest is None:
-        raise ValueError(f"cannot bind source scan: {path}")
+    if snapshot.path != path:
+        raise ValueError(f"cannot bind source scan snapshot: {path}")
     return _PrecomputedModuleImportScan(
         _ModuleSourceScanAuthority(
             module_name,
@@ -71,7 +71,7 @@ def _bind_precomputed_module_import_scan(
             is_package,
             scan.requires_runtime_package_anchor,
         ),
-        digest,
+        snapshot.sha256,
         target_python.tag,
         capability_config_digest,
         scan,
@@ -404,9 +404,6 @@ def _discover_module_graph_from_paths(
         scan_sources.update(enclosing_scan_authority.restricted(graph).by_module)
         if set(scan_sources) != set(graph):
             raise ValueError("runtime catalog lacks enclosing source scan authority")
-        # Persisted scans are strict. Their schema deliberately has no runtime
-        # custody lane; only the per-build, custody-keyed memory cache is used.
-        project_root = None
     skip_modules = skip_modules or set()
     stub_parents = stub_parents or set()
     stdlib_static_import_helper_modules = (
@@ -448,86 +445,6 @@ def _discover_module_graph_from_paths(
         resolution_cache.resolved_path(path) for path in entry_paths
     )
 
-    persisted_graph_paths: dict[str, Path] = {}
-    dirty_persisted_modules: set[str] = set()
-    use_persisted_graph_cache = project_root is not None and len(entry_paths) == 1
-    scan_input_digest = (
-        hashlib.sha256(
-            json.dumps(
-                {
-                    "precomputed": [
-                        (
-                            str(path),
-                            record.authority.module_name,
-                            record.authority.mode,
-                            record.authority.is_package,
-                            record.source_sha256,
-                            record.target_python_tag,
-                            record.capability_config_digest,
-                            record.scan.imports,
-                            record.scan.dynamic_relative_import_candidates,
-                            record.scan.requires_runtime_package_anchor,
-                            [
-                                (name, str(source_path))
-                                for name, source_path in record.scan.source_executions
-                            ],
-                        )
-                        for path, record in sorted(precomputed_scans_by_path.items())
-                    ],
-                    "admitted_sources": enclosing_scan_authority.payload()
-                    if enclosing_scan_authority is not None
-                    else [],
-                },
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        if precomputed_scans_by_path or enclosing_scan_authority is not None
-        else ""
-    )
-    source_inputs = (
-        dict(enclosing_scan_authority.by_module)
-        if enclosing_scan_authority is not None
-        else {}
-    )
-    source_inputs.update(
-        (record.authority.module_name, record.authority)
-        for record in precomputed_scans_by_path.values()
-    )
-    if use_persisted_graph_cache:
-        cache_project_root = project_root
-        assert cache_project_root is not None
-        entry_path = entry_paths[0]
-        persisted_graph = _module_graph_cache._read_persisted_module_graph(
-            cache_project_root,
-            entry_path,
-            roots=roots,
-            module_roots=module_roots,
-            stdlib_root=stdlib_root,
-            skip_modules=skip_modules,
-            stub_parents=stub_parents,
-            stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
-            stdlib_allowlist=stdlib_allowlist,
-            import_admission_policy=import_admission_policy,
-            allow_entry_external_imports=allow_entry_external_imports,
-            resolution_cache=resolution_cache,
-            target_python=target_python,
-            capability_config_digest=capability_config_digest,
-            full_scan_roots=full_scan_roots,
-            scan_input_digest=scan_input_digest,
-            source_input_authority=_ModuleGraphScanAuthority(
-                tuple(source_inputs.values())
-            ),
-        )
-        if persisted_graph is not None:
-            if not persisted_graph.dirty_modules:
-                return _DiscoveredModuleGraph(
-                    persisted_graph.graph,
-                    persisted_graph.explicit_imports,
-                    persisted_graph.scan_authority,
-                )
-            persisted_graph_paths = dict(persisted_graph.graph)
-            dirty_persisted_modules = set(persisted_graph.dirty_modules)
-
     def resolve_candidate(candidate: str) -> Path | None:
         if runtime_import_custody is not None:
             catalog_path = runtime_import_custody.catalog_by_module.get(candidate)
@@ -537,9 +454,6 @@ def _discover_module_graph_from_paths(
             admitted = enclosing_scan_authority.by_module.get(candidate)
             if admitted is not None:
                 return admitted.source_path
-        persisted_path = persisted_graph_paths.get(candidate)
-        if persisted_path is not None and candidate not in dirty_persisted_modules:
-            return persisted_path
         return resolution_cache.resolve_module(
             candidate, roots, stdlib_root, stdlib_allowlist
         )
@@ -595,7 +509,7 @@ def _discover_module_graph_from_paths(
         imports: tuple[str, ...]
         dynamic_relative_import_candidates: tuple[str, ...] = ()
         requires_runtime_package_anchor = False
-        source_executions: tuple[_module_import_scanner._StaticSourceExecution, ...]
+        source_executions: tuple[tuple[str | None, Path], ...]
         if import_admission_policy.owns_source_closure_with_native_artifact_plan(
             module_name,
             path,
@@ -614,11 +528,8 @@ def _discover_module_graph_from_paths(
                     target_python=target_python,
                     capability_config_digest=capability_config_digest,
                 )
-            source_executions = tuple(
-                _module_import_scanner._StaticSourceExecution(name, source_path)
-                for name, source_path in (
-                    precomputed_scan.scan.source_executions if precomputed_scan else ()
-                )
+            source_executions = (
+                precomputed_scan.scan.source_executions if precomputed_scan else ()
             )
             if precomputed_scan is not None:
                 dynamic_relative_import_candidates = (
@@ -653,10 +564,7 @@ def _discover_module_graph_from_paths(
             requires_runtime_package_anchor = (
                 loaded_scan.scan.requires_runtime_package_anchor
             )
-            source_executions = tuple(
-                _module_import_scanner._StaticSourceExecution(name, source_path)
-                for name, source_path in loaded_scan.scan.source_executions
-            )
+            source_executions = loaded_scan.scan.source_executions
         scan_sources[module_name] = _ModuleSourceScanAuthority(
             module_name,
             path,
@@ -664,12 +572,9 @@ def _discover_module_graph_from_paths(
             is_package,
             requires_runtime_package_anchor,
         )
-        for execution in source_executions:
-            execution_name = (
-                execution.module_name
-                or resolution_cache.module_name_from_path(
-                    execution.source_path, module_roots, stdlib_root
-                )
+        for requested_name, execution_path in source_executions:
+            execution_name = requested_name or resolution_cache.module_name_from_path(
+                execution_path, module_roots, stdlib_root
             )
             if not re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
@@ -684,7 +589,7 @@ def _discover_module_graph_from_paths(
             )
             if not import_admission_policy.admits_import(
                 execution_name,
-                execution.source_path,
+                execution_path,
                 from_entry_path=from_entry_path,
             ):
                 continue
@@ -692,20 +597,20 @@ def _discover_module_graph_from_paths(
             if existing is not None:
                 if resolution_cache.resolved_path(
                     existing
-                ) != resolution_cache.resolved_path(execution.source_path):
+                ) != resolution_cache.resolved_path(execution_path):
                     raise ValueError(
                         f"module {execution_name!r} has multiple statically executed source "
-                        f"authorities: {existing} and {execution.source_path}"
+                        f"authorities: {existing} and {execution_path}"
                     )
                 continue
             explicit_imports.add(execution_name)
             entry = (
-                resolution_cache.resolved_path(execution.source_path),
+                resolution_cache.resolved_path(execution_path),
                 execution_name,
             )
             if entry not in queued_entries:
                 queued_entries.add(entry)
-                queue.append((execution.source_path, execution_name))
+                queue.append((execution_path, execution_name))
         discovery_imports = tuple(
             dict.fromkeys((*imports, *dynamic_relative_import_candidates))
         )
@@ -750,28 +655,6 @@ def _discover_module_graph_from_paths(
                     continue
                 queued_entries.add(entry)
                 queue.append((resolved, admitted_name))
-    if use_persisted_graph_cache:
-        with contextlib.suppress(OSError):
-            _module_graph_cache._write_persisted_module_graph(
-                cache_project_root,
-                entry_paths[0],
-                roots=roots,
-                module_roots=module_roots,
-                stdlib_root=stdlib_root,
-                skip_modules=skip_modules,
-                stub_parents=stub_parents,
-                stdlib_static_import_helper_modules=stdlib_static_import_helper_modules,
-                stdlib_allowlist=stdlib_allowlist,
-                import_admission_policy=import_admission_policy,
-                allow_entry_external_imports=allow_entry_external_imports,
-                graph=graph,
-                scan_authority=_ModuleGraphScanAuthority(tuple(scan_sources.values())),
-                explicit_imports=explicit_imports,
-                target_python=target_python,
-                capability_config_digest=capability_config_digest,
-                full_scan_roots=full_scan_roots,
-                scan_input_digest=scan_input_digest,
-            )
     return _DiscoveredModuleGraph(
         graph, explicit_imports, _ModuleGraphScanAuthority(tuple(scan_sources.values()))
     )
@@ -861,6 +744,7 @@ def _load_module_import_scan(
     project_root: Path | None,
     tree: ast.AST | None = None,
     source: str | None = None,
+    source_snapshot: _module_source.PythonSourceSnapshot | None = None,
     source_filename: str | None = None,
     retain_source: bool = True,
     retain_tree: bool = True,
@@ -872,13 +756,7 @@ def _load_module_import_scan(
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     precomputed_scan: _PrecomputedModuleImportScan | None = None,
 ) -> _LoadedModuleImportScan:
-    """Load or produce both source-scan projections exactly once.
-
-    A hit is complete and is never rewritten. Precomputed records carry both
-    projections and are checked against the exact source and scan authority.
-    The returned source/AST belong only to this operation, letting analysis reuse
-    a cold scan without a second source read or parse.
-    """
+    """Admit source-only requests, then resolve filesystem edges in this operation."""
     if runtime_import_custody is not None and not runtime_import_custody.owns(
         module_name, path.resolve()
     ):
@@ -909,6 +787,32 @@ def _load_module_import_scan(
         return _LoadedModuleImportScan(
             precomputed_scan.scan, False, False, source, tree
         )
+    # Explicit source or AST is operation-local and must not be overridden by disk.
+    if tree is not None or source is not None:
+        project_root = None
+    snapshot = source_snapshot
+    if snapshot is not None:
+        if snapshot.path != path or source is not None and source != snapshot.text:
+            raise ValueError("source scan snapshot does not match supplied source")
+        source = snapshot.text
+    elif source is None and tree is None:
+        snapshot = _module_source.PythonSourceSnapshot.capture(path)
+        source = snapshot.text
+
+    if snapshot is not None and source is not None and retain_source:
+        resolution_cache.source_cache[resolution_cache.resolved_path(path)] = source
+
+    def complete(requests: _ImportScanRequests) -> _CompleteImportScan:
+        return _module_import_scanner._complete_import_scan(
+            requests,
+            source_path=path,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
+        )
+
     if project_root is not None:
         persisted = _module_graph_cache._read_persisted_import_scan_record(
             project_root,
@@ -916,16 +820,18 @@ def _load_module_import_scan(
             module_name=module_name,
             is_package=is_package,
             import_scan_mode=import_scan_mode,
+            snapshot=snapshot,
             target_python=target_python,
             capability_config_digest=capability_config_digest,
         )
         if persisted is not None:
-            return _LoadedModuleImportScan(persisted, True, False, None, None)
+            return _LoadedModuleImportScan(
+                complete(persisted), True, False, source, None, snapshot
+            )
 
     source_parsed = False
     if tree is None:
-        if source is None:
-            source = resolution_cache.read_module_source(path, retain=retain_source)
+        assert source is not None
         tree = resolution_cache.parse_module_ast(
             path,
             source,
@@ -947,45 +853,19 @@ def _load_module_import_scan(
         runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
     )
-    if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
-        import_projection = _module_import_scanner._expand_imports_with_static_package_all_star_children_for_graph(
-            import_projection,
-            tree,
-            module_name=module_name,
-            is_package=is_package,
-            import_scan_mode=import_scan_mode,
-            roots=roots,
-            stdlib_root=stdlib_root,
-            stdlib_allowlist=stdlib_allowlist,
-            resolution_cache=resolution_cache,
-            target_python=target_python,
-            runtime_import_custody=runtime_import_custody,
-            source_path=path.resolve(),
-            ast_digest_admission=ast_digest_admission,
-        )
-    assert tree is not None
-    executions = (
-        ()
-        if source is not None
-        and not _module_import_scanner._source_may_use_static_source_execution(source)
-        else _module_import_scanner._collect_static_source_executions(
-            tree,
-            source_path=path,
-            import_scan_mode=import_scan_mode,
-            module_name=module_name,
-            target_python=target_python,
-            ast_digest_admission=ast_digest_admission,
-        )
+    requests = _module_import_scanner._collect_import_scan_requests(
+        import_projection,
+        tree,
+        source_path=path,
+        module_name=module_name,
+        is_package=is_package,
+        import_scan_mode=import_scan_mode,
+        target_python=target_python,
+        runtime_import_custody=runtime_import_custody,
+        ast_digest_admission=ast_digest_admission,
+        source=source,
     )
-    scan = _module_graph_cache._PersistedImportScan(
-        import_projection.imports,
-        tuple(
-            (execution.module_name, execution.source_path) for execution in executions
-        ),
-        import_projection.dynamic_relative_import_candidates,
-        import_projection.requires_runtime_package_anchor,
-    )
-    if project_root is not None:
+    if project_root is not None and snapshot is not None:
         with contextlib.suppress(OSError):
             _module_graph_cache._write_persisted_import_scan(
                 project_root,
@@ -993,8 +873,11 @@ def _load_module_import_scan(
                 module_name=module_name,
                 is_package=is_package,
                 import_scan_mode=import_scan_mode,
-                scan=scan,
+                scan=requests,
+                snapshot=snapshot,
                 target_python=target_python,
                 capability_config_digest=capability_config_digest,
             )
-    return _LoadedModuleImportScan(scan, False, source_parsed, source, tree)
+    return _LoadedModuleImportScan(
+        complete(requests), False, source_parsed, source, tree, snapshot
+    )

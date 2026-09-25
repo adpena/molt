@@ -20,6 +20,7 @@ from molt.cli.python_import_resolution import (
     local_import_targets,
 )
 from molt.compiler_analysis import python_imports
+from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis import python_effects
 from molt.compiler_analysis.python_imports import (
     INVALID_VALUE,
@@ -256,7 +257,7 @@ def test_python_source_snapshot_caches_its_ast_digest(
 ) -> None:
     path = tmp_path / "entry.py"
     path.write_text("from pkg import child\n", encoding="utf-8")
-    digest = python_import_resolution.python_ast_digest
+    digest = python_binding_flow.python_ast_digest
     calls = 0
 
     def record_digest(tree: ast.AST) -> str:
@@ -264,7 +265,7 @@ def test_python_source_snapshot_caches_its_ast_digest(
         calls += 1
         return digest(tree)
 
-    monkeypatch.setattr(python_import_resolution, "python_ast_digest", record_digest)
+    monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
     snapshot = LocalPythonModuleResolver((tmp_path,)).capture_source(path)
     assert snapshot.ast_digest == snapshot.ast_digest
     assert calls == 1
@@ -1217,14 +1218,14 @@ def test_static_source_scanner_uses_completion_reachability(
         + ("raise RuntimeError()\n" if dead else "")
         + call
     )
-    requests = module_import_scanner._collect_static_source_executions(
+    requests = module_import_scanner._collect_static_source_execution_requests(
         ast.parse(source),
         source_path=tmp_path / "entry.py",
         module_name="pkg.entry",
     )
     assert len(requests) == (0 if dead else 1)
     if requests:
-        assert requests[0].source_path == target.resolve()
+        assert requests[0].path == str(target)
         assert requests[0].module_name == ("loaded_name" if loader == "spec" else None)
 
 

@@ -27,8 +27,8 @@ from functools import partial
 from pathlib import Path
 from molt.cli.models import (
     _CompleteImportScan,
-    _ModuleGraphScanAuthority,
-    _ModuleSourceScanAuthority,
+    _ImportScanRequests,
+    _StaticSourceExecutionRequest,
 )
 from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
 from typing import Any, Collection, Mapping, Sequence, cast
@@ -4465,7 +4465,7 @@ def test_from_import_star_graph_admits_static_all_child_module(
     assert "tinygrad.tensor" in explicit_imports
 
     tree = ast.parse(entry.read_text(encoding="utf-8"))
-    _, imports, _, _, _, _, _, _ = cli._load_module_analysis(
+    _, imports, _, _, _, _, _ = cli._load_module_analysis(
         entry,
         module_name="main",
         is_package=False,
@@ -4482,22 +4482,6 @@ def test_from_import_star_graph_admits_static_all_child_module(
     )
     assert tree is not None
     assert "tinygrad.tensor" in imports
-
-
-def test_module_graph_policy_digest_includes_external_admission(
-    tmp_path: Path,
-) -> None:
-    external_root = tmp_path / "site"
-    external_root.mkdir()
-    bounded = cli._ImportAdmissionPolicy(external_roots=(external_root,))
-    closed = cli._ImportAdmissionPolicy(
-        external_roots=(external_root,),
-        admitted_external_packages=frozenset({"hugepkg"}),
-    )
-
-    assert cli_module_graph_cache._module_graph_policy_digest({"sys"}, bounded) != (
-        cli_module_graph_cache._module_graph_policy_digest({"sys"}, closed)
-    )
 
 
 def _libmolt_source_manifest_fields(
@@ -10285,101 +10269,6 @@ def test_external_native_artifact_plan_rejects_ambiguous_capsule_provider(
     assert "nativepkg.providers.provider_b" in errors[0]
 
 
-def test_module_graph_policy_digest_includes_native_artifact_plan(
-    native_archives: NativeArchiveFixtureCatalog,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    external_root, artifact_path, manifest_path = _write_external_native_package(
-        tmp_path,
-        native_archives=native_archives,
-        artifact_bytes=native_archives.archive(
-            NativeSymbolFixture(functions=("PyInit__native",)), revision=b"v1"
-        ),
-    )
-    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
-    first_policy, first_error = cli._resolve_import_admission_policy(
-        external_module_roots=(external_root,),
-        json_output=False,
-    )
-    assert first_error is None
-    assert first_policy is not None
-
-    artifact_path.write_bytes(
-        native_archives.archive(
-            NativeSymbolFixture(functions=("PyInit__native",)), revision=b"v2"
-        )
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["extension_sha256"] = hashlib.sha256(
-        artifact_path.read_bytes()
-    ).hexdigest()
-    object_closure = manifest["object_closure"]
-    assert isinstance(object_closure, dict)
-    objects = object_closure["objects"]
-    assert isinstance(objects, list) and isinstance(objects[0], dict)
-    objects[0]["source_sha256"] = manifest["extension_sha256"]
-    objects[0]["object_sha256"] = manifest["extension_sha256"]
-    finalize_source_extension_object_closure(manifest)
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    second_policy, second_error = cli._resolve_import_admission_policy(
-        external_module_roots=(external_root,),
-        json_output=False,
-    )
-    assert second_error is None
-    assert second_policy is not None
-
-    assert first_policy.native_artifact_plan.digest() != (
-        second_policy.native_artifact_plan.digest()
-    )
-    assert cli_module_graph_cache._module_graph_policy_digest(
-        {"sys"}, first_policy
-    ) != cli_module_graph_cache._module_graph_policy_digest({"sys"}, second_policy)
-
-
-def test_module_graph_policy_digest_includes_native_runtime_import_modules(
-    tmp_path: Path,
-) -> None:
-    artifact_path = tmp_path / "native.molt.wasm"
-    manifest_path = tmp_path / "native.molt.wasm.extension_manifest.json"
-    artifact_path.write_bytes(b"native")
-    manifest_path.write_text("{}", encoding="utf-8")
-    base_artifact = _ExternalPackageNativeArtifact(
-        package="nativepkg",
-        module="nativepkg._native",
-        package_dir=tmp_path,
-        path=artifact_path,
-        manifest_path=manifest_path,
-        extension_sha256="0" * 64,
-        manifest_sha256="1" * 64,
-        capabilities=(),
-        abi_tag="molt_abi1",
-        target_triple="wasm32-wasip1",
-        platform_tag="wasm32_wasip1",
-        init_symbol="PyInit__native",
-        runtime_linkage="static_link",
-        artifact_kind="wasm_relocatable_object",
-        link_requirements=SourceExtensionLinkRequirements("wasm32-wasip1"),
-    )
-    first_policy = cli._ImportAdmissionPolicy(
-        native_artifact_plan=_ExternalPackageNativeArtifactPlan(
-            (replace(base_artifact, runtime_python_import_modules=("nativepkg.a",)),)
-        )
-    )
-    second_policy = cli._ImportAdmissionPolicy(
-        native_artifact_plan=_ExternalPackageNativeArtifactPlan(
-            (replace(base_artifact, runtime_python_import_modules=("nativepkg.b",)),)
-        )
-    )
-
-    assert first_policy.native_artifact_plan.digest() != (
-        second_policy.native_artifact_plan.digest()
-    )
-    assert cli_module_graph_cache._module_graph_policy_digest(
-        {"sys"}, first_policy
-    ) != cli_module_graph_cache._module_graph_policy_digest({"sys"}, second_policy)
-
-
 def test_external_native_artifact_output_custody_accepts_native_binary(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
@@ -11363,13 +11252,20 @@ def test_collect_static_source_execution_preserves_loader_name_and_path(
         "importlib.util.spec_from_file_location('loaded_name', path)\n"
     )
 
-    assert cli_module_import_scanner._collect_static_source_executions(
+    requests = cli_module_import_scanner._collect_static_source_execution_requests(
         tree, source_path=entry
-    ) == (
-        cli_module_import_scanner._StaticSourceExecution(
-            module_name="loaded_name", source_path=target.resolve()
-        ),
     )
+    assert requests == (_StaticSourceExecutionRequest("loaded_name", str(target)),)
+    completed = cli_module_import_scanner._complete_import_scan(
+        _ImportScanRequests((), requests),
+        source_path=entry,
+        roots=None,
+        stdlib_root=None,
+        stdlib_allowlist=None,
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert completed.source_executions == (("loaded_name", target.resolve()),)
 
 
 def test_discover_module_graph_admits_static_loader_source_under_execution_name(
@@ -12839,12 +12735,13 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 
     read_calls = 0
     parse_calls = 0
-    original_read = cli_module_source._read_module_source
+    original_read = Path.read_bytes
     original_parse = TARGET_PYTHON.ast.parse
 
-    def wrapped_read(path: Path) -> str:
+    def wrapped_read(path: Path) -> bytes:
         nonlocal read_calls
-        read_calls += 1
+        if path.is_relative_to(pkg):
+            read_calls += 1
         return original_read(path)
 
     def wrapped_parse(
@@ -12865,7 +12762,7 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
             feature_version=feature_version,
         )
 
-    monkeypatch.setattr(cli_module_source, "_read_module_source", wrapped_read)
+    monkeypatch.setattr(Path, "read_bytes", wrapped_read)
     monkeypatch.setattr(TARGET_PYTHON.ast, "parse", wrapped_parse)
 
     shared_cache = cli_module_resolution._ModuleResolutionCache()
@@ -12983,7 +12880,7 @@ def test_shared_module_resolution_cache_resolves_relative_paths(
     assert calls == 1
 
 
-def test_shared_module_resolution_cache_reuses_import_scans(
+def test_shared_module_resolution_cache_reuses_graph_import_scans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
@@ -13015,11 +12912,6 @@ def test_shared_module_resolution_cache_reuses_import_scans(
         "_read_persisted_import_scan_record",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(
-        cli_module_graph_cache,
-        "_read_persisted_module_graph",
-        lambda *args, **kwargs: None,
-    )
 
     cache = cli_module_resolution._ModuleResolutionCache()
     discovery_result = cli_module_graph_discovery._discover_module_graph(
@@ -13044,10 +12936,10 @@ def test_shared_module_resolution_cache_reuses_import_scans(
                 cli_module_import_scanner.STDLIB_STATIC_IMPORT_HELPER_MODULES
             ),
         )
-        cache.collect_imports(
+        cache.collect_graph_imports(
             module_path,
             tree,
-            collector=cli_module_import_scanner._collect_imports,
+            collector=cli_module_import_scanner._collect_imports_for_graph,
             module_name=module_name,
             is_package=module_path.name == "__init__.py",
             import_scan_mode=import_scan_mode,
@@ -13083,10 +12975,12 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
 
-    def fail_read(path: Path) -> str:
-        raise AssertionError(f"unexpected source read for {path}")
+    def fail_requests(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("warm source requests must not be re-extracted")
 
-    monkeypatch.setattr(cli_module_source, "_read_module_source", fail_read)
+    monkeypatch.setattr(
+        cli_module_import_scanner, "_collect_import_scan_requests", fail_requests
+    )
 
     discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
@@ -13120,7 +13014,8 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        scan=cli_module_graph_cache._PersistedImportScan(("json",), ()),
+        scan=_ImportScanRequests(("json",), ()),
+        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
     record = cli_module_graph_cache._read_persisted_import_scan_record(
         tmp_path,
@@ -13167,7 +13062,8 @@ def test_persisted_import_scan_cache_tracks_source_content(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        scan=cli_module_graph_cache._PersistedImportScan(("json",), ()),
+        scan=_ImportScanRequests(("json",), ()),
+        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
 
     _rewrite_preserving_mtime(module_path, "import math\n", original)
@@ -13251,132 +13147,6 @@ def test_source_content_sha256_rehashes_preserved_mtime_content_change(
     assert hash_calls == 2
 
 
-def test_persisted_module_graph_cache_tracks_tooling_fingerprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry_path = tmp_path / "main.py"
-    entry_path.write_text("import pkg.mod\n", encoding="utf-8")
-    module_path = tmp_path / "pkg" / "mod.py"
-    module_path.parent.mkdir()
-    module_path.write_text("VALUE = 1\n", encoding="utf-8")
-    roots = [tmp_path]
-    module_roots = [tmp_path]
-    stdlib_root = tmp_path / "stdlib"
-
-    monkeypatch.setattr(
-        cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
-        lambda: "tool-a",
-    )
-    cli_module_graph_cache._write_persisted_module_graph(
-        tmp_path,
-        entry_path,
-        roots=roots,
-        full_scan_roots=True,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules=set(),
-        stub_parents=set(),
-        stdlib_static_import_helper_modules=set(),
-        stdlib_allowlist=set(),
-        graph={"__main__": entry_path, "pkg.mod": module_path},
-        scan_authority=_ModuleGraphScanAuthority(
-            (
-                _ModuleSourceScanAuthority("__main__", entry_path, "full"),
-                _ModuleSourceScanAuthority("pkg.mod", module_path, "module_init"),
-            )
-        ),
-        explicit_imports={"pkg.mod"},
-    )
-    assert (
-        cli_module_graph_cache._read_persisted_module_graph(
-            tmp_path,
-            entry_path,
-            roots=roots,
-            full_scan_roots=True,
-            module_roots=module_roots,
-            stdlib_root=stdlib_root,
-            skip_modules=set(),
-            stub_parents=set(),
-            stdlib_static_import_helper_modules=set(),
-            stdlib_allowlist=set(),
-        )
-        is not None
-    )
-
-    monkeypatch.setattr(
-        cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
-        lambda: "tool-b",
-    )
-    assert (
-        cli_module_graph_cache._read_persisted_module_graph(
-            tmp_path,
-            entry_path,
-            roots=roots,
-            full_scan_roots=True,
-            module_roots=module_roots,
-            stdlib_root=stdlib_root,
-            skip_modules=set(),
-            stub_parents=set(),
-            stdlib_static_import_helper_modules=set(),
-            stdlib_allowlist=set(),
-        )
-        is None
-    )
-
-
-def test_persisted_module_graph_cache_tracks_source_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry_path = tmp_path / "main.py"
-    entry_path.write_text("import json\n", encoding="utf-8")
-    original = entry_path.stat()
-    roots = [tmp_path]
-    module_roots = [tmp_path]
-    stdlib_root = tmp_path / "stdlib"
-
-    monkeypatch.setattr(
-        cli_module_graph_cache,
-        "_frontend_semantic_tooling_fingerprint",
-        lambda: "tool-a",
-    )
-    cli_module_graph_cache._write_persisted_module_graph(
-        tmp_path,
-        entry_path,
-        roots=roots,
-        full_scan_roots=True,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules=set(),
-        stub_parents=set(),
-        stdlib_static_import_helper_modules=set(),
-        stdlib_allowlist=set(),
-        graph={"__main__": entry_path},
-        scan_authority=_ModuleGraphScanAuthority(
-            (_ModuleSourceScanAuthority("__main__", entry_path, "full"),)
-        ),
-        explicit_imports={"json"},
-    )
-
-    _rewrite_preserving_mtime(entry_path, "import math\n", original)
-
-    cached = cli_module_graph_cache._read_persisted_module_graph(
-        tmp_path,
-        entry_path,
-        roots=roots,
-        full_scan_roots=True,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules=set(),
-        stub_parents=set(),
-        stdlib_static_import_helper_modules=set(),
-        stdlib_allowlist=set(),
-    )
-    assert cached is not None
-    assert cached.dirty_modules == {"__main__"}
-
-
 def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -13395,7 +13165,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         import_scan_mode="full",
         func_defaults={"f": _func_metadata(params=1)},
         func_kinds={"f": "sync"},
-        imports=("json",),
+        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
     assert cli._read_persisted_module_analysis(
         tmp_path,
@@ -13403,7 +13173,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
-    ) == ({"f": _func_metadata(params=1)}, {"f": "sync"}, ("json",))
+    ) == ({"f": _func_metadata(params=1)}, {"f": "sync"})
 
     monkeypatch.setattr(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
@@ -13439,7 +13209,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
         import_scan_mode="full",
         func_defaults={"f": _func_metadata(params=1)},
         func_kinds={"f": "sync"},
-        imports=("json",),
+        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
 
     _rewrite_preserving_mtime(module_path, "def f(x=2):\n    return x\n", original)
@@ -13456,7 +13226,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
     )
 
 
-def test_discover_module_graph_skips_persisted_caches_when_disabled(
+def test_discover_module_graph_reconstructs_on_pure_scan_miss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
@@ -13483,21 +13253,10 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     assert "pkg.helper" in explicit_imports
     assert graph["pkg.helper"] == helper
 
-    def fail_persisted_graph(*args: object, **kwargs: object) -> None:
-        raise AssertionError("unexpected persisted module-graph cache read")
-
-    def fail_persisted_imports(*args: object, **kwargs: object) -> None:
-        raise AssertionError("unexpected persisted import-scan cache read")
-
-    # The cache_enabled parameter was removed from _discover_module_graph.
+    # Whole graphs are never persisted; force source-request misses here.
     # Verify that the graph resolves correctly when persisted caches return
     # None (cache miss), confirming the scanner re-derives the graph from
     # source without relying on stale persisted data.
-    monkeypatch.setattr(
-        cli_module_graph_cache,
-        "_read_persisted_module_graph",
-        lambda *args, **kwargs: None,
-    )
     monkeypatch.setattr(
         cli_module_graph_cache,
         "_read_persisted_import_scan_record",
@@ -13519,32 +13278,44 @@ def test_discover_module_graph_skips_persisted_caches_when_disabled(
     assert graph["pkg.helper"] == helper
 
 
-def test_discover_module_graph_reuses_persisted_graph_cache(
+def test_warm_source_requests_resolve_new_higher_priority_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    entry = tmp_path / "pkg" / "__init__.py"
-    entry.parent.mkdir()
-    entry.write_text("import pkg.helper\n")
-    helper = entry.parent / "helper.py"
-    helper.write_text("import warnings\n")
-
+    entry = tmp_path / "main.py"
+    entry.write_text("import dependency\n", encoding="utf-8")
+    higher = tmp_path / "higher"
+    lower = tmp_path / "lower"
+    higher.mkdir()
+    lower.mkdir()
+    old_dependency = lower / "dependency.py"
+    old_dependency.write_text("VALUE = 1\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
-    module_roots = [tmp_path.resolve()]
-    roots = module_roots + [stdlib_root]
-    stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
+    roots = [higher, lower, tmp_path, stdlib_root]
 
-    discovery_result = cli_module_graph_discovery._discover_module_graph(
-        entry,
-        roots,
-        module_roots,
-        stdlib_root,
-        tmp_path,
-        stdlib_allowlist,
+    def discover():
+        return cli_module_graph_discovery._discover_module_graph(
+            entry, roots, [tmp_path, higher, lower], stdlib_root, tmp_path, set()
+        )
+
+    first = discover()
+    assert first.graph["dependency"] == old_dependency
+    new_dependency = higher / "dependency.py"
+    new_dependency.write_text("VALUE = 2\n", encoding="utf-8")
+    requested: list[Path] = []
+    collect = cli_module_import_scanner._collect_import_scan_requests
+
+    def record(*args: Any, **kwargs: Any):
+        requested.append(kwargs["source_path"])
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cli_module_import_scanner, "_collect_import_scan_requests", record
     )
-    graph = discovery_result.graph
-    explicit_imports = discovery_result.explicit_imports
-    assert "pkg.helper" in explicit_imports
-    assert "pkg" in graph
+    second = discover()
+    assert second.graph["dependency"] == new_dependency
+    assert "dependency" in second.explicit_imports
+    assert entry not in requested
+    assert new_dependency in requested
 
 
 def test_discover_module_graph_reuses_precomputed_entry_imports(
@@ -13564,13 +13335,13 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
     reads: list[Path] = []
-    original_read = cache.read_module_source
+    original_read = cache.parse_module_ast
 
-    def wrapped_read(path: Path, *, retain: bool = True) -> str:
+    def wrapped_read(path: Path, *args: Any, **kwargs: Any) -> ast.Module:
         reads.append(path)
-        return original_read(path, retain=retain)
+        return original_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+    monkeypatch.setattr(cache, "parse_module_ast", wrapped_read)
 
     discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
@@ -13585,6 +13356,7 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
             module_name="main",
             import_scan_mode="full",
             scan=_CompleteImportScan(("pkg.helper",), ()),
+            snapshot=cli_module_source.PythonSourceSnapshot.capture(entry),
             target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         ),
     )
@@ -13613,13 +13385,13 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
     roots = module_roots + [stdlib_root]
     cache = cli_module_resolution._ModuleResolutionCache()
     reads: list[Path] = []
-    original_read = cache.read_module_source
+    original_read = cache.parse_module_ast
 
-    def wrapped_read(path: Path, *, retain: bool = True) -> str:
+    def wrapped_read(path: Path, *args: Any, **kwargs: Any) -> ast.Module:
         reads.append(path)
-        return original_read(path, retain=retain)
+        return original_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+    monkeypatch.setattr(cache, "parse_module_ast", wrapped_read)
 
     discovery_result = cli_module_graph_discovery._discover_module_graph_from_paths(
         [first, second],
@@ -13735,7 +13507,7 @@ def test_module_graph_dependency_scan_skips_lazy_backend_bodies(
     assert "pkg.runtime.autogen.mesa" not in explicit_imports
 
 
-def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
+def test_discover_module_graph_resolves_all_paths_but_reparses_only_changed_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
@@ -13767,13 +13539,13 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     helper.write_text("VALUE = 10\n")
     cache = cli_module_resolution._ModuleResolutionCache()
     read_paths: list[Path] = []
-    original_read = cache.read_module_source
+    original_read = cache.parse_module_ast
     original_resolve = cache.resolve_module
     resolved_candidates: list[str] = []
 
-    def wrapped_read(path: Path, *, retain: bool = True) -> str:
+    def wrapped_read(path: Path, *args: Any, **kwargs: Any) -> ast.Module:
         read_paths.append(path)
-        return original_read(path, retain=retain)
+        return original_read(path, *args, **kwargs)
 
     def wrapped_resolve(
         candidate: str,
@@ -13786,7 +13558,7 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
             candidate, roots_arg, stdlib_root_arg, stdlib_allowlist_arg
         )
 
-    monkeypatch.setattr(cache, "read_module_source", wrapped_read)
+    monkeypatch.setattr(cache, "parse_module_ast", wrapped_read)
     monkeypatch.setattr(cache, "resolve_module", wrapped_resolve)
 
     discovery_result = cli_module_graph_discovery._discover_module_graph(
@@ -13806,10 +13578,10 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     assert helper in read_paths
     assert entry not in read_paths
     assert extra not in read_paths
-    assert resolved_candidates == ["pkg.helper"]
+    assert {"pkg.helper", "pkg.extra"} <= set(resolved_candidates)
 
 
-def test_discover_module_graph_prunes_removed_persisted_dependency(
+def test_discover_module_graph_prunes_removed_dependency_with_warm_source_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
@@ -13852,14 +13624,18 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
 
     cache = cli_module_resolution._ModuleResolutionCache()
 
-    def fail_resolve(*args: object, **kwargs: object) -> Path | None:
-        raise AssertionError("unexpected module resolution")
+    resolved: list[str] = []
+    resolve = cache.resolve_module
 
-    def fail_read(path: Path) -> str:
-        raise AssertionError(f"unexpected source read for {path}")
+    def record_resolve(candidate: str, *args: Any, **kwargs: Any) -> Path | None:
+        resolved.append(candidate)
+        return resolve(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(cache, "resolve_module", fail_resolve)
-    monkeypatch.setattr(cache, "read_module_source", fail_read)
+    def fail_read(path: Path, *args: Any, **kwargs: Any) -> ast.Module:
+        raise AssertionError(f"unexpected parse for warm source {path}")
+
+    monkeypatch.setattr(cache, "resolve_module", record_resolve)
+    monkeypatch.setattr(cache, "parse_module_ast", fail_read)
 
     read_text = Path.read_text
 
@@ -13885,6 +13661,8 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
     explicit_imports = discovery_result.explicit_imports
     assert "pkg.helper" in explicit_imports
     assert "pkg" in graph
+    assert "pkg.helper" in resolved
+    assert "pkg.old" not in graph
 
 
 def test_resolved_artifact_hash_key_is_cached(tmp_path: Path) -> None:
@@ -14193,7 +13971,7 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
         import_scan_mode="full",
         func_defaults={},
         func_kinds={},
-        imports=("os", "warnings"),
+        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
     )
     cache_path = cli._module_analysis_cache_path(
         tmp_path,
@@ -14227,148 +14005,6 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
         )
         is None
     )
-
-
-def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
-    entry_path = tmp_path / "main.py"
-    roots = (str(tmp_path),)
-    module_roots = (str(tmp_path / "src"),)
-    stdlib_root = str(tmp_path / "stdlib")
-    cli_module_graph_cache._module_graph_cache_key.cache_clear()
-
-    first = cli_module_graph_cache._module_graph_cache_key(
-        str(entry_path),
-        roots,
-        module_roots,
-        stdlib_root,
-        ("warnings",),
-        ("asyncio",),
-        ("tkinter",),
-        cli_module_graph_cache._module_graph_policy_digest({"json"}),
-        "tooling",
-        full_scan_roots=True,
-    )
-    second = cli_module_graph_cache._module_graph_cache_key(
-        str(entry_path),
-        roots,
-        module_roots,
-        stdlib_root,
-        ("warnings",),
-        ("asyncio",),
-        ("tkinter",),
-        cli_module_graph_cache._module_graph_policy_digest({"json"}),
-        "tooling",
-        full_scan_roots=True,
-    )
-    different_policy = cli_module_graph_cache._module_graph_cache_key(
-        str(entry_path),
-        roots,
-        module_roots,
-        stdlib_root,
-        ("warnings",),
-        ("asyncio",),
-        ("tkinter",),
-        cli_module_graph_cache._module_graph_policy_digest({"math"}),
-        "tooling",
-        full_scan_roots=True,
-    )
-
-    info = cli_module_graph_cache._module_graph_cache_key.cache_info()
-    assert first == second
-    assert first != different_policy
-    assert info.hits >= 1
-    assert info.currsize >= 1
-
-
-def test_module_graph_cache_key_tracks_capability_config_digest(
-    tmp_path: Path,
-) -> None:
-    entry_path = tmp_path / "main.py"
-    roots = (str(tmp_path),)
-    module_roots = (str(tmp_path / "src"),)
-    stdlib_root = str(tmp_path / "stdlib")
-    cli_module_graph_cache._module_graph_cache_key.cache_clear()
-
-    base = cli_module_graph_cache._module_graph_cache_key(
-        str(entry_path),
-        roots,
-        module_roots,
-        stdlib_root,
-        (),
-        (),
-        (),
-        cli_module_graph_cache._module_graph_policy_digest({"json"}),
-        "tooling",
-        full_scan_roots=True,
-        capability_config_digest="capability-a",
-    )
-    changed = cli_module_graph_cache._module_graph_cache_key(
-        str(entry_path),
-        roots,
-        module_roots,
-        stdlib_root,
-        (),
-        (),
-        (),
-        cli_module_graph_cache._module_graph_policy_digest({"json"}),
-        "tooling",
-        full_scan_roots=True,
-        capability_config_digest="capability-b",
-    )
-
-    assert base != changed
-
-
-def test_module_graph_cache_path_uses_cached_graph_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entry_path = tmp_path / "main.py"
-    roots = [tmp_path]
-    module_roots = [tmp_path / "src"]
-    stdlib_root = tmp_path / "stdlib"
-    cli_module_graph_cache._module_graph_cache_key.cache_clear()
-
-    calls = 0
-    original = cli_module_graph_cache._module_graph_cache_key
-
-    def wrapped(*args: Any, **kwargs: Any) -> str:
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(
-        cli_module_graph_cache, "_module_graph_cache_key", wrapped, raising=True
-    )
-
-    first = cli_module_graph_cache._module_graph_cache_path(
-        tmp_path,
-        entry_path,
-        roots=roots,
-        full_scan_roots=True,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules={"warnings"},
-        stub_parents={"asyncio"},
-        stdlib_static_import_helper_modules={"tkinter"},
-        stdlib_allowlist={"json"},
-    )
-    second = cli_module_graph_cache._module_graph_cache_path(
-        tmp_path,
-        entry_path,
-        roots=roots,
-        full_scan_roots=True,
-        module_roots=module_roots,
-        stdlib_root=stdlib_root,
-        skip_modules={"warnings"},
-        stub_parents={"asyncio"},
-        stdlib_static_import_helper_modules={"tkinter"},
-        stdlib_allowlist={"json"},
-    )
-
-    info = original.cache_info()
-    assert first == second
-    assert calls == 2
-    assert info.hits >= 1
 
 
 def test_cargo_target_root_is_cached(
@@ -15134,35 +14770,35 @@ def test_load_module_imports_reuses_persisted_cache(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import warnings\n")
-    source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
-    tree = cache.parse_module_ast(module_path, source, filename=str(module_path))
 
-    imports = cli_module_graph_discovery._load_module_imports(
+    imports = cli_module_graph_discovery._load_module_import_scan(
         module_path,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        tree=tree,
         resolution_cache=cache,
         project_root=tmp_path,
     )
-    assert imports == ("warnings",)
+    assert imports.scan.imports == ("warnings",)
+    assert not imports.cache_hit
 
     def fail_collect(*args: object, **kwargs: object) -> tuple[str, ...]:
         raise AssertionError("unexpected import scan")
 
-    monkeypatch.setattr(cache, "collect_imports", fail_collect)
-    cached_imports = cli_module_graph_discovery._load_module_imports(
+    monkeypatch.setattr(
+        cli_module_import_scanner, "_collect_import_scan_requests", fail_collect
+    )
+    cached_imports = cli_module_graph_discovery._load_module_import_scan(
         module_path,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        tree=tree,
         resolution_cache=cache,
         project_root=tmp_path,
     )
-    assert cached_imports == ("warnings",)
+    assert cached_imports.scan.imports == ("warnings",)
+    assert cached_imports.cache_hit
 
 
 def test_load_module_analysis_reuses_persisted_cache(
@@ -15180,14 +14816,13 @@ def test_load_module_analysis_reuses_persisted_cache(
         func_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -15198,7 +14833,6 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert func_kinds == {"f": "sync"}
     assert cached_source == source
     assert cache_hit is False
-    assert interface_changed is True
     assert path_stat is not None
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
@@ -15212,7 +14846,6 @@ def test_load_module_analysis_reuses_persisted_cache(
         cached_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15229,9 +14862,8 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_imports == ("warnings",)
     assert cached_defaults == func_defaults
     assert cached_kinds == func_kinds
-    assert cached_source is None
+    assert cached_source == source
     assert cache_hit is True
-    assert interface_changed is False
     assert cached_path_stat is not None
 
 
@@ -15250,14 +14882,13 @@ def test_load_module_analysis_persists_bytes_defaults(
         func_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         path_stat,
     ) = cli._load_module_analysis(
         module_path,
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -15278,7 +14909,6 @@ def test_load_module_analysis_persists_bytes_defaults(
     assert func_kinds == {"f": "sync"}
     assert cached_source == source
     assert cache_hit is False
-    assert interface_changed is True
     assert path_stat is not None
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
@@ -15292,7 +14922,6 @@ def test_load_module_analysis_persists_bytes_defaults(
         cached_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15309,9 +14938,8 @@ def test_load_module_analysis_persists_bytes_defaults(
     assert cached_imports == ()
     assert cached_defaults == func_defaults
     assert cached_kinds == func_kinds
-    assert cached_source is None
+    assert cached_source == source
     assert cache_hit is True
-    assert interface_changed is False
     assert cached_path_stat is not None
 
 
@@ -15345,7 +14973,6 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
             "mtime_ns": stat.st_mtime_ns,
             "source_sha256": source_sha256,
             "func_defaults": {"g": {"params": 0, "defaults": []}},
-            "imports": [],
         },
         default=CACHE_KEYS._json_ir_default,
     )
@@ -15357,7 +14984,6 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
         func_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15383,11 +15009,10 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     assert func_kinds == {"g": "gen"}
     assert cached_source == module_path.read_text(encoding="utf-8")
     assert cache_hit is False
-    assert interface_changed is True
     assert path_stat is not None
 
 
-def test_load_module_analysis_reuses_persisted_module_analysis_imports(
+def test_load_module_analysis_reuses_facts_but_always_admits_import_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
@@ -15400,18 +15025,25 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
     )
 
-    def fail_import_scan(
+    admitted = 0
+    load_scan = cli_module_cache._load_module_import_scan
+
+    def record_import_scan(
         *args: object, **kwargs: object
     ) -> cli_module_graph_discovery._LoadedModuleImportScan:
-        raise AssertionError("unexpected persisted import-scan read")
+        nonlocal admitted
+        admitted += 1
+        return load_scan(*args, **kwargs)
 
-    monkeypatch.setattr(cli_module_cache, "_load_module_import_scan", fail_import_scan)
+    monkeypatch.setattr(
+        cli_module_cache, "_load_module_import_scan", record_import_scan
+    )
     monkeypatch.setattr(
         cache,
         "parse_module_ast",
@@ -15427,7 +15059,6 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         cached_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15444,9 +15075,9 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_imports == ("warnings",)
     assert "f" in cached_defaults
     assert cached_kinds == {"f": "sync"}
-    assert cached_source is None
+    assert cached_source == source
     assert cache_hit is True
-    assert interface_changed is False
+    assert admitted == 1
     assert cached_path_stat is not None
 
 
@@ -15455,7 +15086,6 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
-    source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -15463,7 +15093,7 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -15526,7 +15156,6 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
 ) -> None:
     module_path = tmp_path / "pkg.py"
     module_path.write_text("import os\n\ndef f():\n    import warnings\n")
-    source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -15534,7 +15163,7 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
         module_name="pkg",
         is_package=False,
         import_scan_mode="module_init",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -15572,7 +15201,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         module_name="pkg",
         is_package=False,
         import_scan_mode="full",
-        source=source,
+        source=None,
         logical_source_path=str(module_path),
         resolution_cache=cache,
         project_root=tmp_path,
@@ -15590,7 +15219,9 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     read_calls: list[bool] = []
 
     def wrapped_read_analysis(*args: object, **kwargs: object) -> object:
-        read_calls.append(bool(kwargs.get("validate_stat", True)))
+        read_calls.append(
+            isinstance(kwargs.get("snapshot"), cli_module_source.PythonSourceSnapshot)
+        )
         return original_read_analysis(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -15612,7 +15243,6 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         cached_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         cached_path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15629,15 +15259,14 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert cached_imports == ("warnings",)
     assert "f" in cached_defaults
     assert cached_kinds == {"f": "sync"}
-    assert cached_source is None
+    assert cached_source == source
     assert read_calls == [True]
     assert calls == 1
     assert cache_hit is True
-    assert interface_changed is False
     assert cached_path_stat is not None
 
 
-def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
+def test_load_module_analysis_misses_after_body_only_edit(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
@@ -15667,7 +15296,6 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
         func_kinds,
         cached_source,
         cache_hit,
-        interface_changed,
         path_stat,
     ) = cli._load_module_analysis(
         module_path,
@@ -15686,7 +15314,6 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
     assert func_kinds == {"f": "sync"}
     assert cached_source is not None
     assert cache_hit is False
-    assert interface_changed is False
     assert path_stat is not None
 
 
@@ -16203,7 +15830,6 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             module_dep_closures={"alpha": frozenset({"alpha"})},
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
-            dirty_lowering_modules=set(),
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
         )
@@ -16216,7 +15842,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     assert context_payload_calls == 1
 
 
-def test_prepare_frontend_parallel_batch_reuses_dirty_module_lowering_cache(
+def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
@@ -16291,7 +15917,6 @@ def test_prepare_frontend_parallel_batch_reuses_dirty_module_lowering_cache(
             module_dep_closures={"alpha": frozenset({"alpha"})},
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
-            dirty_lowering_modules={"alpha"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
         )
@@ -16415,23 +16040,6 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
     assert calls == 1
 
 
-def test_dependent_module_closure_tracks_reverse_frontier() -> None:
-    module_deps = {
-        "main": {"alpha", "beta"},
-        "alpha": {"leaf"},
-        "beta": set(),
-        "leaf": set(),
-    }
-
-    closure = cli_module_dependencies._dependent_module_closure(
-        {"leaf"},
-        module_deps,
-        {"main", "alpha", "beta", "leaf"},
-    )
-
-    assert closure == {"leaf", "alpha", "main"}
-
-
 def test_reverse_module_dependencies_maps_dependents_once() -> None:
     module_deps = {
         "main": {"alpha", "beta"},
@@ -16449,28 +16057,6 @@ def test_reverse_module_dependencies_maps_dependents_once() -> None:
     assert reverse["alpha"] == {"main"}
     assert reverse["beta"] == {"main"}
     assert reverse["main"] == set()
-
-
-def test_dependent_module_closure_reuses_precomputed_reverse_frontier() -> None:
-    module_deps = {
-        "main": {"alpha", "beta"},
-        "alpha": {"leaf"},
-        "beta": set(),
-        "leaf": set(),
-    }
-    reverse = cli_module_dependencies._reverse_module_dependencies(
-        module_deps,
-        {"main", "alpha", "beta", "leaf"},
-    )
-
-    closure = cli_module_dependencies._dependent_module_closure(
-        {"leaf"},
-        module_deps,
-        {"main", "alpha", "beta", "leaf"},
-        reverse_module_deps=reverse,
-    )
-
-    assert closure == {"leaf", "alpha", "main"}
 
 
 def test_module_dependency_closure_tracks_forward_dependencies() -> None:
@@ -16951,7 +16537,6 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             },
             module_graph_metadata=module_graph_metadata,
             module_chunking=False,
-            dirty_lowering_modules={"main", "alpha"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
         )
@@ -17017,7 +16602,6 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
                 name: path.stat() for name, path in module_graph.items()
             },
             module_chunking=False,
-            dirty_lowering_modules={"main"},
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
         )
@@ -18660,7 +18244,7 @@ def test_stdlib_object_cache_path_tracks_build_variant(
     assert base.suffix == ".a"
 
 
-def test_read_module_source_uses_utf8_fast_path(
+def test_read_module_source_decodes_captured_utf8_without_reopening(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source_path = tmp_path / "fast_utf8.py"
@@ -18669,11 +18253,11 @@ def test_read_module_source_uses_utf8_fast_path(
     def fail_open(path: Path):  # type: ignore[no-untyped-def]
         raise AssertionError(f"tokenize.open should not run for {path}")
 
-    monkeypatch.setattr(cli.tokenize, "open", fail_open)
+    monkeypatch.setattr(cli_module_source.tokenize, "open", fail_open)
     assert cli_module_source._read_module_source(source_path) == "value = 'hello'\n"
 
 
-def test_read_module_source_falls_back_for_encoding_cookie(
+def test_read_module_source_decodes_captured_encoding_cookie(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "latin1_source.py"
@@ -23997,7 +23581,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             path_stat_by_module={},
             module_chunking=False,
             scoped_lowering_inputs=None,
-            dirty_lowering_modules=set(),
             frontend_module_costs={},
             stdlib_like_by_module={},
             known_classes={},

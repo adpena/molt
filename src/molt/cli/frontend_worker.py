@@ -722,7 +722,6 @@ def _prepare_frontend_parallel_batch(
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    dirty_lowering_modules: Collection[str],
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     frontend_phase_timeout: float | None = None,

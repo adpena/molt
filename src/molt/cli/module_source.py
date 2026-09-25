@@ -1,22 +1,61 @@
 from __future__ import annotations
 
-import codecs
+import ast
 import contextlib
 import functools
 import hashlib
+import io
 import json
 import os
-import re
 import sys
 import tokenize
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
+
+
+@dataclass(frozen=True)
+class PythonSourceSnapshot:
+    """One captured byte generation supplies source text, identity and host AST."""
+
+    path: Path
+    content: bytes
+
+    @classmethod
+    def capture(cls, path: Path) -> PythonSourceSnapshot:
+        return cls(path, path.read_bytes())
+
+    @functools.cached_property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.content).hexdigest()
+
+    @functools.cached_property
+    def text(self) -> str:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(self.content).readline)
+        source = self.content.decode(encoding)
+        return source.replace("\r\n", "\n").replace("\r", "\n")
+
+    @functools.cached_property
+    def tree(self) -> ast.Module:
+        try:
+            # This is the host-source parser. Target consumers parse text through
+            # their selected target authority, never through this host AST.
+            return ast.parse(self.content, filename=str(self.path))
+        except (SyntaxError, UnicodeError, ValueError) as exc:
+            raise ValueError(
+                f"cannot parse local Python source {self.path}: {exc}"
+            ) from exc
+
+    @functools.cached_property
+    def ast_digest(self) -> str:
+        from molt.compiler_analysis.python_binding_flow import python_ast_digest
+
+        return python_ast_digest(self.tree)
 
 
 @dataclass(frozen=True)
@@ -379,31 +418,7 @@ def _payload_source_matches(
 
 
 def _read_module_source(path: Path) -> str:
-    def normalize_newlines(source: str) -> str:
-        return source.replace("\r\n", "\n").replace("\r", "\n")
-
-    with path.open("rb") as handle:
-        first_line = handle.readline()
-        second_line = handle.readline()
-        has_utf8_bom = first_line.startswith(codecs.BOM_UTF8)
-        _cookie_re = tokenize.cookie_re
-        if isinstance(_cookie_re.pattern, bytes):
-            cookie_re = cast(re.Pattern[bytes], _cookie_re)
-            has_encoding_cookie = any(
-                cookie_re.match(line) for line in (first_line, second_line) if line
-            )
-        else:
-            has_encoding_cookie = any(
-                _cookie_re.match(line.decode("latin-1", errors="ignore"))
-                for line in (first_line, second_line)
-                if line
-            )
-        if not has_utf8_bom and not has_encoding_cookie:
-            return normalize_newlines(
-                (first_line + second_line + handle.read()).decode("utf-8")
-            )
-    with tokenize.open(path) as handle:
-        return normalize_newlines(handle.read())
+    return PythonSourceSnapshot.capture(path).text
 
 
 def _build_module_source_catalog(

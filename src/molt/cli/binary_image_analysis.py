@@ -436,9 +436,6 @@ def _frontend_binary_image_analysis_payload(
             "dependency_closure_edge_count": sum(
                 len(deps) for deps in frontend_analysis.module_dep_closures.values()
             ),
-            "dirty_lowering_module_count": len(
-                frontend_analysis.dirty_lowering_modules
-            ),
         },
         "lowering": {
             "target_python": target_python_tag,

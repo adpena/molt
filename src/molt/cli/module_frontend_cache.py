@@ -1,6 +1,6 @@
 """Shared, content-addressed tier for the per-module frontend caches.
 
-The per-module *analysis* cache (function defaults / kinds / import scan facts)
+The per-module *analysis* cache (function defaults / kinds)
 and *lowering* cache (the frontend IR lowering result) are a *fixed* function of
 the module source content plus the frontend/tooling identity that produced them.
 Their correctness identity is already fully captured:

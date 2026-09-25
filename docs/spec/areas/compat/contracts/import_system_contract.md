@@ -26,8 +26,10 @@ covered native path, static package `__all__` child auto-import for source
 relative `builtins.__import__` cases, public resolver validation for
 `importlib.import_module` and `importlib.util.resolve_name`,
 `FileLoader`/`SourceFileLoader.load_module` execution through the Rust
-spec-execution transaction, and persisted module graph/import-scan caches keyed
-by compiler/tooling policy inputs. Remaining transaction work is not closed:
+spec-execution transaction, and persisted source-only import requests keyed by
+source and compiler/tooling policy inputs. Filesystem-dependent edges are
+completed live on every graph walk; completed graphs and derived imports are
+not persisted. Remaining transaction work is not closed:
 public importlib API validation outside the covered import-module/resolve-name
 resolver and load-module cases, dynamic/broader CPython `fromlist`
 star/`__all__` expansion, and namespace-package edge cases still need structural
@@ -136,8 +138,9 @@ Metadata construction and native-provider publication use that same cleanup path
   semantic import edges. Only classified unknown package/spec/name anchors may
   defer to runtime custody; unrelated resolution errors still fail closed, and
   foreign globals or explicit package arguments never acquire lexical fallback
-  semantics. The complete scan record carries the runtime-anchor requirement
-  through precomputed scans, persisted caches, and graph merges. Custody reaches
+  semantics. Source requests carry the runtime-anchor requirement into live
+  completion, precomputed scans, and graph merges. Strict persisted requests
+  never carry runtime custody. Custody reaches
   a fixed point over every discovered owner, preserving admitted module names
   (including aliases), original resolution roots, fresh AST identity, and
   full-depth scans. This source custody is target-independent: native/WASM

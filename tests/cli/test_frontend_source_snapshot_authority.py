@@ -18,7 +18,9 @@ from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_resolution
 from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
+from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import (
+    _ImportScanRequests,
     ImportScanMode,
     _CompleteImportScan,
     _ImportAdmissionPolicy,
@@ -169,7 +171,11 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
     counts = _count_semantic_work(monkeypatch)
     options = _scan_options("entry")
     scans._write_persisted_import_scan(
-        tmp_path, source, scan=scans._PersistedImportScan((), ()), **options
+        tmp_path,
+        source,
+        scan=_ImportScanRequests((), ()),
+        snapshot=PythonSourceSnapshot.capture(source),
+        **options,
     )
     assert counts == {"paths": 1, "bytes": 1}
     counts.update(paths=0, bytes=0)
@@ -193,7 +199,7 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
         )
 
 
-@pytest.mark.parametrize("warm_operation", ["imports", "native_support"])
+@pytest.mark.parametrize("warm_operation", ["scan", "native_support"])
 def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
     warm_operation: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -223,7 +229,7 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
 
     def record_read(
         project_root: Path, path: Path, **kwargs: Any
-    ) -> scans._PersistedImportScan | None:
+    ) -> _ImportScanRequests | None:
         reads.append(path)
         return read_record(project_root, path, **kwargs)
 
@@ -231,22 +237,17 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
         writes.append(path)
         write_record(project_root, path, **kwargs)
 
-    def missing_graph(*_args: object, **_kwargs: object) -> None:
-        return None
-
     monkeypatch.setattr(scans, "_read_persisted_import_scan_record", record_read)
     monkeypatch.setattr(scans, "_write_persisted_import_scan", record_write)
-    monkeypatch.setattr(scans, "_read_persisted_module_graph", missing_graph)
     counts = _count_semantic_work(monkeypatch)
 
-    if warm_operation == "imports":
-        imports = discovery._load_module_imports(
+    if warm_operation == "scan":
+        imports = discovery._load_module_import_scan(
             support,
-            tree=ast.parse(source),
             resolution_cache=module_resolution._ModuleResolutionCache(),
             project_root=app,
             **_scan_options("support", "module_init"),
-        )
+        ).scan.imports
     else:
 
         class NativeSupportPlan:
@@ -337,7 +338,7 @@ def test_cold_discovery_produces_complete_scan_once(
 
     def read(
         project_root: Path, path: Path, **kwargs: Any
-    ) -> scans._PersistedImportScan | None:
+    ) -> _ImportScanRequests | None:
         counts["reads"] += 1
         return read_record(project_root, path, **kwargs)
 
@@ -414,7 +415,8 @@ def test_malformed_execution_projection_rejects_entire_scan(
         scans._write_persisted_import_scan(
             tmp_path,
             source,
-            scan=scans._PersistedImportScan(("helper",), ()),
+            snapshot=PythonSourceSnapshot.capture(source),
+            scan=_ImportScanRequests(("helper",), ()),
             **options,
         )
         path = scans._import_scan_cache_path(tmp_path, source, **options)
@@ -456,8 +458,6 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         )
 
     for name in (
-        "_read_persisted_module_graph",
-        "_write_persisted_module_graph",
         "_read_persisted_import_scan_record",
         "_write_persisted_import_scan",
     ):
@@ -502,7 +502,8 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         scans._write_persisted_import_scan(
             tmp_path,
             source,
-            scan=scans._PersistedImportScan((), ()),
+            snapshot=PythonSourceSnapshot.capture(source),
+            scan=_ImportScanRequests((), ()),
             **_scan_options("entry"),
         )
 
@@ -544,7 +545,6 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     cache = module_resolution._ModuleResolutionCache()
-    execution = module_import_scanner._StaticSourceExecution("target", target)
     policy = _ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"owner"})
     )
@@ -557,7 +557,7 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
         "_write_persisted_import_scan",
     ):
         monkeypatch.setattr(scans, name, forbidden)
-    for name in ("_collect_imports", "_collect_static_source_executions"):
+    for name in ("_collect_imports", "_collect_static_source_execution_requests"):
         monkeypatch.setattr(module_import_scanner, name, forbidden)
     monkeypatch.setattr(cache, "read_module_source", forbidden)
     monkeypatch.setattr(cache, "parse_module_ast", forbidden)
@@ -585,15 +585,15 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
         precomputed_scans_by_path={
             owner: discovery._bind_precomputed_module_import_scan(
                 owner,
+                snapshot=PythonSourceSnapshot.capture(owner),
                 module_name="owner",
                 import_scan_mode="full",
-                scan=_CompleteImportScan(
-                    (), ((execution.module_name, execution.source_path),)
-                ),
+                scan=_CompleteImportScan((), (("target", target),)),
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),
             target: discovery._bind_precomputed_module_import_scan(
                 target,
+                snapshot=PythonSourceSnapshot.capture(target),
                 module_name="target",
                 import_scan_mode="module_init",
                 scan=_CompleteImportScan((), ()),
@@ -620,8 +620,8 @@ def test_cold_scan_with_cached_analysis_facts_preserves_retention_and_miss(
 
     def cached_facts_without_imports(
         *_args: object, **_kwargs: object
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, str], None]:
-        return {}, {}, None
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+        return {}, {}
 
     monkeypatch.setattr(
         module_cache, "_read_persisted_module_analysis", cached_facts_without_imports
@@ -636,7 +636,7 @@ def test_cold_scan_with_cached_analysis_facts_preserves_retention_and_miss(
         retain_tree=retain,
         **_scan_options("entry"),
     )
-    tree, imports, defaults, kinds, retained_source, hit, _changed, _stat = result
+    tree, imports, defaults, kinds, retained_source, hit, _stat = result
     assert imports == () and defaults == {} and kinds == {}
     assert hit is False
     assert (tree is not None) is retain
