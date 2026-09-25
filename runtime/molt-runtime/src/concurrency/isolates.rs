@@ -548,6 +548,8 @@ mod bootstrap_failure_tests {
     }
 
     extern "C" fn publish_isolate_shutdown_edges() -> u64 {
+        assert!(crate::concurrency::execution::current_thread_holds_shutdown_drain_custody());
+        assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
         crate::with_gil_entry_nopanic!(py, {
             let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
             assert!(

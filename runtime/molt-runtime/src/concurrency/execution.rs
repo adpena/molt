@@ -154,7 +154,7 @@ pub(crate) fn current_thread_has_runtime_execution_custody() -> bool {
             && execution_is_nested())
 }
 
-fn current_thread_holds_shutdown_drain_custody() -> bool {
+pub(crate) fn current_thread_holds_shutdown_drain_custody() -> bool {
     SHUTDOWN_DRAIN_EXECUTION_DEPTH.with(|depth| depth.get() != 0)
 }
 
@@ -190,6 +190,23 @@ pub(crate) struct ShutdownDrainExecutionCustody {
 }
 
 impl ShutdownDrainExecutionCustody {
+    /// Inherit the caller's lifetime capability or own the complete teardown.
+    /// C-extension context alone is not a lease: bootstrap/finalizing entry can
+    /// establish it without admitting ordinary runtime execution.
+    pub(crate) fn enter_if_needed() -> Option<Self> {
+        assert!(
+            gil_held(),
+            "shutdown drain execution custody requires the GIL"
+        );
+        if crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
+            || current_thread_holds_shutdown_drain_custody()
+        {
+            None
+        } else {
+            Some(Self::enter())
+        }
+    }
+
     pub(crate) fn enter() -> Self {
         assert!(
             gil_held(),
@@ -752,6 +769,33 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn shutdown_custody_inherits_only_real_lifetime_capabilities() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        {
+            let _execution = RuntimeExecutionGuard::enter();
+            assert!(ShutdownDrainExecutionCustody::enter_if_needed().is_none());
+            assert!(!current_thread_holds_shutdown_drain_custody());
+        }
+        let _gil = GilGuard::new();
+        // Bootstrap/finalizing C context is not ordinary admission.
+        enter_c_extension_execution_context();
+        let custody = ShutdownDrainExecutionCustody::enter_if_needed()
+            .expect("C context without a lease must acquire shutdown custody");
+        assert!(current_thread_holds_shutdown_drain_custody());
+        assert!(ShutdownDrainExecutionCustody::enter_if_needed().is_none());
+        {
+            let nested = RuntimeExecutionGuard::enter();
+            assert!(nested.custody.is_none());
+            assert!(!nested.active_lifecycle_lease);
+        }
+        drop(custody);
+        assert!(!current_thread_holds_shutdown_drain_custody());
+        assert!(current_thread_has_c_extension_execution_context());
+        leave_c_extension_execution_context();
+        assert!(!current_thread_has_c_extension_execution_context());
+    }
 
     #[test]
     fn scoped_cleanup_panic_detaches_and_releases_outer_gil() {
