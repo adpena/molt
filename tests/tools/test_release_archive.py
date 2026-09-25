@@ -408,6 +408,37 @@ def test_clean_consumer_uses_strict_zip_authority(tmp_path: Path) -> None:
         verify_consumer._extract(archive, tmp_path / "out")
 
 
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_extraction_rejects_indirect_parent_before_creating_descendants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_kind: str
+) -> None:
+    if link_kind == "junction" and os.name != "nt":
+        pytest.skip("junctions are Windows reparse points")
+    external = tmp_path / "external"
+    external.mkdir()
+    original = release_archive.tempfile.mkdtemp
+
+    def staged_link(**kwargs):
+        stage = Path(original(**kwargs))
+        if link_kind == "junction":
+            import _winapi
+
+            _winapi.CreateJunction(str(external), str(stage / "alias"))
+        else:
+            try:
+                (stage / "alias").symlink_to(external, target_is_directory=True)
+            except OSError:
+                pytest.skip("host does not permit symbolic links")
+        return str(stage)
+
+    monkeypatch.setattr(release_archive.tempfile, "mkdtemp", staged_link)
+    archive = _zip(tmp_path / "archive.zip", ("alias/missing/deeper/file",))
+    with pytest.raises(ValueError, match="link|junction"):
+        release_archive.extract_zip_strict(archive, tmp_path / "out")
+    assert not list(external.iterdir())
+    assert not (tmp_path / "out").exists()
+
+
 def test_inventory_accepts_linux_style_read_atime_advance(tmp_path: Path) -> None:
     sources, _ = release_archive._inventory_regular_files(
         _source(tmp_path), policy=release_archive.DEFAULT_ARCHIVE_POLICY

@@ -23,6 +23,7 @@ from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import _find_molt_root, _require_molt_root
 from molt.cli import wasm_toolchain
+from molt.compiler_distribution import installed_compiler
 
 from molt.cli.setup_readiness import (
     _canonical_env_defaults,
@@ -197,6 +198,14 @@ def update_repo(
     root_error = _require_molt_root(root, json_output, "update")
     if root_error is not None:
         return root_error
+
+    if (include_locks or include_manifests) and installed_compiler(root) is not None:
+        return _fail(
+            "Installed Molt sources are immutable. Upgrade with the package manager "
+            "or install a new release bundle; dependency updates require a source checkout.",
+            json_output,
+            command="update",
+        )
 
     steps, warnings = _planned_update_steps(
         root,

@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import tarfile
 import tempfile
 import time
@@ -72,22 +71,8 @@ def _venv_python(root: Path) -> Path:
     return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _launchers(bundle_root: Path) -> tuple[list[str], list[str] | None]:
-    if os.name != "nt":
-        return [str(bundle_root / "bin" / "molt")], None
-    powershell = shutil.which("powershell.exe")
-    if powershell is None:
-        raise ValueError("Windows release verification requires PowerShell")
-    return [str(bundle_root / "bin" / "molt.cmd")], [
-        powershell,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(bundle_root / "bin" / "molt.ps1"),
-    ]
+def _launcher(bundle_root: Path) -> list[str]:
+    return [str(bundle_root / "bin" / ("molt.exe" if os.name == "nt" else "molt"))]
 
 
 def _run(
@@ -211,7 +196,7 @@ def _consumer_environment(root: Path) -> dict[str, str]:
     ):
         env.pop(name, None)
     env["MOLT_HOME"] = str(root / "molt-home")
-    env["MOLT_PROJECT_ROOT"] = str(root / "project")
+    env.pop("MOLT_PROJECT_ROOT", None)
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     return env
 
@@ -220,6 +205,7 @@ def _verify_python_coordinate(
     *,
     root: Path,
     bundle_root: Path,
+    worker: Path,
     compiler: InstalledCompiler,
     target: dict[str, object],
     minor: str,
@@ -248,7 +234,16 @@ def _verify_python_coordinate(
     )
     _absent_probe(python, env=env, cwd=root)
     env["PYTHON"] = str(python)
-    launcher, powershell = _launchers(bundle_root)
+    launcher = _launcher(bundle_root)
+    commands.append(
+        _run(
+            [*launcher, "setup", "--install-cli-dependencies"],
+            cwd=project,
+            env=env,
+            timeout=600,
+            role="cli_setup",
+        )
+    )
     commands.append(
         _run(
             [*launcher, "--help"],
@@ -257,19 +252,6 @@ def _verify_python_coordinate(
             timeout=600,
             role="cli_help",
         )
-    )
-    if powershell is not None:
-        commands.append(
-            _run(
-                [*powershell, "--help"],
-                cwd=project,
-                env=env,
-                timeout=600,
-                role="cli_help_powershell",
-            )
-        )
-    worker = (
-        bundle_root / "bin" / ("molt-worker.exe" if os.name == "nt" else "molt-worker")
     )
     commands.append(
         _run(
@@ -310,7 +292,7 @@ def _verify_python_coordinate(
                     str(executable),
                     str(source),
                 ],
-                cwd=project,
+                cwd=root,
                 env=env,
                 timeout=2700,
                 role=f"build_{profile}",
@@ -407,21 +389,35 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
                 "release bundle must contain exactly one top-level directory"
             )
         bundle_root = bundle_roots[0]
-        wheels = sorted((bundle_root / "share" / "molt" / "wheels").glob("*.whl"))
-        if len(wheels) != 1:
-            raise ValueError("release bundle must contain exactly one wheel")
-        if sha256_file(wheels[0]) != candidate["wheel"]["sha256"]:
-            raise ValueError("bundled wheel does not match the canonical wheel")
+        worker_records = [
+            record for record in artifacts if record.get("kind") == "molt-worker"
+        ]
+        if len(worker_records) != 1:
+            raise ValueError(
+                "candidate must contain exactly one standalone worker bundle"
+            )
+        worker_extract = root / "worker"
+        _extract(candidate_dir / str(worker_records[0]["filename"]), worker_extract)
         worker_name = "molt-worker.exe" if os.name == "nt" else "molt-worker"
-        worker = bundle_root / "bin" / worker_name
+        worker_root = worker_extract / f"molt-worker-{candidate['version']}"
+        if list(worker_extract.iterdir()) != [worker_root]:
+            raise ValueError("standalone worker bundle must have one exact root")
+        worker = worker_root / "bin" / worker_name
         if not worker.is_file() or worker.stat().st_size == 0:
-            raise ValueError(f"release bundle is missing {worker_name}")
+            raise ValueError(f"standalone worker bundle is missing {worker_name}")
+        if (bundle_root / "bin" / worker_name).exists():
+            raise ValueError(
+                "compiler bundle must not duplicate standalone worker ownership"
+            )
 
         compiler = installed_compiler(bundle_root / "source")
         if compiler is None or compiler.source_sha != candidate["source_sha"]:
             raise ValueError("Bundle compiler source differs from candidate")
         if compiler.record != candidate["compiler"]:
             raise ValueError("Bundle compiler identity differs from candidate")
+        if compiler.launcher != candidate["launcher"]:
+            raise ValueError("Bundle launcher identity differs from candidate")
+        compiler.verify_launcher()
         compiler.verify_sources()
         compiler.verify_binary(("native-backend", "wasm-backend"), "release")
         if consumer_python_policy(
@@ -435,6 +431,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             _verify_python_coordinate(
                 root=root / f"python-{minor}",
                 bundle_root=bundle_root,
+                worker=worker,
                 compiler=compiler,
                 target=candidate["target"],
                 minor=minor,
@@ -446,6 +443,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         # Remove both the portable bundle and its private installed environments;
         # checking only the untouched bootstrap interpreter would miss residue.
         durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
+        durable_remove_path(worker_root, retirement_scope="consumer-uninstall")
         for minor, _ in coordinates:
             coordinate_root = root / f"python-{minor}"
             home = coordinate_root / "molt-home"
@@ -459,8 +457,10 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
                 env=_consumer_environment(coordinate_root),
                 cwd=coordinate_root,
             )
-        if bundle_root.exists():
-            raise RuntimeError("Molt remained installed after portable bundle removal")
+        if bundle_root.exists() or worker_root.exists():
+            raise RuntimeError(
+                "Molt or worker remained installed after portable bundle removal"
+            )
 
         count = len(coordinates) * 2
         payload: dict[str, object] = {
@@ -475,6 +475,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             "failed": 0,
             "errors": 0,
             "compiler": compiler.record,
+            "launcher": compiler.launcher,
             "guest_profiles": ["dev", "release"],
             "python_policy_sha256": policy_sha256,
             "python_proofs": proofs,

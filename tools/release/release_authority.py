@@ -15,7 +15,10 @@ import tomllib
 from typing import Any
 
 from molt.exact_json import canonical_json_sha256, read_exact
-from molt.compiler_distribution import validate_compiler_record
+from molt.compiler_distribution import (
+    validate_compiler_record,
+    validate_launcher_record,
+)
 from molt.file_publication import durable_publish_directory_exclusive
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import snapshot_stable_regular_file
@@ -24,7 +27,7 @@ from tools.command_execution import CommandExecutor
 from tools.git_identity import clean_checkout_status_arguments, require_git_object_id
 
 from .build_bundle import build_bundle
-from .compiler_payload import compiler_record, source_snapshot
+from .compiler_payload import compiler_record, launcher_record, source_snapshot
 from . import release_evidence
 from .release_remote import (
     download_evidence,
@@ -64,9 +67,9 @@ from .release_model import (
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-CANDIDATE_SCHEMA = "molt.release-candidate.v2"
+CANDIDATE_SCHEMA = "molt.release-candidate.v3"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v3"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v4"
 
 
 def consumer_python_policy(
@@ -216,6 +219,8 @@ def assemble_candidate(
     secondary_worker: Path,
     primary_compiler: Path,
     secondary_compiler: Path,
+    primary_launcher: Path,
+    secondary_launcher: Path,
     output: Path,
 ) -> dict[str, object]:
     target = target_by_id(target_id)
@@ -226,6 +231,13 @@ def assemble_candidate(
         secondary_compiler, platform=target.platform, arch=target.arch
     ):
         raise ValueError(f"{target_id}: production compiler is not reproducible")
+    launcher = launcher_record(
+        primary_launcher, platform=target.platform, arch=target.arch
+    )
+    if launcher != launcher_record(
+        secondary_launcher, platform=target.platform, arch=target.arch
+    ):
+        raise ValueError(f"{target_id}: production launcher is not reproducible")
     snapshot = source_snapshot(ROOT, source_sha)
     worker_primary = file_record(primary_worker, kind="worker-repro-primary")
     worker_secondary = file_record(secondary_worker, kind="worker-repro-secondary")
@@ -242,20 +254,25 @@ def assemble_candidate(
             filename = target.artifact_filename(kind, version)
             primary_bundle = output / filename
             repeat_bundle = repeat_root / filename
-            for worker, compiler_binary, destination in (
-                (primary_worker, primary_compiler, primary_bundle),
-                (secondary_worker, secondary_compiler, repeat_bundle),
+            for worker, compiler_binary, launcher_binary, destination in (
+                (primary_worker, primary_compiler, primary_launcher, primary_bundle),
+                (
+                    secondary_worker,
+                    secondary_compiler,
+                    secondary_launcher,
+                    repeat_bundle,
+                ),
             ):
                 build_bundle(
                     version=version,
                     platform=target.platform,
-                    wheel=wheel if kind == "molt" else None,
-                    worker=worker,
+                    worker=worker if kind == "molt-worker" else None,
                     kind=kind,
                     output=destination,
                     source_date_epoch=source_date_epoch,
                     arch=target.arch,
                     compiler=compiler_binary if kind == "molt" else None,
+                    launcher=launcher_binary if kind == "molt" else None,
                     snapshot=snapshot if kind == "molt" else None,
                 )
             if sha256_file(primary_bundle) != sha256_file(repeat_bundle):
@@ -295,11 +312,14 @@ def assemble_candidate(
         },
         "wheel": wheel_record,
         "compiler": compiler,
+        "launcher": launcher,
         "artifacts": sorted(artifacts, key=lambda item: str(item["filename"])),
         "reproducibility": {
             "worker_sha256": worker_primary["sha256"],
+            "launcher_sha256": launcher["sha256"],
             "independent_worker_builds": 2,
             "independent_compiler_builds": 2,
+            "independent_launcher_builds": 2,
             "independent_bundle_assemblies": 2,
             "matched": True,
         },
@@ -322,6 +342,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "target",
             "wheel",
             "compiler",
+            "launcher",
             "artifacts",
             "reproducibility",
         }
@@ -362,15 +383,20 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         validate_artifact_record(record, version=version)
     proof = payload["reproducibility"]
     compiler = validate_compiler_record(payload["compiler"])
+    launcher = validate_launcher_record(payload["launcher"])
     if (compiler["platform"], compiler["arch"]) != (target["platform"], target["arch"]):
         raise ValueError("release compiler target differs from candidate")
+    if (launcher["platform"], launcher["arch"]) != (target["platform"], target["arch"]):
+        raise ValueError("release launcher target differs from candidate")
     if (
         not isinstance(proof, dict)
         or set(proof)
         != {
             "worker_sha256",
+            "launcher_sha256",
             "independent_worker_builds",
             "independent_compiler_builds",
+            "independent_launcher_builds",
             "independent_bundle_assemblies",
             "matched",
         }
@@ -379,12 +405,14 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             for key in (
                 "independent_worker_builds",
                 "independent_compiler_builds",
+                "independent_launcher_builds",
                 "independent_bundle_assemblies",
             )
         )
         or proof.get("matched") is not True
         or not isinstance(proof.get("worker_sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", proof["worker_sha256"]) is None
+        or proof.get("launcher_sha256") != launcher["sha256"]
     ):
         raise ValueError(f"{target['id']}: reproducibility proof is incomplete")
     return payload
@@ -412,12 +440,10 @@ def _validate_consumer_profile_proofs(profiles: object, *, compiler_sha256: str)
 
 
 def _validate_consumer_command_records(
-    commands: object, *, windows: bool
+    commands: object,
 ) -> dict[str, dict[str, Any]]:
     """Admit the exact ordered roles and typed successful command records."""
-    roles = ["environment", "cli_help"]
-    if windows:
-        roles.append("cli_help_powershell")
+    roles = ["environment", "cli_setup", "cli_help"]
     roles.extend(
         ("worker_help", "build_dev", "run_dev", "build_release", "run_release")
     )
@@ -469,7 +495,7 @@ def _validate_consumer_command_bindings(
     path_type = PureWindowsPath if windows else PurePosixPath
     help_argv = by_role["cli_help"]["argv"]
     launcher = help_argv[:-1]
-    expected_launcher = "molt.cmd" if windows else "molt"
+    expected_launcher = "molt.exe" if windows else "molt"
     launcher_path = path_type(launcher[-1]) if launcher else None
     if (
         help_argv[-1] != "--help"
@@ -479,34 +505,25 @@ def _validate_consumer_command_bindings(
         or launcher_path.name != expected_launcher
         or launcher_path.parent.name != "bin"
         or launcher_path.parent.parent.name != f"molt-{version}"
+        or len(launcher_path.parents) < 4
     ):
         raise ValueError("release consumer must exercise the shipped primary launcher")
-    if windows:
-        powershell = by_role["cli_help_powershell"]["argv"]
-        if (
-            len(powershell) != 9
-            or path_type(powershell[0]).name.lower() != "powershell.exe"
-            or powershell[1:-2]
-            != [
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ]
-            or powershell[-1] != "--help"
-            or path_type(powershell[-2]) != launcher_path.with_name("molt.ps1")
-        ):
-            raise ValueError(
-                "release consumer must exercise the shipped PowerShell launcher"
-            )
+    if by_role["cli_setup"]["argv"] != [
+        *launcher,
+        "setup",
+        "--install-cli-dependencies",
+    ]:
+        raise ValueError("release consumer must explicitly authorize private CLI setup")
     worker = by_role["worker_help"]["argv"]
     if (
         len(worker) != 2
         or worker[-1] != "--help"
         or path_type(worker[0])
-        != launcher_path.with_name("molt-worker.exe" if windows else "molt-worker")
+        != launcher_path.parents[3]
+        / "worker"
+        / f"molt-worker-{version}"
+        / "bin"
+        / ("molt-worker.exe" if windows else "molt-worker")
     ):
         raise ValueError(
             "release consumer worker command differs from installed worker"
@@ -624,6 +641,7 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "failed",
             "errors",
             "compiler",
+            "launcher",
             "guest_profiles",
             "python_policy_sha256",
             "python_proofs",
@@ -648,6 +666,7 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
         )
         or consumer.get("uninstall_verified") is not True
         or consumer.get("compiler") != candidate["compiler"]
+        or consumer.get("launcher") != candidate["launcher"]
         or consumer.get("guest_profiles") != ["dev", "release"]
         or consumer.get("standalone_native_output") != CONSUMER_EXPECTED_OUTPUT
     ):
@@ -682,9 +701,7 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
                 proof["profile_proofs"], compiler_sha256=candidate["compiler"]["sha256"]
             )
         )
-        commands = _validate_consumer_command_records(
-            proof["commands"], windows=windows
-        )
+        commands = _validate_consumer_command_records(proof["commands"])
         _validate_consumer_command_bindings(
             commands,
             windows=windows,
@@ -1207,6 +1224,8 @@ def main() -> None:
     candidate.add_argument("--secondary-worker", type=Path, required=True)
     candidate.add_argument("--primary-compiler", type=Path, required=True)
     candidate.add_argument("--secondary-compiler", type=Path, required=True)
+    candidate.add_argument("--primary-launcher", type=Path, required=True)
+    candidate.add_argument("--secondary-launcher", type=Path, required=True)
     candidate.add_argument("--output", type=Path, required=True)
 
     index = subparsers.add_parser("index")
@@ -1346,6 +1365,8 @@ def main() -> None:
             secondary_worker=args.secondary_worker,
             primary_compiler=args.primary_compiler,
             secondary_compiler=args.secondary_compiler,
+            primary_launcher=args.primary_launcher,
+            secondary_launcher=args.secondary_launcher,
             output=args.output,
         )
         print(json.dumps(payload, sort_keys=True))

@@ -3176,7 +3176,7 @@ gates = [
 # --- v1 public stable contract ------------------------------------------------
 [[rule]]
 name = "public-contract"
-description = "Every CLI command carries a declared stability tier and the generated public surface snapshot (CLI tree, target Python range, release targets, verified-subset matrix digest, native callable ABI) has not drifted without an explicit --update."
+description = "Every CLI command carries a declared stability tier, public schema declarations match executable producers, and the generated public surface snapshot has not drifted without an explicit --update."
 globs = [
   "config/public_contract_v1.toml",
   "config/public_contract_v1.surface.json",
@@ -3186,6 +3186,15 @@ globs = [
   "src/molt/cli/__init__.py",
   "src/molt/release_matrix.py",
   "src/molt/target_python.py",
+  "src/molt/compiler_distribution.py",
+  "src/molt/verified_subset.py",
+  "tools/gen_release_matrix.py",
+  "tools/legacy_inventory.py",
+  "tools/pact_witness_receipt.py",
+  "tools/phase_exit_manifest.py",
+  "tools/release_exit_gate.py",
+  "tools/release/release_authority.py",
+  "tools/release/release_model.py",
   "tools/public_contract_gate.py",
   "tests/tools/test_public_contract_gate.py",
 ]

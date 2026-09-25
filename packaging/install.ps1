@@ -1,7 +1,7 @@
 Param(
   [string]$Version = "",
   [string]$Prefix = "",
-  [switch]$NoPath
+  [switch]$AddPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +9,7 @@ $RepoOwner = "adpena"
 $RepoName = "molt"
 
 if ([string]::IsNullOrWhiteSpace($Prefix)) {
-  $Prefix = Join-Path $env:USERPROFILE ".molt"
+  $Prefix = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "Programs\Molt"
 }
 $Prefix = [IO.Path]::GetFullPath($Prefix)
 $PrefixParent = Split-Path -Parent $Prefix
@@ -85,7 +85,7 @@ try {
   }
 
   $binPath = Join-Path $Prefix "bin"
-  if (-not $NoPath) {
+  if ($AddPath) {
     $current = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($current -notlike "*$binPath*") {
       [Environment]::SetEnvironmentVariable("Path", "$binPath;$current", "User")
@@ -93,12 +93,14 @@ try {
     }
   }
 
-  $moltCommand = Join-Path $binPath "molt.cmd"
+  $moltCommand = Join-Path $binPath "molt.exe"
   if (-not (Test-Path -LiteralPath $moltCommand)) {
     throw "Installed bundle is missing executable: $moltCommand"
   }
   Write-Output "Molt $Version installed to $Prefix from verified $arch release"
-  & $moltCommand setup --strict
+  Write-Output "No CLI dependencies or toolchains were installed. To authorize private CLI dependency setup:"
+  Write-Output "& `"$moltCommand`" setup --install-cli-dependencies"
+  Write-Output "Then run: & `"$moltCommand`" doctor --strict"
 } finally {
   if (Test-Path -LiteralPath $workdir) {
     Remove-Item -LiteralPath $workdir -Recurse -Force

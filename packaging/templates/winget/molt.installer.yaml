@@ -7,18 +7,14 @@ Installers:
     InstallerSha256: "{{WIN_X86_SHA256}}"
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: bin\\molt.cmd
+      - RelativeFilePath: molt-{{VERSION}}\bin\molt.exe
         PortableCommandAlias: molt
-      - RelativeFilePath: bin\\molt-worker.exe
-        PortableCommandAlias: molt-worker
   - Architecture: arm64
     InstallerUrl: "{{WIN_ARM_URL}}"
     InstallerSha256: "{{WIN_ARM_SHA256}}"
     NestedInstallerType: portable
     NestedInstallerFiles:
-      - RelativeFilePath: bin\\molt.cmd
+      - RelativeFilePath: molt-{{VERSION}}\bin\molt.exe
         PortableCommandAlias: molt
-      - RelativeFilePath: bin\\molt-worker.exe
-        PortableCommandAlias: molt-worker
 ManifestType: installer
 ManifestVersion: 1.6.0

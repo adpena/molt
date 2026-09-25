@@ -37,6 +37,7 @@ members = [
     "runtime/molt-backend-wasm",
     "runtime/molt-db",
     "runtime/molt-worker",
+    "runtime/molt-launcher",
     "runtime/molt-wasm-host",
     "runtime/molt-wasm-facts",
     "runtime/molt-cpython-abi",

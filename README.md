@@ -101,6 +101,12 @@ no progress chatter.
 
 ## Install
 
+Release bundles keep one immutable CLI/compiler source and a separate private
+dependency environment. `molt setup --install-cli-dependencies` explicitly
+authorizes dependency installation; normal launches do not install or repair it.
+`molt doctor` identifies the active installation and competing PATH entries
+without changing them. See [binary installation](packaging/INSTALL.md).
+
 - Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
 - Packaging details: [packaging/README.md](packaging/README.md)
 - Toolchain diagnostics: `uv run --python 3.12 molt doctor --json` (not a

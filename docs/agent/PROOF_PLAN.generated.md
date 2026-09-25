@@ -288,7 +288,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
 | `import-symbol-gate` | 2 | 2 | no |
 | `phase-exit-manifest` | 6 | 2 | no |
-| `public-contract` | 10 | 2 | no |
+| `public-contract` | 19 | 2 | no |
 
 ## Selection contract
 
