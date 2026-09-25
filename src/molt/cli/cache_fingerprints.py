@@ -468,7 +468,15 @@ def _source_tree_cache_fingerprint(
         cached = transaction.fingerprints.get(transaction_key)
         if cached is not None:
             return cached
-    clean_signature = _source_tree_clean_pathspec_signature(root, path_keys)
+    # Captured Python identity is already paid for by dependency discovery.
+    # Going through Git would add subprocesses and discard that authority; hash
+    # the receipt plus any remaining assets directly. Uncaptured backend/runtime
+    # trees still benefit from the clean-pathspec shortcut.
+    clean_signature = (
+        None
+        if inputs.source_sha256
+        else _source_tree_clean_pathspec_signature(root, path_keys)
+    )
     if clean_signature is None:
         content_signature = _source_tree_content_signature(
             root, path_keys, inputs.source_sha256
