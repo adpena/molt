@@ -19,10 +19,11 @@ from typing import Any
 from molt.exact_json import ExactJsonError, loads_exact, write_exact
 from molt.file_publication import durable_publish_directory_exclusive
 from molt.toolchain_identity import stable_file_sha256
-from molt.verified_subset import verified_subset_coordinates
+from molt.verified_subset import VerifiedSubsetCoordinate
 from tools import pact_witness_receipt as pwr
 from tools import perf_authority as pa
 from tools import release_criterion_receipt as rcr
+from tools import verified_subset
 from tools.git_identity import is_git_object_id
 from tools.command_execution import CommandExecutor
 
@@ -71,13 +72,15 @@ def verified_subset_evidence_role(coordinate_id: str) -> str:
     return f"{VERIFIED_SUBSET_EVIDENCE_PREFIX}{coordinate_id}"
 
 
-def _expected_evidence_roles() -> frozenset[str]:
+def _expected_evidence_roles(
+    coordinates: Sequence[VerifiedSubsetCoordinate],
+) -> frozenset[str]:
     return frozenset(
         {
             *BASE_EVIDENCE_ROLES,
             *(
                 verified_subset_evidence_role(coordinate.id)
-                for coordinate in verified_subset_coordinates()
+                for coordinate in coordinates
             ),
         }
     )
@@ -338,6 +341,7 @@ def _validate_evidence_records(
     value: object,
     *,
     bundle_root: Path,
+    expected_roles: frozenset[str],
 ) -> tuple[dict[str, Path], list[str]]:
     problems: list[str] = []
     resolved_by_role: dict[str, Path] = {}
@@ -391,7 +395,6 @@ def _validate_evidence_records(
         problems.append("manifest evidence roles must not duplicate")
     if len(paths) != len(set(paths)):
         problems.append("manifest evidence paths must not duplicate")
-    expected_roles = _expected_evidence_roles()
     if roles != sorted(expected_roles):
         problems.append(
             "manifest evidence roles must be sorted and exact: "
@@ -407,6 +410,7 @@ def _typed_receipt_problems(
     source_sha: str,
     repo_root: Path,
     now: dt.datetime | None,
+    verified_subset_validation: verified_subset.VerifiedSubsetValidation | None = None,
 ) -> tuple[Mapping[str, Any] | None, list[str]]:
     try:
         payload = _load_json(path, label=f"{kind} receipt")
@@ -420,6 +424,7 @@ def _typed_receipt_problems(
             repo_root=repo_root,
             verify_inputs=True,
             now=now,
+            verified_subset_validation=verified_subset_validation,
         )
     )
 
@@ -540,6 +545,7 @@ def verify_release_bundle(
     *,
     repo_root: Path = ROOT,
     now: dt.datetime | None = None,
+    verified_subset_validation: verified_subset.VerifiedSubsetValidation | None = None,
 ) -> ReleaseGateReport:
     """Purely verify bundle bytes plus source inputs bound by typed receipts."""
 
@@ -584,9 +590,29 @@ def verify_release_bundle(
                 "release-exit registry differs from the checked-out canonical "
                 "scientific registry"
             )
+    try:
+        if verified_subset_validation is None:
+            verified_subset_validation = verified_subset.validate_manifest(
+                repo_root=repo_root
+            )
+        verified_subset_validation.require_root(repo_root)
+    except (OSError, ValueError) as exc:
+        problems.append(f"E3 source inventory is invalid: {exc}")
+        verified_subset_validation = None
+    expected_e3_coordinates = {
+        coordinate.id: coordinate
+        for coordinate in (
+            verified_subset_validation.coordinates
+            if verified_subset_validation is not None
+            else ()
+        )
+    }
     evidence, evidence_problems = _validate_evidence_records(
         payload.get("evidence"),
         bundle_root=bundle_root,
+        expected_roles=_expected_evidence_roles(
+            tuple(expected_e3_coordinates.values())
+        ),
     )
     problems.extend(evidence_problems)
     expected_bundle_files.update(evidence.values())
@@ -650,14 +676,15 @@ def verify_release_bundle(
                 )
             )
 
-    expected_e3_coordinates = {
-        coordinate.id: coordinate for coordinate in verified_subset_coordinates()
-    }
     seen_e3_coordinates: set[str] = set()
     for coordinate_id in sorted(expected_e3_coordinates):
         role = verified_subset_evidence_role(coordinate_id)
         path = evidence.get(role)
-        if path is None or not expected_source_sha:
+        if (
+            path is None
+            or not expected_source_sha
+            or verified_subset_validation is None
+        ):
             continue
         receipt, receipt_problems = _typed_receipt_problems(
             path,
@@ -665,6 +692,7 @@ def verify_release_bundle(
             source_sha=expected_source_sha,
             repo_root=repo_root,
             now=now,
+            verified_subset_validation=verified_subset_validation,
         )
         problems.extend(f"{role}: {problem}" for problem in receipt_problems)
         if receipt is None:
@@ -718,6 +746,11 @@ def verify_release_bundle(
             expected_files={path.resolve() for path in expected_bundle_files},
         )
     )
+    if verified_subset_validation is not None:
+        try:
+            verified_subset_validation.verify_unchanged()
+        except (OSError, ValueError) as exc:
+            problems.append(f"E3 source inventory changed: {exc}")
     passed = not problems and status == STATUS_PASS
     return ReleaseGateReport(
         expected_source_sha or None,
@@ -886,8 +919,9 @@ def assemble_release_bundle(
         raise ValueError("release assembly requires exactly two E1 receipts")
     if len(e4_receipts) != 4:
         raise ValueError("release assembly requires exactly four E4 receipts")
+    validation = verified_subset.validate_manifest(repo_root=root)
     expected_e3_coordinates = {
-        coordinate.id: coordinate for coordinate in verified_subset_coordinates()
+        coordinate.id: coordinate for coordinate in validation.coordinates
     }
     if len(e3_receipts) != len(expected_e3_coordinates):
         raise ValueError(
@@ -949,6 +983,7 @@ def assemble_release_bundle(
             source_sha=source_sha,
             repo_root=root,
             now=now,
+            verified_subset_validation=validation,
         )
         if payload is None or receipt_problems:
             raise ValueError("invalid E3 receipt: " + "; ".join(receipt_problems))
@@ -1070,6 +1105,7 @@ def assemble_release_bundle(
             stage_manifest,
             repo_root=root,
             now=now,
+            verified_subset_validation=validation,
         )
         if stage_report.problems:
             raise ValueError(
@@ -1077,12 +1113,15 @@ def assemble_release_bundle(
                 + "; ".join(stage_report.problems)
             )
         _assert_clean_landed_source(root, source_sha)
+        validation.verify_unchanged()
         durable_publish_directory_exclusive(stage, destination)
     except BaseException:
         if stage.exists():
             _remove_staging_directory(stage, canonical_root=canonical_root)
         raise
-    report = verify_release_bundle(manifest_path, repo_root=root, now=now)
+    report = verify_release_bundle(
+        manifest_path, repo_root=root, now=now, verified_subset_validation=validation
+    )
     return manifest_path, report
 
 

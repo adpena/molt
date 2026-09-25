@@ -11,7 +11,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from molt.verified_subset import load_verified_subset_policy
 from tests.process_guard_common import run_guarded_test_process
+from tests.tools.verified_subset_fixtures import synthetic_validation
 from tools import release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
@@ -51,8 +53,10 @@ def _load_gate(monkeypatch: pytest.MonkeyPatch, *, stub_source: bool = True):
     )
     monkeypatch.setattr(
         verified_subset,
-        "verified_subset_projection",
-        lambda _policy, coordinate, **_kwargs: _verified_projection(coordinate),
+        "validate_manifest",
+        lambda **kwargs: synthetic_validation(
+            kwargs["repo_root"], _verified_projection
+        ),
     )
     monkeypatch.setattr(
         module.rcr,
@@ -408,7 +412,7 @@ def _write_typed_receipts(
         path.write_text(json.dumps(receipt), encoding="utf-8")
         return path
 
-    policy = verified_subset.load_manifest()
+    policy = load_verified_subset_policy()
     verified_inputs = list(verified_subset.verified_subset_authority_files(policy))
     verified_tool = gate.rcr.input_record(
         REPO_ROOT / gate.rcr.KIND_TO_TOOL[gate.rcr.KIND_VERIFIED_SUBSET],
@@ -572,8 +576,28 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = _load_gate(monkeypatch)
+    inputs = _inputs(tmp_path, gate)
+    captures = []
+    validations = []
+    capture = verified_subset.validate_manifest
+    validate = gate.rcr.validate_receipt
 
-    manifest_path, report = _assemble(tmp_path, gate)
+    def capture_once(**kwargs):
+        result = capture(**kwargs)
+        captures.append(result)
+        return result
+
+    def validate_in_batch(*args, **kwargs):
+        if kwargs["expected_kind"] == gate.rcr.KIND_VERIFIED_SUBSET:
+            validations.append(kwargs.get("verified_subset_validation"))
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(verified_subset, "validate_manifest", capture_once)
+    monkeypatch.setattr(gate.rcr, "validate_receipt", validate_in_batch)
+
+    manifest_path, report = gate.assemble_release_bundle(**inputs)
+    assert len(captures) == 1
+    assert validations and all(item is captures[0] for item in validations)
 
     assert manifest_path == (
         tmp_path / "dist" / "release-exit" / SOURCE_SHA / "release-exit.json"
@@ -590,7 +614,7 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
     }
     assert payload["status"] == gate.STATUS_PASS
     assert [item["role"] for item in payload["evidence"]] == sorted(
-        gate._expected_evidence_roles()
+        gate._expected_evidence_roles(verified_subset.verified_subset_coordinates())
     )
     for item in payload["evidence"]:
         relative = PurePosixPath(item["path"])
@@ -602,6 +626,37 @@ def test_assemble_writes_one_portable_source_addressed_bundle(
             path,
             label="test release exit artifact",
         )
+
+
+@pytest.mark.parametrize("failure", ["capture", "mutation"])
+def test_release_verification_fails_closed_on_inventory_errors_without_rescanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    gate = _load_gate(monkeypatch)
+    manifest, _report = _assemble(tmp_path, gate)
+    capture = verified_subset.validate_manifest
+    calls = []
+
+    def failing_capture(**kwargs):
+        calls.append(True)
+        if failure == "capture":
+            raise ValueError("injected source capture failure")
+        return capture(**kwargs)
+
+    def changed(_self):
+        raise ValueError("injected source mutation")
+
+    monkeypatch.setattr(verified_subset, "validate_manifest", failing_capture)
+    if failure == "mutation":
+        monkeypatch.setattr(
+            verified_subset.VerifiedSubsetValidation, "verify_unchanged", changed
+        )
+    report = gate.verify_release_bundle(manifest, repo_root=REPO_ROOT, now=NOW)
+    assert not report.passed
+    assert len(calls) == 1
+    assert any("injected source" in problem for problem in report.problems)
 
 
 def test_release_exit_accepts_sha256_repository_object_id(

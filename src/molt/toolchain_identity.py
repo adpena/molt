@@ -17,6 +17,7 @@ import subprocess
 from typing import BinaryIO
 
 from molt.file_hashing import content_change_time_ns, content_change_time_ns_from_fd
+from molt.file_publication import metadata_is_link_like
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,18 +120,6 @@ def _stored_path_handle_identity(
 
     device, inode, mode, size, mtime_ns, _ctime_ns = value
     return device, inode, stat.S_IFMT(mode), size, mtime_ns
-
-
-def _stat_is_reparse_point(value: os.stat_result) -> bool:
-    """Return whether platform file metadata marks path indirection."""
-
-    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", None)
-    file_attributes = getattr(value, "st_file_attributes", None)
-    return (
-        reparse_attribute is not None
-        and file_attributes is not None
-        and bool(file_attributes & reparse_attribute)
-    )
 
 
 def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
@@ -492,7 +481,7 @@ def open_stable_regular_file(
         before_path = lexical.lstat()
     except OSError as exc:
         raise StableRegularFileError(f"{label} is unavailable: {lexical}") from exc
-    if not stat.S_ISREG(before_path.st_mode) or _stat_is_reparse_point(before_path):
+    if not stat.S_ISREG(before_path.st_mode) or metadata_is_link_like(before_path):
         raise StableRegularFileError(
             f"{label} is not one stable regular file: {lexical}"
         )
@@ -541,8 +530,8 @@ def open_stable_regular_file(
             )
         if (
             not stat.S_ISREG(before_handle.st_mode)
-            or _stat_is_reparse_point(before_handle)
-            or _stat_is_reparse_point(opened_path)
+            or metadata_is_link_like(before_handle)
+            or metadata_is_link_like(opened_path)
             or _stat_identity(opened_path) != _stat_identity(before_path)
             or _path_handle_identity(before_handle)
             != _path_handle_identity(opened_path)
@@ -573,8 +562,8 @@ def open_stable_regular_file(
                 f"{label} cannot establish direct-file change-time identity: {lexical}"
             )
         if (
-            _stat_is_reparse_point(after_handle)
-            or _stat_is_reparse_point(after_path)
+            metadata_is_link_like(after_handle)
+            or metadata_is_link_like(after_path)
             or _stat_identity(before_path) != _stat_identity(after_path)
             or _stat_identity(before_handle) != _stat_identity(after_handle)
             or _path_handle_identity(after_path) != _path_handle_identity(after_handle)
@@ -603,6 +592,37 @@ def _stable_regular_file_snapshot(
     return opened.path, opened.stat, opened.content_change_time_ns, digest
 
 
+def _regular_file_identity(
+    path: Path, metadata: os.stat_result, change_time_ns: int, digest: str
+) -> StableRegularFileIdentity:
+    return StableRegularFileIdentity(
+        path=path,
+        size=metadata.st_size,
+        sha256=digest,
+        _stat_identity=_stat_identity(metadata),
+        _content_change_time_ns=change_time_ns,
+    )
+
+
+def capture_stable_regular_file(
+    path: Path, *, label: str
+) -> tuple[StableRegularFileIdentity, bytes]:
+    """Capture bytes and their mutation identity from one stable no-follow read."""
+    with open_stable_regular_file(path, label=label) as opened:
+        data = opened.stream.read()
+        if len(data) != opened.stat.st_size:
+            raise StableRegularFileChangedError(
+                f"{label} size changed during capture: {opened.path}"
+            )
+        identity = _regular_file_identity(
+            opened.path,
+            opened.stat,
+            opened.content_change_time_ns,
+            hashlib.sha256(data).hexdigest(),
+        )
+    return identity, data
+
+
 def stable_regular_file_identity(
     path: Path,
     *,
@@ -617,13 +637,7 @@ def stable_regular_file_identity(
     )
     if digest is None:
         raise RuntimeError("stable regular-file identity omitted its content digest")
-    return StableRegularFileIdentity(
-        path=lexical,
-        size=file_stat.st_size,
-        sha256=digest,
-        _stat_identity=_stat_identity(file_stat),
-        _content_change_time_ns=change_time_ns,
-    )
+    return _regular_file_identity(lexical, file_stat, change_time_ns, digest)
 
 
 _STABLE_SNAPSHOT_CHUNK_BYTES = 1024 * 1024
@@ -707,12 +721,11 @@ def snapshot_stable_regular_file(
         raise StableRegularFileSnapshotError(
             f"{label} snapshot content changed after its source stream: {snapshot}"
         )
-    source_identity = StableRegularFileIdentity(
-        path=opened.path,
-        size=opened.stat.st_size,
-        sha256=digest,
-        _stat_identity=_stat_identity(opened.stat),
-        _content_change_time_ns=opened.content_change_time_ns,
+    source_identity = _regular_file_identity(
+        opened.path,
+        opened.stat,
+        opened.content_change_time_ns,
+        digest,
     )
     if owned_snapshot_identity is None:
         raise RuntimeError("stable snapshot lost its destination ownership identity")

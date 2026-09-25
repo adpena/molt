@@ -95,7 +95,9 @@ def test_real_h0_projection_uses_exact_release_bundle_e3_roles() -> None:
     matrix = pem.generated_matrix()
     expanded = pem.expand_requirements(phase, matrix)
     roles = {row.evidence_role for row in expanded}
-    assert roles == pem.reg._expected_evidence_roles()
+    assert roles == pem.reg._expected_evidence_roles(
+        pem.reg.verified_subset.verified_subset_coordinates()
+    )
     for coordinate in matrix["include"]:
         role = f"e3_verified_subset.{coordinate['id']}"
         assert role in roles

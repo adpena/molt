@@ -13,34 +13,38 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
-from molt.exact_json import ExactJsonError, loads_exact
-from molt._host_capabilities_generated import EXPLICIT_CAPABILITY_TIER
-from molt.file_publication import is_link_like
-from molt import python_interpreter
-from molt.verified_subset import (
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.exact_json import ExactJsonError, loads_exact  # noqa: E402
+from molt._host_capabilities_generated import EXPLICIT_CAPABILITY_TIER  # noqa: E402
+from molt.file_publication import is_link_like  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
+    StableRegularFileIdentity,
+    verify_stable_regular_file_identity,
+)
+from molt import python_interpreter  # noqa: E402
+from molt.verified_subset import (  # noqa: E402
     VerifiedSubsetCoordinate,
     VerifiedSubsetPolicy,
-    load_verified_subset_policy,
+    capture_verified_subset_policy,
     require_current_host,
-    verified_subset_coordinate_by_id,
     verified_subset_coordinates,
 )
 
-try:
-    from tools import harness_memory_guard
-    from tools import release_criterion_receipt as release_receipt
-    from tools.compat import comparison as compat_comparison
-    from tools.compat import test_policy
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore[no-redef]
-    import release_criterion_receipt as release_receipt  # type: ignore[no-redef]
-    from compat import comparison as compat_comparison  # type: ignore[no-redef]
-    from compat import test_policy  # type: ignore[no-redef]
+from tools import harness_memory_guard  # noqa: E402
+from tools import release_criterion_receipt as release_receipt  # noqa: E402
+from tools.compat import comparison as compat_comparison  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
@@ -60,89 +64,76 @@ class ResultStatus(StrEnum):
 RESULT_STATUSES: Final[frozenset[ResultStatus]] = frozenset(ResultStatus)
 
 
-@lru_cache(maxsize=4)
-def verified_subset_test_files(
-    policy: VerifiedSubsetPolicy,
-) -> tuple[Path, ...]:
-    return test_policy.collect_physical_test_files(
-        policy.suite_selectors,
-        repo_root=ROOT,
-    )
+@dataclass(frozen=True, slots=True)
+class VerifiedSubsetValidation:
+    """One explicit source generation shared by a validation transaction."""
 
+    policy: VerifiedSubsetPolicy
+    policy_identity: StableRegularFileIdentity
+    inventory: test_policy.TestSourceInventory
+    coordinates: tuple[VerifiedSubsetCoordinate, ...]
+    projections: tuple[test_policy.CoordinateProjection, ...]
 
-@lru_cache(maxsize=4)
-def _verified_subset_test_sources(
-    policy: VerifiedSubsetPolicy,
-) -> tuple[test_policy.TestPolicySource, ...]:
-    return test_policy.load_test_sources(
-        verified_subset_test_files(policy), repo_root=ROOT
-    )
+    @property
+    def repo_root(self) -> Path:
+        return self.inventory.repo_root
 
+    def require_root(self, repo_root: Path) -> None:
+        if repo_root.resolve(strict=True) != self.repo_root:
+            raise ValueError(
+                "verified-subset validation belongs to a different source root"
+            )
 
-def verified_subset_projection(
-    policy: VerifiedSubsetPolicy,
-    coordinate: VerifiedSubsetCoordinate,
-    *,
-    sources: Sequence[test_policy.TestPolicySource] | None = None,
-) -> test_policy.CoordinateProjection:
-    if sources is None:
-        return _cached_verified_subset_projection(policy, coordinate)
-    prepared = tuple(sources)
-    return test_policy.project_prepared_coordinate(
-        prepared,
-        python=coordinate.python,
-        platform=coordinate.platform,
-        arch=coordinate.arch,
-        backend=coordinate.backend,
-        excluded_verification_scopes=frozenset(policy.excluded_verification_scopes),
-    )
+    def projection(
+        self, coordinate: VerifiedSubsetCoordinate
+    ) -> test_policy.CoordinateProjection:
+        for admitted, projection in zip(
+            self.coordinates, self.projections, strict=True
+        ):
+            if coordinate == admitted:
+                return projection
+        raise ValueError(
+            f"coordinate is outside the captured verified-subset policy: {coordinate.id}"
+        )
 
-
-@lru_cache(maxsize=128)
-def _cached_verified_subset_projection(
-    policy: VerifiedSubsetPolicy,
-    coordinate: VerifiedSubsetCoordinate,
-) -> test_policy.CoordinateProjection:
-    return test_policy.project_prepared_coordinate(
-        _verified_subset_test_sources(policy),
-        python=coordinate.python,
-        platform=coordinate.platform,
-        arch=coordinate.arch,
-        backend=coordinate.backend,
-        excluded_verification_scopes=frozenset(policy.excluded_verification_scopes),
-    )
+    def verify_unchanged(self) -> None:
+        verify_stable_regular_file_identity(
+            self.policy_identity, label="verified-subset policy"
+        )
+        self.inventory.verify_unchanged()
+        verify_stable_regular_file_identity(
+            self.policy_identity, label="verified-subset policy"
+        )
 
 
 def verified_subset_authority_files(
     policy: VerifiedSubsetPolicy,
+    *,
+    repo_root: Path = ROOT,
 ) -> tuple[Path, ...]:
     paths = {
-        (ROOT / "config" / "verified_subset.toml").resolve(strict=True),
-        (ROOT / "config" / "release_targets.toml").resolve(strict=True),
-        (ROOT / "src" / "molt" / "release_matrix.py").resolve(strict=True),
-        (ROOT / "src" / "molt" / "target_python.py").resolve(strict=True),
-        (ROOT / "src" / "molt" / "verified_subset.py").resolve(strict=True),
-        (ROOT / "tests" / "molt_diff.py").resolve(strict=True),
-        (ROOT / "tools" / "compat" / "backends.py").resolve(strict=True),
-        (ROOT / "tools" / "compat" / "comparison.py").resolve(strict=True),
-        (ROOT / "tools" / "compat" / "test_policy.py").resolve(strict=True),
+        (repo_root / "config" / "verified_subset.toml").resolve(strict=True),
+        (repo_root / "config" / "release_targets.toml").resolve(strict=True),
+        (repo_root / "src" / "molt" / "release_matrix.py").resolve(strict=True),
+        (repo_root / "src" / "molt" / "target_python.py").resolve(strict=True),
+        (repo_root / "src" / "molt" / "verified_subset.py").resolve(strict=True),
+        (repo_root / "tests" / "molt_diff.py").resolve(strict=True),
+        (repo_root / "tools" / "compat" / "backends.py").resolve(strict=True),
+        (repo_root / "tools" / "compat" / "comparison.py").resolve(strict=True),
+        (repo_root / "tools" / "compat" / "test_policy.py").resolve(strict=True),
     }
-    return tuple(sorted(paths, key=lambda path: path.relative_to(ROOT).as_posix()))
+    return tuple(sorted(paths, key=lambda path: path.relative_to(repo_root).as_posix()))
 
 
-def load_manifest() -> VerifiedSubsetPolicy:
-    return load_verified_subset_policy()
-
-
-def validate_suite_equivalence_floors(policy: VerifiedSubsetPolicy) -> None:
-    for suite in policy.suites:
-        files = test_policy.collect_physical_test_files(
-            ((suite.path, suite.recursive),), repo_root=ROOT
-        )
-        sources = test_policy.load_test_sources(files, repo_root=ROOT)
+def validate_suite_equivalence_floors(
+    policy: VerifiedSubsetPolicy, inventory: test_policy.TestSourceInventory
+) -> None:
+    sources = {source.path: source for source in inventory.sources}
+    for suite, members in zip(policy.suites, inventory.suite_members, strict=True):
         actual = sum(
-            source.metadata.verification_scope == test_policy.CPYTHON_EQUIVALENCE_SCOPE
-            for source in sources
+            sources[path].metadata.verification_scope
+            == test_policy.CPYTHON_EQUIVALENCE_SCOPE
+            for path in members
         )
         if actual < suite.cpython_equivalence_floor:
             raise ValueError(
@@ -153,36 +144,48 @@ def validate_suite_equivalence_floors(policy: VerifiedSubsetPolicy) -> None:
 
 
 def validate_manifest(
-    policy: VerifiedSubsetPolicy,
-) -> tuple[test_policy.CoordinateProjection, ...]:
+    *,
+    repo_root: Path = ROOT,
+) -> VerifiedSubsetValidation:
+    policy, policy_identity = capture_verified_subset_policy(
+        repo_root / "config" / "verified_subset.toml"
+    )
     coordinates = verified_subset_coordinates(policy)
-    tests = verified_subset_test_files(policy)
     expected = len(policy.python_versions) * len(policy.backends)
     if not coordinates or len(coordinates) % expected:
         raise ValueError("verified-subset coordinate cross-product is incomplete")
-    if not tests:
+    inventory = test_policy.load_test_inventory(
+        policy.suite_selectors, repo_root=repo_root
+    )
+    if not inventory.files:
         raise ValueError("verified-subset test closure is empty")
-    validate_suite_equivalence_floors(policy)
-    sources = _verified_subset_test_sources(policy)
+    validate_suite_equivalence_floors(policy, inventory)
     projections: list[test_policy.CoordinateProjection] = []
     for coordinate in coordinates:
-        projection = verified_subset_projection(policy, coordinate, sources=sources)
+        projection = test_policy.project_prepared_coordinate(
+            inventory.sources,
+            python=coordinate.python,
+            platform=coordinate.platform,
+            arch=coordinate.arch,
+            backend=coordinate.backend,
+            excluded_verification_scopes=frozenset(policy.excluded_verification_scopes),
+        )
         if not projection.applicable:
             raise ValueError(
                 f"verified-subset coordinate has no applicable tests: {coordinate.id}"
             )
         projections.append(projection)
-    return tuple(projections)
+    verify_stable_regular_file_identity(policy_identity, label="verified-subset policy")
+    return VerifiedSubsetValidation(
+        policy, policy_identity, inventory, tuple(coordinates), tuple(projections)
+    )
 
 
-def matrix_payload(policy: VerifiedSubsetPolicy | None = None) -> dict[str, object]:
-    resolved_policy = policy or load_manifest()
-    validate_manifest(resolved_policy)
+def matrix_payload() -> dict[str, object]:
+    validation = validate_manifest()
+    validation.verify_unchanged()
     return {
-        "include": [
-            coordinate.as_record()
-            for coordinate in verified_subset_coordinates(resolved_policy)
-        ]
+        "include": [coordinate.as_record() for coordinate in validation.coordinates]
     }
 
 
@@ -658,12 +661,11 @@ def run_differential_suites(
     )
 
 
-def _receipt_files(receipt_root: Path) -> tuple[Path, ...]:
+def _receipt_files(receipt_root: Path, *, expected_count: int) -> tuple[Path, ...]:
     absolute_root = receipt_root.absolute()
     root = receipt_root.resolve(strict=True)
     if not root.is_dir() or is_link_like(receipt_root) or absolute_root != root:
         raise ValueError("verified-subset receipt root must be a real directory")
-    expected_count = len(verified_subset_coordinates())
     files: list[Path] = []
     stack = [root]
     while stack:
@@ -696,11 +698,16 @@ def _receipt_files(receipt_root: Path) -> tuple[Path, ...]:
     return tuple(files)
 
 
-def verify_receipt_closure(*, receipt_root: Path, source_sha: str) -> None:
-    expected_coordinates = {
-        coordinate.id for coordinate in verified_subset_coordinates()
-    }
-    files = _receipt_files(receipt_root)
+def verify_receipt_closure(
+    *,
+    receipt_root: Path,
+    source_sha: str,
+    validation: VerifiedSubsetValidation | None = None,
+) -> None:
+    validation = validation or validate_manifest()
+    validation.require_root(ROOT)
+    expected_coordinates = {coordinate.id for coordinate in validation.coordinates}
+    files = _receipt_files(receipt_root, expected_count=len(expected_coordinates))
     if len(files) != len(expected_coordinates):
         raise ValueError(
             "verified-subset receipt count is not exact: "
@@ -728,6 +735,7 @@ def verify_receipt_closure(*, receipt_root: Path, source_sha: str) -> None:
             expected_source_sha=source_sha,
             repo_root=ROOT,
             verify_inputs=index == 0,
+            verified_subset_validation=validation,
         )
         if problems:
             raise ValueError(
@@ -757,16 +765,19 @@ def verify_receipt_closure(*, receipt_root: Path, source_sha: str) -> None:
         raise ValueError(
             f"verified-subset receipt matrix is incomplete: missing={missing!r}"
         )
+    validation.verify_unchanged()
 
 
 def _run_coordinate(
     *,
     coordinate: VerifiedSubsetCoordinate,
-    policy: VerifiedSubsetPolicy,
+    validation: VerifiedSubsetValidation,
     raw_argv: Sequence[str],
     receipt_path: Path | None,
     source_sha: str | None,
 ) -> int:
+    validation.require_root(ROOT)
+    policy = validation.policy
     destination = release_receipt.prepare_receipt_destination(
         repo_root=ROOT,
         receipt_path=receipt_path,
@@ -779,7 +790,8 @@ def _run_coordinate(
     results_path = stage / "results.jsonl"
     schedule_path = stage / "schedule.txt"
     try:
-        projection = verified_subset_projection(policy, coordinate)
+        projection = validation.projection(coordinate)
+        validation.verify_unchanged()
         completed = run_differential_suites(
             coordinate,
             projection=projection,
@@ -794,6 +806,7 @@ def _run_coordinate(
             projection=projection,
             coordinate=coordinate,
         )
+        validation.verify_unchanged()
         passed = completed.returncode == 0 and outcomes_pass(results)
         if destination is not None:
             input_paths = list(verified_subset_authority_files(policy))
@@ -819,8 +832,11 @@ def _run_coordinate(
                 ),
                 input_paths=input_paths,
                 repo_root=ROOT,
+                verified_subset_validation=validation,
             )
-            release_receipt.write_receipt(receipt, destination)
+            release_receipt.write_receipt(
+                receipt, destination, verified_subset_validation=validation
+            )
             print(f"verified_subset_receipt={destination.output_path}")
         return 0 if passed else 1
     finally:
@@ -843,9 +859,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     release_receipt.add_receipt_arguments(run)
     args = parser.parse_args(raw_argv)
     try:
-        policy = load_manifest()
+        if args.command == "matrix":
+            print(json.dumps(matrix_payload(), separators=(",", ":"), sort_keys=True))
+            return 0
+        validation = validate_manifest()
         if args.command == "check":
-            projections = validate_manifest(policy)
+            projections = validation.projections
             applicable_counts = [
                 len(projection.applicable) for projection in projections
             ]
@@ -854,37 +873,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for projection in projections
                 for test in projection.expected_failures
             }
+            validation.verify_unchanged()
             print(
                 "verified subset policy: OK "
-                f"coordinates={len(verified_subset_coordinates(policy))} "
-                f"source_tests={len(verified_subset_test_files(policy))} "
+                f"coordinates={len(validation.coordinates)} "
+                f"source_tests={len(validation.inventory.files)} "
                 f"applicable={min(applicable_counts)}..{max(applicable_counts)} "
                 f"expected_failure_debts={len(expected_failure_paths)}"
             )
             return 0
-        if args.command == "matrix":
-            print(
-                json.dumps(
-                    matrix_payload(policy), separators=(",", ":"), sort_keys=True
-                )
-            )
-            return 0
-        validate_manifest(policy)
         if args.command == "verify-receipts":
             verify_receipt_closure(
                 receipt_root=args.receipt_root,
                 source_sha=args.source_sha,
+                validation=validation,
             )
             print(
                 "verified subset receipts: OK "
                 f"source_sha={args.source_sha} "
-                f"coordinates={len(verified_subset_coordinates(policy))}"
+                f"coordinates={len(validation.coordinates)}"
             )
             return 0
-        coordinate = verified_subset_coordinate_by_id(args.coordinate)
+        coordinate = next(
+            (cell for cell in validation.coordinates if cell.id == args.coordinate),
+            None,
+        )
+        if coordinate is None:
+            raise ValueError(f"unknown verified-subset coordinate: {args.coordinate}")
         return _run_coordinate(
             coordinate=coordinate,
-            policy=policy,
+            validation=validation,
             raw_argv=raw_argv,
             receipt_path=args.receipt,
             source_sha=args.source_sha,

@@ -10,7 +10,10 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, TypeGuard, TypedDict
+from typing import TYPE_CHECKING, Any, TypeGuard, TypedDict
+
+if TYPE_CHECKING:
+    from tools.verified_subset import VerifiedSubsetValidation
 
 if __package__ in (None, ""):
     from import_file import bind_repository_imports
@@ -316,6 +319,7 @@ def build_receipt(
     input_paths: Sequence[Path],
     repo_root: Path,
     generated_at: str | None = None,
+    verified_subset_validation: VerifiedSubsetValidation | None = None,
 ) -> Receipt:
     tool = input_record(tool_path, repo_root=repo_root)
     canonical_argv = [tool["path"], *argv]
@@ -334,13 +338,19 @@ def build_receipt(
         expected_kind=kind,
         expected_source_sha=source_sha,
         repo_root=repo_root,
+        verified_subset_validation=verified_subset_validation,
     )
     if problems:
         raise ValueError("invalid release criterion receipt: " + "; ".join(problems))
     return receipt
 
 
-def write_receipt(receipt: Receipt, destination: ReceiptDestination) -> None:
+def write_receipt(
+    receipt: Receipt,
+    destination: ReceiptDestination,
+    *,
+    verified_subset_validation: VerifiedSubsetValidation | None = None,
+) -> None:
     # Recheck immediately before byte creation so a long-running producer cannot
     # attest a checkout that changed after its initial preflight.
     assert_clean_source(
@@ -353,12 +363,15 @@ def write_receipt(receipt: Receipt, destination: ReceiptDestination) -> None:
         expected_kind=receipt["kind"],
         expected_source_sha=destination.source_sha,
         repo_root=destination.repo_root,
+        verified_subset_validation=verified_subset_validation,
     )
     if problems:
         raise ValueError(
             "release criterion receipt changed before publication: "
             + "; ".join(problems)
         )
+    if verified_subset_validation is not None:
+        verified_subset_validation.verify_unchanged()
     write_exact(destination.output_path, receipt, exclusive=True)
 
 
@@ -514,13 +527,10 @@ def _validate_metric_facts(
 
 
 def _validate_verified_subset_facts(
-    facts: Mapping[str, Any], status: object
+    facts: Mapping[str, Any],
+    status: object,
+    validation: VerifiedSubsetValidation,
 ) -> list[str]:
-    from molt.verified_subset import (
-        ROOT as VERIFIED_SUBSET_ROOT,
-        load_verified_subset_policy,
-        verified_subset_coordinate_by_id,
-    )
     from tools import verified_subset as verified
     from tools.compat import comparison, test_policy
 
@@ -539,7 +549,7 @@ def _validate_verified_subset_facts(
     if set(facts) != keys:
         return ["verified_subset facts schema is invalid"]
     problems: list[str] = []
-    policy = load_verified_subset_policy()
+    policy = validation.policy
     if facts.get("fallback_policy") != policy.fallback_policy:
         problems.append("facts.fallback_policy differs from verified-subset policy")
     suites = facts.get("suites")
@@ -554,8 +564,10 @@ def _validate_verified_subset_facts(
         problems.append("facts.authority_inputs contains a non-portable path")
     else:
         expected_authority_inputs = [
-            path.relative_to(VERIFIED_SUBSET_ROOT).as_posix()
-            for path in verified.verified_subset_authority_files(policy)
+            path.relative_to(validation.repo_root).as_posix()
+            for path in verified.verified_subset_authority_files(
+                policy, repo_root=validation.repo_root
+            )
         ]
         if authority_inputs != expected_authority_inputs:
             problems.append(
@@ -581,10 +593,11 @@ def _validate_verified_subset_facts(
         problems.append("facts.coordinate schema is invalid")
     else:
         coordinate_id = coordinate.get("id")
-        try:
-            expected_coordinate = verified_subset_coordinate_by_id(str(coordinate_id))
-        except ValueError as exc:
-            problems.append(str(exc))
+        expected_coordinate = next(
+            (cell for cell in validation.coordinates if cell.id == coordinate_id), None
+        )
+        if expected_coordinate is None:
+            problems.append(f"unknown verified-subset coordinate: {coordinate_id}")
         else:
             if dict(coordinate) != expected_coordinate.as_record():
                 problems.append(
@@ -596,9 +609,7 @@ def _validate_verified_subset_facts(
     )
     expected_projection = None
     if expected_coordinate is not None:
-        expected_projection = verified.verified_subset_projection(
-            policy, expected_coordinate
-        )
+        expected_projection = validation.projection(expected_coordinate)
     if not _is_exact_object(projection, projection_keys):
         problems.append("facts.projection schema is invalid")
     elif expected_projection is not None:
@@ -982,7 +993,12 @@ def _validate_fail_closed_facts(facts: Mapping[str, Any], status: object) -> lis
     return problems
 
 
-def _validate_facts(kind: object, facts: object, status: object) -> list[str]:
+def _validate_facts(
+    kind: object,
+    facts: object,
+    status: object,
+    verified_subset_validation: VerifiedSubsetValidation | None,
+) -> list[str]:
     if not isinstance(facts, Mapping):
         return ["receipt facts must be an object"]
     fields: dict[str, object] = {}
@@ -991,7 +1007,11 @@ def _validate_facts(kind: object, facts: object, status: object) -> list[str]:
             return ["receipt facts keys must be strings"]
         fields[key] = value
     if kind == KIND_VERIFIED_SUBSET:
-        return _validate_verified_subset_facts(fields, status)
+        if verified_subset_validation is None:
+            return ["verified-subset source validation is unavailable"]
+        return _validate_verified_subset_facts(
+            fields, status, verified_subset_validation
+        )
     if kind == KIND_CANONICALIZATION_CONTRACT:
         return _validate_metric_facts(
             fields,
@@ -1023,6 +1043,7 @@ def validate_receipt(
     repo_root: Path,
     verify_inputs: bool = True,
     now: dt.datetime | None = None,
+    verified_subset_validation: VerifiedSubsetValidation | None = None,
 ) -> tuple[str, ...]:
     """Return every violation of the source-addressed receipt contract."""
 
@@ -1138,7 +1159,38 @@ def validate_receipt(
         problems.append("receipt inputs must be sorted and unique by path")
 
     facts = payload.get("facts")
-    problems.extend(_validate_facts(kind, facts, status))
+    owns_validation = (
+        kind == KIND_VERIFIED_SUBSET and verified_subset_validation is None
+    )
+    if kind == KIND_VERIFIED_SUBSET:
+        try:
+            if verified_subset_validation is None:
+                from tools import verified_subset
+
+                verified_subset_validation = verified_subset.validate_manifest(
+                    repo_root=repo_root
+                )
+            verified_subset_validation.require_root(repo_root)
+        except (OSError, ValueError) as exc:
+            problems.append(f"verified-subset source inventory is invalid: {exc}")
+            verified_subset_validation = None
+    problems.extend(_validate_facts(kind, facts, status, verified_subset_validation))
+    if kind == KIND_VERIFIED_SUBSET and verified_subset_validation is not None:
+        identity = verified_subset_validation.policy_identity
+        policy_record = {
+            "path": "config/verified_subset.toml",
+            "sha256": identity.sha256,
+            "size": identity.size,
+        }
+        if policy_record not in inputs:
+            problems.append(
+                "verified-subset policy input differs from captured policy generation"
+            )
+    if owns_validation and verified_subset_validation is not None:
+        try:
+            verified_subset_validation.verify_unchanged()
+        except (OSError, ValueError) as exc:
+            problems.append(f"verified-subset source inventory changed: {exc}")
     if isinstance(facts, Mapping):
         if kind == KIND_VERIFIED_SUBSET:
             execution = facts.get("execution")
