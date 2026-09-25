@@ -382,6 +382,12 @@ the current shared-runtime body optimization; app linking only performs cached
 structural cleanup over its canonical full export graph. Any future Binaryen
 runtime policy belongs in runtime-generation custody, never a per-app linker lane.
 
+`--preserve-debug-sections` is a linked-publication policy across monolithic,
+split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name
+stripping, requests Binaryen debug output, and partitions optimizer caches.
+Final publication removes any remaining debug/name sections under the default
+policy; optimization without preservation may discard them earlier.
+
 This document intentionally does not copy the pass sequences. Consumers obtain
 the exact command-line tuple through `wasm_opt_pipeline()` or
 `wasm_link_policy()` in that module. `WASM_OPT_DEV_DEFAULT` and

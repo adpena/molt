@@ -175,7 +175,6 @@ from wasm_link_optimize import (  # noqa: E402
     _neutralize_dead_element_entries as _neutralize_dead_element_entries,
     _post_link_optimize as _post_link_optimize,
     _reachable_function_indices as _reachable_function_indices,
-    _strip_debug_sections as _strip_debug_sections,
     _strip_unused_module_function_imports as _strip_unused_module_function_imports,
     _stub_dead_functions as _stub_dead_functions,
 )
@@ -684,6 +683,7 @@ def _split_app_optimize_cache_key(
     reference_data: bytes | None,
     optimize: bool,
     optimize_level: str,
+    preserve_debug: bool = False,
     contract_keep_set: set[str],
     facts_authority_digest: str,
     wasm_opt_identity: tuple[str, str, str] | None = None,
@@ -699,6 +699,8 @@ def _split_app_optimize_cache_key(
     hasher.update(str(int(optimize)).encode("ascii"))
     hasher.update(b"\0level\0")
     hasher.update(optimize_level.encode("utf-8"))
+    hasher.update(b"\0preserve-debug\0")
+    hasher.update(str(int(preserve_debug)).encode("ascii"))
     hasher.update(b"\0exports\0")
     for name in sorted(contract_keep_set):
         hasher.update(name.encode("utf-8") + b"\0")
@@ -915,12 +917,15 @@ def _tree_shake_runtime_cache_key(
     *,
     runtime_data: bytes,
     normalized_required_exports: set[str],
+    preserve_debug: bool = False,
     facts_authority_digest: str,
 ) -> str:
     hasher = hashlib.sha256()
     hasher.update(_TREE_SHAKE_RUNTIME_CACHE_SCHEMA.encode("ascii"))
     hasher.update(b"\0")
     hasher.update(runtime_data)
+    hasher.update(b"\0preserve-debug\0")
+    hasher.update(str(int(preserve_debug)).encode("ascii"))
     hasher.update(b"\0exports\0")
     for name in sorted(normalized_required_exports):
         hasher.update(name.encode("utf-8"))

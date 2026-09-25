@@ -18,6 +18,7 @@ def _tree_shake_runtime(
     *,
     facts_provider: Callable[[bytes], dict[str, object]],
     operation_counts: dict[str, int | float] | None = None,
+    preserve_debug: bool = False,
 ) -> bytes:
     """Strip unused exports from the runtime module and eliminate dead code.
 
@@ -67,6 +68,7 @@ def _tree_shake_runtime(
     cache_key = context["_tree_shake_runtime_cache_key"](
         runtime_data=runtime_data,
         normalized_required_exports=normalized_required_exports,
+        preserve_debug=preserve_debug,
         facts_authority_digest=facts_authority_digest,
     )
     cache_entry = context["_wasm_link_cache_entry"](
@@ -205,6 +207,7 @@ def _optimize_split_app_module(
     reference_data: bytes | None,
     optimize: bool,
     optimize_level: str,
+    preserve_debug: bool = False,
     contract_keep_set: set[str],
     attestation: dict[str, object] | None = None,
     operation_counts: dict[str, int | float] | None = None,
@@ -251,6 +254,7 @@ def _optimize_split_app_module(
         reference_data=reference_data,
         optimize=optimize,
         optimize_level=optimize_level,
+        preserve_debug=preserve_debug,
         contract_keep_set=contract_keep_set,
         facts_authority_digest=facts_authority_digest,
         wasm_opt_identity=wasm_opt_identity,
@@ -312,7 +316,9 @@ def _optimize_split_app_module(
         active_attestation = attestation if attestation is not None else {}
         if optimize:
             assert wasm_opt_identity is not None
-            optimizer_policy = context["wasm_link_policy"](optimize_level)
+            optimizer_policy = context["wasm_link_policy"](
+                optimize_level, preserve_debug=preserve_debug
+            )
             with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
                 app_path = Path(tmp) / "app_split_preopt.wasm"
                 app_path.write_bytes(optimized)
@@ -330,6 +336,7 @@ def _optimize_split_app_module(
                     required_exports=required_function_exports,
                     apply_level=optimizer_policy.apply_level,
                     extra_passes=optimizer_policy.extra_passes,
+                    preserve_debug=preserve_debug,
                     attestation=active_attestation,
                 )
                 context["_record_wasm_opt_attestation_cache_metrics"](
@@ -387,11 +394,12 @@ def _run_wasm_opt_via_optimize(
     required_exports: set[str] | None = None,
     apply_level: bool | None = None,
     extra_passes: Sequence[str] | None = None,
+    preserve_debug: bool = False,
     attestation: dict[str, object] | None = None,
 ) -> bool:
     """Run the canonical atomic optimizer and record its attestation."""
 
-    policy = context["wasm_link_policy"](level)
+    policy = context["wasm_link_policy"](level, preserve_debug=preserve_debug)
     resolved_converge = policy.converge if converge is None else converge
     resolved_apply_level = policy.apply_level if apply_level is None else apply_level
     resolved_extra_passes = (
@@ -414,6 +422,7 @@ def _run_wasm_opt_via_optimize(
         converge=resolved_converge,
         required_exports=required_exports,
         apply_level=resolved_apply_level,
+        preserve_debug=preserve_debug,
     )
 
     if not result["ok"]:

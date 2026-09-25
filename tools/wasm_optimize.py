@@ -206,6 +206,7 @@ def optimize(
     converge: bool | None = None,
     required_exports: set[str] | frozenset[str] | None = None,
     apply_level: bool = True,
+    preserve_debug: bool = False,
     timeout: float | None = None,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
@@ -292,6 +293,7 @@ def optimize(
         extra_passes=extra_passes or (),
         converge=converge,
         apply_level=apply_level,
+        preserve_debug=preserve_debug,
     )
     staged_output = artifact_publish.staged_output_path(
         output_path,

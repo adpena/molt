@@ -87,6 +87,11 @@ function invocation transfers exact callable code, captured globals and builtins
 slot-keyed, single-use handoff. Typed generated calls and runtime dispatch use
 the same handoff, independently of their machine return ABI.
 
+Frame entry returns `None`, not its borrowed code identity. The frame stack
+owns the transferred code, globals and builtins until exit; disposing an unbound
+runtime-call result must not release those owners. Direct lexical entry and
+invocation handoff obey this same contract in native and WASM backends.
+
 Each frontend-lowered module initializer alone constructs and publishes its
 module code object with its lexical globals dictionary, before entering the
 module frame. Executable, host, isolate-bootstrap and import-dispatch wrappers
