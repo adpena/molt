@@ -7,7 +7,7 @@ workflow from that same tag, with an existing unpublished draft containing only
 workflow rejects a branch dispatch, a dirty tree, duplicate drafts, moved tags,
 or a source different from the workflow's signed GitHub identity.
 
-Artifact reproducibility and the native installation smoke test are necessary,
+Artifact reproducibility and the native/WASM installation smoke tests are necessary,
 not sufficient, for semantic release acceptance. The
 [initial-release contract](../ROADMAP.md#first-release-milestone) requires
 current-revision end-to-end evidence for the declared verified subset on native
@@ -44,17 +44,30 @@ These remain release blockers, not implicit passes from packaging success.
 5. `tools/release/verify_consumer.py` extracts that immutable candidate into a
    clean temporary root, explicitly authorizes its private CLI dependencies, and
    runs the shipped launcher for every Python version
-   in the candidate source's verified-subset policy. Each cell selects its exact
-   reference interpreter and explicit guest Python semantics, then builds and
-   executes a standalone native program with both `dev` and `release` profiles.
-   All cells must use the same production compiler and native launcher. The
-   source-bound consumer receipt binds observed interpreter/host identities,
-   executable identities, build/run commands and outputs to the exact candidate.
+   in the candidate source's verified-subset policy. Each coordinate selects its
+   exact reference interpreter and explicit guest Python semantics, then runs one
+   version-gated guest for every shipped target with both `dev` and `release`
+   program profiles: `molt build --target native` followed by direct execution
+   of the requested executable, and one public `molt run --target wasm` that
+   performs its own linked build and runs it on the Node host. The guest
+   receives a flag-shaped argument and an argument containing a space, and its
+   stdout must equal a fixed literal that CPython reproduces. Every cell writes
+   into its own directory. All cells must use the same production compiler,
+   read from each build's own diagnostics, and the same native launcher. The
+   source-bound consumer receipt binds observed interpreter/host identities, the
+   guest source digest, public commands, native executables, the linked module
+   named by each WASM execution manifest, and outputs to the exact candidate.
    The separate worker archive is extracted and executed as its sole command
    owner; the compiler bundle does not contain another copy. Installation is
    private to the consumer; uninstall checks prove no ambient
-   import or console script remains. Schema versions are checked against their
-   producers by the public-contract gate rather than restated here.
+   import or console script remains. With the bundle, worker and private
+   environments removed, every native executable is re-identified and run again
+   with the same arguments and output. This is an installed smoke closure: one
+   build and run per cell proves neither artifact reproducibility nor
+   verified-subset determinism, and WASM execution after uninstall is not
+   claimed because its Node runner ships in the bundle. Schema versions are
+   checked against their producers by the public-contract gate rather than
+   restated here.
 6. Only after every target passes does one index job create the collision-free
    v3 manifest, SHA256SUMS, and SPDX 2.3 SBOM, including the evidence ZIP and any
    required H0 manifest and signature bundle. GitHub's pinned attestation action

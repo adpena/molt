@@ -16,6 +16,7 @@ def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> 
         "-target",
         "wasm32-wasip1",
         "--sysroot=/sdk/wasi",
+        "--no-default-config",
         "-O2",
         "--driver-mode=gcc",
         "-fPIC",

@@ -432,7 +432,8 @@ def test_canonical_native_resolver_uses_only_selected_environment(
     monkeypatch.setenv(cxx_key, "ambient-must-not-be-selected")
     seen = []
 
-    def family(*, explicit_commands, sibling_directories, environment):
+    def family(*, target_family, explicit_commands, sibling_directories, environment):
+        assert target_family == "native"
         assert environment == selected
         seen.append(environment)
         return replace(
@@ -466,7 +467,8 @@ def test_canonical_wasm_resolver_passes_environment_to_every_selection(
     monkeypatch.setenv("MOLT_WASM_CC", "ambient-must-not-be-selected")
     seen = []
 
-    def family(*, environment, explicit_commands=None):
+    def family(*, target_family, environment, explicit_commands=None):
+        assert target_family == "wasm"
         assert environment == selected
         seen.append("family")
         return resolved.tools
@@ -609,7 +611,8 @@ def test_wasi_compiler_user_sysroot_uses_the_same_selected_path_for_probe_and_id
     monkeypatch.setattr(wasm_link_inputs, "wasm_compiler_builtins_archive", archive)
     probes = []
 
-    def family(*, environment, explicit_commands):
+    def family(*, target_family, environment, explicit_commands):
+        assert target_family == "wasm"
         assert environment == selected
         return replace(
             resolved.tools,

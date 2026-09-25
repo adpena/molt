@@ -24,6 +24,8 @@ from molt.cli.llvm_wasi_tools import (
     LlvmToolRole,
     LlvmWasiToolFamily,
     resolve_llvm_wasi_tool_family,
+    llvm_tool_candidates,
+    llvm_tool_is_wasi_sdk,
 )
 from molt.toolchain_identity import (
     executable_environment_value,
@@ -120,6 +122,18 @@ def _compiler_probe_target_args(
     )
 
 
+def _wasm_source_extension_compiler_command(
+    command: tuple[str, ...], *, environment: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    # SDK clang.cfg injects a WASI sysroot even when --target selects a
+    # freestanding triple. Only the admitted command may select a sysroot.
+    if "--no-default-config" not in command and llvm_tool_is_wasi_sdk(
+        Path(command[0]), environment=environment
+    ):
+        return (*command, "--no-default-config")
+    return command
+
+
 def _probe_wasm_source_extension_compiler(
     compiler_cmd: tuple[str, ...],
     *,
@@ -192,10 +206,15 @@ def _resolve_env_wasm_compiler(
         return _SourceExtensionWasmToolchain(
             ok=False,
             compiler_kind=env_name.lower(),
-            tools=resolve_llvm_wasi_tool_family(environment=environment),
+            tools=resolve_llvm_wasi_tool_family(
+                target_family="wasm", environment=environment
+            ),
             wasi_sysroot=None,
             detail=str(exc),
         )
+    compiler = _wasm_source_extension_compiler_command(
+        compiler, environment=environment
+    )
     validated = validate_source_extension_compiler_command(
         compiler,
         role="c",
@@ -219,7 +238,9 @@ def _resolve_env_wasm_compiler(
             ok=False,
             compiler_kind=env_name.lower(),
             tools=resolve_llvm_wasi_tool_family(
-                explicit_commands={"cc": compiler}, environment=environment
+                target_family="wasm",
+                explicit_commands={"cc": compiler},
+                environment=environment,
             ),
             wasi_sysroot=None,
             detail=(
@@ -234,7 +255,9 @@ def _resolve_env_wasm_compiler(
             materialized[index] = prefix + str(wasi_sysroot)
         compiler = tuple(materialized)
     tools = resolve_llvm_wasi_tool_family(
-        explicit_commands={"cc": compiler}, environment=environment
+        target_family="wasm",
+        explicit_commands={"cc": compiler},
+        environment=environment,
     )
     missing = tools.missing_roles()
     if missing:
@@ -326,7 +349,7 @@ def _resolve_source_extension_wasm_toolchain(
             environment=environment,
         )
 
-    tools = resolve_llvm_wasi_tool_family(environment=environment)
+    tools = resolve_llvm_wasi_tool_family(target_family="wasm", environment=environment)
     requires_wasi = target_plan.target_triple == "wasm32-wasip1"
     wasi_sysroot = _resolve_wasi_sysroot(env=environment) if requires_wasi else None
     if tools.cc is not None and (wasi_sysroot is not None or not requires_wasi):
@@ -334,6 +357,9 @@ def _resolve_source_extension_wasm_toolchain(
             (*tools.cc.command, "--sysroot", str(wasi_sysroot))
             if wasi_sysroot is not None
             else tools.cc.command
+        )
+        clang_cmd = _wasm_source_extension_compiler_command(
+            clang_cmd, environment=environment
         )
         tools = _with_compiler_command(tools, clang_cmd)
         missing = tools.missing_roles()
@@ -395,7 +421,9 @@ def _resolve_source_extension_wasm_toolchain(
             "strip": (zig, "strip"),
         }
         zig_tools = resolve_llvm_wasi_tool_family(
-            explicit_commands=zig_explicit_commands, environment=environment
+            target_family="wasm",
+            explicit_commands=zig_explicit_commands,
+            environment=environment,
         )
         missing = zig_tools.missing_roles()
         if missing:
@@ -492,15 +520,13 @@ def _source_extension_include_dirs_for_abi_tier(
     normalized = _normalize_source_extension_abi_tier(abi_tier)
     root = molt_root.resolve()
     if normalized == "cpython-abi":
-        # The CPython-ABI tier is a SINGLE self-complete header authority:
-        # ``runtime/molt-cpython-abi/include`` supplies the full stock-CPython
-        # public surface (Python.h, structmember.h, pymem.h, pyerrors.h, ...).
-        # It must NOT also inject the repo-root ``include/`` tier: that tier
-        # is the libmolt source-compat header surface. Package headers such as
-        # ``numpy/*`` are admitted through the package build/source plan, never
-        # through either Molt ABI tier. One header home per tier; no cross-tier
-        # drag-in.
-        return (root / "runtime" / "molt-cpython-abi" / "include",)
+        # One public header home per tier. Shared scalar/data-model primitives
+        # are separate from the source-compat include root, so installing the
+        # linked tier never exposes source transport or package-owned headers.
+        return (
+            root / "runtime" / "molt-cpython-abi" / "include",
+            root / "include" / "molt" / "shared",
+        )
     return (root / "include",)
 
 
@@ -575,6 +601,7 @@ def _source_extension_c_commands(
     *,
     toolchain: _SourceExtensionWasmToolchain,
     target_plan: SourceExtensionTargetPlan,
+    environment: Mapping[str, str] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     target_arg = target_plan.target_triple
     tools = toolchain.tools
@@ -589,12 +616,17 @@ def _source_extension_c_commands(
     assert tools.ranlib is not None
     assert tools.nm is not None
     assert tools.strip is not None
-    c_cmd = _compiler_command_with_target(tools.cc.command, target_arg)
+    c_cmd = _wasm_source_extension_compiler_command(
+        _compiler_command_with_target(tools.cc.command, target_arg),
+        environment=environment,
+    )
     if is_zig_compiler_command(tools.cc.command) or len(tools.cxx.command) > 1:
         cxx_base = tools.cxx.command
     else:
         cxx_base = (*tools.cxx.command, *tools.cc.command[1:])
-    cpp_cmd = _compiler_command_with_target(cxx_base, target_arg)
+    cpp_cmd = _wasm_source_extension_compiler_command(
+        _compiler_command_with_target(cxx_base, target_arg), environment=environment
+    )
     commands: dict[str, tuple[str, ...]] = {
         "ar": tools.ar.command,
         "c": c_cmd,
@@ -641,11 +673,18 @@ def _resolve_source_extension_native_toolchain(
             c_base = (zig, "cc")
             compiler_kind = "zig"
     else:
-        c_base = resolve_explicit_tool_command(
-            executable_environment_value(environment, "CC", "clang"),
-            label="CC",
-            environment=environment,
-        )
+        configured_cc = executable_environment_value(environment, "CC").strip()
+        if configured_cc:
+            c_base = resolve_explicit_tool_command(
+                configured_cc, label="CC", environment=environment
+            )
+        else:
+            candidates = llvm_tool_candidates("cc", environment=environment)
+            if not candidates:
+                raise ValueError(
+                    "native source-extension builds require a native Clang or explicit CC"
+                )
+            c_base = (str(candidates[0]),)
         compiler_kind = "host"
 
     c_command = _compiler_command_with_target(
@@ -687,6 +726,7 @@ def _resolve_source_extension_native_toolchain(
         )
 
     tools = resolve_llvm_wasi_tool_family(
+        target_family="native",
         explicit_commands=explicit_tools,
         sibling_directories=(Path(c_command[0]).parent,),
         environment=environment,
@@ -754,6 +794,7 @@ def _resolve_source_extension_toolchain(
     commands = _source_extension_c_commands(
         toolchain=wasm,
         target_plan=target_plan,
+        environment=environment,
     )
     return _ResolvedSourceExtensionToolchain(
         target_plan=target_plan,

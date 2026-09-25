@@ -2,6 +2,7 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 import json
 import os
@@ -23,7 +24,15 @@ from molt.llvm_toolchain import (
     verify_llvm_toolchain_prefix,
     write_llvm_toolchain_attestation,
 )
+from molt.release_matrix import RELEASE_TARGETS, wasi_sdk_host_id
 from molt.toolchain_identity import stable_regular_file_identity
+from molt.wasi_sdk_identity import (
+    INSTALL_RECEIPT_FILENAME,
+    SDK_DIRNAME,
+    executable_filename,
+    render_wasi_sdk_install_receipt,
+    wasi_sdk_tree_identity,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +83,47 @@ def test_link_probe_preserves_role_alias_and_rejects_generic_lld(
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_wasi_sdk_installation(
+    toolchain_root: Path,
+    *,
+    version_text: str = "33.0+m\nwasi-libc: test\nllvm-version: 22.1.0\n",
+    include_llvm_nm: bool = True,
+) -> Path:
+    """Lay out one provisioned install exactly as tools/provision_wasi_sdk.py does."""
+
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
+    prefix = llvm_toolchain.wasi_sdk_install_prefix(toolchain_root, asset)
+    sdk = prefix / SDK_DIRNAME
+    wasm_ld_name = executable_filename("wasm-ld", asset.id)
+    _write(sdk / "bin" / wasm_ld_name, "linker")
+    if include_llvm_nm:
+        _write(sdk / "bin" / executable_filename("llvm-nm", asset.id), "reader")
+    for name in ("clang", "clang++", "llvm-ar", "llvm-ranlib"):
+        _write(sdk / "bin" / executable_filename(name, asset.id), name)
+    _write(sdk / "VERSION", version_text)
+    sysroot = sdk / "share" / "wasi-sysroot"
+    _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
+    _write(sysroot / "lib/wasm32-wasip1/libc.a", "archive")
+    _write(
+        prefix / INSTALL_RECEIPT_FILENAME,
+        render_wasi_sdk_install_receipt(asdict(asset), wasi_sdk_tree_identity(sdk)),
+    )
+    return prefix
+
+
+def _recording_tool_versions(seen: list[tuple[str, Path, str, bool]]):
+    def verify(_prefix, role, path, *, expected_version, exact_version):
+        seen.append((role, path, expected_version, exact_version))
+        return (
+            llvm_toolchain.LlvmToolVersionFact(
+                role, f"bin/{path.name}", expected_version, 6, "0" * 64
+            ),
+            stable_regular_file_identity(path, label="test LLVM tool"),
+        )
+
+    return verify
 
 
 def _write_facade(root: Path, feature_values: str) -> None:
@@ -557,17 +607,114 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     assert f"apt_installer_url={installer.url}\n" in projected
     assert f"apt_installer_sha256={installer.sha256}\n" in projected
     assert f"apt_installer_provenance_url={installer.provenance_url}\n" in projected
-    wasi = manifest.wasi_sysroot
-    assert wasi.version == "33.0+m"
-    assert wasi.llvm_version == "22.1.0"
-    assert wasi.size == 124253494
-    assert wasi.sha256 == (
-        "063bc1b56582b9923e08ac9b89e58789618d851763f01530b3ff20b9e5df0ca3"
+    wasi = manifest.wasi_sdk
+    assert (wasi.archive_version, wasi.sdk_version, wasi.llvm_version) == (
+        "33.0",
+        "33.0+m",
+        "22.1.0",
     )
-    assert f"wasi_sysroot_url={wasi.url}\n" in projected
-    assert f"wasi_sysroot_size={wasi.size}\n" in projected
-    assert f"wasi_sysroot_sha256={wasi.sha256}\n" in projected
-    assert f"wasi_sysroot_archive_root={wasi.archive_root}\n" in projected
+    # The SDK's LLVM producer line is pinned independently of the backend SDK.
+    assert manifest.default_release == "22.1.8"
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
+    assert f"wasi_sdk_asset={asset.id}\n" in projected
+    assert "wasi_sdk_version=33.0+m\n" in projected
+    assert "wasi_sdk_llvm_version=22.1.0\n" in projected
+    assert f"wasi_sdk_cache_key=wasi-sdk-{asset.id}-{asset.sha256}\n" in projected
+    # The action never downloads or unpacks an SDK archive in shell.
+    assert "wasi_sdk_url" not in projected
+    assert "wasi_sysroot" not in projected
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "asset_id", "archive_root"),
+    (
+        ("Linux", "x86_64", "linux-x86_64", "wasi-sdk-33.0-x86_64-linux"),
+        ("Linux", "aarch64", "linux-aarch64", "wasi-sdk-33.0-arm64-linux"),
+        ("Darwin", "x86_64", "macos-x86_64", "wasi-sdk-33.0-x86_64-macos"),
+        ("Darwin", "arm64", "macos-aarch64", "wasi-sdk-33.0-arm64-macos"),
+        ("Windows", "AMD64", "windows-x86_64", "wasi-sdk-33.0-x86_64-windows"),
+        ("Windows", "ARM64", "windows-aarch64", "wasi-sdk-33.0-arm64-windows"),
+    ),
+)
+def test_wasi_sdk_host_asset_covers_every_release_coordinate(
+    system: str,
+    machine: str,
+    asset_id: str,
+    archive_root: str,
+) -> None:
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT, system=system, machine=machine)
+
+    assert asset.id == asset_id
+    assert asset.archive_root == archive_root
+    assert asset.url == (
+        "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/"
+        f"{archive_root}.tar.gz"
+    )
+    assert (asset.sdk_version, asset.llvm_version) == ("33.0+m", "22.1.0")
+
+
+def test_wasi_sdk_assets_match_the_shipped_release_matrix() -> None:
+    shipped = {
+        wasi_sdk_host_id(target["platform"], target["arch"])
+        for target in RELEASE_TARGETS
+    }
+    manifest = llvm_toolchain.load_llvm_releases(ROOT).wasi_sdk
+
+    assert {asset.id for asset in manifest.targets} == shipped
+    assert len({asset.sha256 for asset in manifest.targets}) == len(shipped)
+    assert len({asset.record_sha256 for asset in manifest.targets}) == len(shipped)
+
+
+def test_wasi_sdk_host_asset_rejects_uncovered_host() -> None:
+    with pytest.raises(LlvmToolchainConfigError, match="unsupported WASI SDK host"):
+        llvm_toolchain.wasi_sdk_host_asset(ROOT, system="FreeBSD", machine="x86_64")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    (
+        ('sdk_version = "33.0+m"', 'sdk_version = "34.0+m"', "release identity"),
+        (
+            "releases/tags/wasi-sdk-33",
+            "releases/tags/wasi-sdk-34",
+            "release identity",
+        ),
+        (
+            "download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
+            "download/wasi-sdk-32/wasi-sdk-33.0-x86_64-linux.tar.gz",
+            "linux-x86_64 identity is invalid",
+        ),
+    ),
+)
+def test_wasi_sdk_manifest_binds_versions_and_assets_to_provenance(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    source = (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8")
+    assert source.count(old) == 1
+    manifest = tmp_path / "llvm_toolchain_releases.toml"
+    manifest.write_text(source.replace(old, new), encoding="utf-8")
+
+    with pytest.raises(LlvmToolchainConfigError, match=message):
+        llvm_toolchain._load_llvm_releases_cached(str(manifest))
+
+
+def test_wasi_sdk_manifest_requires_the_complete_release_matrix(tmp_path: Path) -> None:
+    source = (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8")
+    incomplete, replacements = re.subn(
+        r"\n\[wasi_sdk\.targets\.windows-aarch64\]\n.*?(?=\n\[)",
+        "\n",
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    assert replacements == 1
+    manifest = tmp_path / "llvm_toolchain_releases.toml"
+    manifest.write_text(incomplete, encoding="utf-8")
+
+    with pytest.raises(
+        LlvmToolchainConfigError, match="complete shipped release matrix"
+    ):
+        llvm_toolchain._load_llvm_releases_cached(str(manifest))
 
 
 @pytest.mark.parametrize(
@@ -609,145 +756,189 @@ def test_debian_installer_identity_rejects_mutable_or_mismatched_source(
         llvm_toolchain.load_llvm_releases(tmp_path)
 
 
-def test_wasm_ci_profile_verifies_and_projects_one_linker_sysroot_pair(
+def test_wasm_ci_profile_verifies_and_projects_one_sdk_tool_family(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
-    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
-    llvm_nm = prefix / "bin" / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
-    _write(wasm_ld, "linker")
-    _write(llvm_nm, "symbol reader")
-    sysroot = tmp_path / "wasi-sysroot-33.0+m"
-    _write(
-        sysroot / "VERSION",
-        "33.0+m\nwasi-libc: 161b3195fc25\nllvm-version: 22.1.0\n",
-    )
-    _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
-    _write(sysroot / "lib/wasm32-wasip1/libc.a", "archive")
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
-            prefix=prefix,
-            llvm_config=prefix / "bin/llvm-config",
-            version="22.1.8",
-            source="test",
-        ),
-    )
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    seen: list[tuple[str, Path, str, bool]] = []
     monkeypatch.setattr(
         llvm_toolchain,
         "_tool_version_fact_and_identity",
-        lambda _prefix, role, path, **_kwargs: (
-            llvm_toolchain.LlvmToolVersionFact(
-                role=role,
-                path=f"bin/{path.name}",
-                version="22.1.8",
-                size=path.stat().st_size,
-                sha256="0" * 64,
-            ),
-            stable_regular_file_identity(path, label="test LLVM tool"),
-        ),
+        _recording_tool_versions(seen),
     )
 
-    verified = llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+    verified = llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
+    native_environment = {
+        "PATH": "host-bin",
+        "CC": "native-cc",
+        "CXX": "native-cxx",
+        "AR": "native-ar",
+        "RANLIB": "native-ranlib",
+        "CFLAGS": "-O2",
+        "CFLAGS_wasm32_wasip1": "-fno-exceptions",
+    }
     projected = llvm_toolchain.project_wasm_ci_environment(
-        verified, environ={"PATH": "host-bin"}
+        verified, environ=native_environment
     )
 
-    assert verified.sysroot_version == "33.0+m"
-    assert verified.sysroot_llvm_version == "22.1.0"
-    assert verified.wasm_ld == wasm_ld
-    assert verified.llvm_nm == llvm_nm
-    assert verified.llvm_nm_fact.role == "llvm-nm"
-    assert projected["MOLT_WASI_SYSROOT"] == str(sysroot.resolve())
-    assert projected["WASI_SYSROOT"] == str(sysroot.resolve())
+    installed = prefix.resolve()
+    sdk = installed / "sdk"
+    wasm_ld = sdk / "bin" / verified.installation.wasm_ld.name
+    llvm_nm = sdk / "bin" / verified.installation.llvm_nm.name
+    # Both WebAssembly tools are held to the SDK's LLVM line, not the 22.1.8
+    # native backend release.
+    assert seen == [
+        ("wasm-ld", wasm_ld, "22.1.0", True),
+        ("llvm-nm", llvm_nm, "22.1.0", True),
+    ]
+    assert (verified.sdk_version, verified.llvm_version) == ("33.0+m", "22.1.0")
+    sysroot = str(sdk / "share" / "wasi-sysroot")
+    assert projected["MOLT_WASI_SYSROOT"] == sysroot
+    assert projected["WASI_SYSROOT"] == sysroot
+    assert projected["WASI_SDK_PATH"] == str(sdk)
     assert projected["MOLT_WASM_LD"] == str(wasm_ld)
     assert projected["MOLT_LLVM_NM"] == str(llvm_nm)
-    assert projected["PATH"].split(os.pathsep)[0] == str(prefix / "bin")
-
-
-def test_wasm_ci_profile_rejects_incomplete_or_mismatched_sysroot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prefix = tmp_path / "llvm"
-    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
-    llvm_nm = prefix / "bin" / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
-    _write(wasm_ld, "linker")
-    _write(llvm_nm, "symbol reader")
-    sysroot = tmp_path / "wasi-sysroot"
-    _write(sysroot / "VERSION", "32.0+m\nllvm-version: 21.1.0\n")
-    _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
-            prefix=prefix,
-            llvm_config=prefix / "bin/llvm-config",
-            version="22.1.8",
-            source="test",
-        ),
+    for key in ("PATH", "CC", "CXX", "AR", "RANLIB", "CFLAGS"):
+        assert projected[key] == native_environment[key]
+    for target in ("wasm32-wasip1", "wasm32-unknown-unknown"):
+        for suffix in (target, target.replace("-", "_")):
+            for role, name in (
+                ("CC", "clang"),
+                ("CXX", "clang++"),
+                ("AR", "llvm-ar"),
+                ("RANLIB", "llvm-ranlib"),
+            ):
+                assert projected[f"{role}_{suffix}"] == str(
+                    sdk
+                    / "bin"
+                    / executable_filename(name, verified.installation.asset.id)
+                )
+            for flag in ("CFLAGS", "CXXFLAGS"):
+                assert projected[f"{flag}_{suffix}"].endswith("--no-default-config")
+    assert projected["CFLAGS_wasm32_wasip1"] == "-fno-exceptions --no-default-config"
+    assert (
+        llvm_toolchain.project_wasm_ci_environment(verified, environ=projected)
+        == projected
     )
+    assert not (installed / "wasm-bin").exists()
+
+
+@pytest.mark.parametrize(
+    ("version_text", "include_llvm_nm", "message"),
+    (
+        ("33.0+m\nllvm-version: 22.1.8\n", True, "VERSION identity"),
+        ("32.0+m\nllvm-version: 22.1.0\n", True, "VERSION identity"),
+        ("33.0+m\nllvm-version: 22.1.0\n", False, "installation is incomplete"),
+    ),
+)
+def test_wasm_ci_profile_rejects_mismatched_or_incomplete_sdk(
+    tmp_path: Path, version_text: str, include_llvm_nm: bool, message: str
+) -> None:
+    prefix = _write_wasi_sdk_installation(
+        tmp_path, version_text=version_text, include_llvm_nm=include_llvm_nm
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match=message):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
+
+
+def test_wasm_ci_profile_rejects_tree_mutation_after_provision(
+    tmp_path: Path,
+) -> None:
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    errno_header = prefix / "sdk/share/wasi-sysroot/include/wasm32-wasip1/errno.h"
+    errno_header.write_text("#define EINVAL 29\n", encoding="utf-8")
+
+    with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
+
+
+def test_wasm_cli_exports_target_tools_without_replacing_native_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    seen: list[tuple[str, Path, str, bool]] = []
     monkeypatch.setattr(
         llvm_toolchain,
         "_tool_version_fact_and_identity",
-        lambda _prefix, role, path, **_kwargs: (
-            llvm_toolchain.LlvmToolVersionFact(
-                role, f"bin/{path.name}", "22.1.8", path.stat().st_size, "0" * 64
-            ),
-            stable_regular_file_identity(path, label="test LLVM tool"),
-        ),
+        _recording_tool_versions(seen),
     )
+    github_env = tmp_path / "github-env"
+    assert (
+        llvm_toolchain.main(
+            [
+                "--root",
+                str(ROOT),
+                "--verify-wasm",
+                "--wasi-sdk",
+                str(prefix),
+                "--format",
+                "json",
+                "--github-env",
+                str(github_env),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    exported = dict(
+        line.split("=", 1)
+        for line in github_env.read_text(encoding="utf-8").splitlines()
+    )
+    assert (
+        not {"PATH", "CC", "CXX", "AR", "RANLIB", "CFLAGS", "CXXFLAGS"}
+        & exported.keys()
+    )
+    assert exported["CC_wasm32-wasip1"] == exported["CC_wasm32_wasip1"]
+    assert exported["CFLAGS_wasm32_wasip1"] == "--no-default-config"
+    assert exported["RANLIB_wasm32_unknown_unknown"].endswith(
+        executable_filename("llvm-ranlib", llvm_toolchain.wasi_sdk_host_asset(ROOT).id)
+    )
+    assert llvm_toolchain.resolve_wasi_sdk_tool(
+        ROOT, "wasm-ld", environ={"WASI_SDK_PATH": str(prefix / "sdk")}
+    ) == Path(exported["MOLT_WASM_LD"])
 
-    with pytest.raises(LlvmToolchainConfigError, match="LLVM identity"):
-        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+
+def test_wasm_ci_profile_rejects_receipt_asset_drift(tmp_path: Path) -> None:
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    receipt_path = prefix / INSTALL_RECEIPT_FILENAME
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["asset"]["sha256"] = "1" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(LlvmToolchainConfigError, match="receipt differs"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
 
 
-def test_wasm_ci_profile_rejects_missing_llvm_nm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_wasm_ci_profile_rejects_substituted_sdk_linker(tmp_path: Path) -> None:
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    linker = (
+        prefix
+        / "sdk"
+        / "bin"
+        / executable_filename("wasm-ld", llvm_toolchain.wasi_sdk_host_asset(ROOT).id)
+    )
+    linker.write_text("another linker", encoding="utf-8")
+
+    with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
+
+
+def test_wasm_ci_profile_rejects_a_prefix_outside_the_identity_address(
+    tmp_path: Path,
 ) -> None:
-    prefix = tmp_path / "llvm"
-    wasm_ld = prefix / "bin" / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
-    _write(wasm_ld, "linker")
-    sysroot = tmp_path / "wasi-sysroot-33.0+m"
-    _write(
-        sysroot / "VERSION",
-        "33.0+m\nwasi-libc: 161b3195fc25\nllvm-version: 22.1.0\n",
-    )
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "discover_llvm_toolchain",
-        lambda _root, environ=None: llvm_toolchain.LlvmToolchainDiscovery(
-            prefix=prefix,
-            llvm_config=prefix / "bin/llvm-config",
-            version="22.1.8",
-            source="test",
-        ),
-    )
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "_tool_version_fact",
-        lambda *_args, **_kwargs: llvm_toolchain.LlvmToolVersionFact(
-            "wasm-ld", "bin/wasm-ld", "22.1.8", 6, "0" * 64
-        ),
-    )
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    renamed = prefix.rename(prefix.with_name("wasi-sdk"))
 
-    with pytest.raises(LlvmToolchainConfigError, match="missing required tool"):
-        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, sysroot)
+    with pytest.raises(LlvmToolchainConfigError, match="identity-addressed"):
+        llvm_toolchain.verify_wasm_ci_toolchain(ROOT, renamed)
 
 
 def test_wasm_llvm_nm_explicit_override_uses_manifest_version_verifier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
-    _write(prefix / "bin" / "llvm-nm", "managed")
     override = tmp_path / "overrides" / "llvm-nm-22"
     _write(override, "override")
-    discovery = llvm_toolchain.LlvmToolchainDiscovery(
-        prefix=prefix,
-        llvm_config=prefix / "bin" / "llvm-config",
-        version="22.1.8",
-        source="test",
-    )
     seen: list[tuple[Path, str, Path, str, bool]] = []
 
     def verify(prefix_arg, role, path, *, expected_version, exact_version):
@@ -767,32 +958,63 @@ def test_wasm_llvm_nm_explicit_override_uses_manifest_version_verifier(
     verification = llvm_toolchain.verify_wasm_llvm_nm(
         ROOT,
         environ={"MOLT_LLVM_NM": str(override), "PATH": ""},
-        discovery=discovery,
     )
 
     assert verification.path == override
     assert verification.fact.role == "llvm-nm"
-    assert seen == [(prefix, "llvm-nm", override, "22.1.8", True)]
+    # An explicit reader is still held to the wasi-sdk LLVM release.
+    assert seen == [(tmp_path, "llvm-nm", override, "22.1.0", True)]
+
+
+def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "provisioned_wasi_sdk_prefix",
+        lambda _root, *, environ: prefix,
+    )
+    seen: list[tuple[str, Path, str, bool]] = []
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact_and_identity",
+        _recording_tool_versions(seen),
+    )
+
+    verification = llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+
+    llvm_nm = prefix.resolve() / "sdk" / "bin" / verification.path.name
+    assert verification.path == llvm_nm
+    assert seen == [("llvm-nm", llvm_nm, "22.1.0", True)]
+
+
+def test_wasm_llvm_nm_lookup_never_provisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    absent = tmp_path / "toolchains" / "wasi-sdk-absent"
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "provisioned_wasi_sdk_prefix",
+        lambda _root, *, environ: absent,
+    )
+
+    with pytest.raises(LlvmToolchainConfigError, match="no wasi-sdk is provisioned"):
+        llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+
+    assert not (tmp_path / "toolchains").exists()
 
 
 def test_wasm_llvm_nm_rejects_generic_native_reader(
     tmp_path: Path,
 ) -> None:
-    prefix = tmp_path / "llvm"
     generic_nm = tmp_path / "nm"
     _write(generic_nm, "generic")
-    discovery = llvm_toolchain.LlvmToolchainDiscovery(
-        prefix=prefix,
-        llvm_config=prefix / "bin" / "llvm-config",
-        version="22.1.8",
-        source="test",
-    )
 
     with pytest.raises(LlvmToolchainConfigError, match="llvm-nm entrypoint"):
         llvm_toolchain.verify_wasm_llvm_nm(
             ROOT,
             environ={"MOLT_LLVM_NM": str(generic_nm), "PATH": ""},
-            discovery=discovery,
         )
 
 
@@ -808,12 +1030,6 @@ def test_wasm_llvm_nm_rejects_onedrive_custody(configured: str) -> None:
         llvm_toolchain.verify_wasm_llvm_nm(
             ROOT,
             environ={"MOLT_LLVM_NM": configured, "PATH": ""},
-            discovery=llvm_toolchain.LlvmToolchainDiscovery(
-                prefix=Path(r"C:\Molt\llvm"),
-                llvm_config=Path(r"C:\Molt\llvm\bin\llvm-config.exe"),
-                version="22.1.8",
-                source="test",
-            ),
         )
 
 
@@ -823,15 +1039,8 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
     monkeypatch: pytest.MonkeyPatch,
     selection: str,
 ) -> None:
-    prefix = tmp_path / "llvm"
     selected = tmp_path / "selected tools" / "llvm-nm"
     _write(selected, "reader")
-    discovery = llvm_toolchain.LlvmToolchainDiscovery(
-        prefix=prefix,
-        llvm_config=prefix / "bin" / "llvm-config",
-        version="22.1.8",
-        source="test",
-    )
     raw = {
         "bare": "llvm-nm",
         "unquoted_path": str(selected),
@@ -862,7 +1071,6 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
     verification = llvm_toolchain.verify_wasm_llvm_nm(
         ROOT,
         environ={"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)},
-        discovery=discovery,
     )
 
     assert verification.path == selected
@@ -892,8 +1100,9 @@ def test_wasm_llvm_nm_rejects_invalid_executable_selections(
         LlvmToolchainConfigError,
         match="valid executable selection|without arguments",
     ):
-        llvm_toolchain._explicit_wasm_llvm_nm(
+        llvm_toolchain._explicit_wasm_tool(
             selection.format(selected=selected),
+            selector="MOLT_LLVM_NM",
             environment={"PATH": str(selected.parent)},
         )
 
@@ -982,7 +1191,6 @@ def test_tool_version_rejects_captured_onedrive_alias_before_execution(
 def test_wasm_llvm_nm_rejects_lexical_alias_to_poison_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    prefix = tmp_path / "llvm"
     content = tmp_path / "poison-content" / "llvm-nm"
     alias = tmp_path / "canonical-alias" / "llvm-nm"
     _write(content, "reader")
@@ -991,12 +1199,6 @@ def test_wasm_llvm_nm_rejects_lexical_alias_to_poison_content(
         alias.symlink_to(content)
     except OSError:
         pytest.skip("file symlinks are unavailable")
-    discovery = llvm_toolchain.LlvmToolchainDiscovery(
-        prefix=prefix,
-        llvm_config=prefix / "bin" / "llvm-config",
-        version="22.1.8",
-        source="test",
-    )
     checked: list[tuple[Path, str]] = []
 
     def reject(value, *, authority):
@@ -1010,7 +1212,6 @@ def test_wasm_llvm_nm_rejects_lexical_alias_to_poison_content(
         llvm_toolchain.verify_wasm_llvm_nm(
             ROOT,
             environ={"MOLT_LLVM_NM": str(alias), "PATH": ""},
-            discovery=discovery,
         )
 
     assert checked[-2:] == [

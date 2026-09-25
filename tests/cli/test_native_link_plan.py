@@ -337,6 +337,9 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
     managed_bin = tmp_path / "target" / "toolchains" / "llvm-99" / "bin"
     clang = _managed_tool(managed_bin, "clang")
     _managed_tool(managed_bin, "lld-link")
+    sdk_bin = tmp_path / "target" / "toolchains" / "wasi-sdk" / "bin"
+    _managed_tool(sdk_bin, "clang")
+    _managed_tool(sdk_bin, "lld-link")
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target"))
     monkeypatch.delenv("CC", raising=False)
     monkeypatch.delenv("MOLT_DEV_LINKER", raising=False)

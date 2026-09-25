@@ -194,9 +194,180 @@ def test_llvm_family_lanes_prefer_the_canonical_sdk_prefix(
         llvm_toolchain, "discover_llvm_toolchain", lambda root, environ=None: None
     )
     untouched, found = ge.prefer_canonical_llvm_prefix(
-        {"PATH": ambient}, ["python", "wasm-ld"], cwd=tmp_path
+        {"PATH": ambient}, ["python", "ld.lld"], cwd=tmp_path
     )
     assert found is None and untouched["PATH"] == ambient
+
+
+@pytest.mark.parametrize("with_native", [False, True])
+def test_sdk_role_selection_does_not_promote_sdk_tools_to_native_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_native: bool
+) -> None:
+    import molt.llvm_toolchain as llvm_toolchain
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    native = tmp_path / "llvm-native"
+    (native / "bin").mkdir(parents=True)
+    sdk_linker = tmp_path / "sdk" / "bin" / "wasm-ld"
+    ambient = str(tmp_path / "ambient")
+    selected = {"PATH": ambient, "WASI_SDK_PATH": str(sdk_linker.parent.parent)}
+    seen = []
+
+    def sdk_role(root, role, *, environ):
+        assert root == ge.state.ROOT
+        assert role == "wasm-ld"
+        assert environ == selected
+        seen.append("sdk")
+        return sdk_linker
+
+    def native_sdk(root, *, environ):
+        assert with_native, "a WASM-only declaration must not discover native LLVM"
+        assert root == tmp_path
+        assert environ["MOLT_WASM_LD"] == str(sdk_linker)
+        seen.append("native")
+        return SimpleNamespace(prefix=native)
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
+    monkeypatch.setattr(llvm_toolchain, "discover_llvm_toolchain", native_sdk)
+    declared = ["wasm-ld", "ld.lld"] if with_native else ["wasm-ld"]
+    actual, found = ge.prefer_canonical_llvm_prefix(selected, declared, cwd=tmp_path)
+    assert actual["MOLT_WASM_LD"] == str(sdk_linker)
+    assert actual["WASI_SDK_PATH"] == selected["WASI_SDK_PATH"]
+    assert actual["PATH"] == (
+        os.pathsep.join((str((native / "bin").resolve()), ambient))
+        if with_native
+        else ambient
+    )
+    assert found == (str(native) if with_native else None)
+    assert seen == (["sdk", "native"] if with_native else ["sdk"])
+    assert selected == {"PATH": ambient, "WASI_SDK_PATH": str(sdk_linker.parent.parent)}
+
+
+def test_missing_declared_sdk_role_fails_without_native_path_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import molt.llvm_toolchain as llvm_toolchain
+    from tools.proof_queue_pkg import guarded_execution as ge
+
+    def missing(*_args, **_kwargs):
+        raise llvm_toolchain.LlvmToolchainConfigError(
+            "SDK must be provisioned explicitly"
+        )
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", missing)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "discover_llvm_toolchain",
+        lambda *_a, **_k: pytest.fail("native LLVM cannot supply the SDK role"),
+    )
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match="provisioned explicitly"
+    ):
+        ge.prefer_canonical_llvm_prefix(
+            {"PATH": "native-llvm"}, ["wasm-ld"], cwd=tmp_path
+        )
+
+
+@pytest.mark.parametrize("version", ["22.1.0", "22.1.8"])
+def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    import hashlib
+    import subprocess
+    import molt.llvm_toolchain as llvm_toolchain
+    from tools.proof_queue_pkg import command_identity
+
+    selected = tmp_path / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld")
+    selected.write_bytes(b"SDK entrypoint")
+    environment = {"MOLT_WASM_LD": str(selected), "PATH": "wrong-native-llvm"}
+
+    def sdk_role(root, role, *, environ):
+        assert root == proof_plan.ROOT and role == "wasm-ld"
+        assert environ == environment
+        return selected
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
+    monkeypatch.setattr(
+        command_identity.shutil,
+        "which",
+        lambda *_a, **_k: pytest.fail("SDK role must not resolve through PATH"),
+    )
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(tuple(command))
+        assert list(command) == [str(selected), "--version"]
+        return subprocess.CompletedProcess(command, 0, f"LLD {version}", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", run)
+    envelope = {"argv": ["wasm-ld", "--version"], "python": None}
+    exact = command_identity._exact_command(envelope, cwd=tmp_path, env=environment)
+    assert exact == [str(selected), "--version"]
+    # An enclosing uv environment cannot send the role back through its PATH.
+    assert (
+        command_identity._which_in_command_environment(
+            "wasm-ld",
+            {"python": {"kind": "uv"}},
+            ["uv", "run"],
+            cwd=tmp_path,
+            env=environment,
+        )
+        == selected
+    )
+    identity = command_identity._tool_identity(
+        PLAN, "wasm-ld", envelope, exact, cwd=tmp_path, env=environment
+    )
+    assert identity["path"] == str(selected)
+    assert (
+        identity["executable_sha256"] == hashlib.sha256(b"SDK entrypoint").hexdigest()
+    )
+    assert calls == [(str(selected), "--version")]
+    if version == "22.1.0":
+        command_identity._validate_toolchain_identity(PLAN, "wasm-ld", identity)
+    else:
+        with pytest.raises(ValueError, match="violates canonical policy"):
+            command_identity._validate_toolchain_identity(PLAN, "wasm-ld", identity)
+
+
+def test_sdk_projection_survives_queue_environment_and_binds_tool_bytes(
+    tmp_path: Path,
+) -> None:
+    from molt.wasi_sdk_identity import SDK_CARGO_TARGETS, SDK_CARGO_TOOLS
+    from tools.proof_queue_pkg import execution_environment
+
+    binary = tmp_path / "tool"
+    binary.write_bytes(b"selected SDK bytes")
+    source = {
+        "PATH": "native-tools",
+        "WASI_SDK_PATH": str(tmp_path / "sdk"),
+        "WASI_SYSROOT": str(tmp_path / "sdk" / "share" / "wasi-sysroot"),
+        "MOLT_WASM_LD": str(binary),
+        "MOLT_LLVM_NM": str(binary),
+    }
+    executable_names = {"MOLT_WASM_LD", "MOLT_LLVM_NM"}
+    for target in SDK_CARGO_TARGETS:
+        for spelling in (target, target.replace("-", "_")):
+            for role, _name in SDK_CARGO_TOOLS:
+                source[f"{role}_{spelling}"] = str(binary)
+                executable_names.add(f"{role}_{spelling}")
+            for role in ("CFLAGS", "CXXFLAGS"):
+                source[f"{role}_{spelling}"] = "--no-default-config"
+    selected, _contract = execution_environment._deterministic_execution_environment(
+        source, override_names=[]
+    )
+    assert all(selected[name] == value for name, value in source.items())
+    before = execution_environment._execution_environment_executable_identities(
+        selected, cwd=tmp_path
+    )
+    assert set(before) == executable_names
+    binary.write_bytes(b"changed SDK bytes")
+    after = execution_environment._execution_environment_executable_identities(
+        selected, cwd=tmp_path
+    )
+    assert all(
+        before[name]["executable"]["sha256"] != after[name]["executable"]["sha256"]
+        for name in executable_names
+    )
 
 
 def test_llvm_family_is_derived_from_the_release_manifest_evidence() -> None:

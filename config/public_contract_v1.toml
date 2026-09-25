@@ -5,7 +5,7 @@ public_schemas = [
   "molt.release-supply-chain.v1",
   "molt.release-candidate.v3",
   "molt.release-manifest.v3",
-  "molt.release-consumer-proof.v4",
+  "molt.release-consumer-proof.v5",
   "molt.release-compiler-source.v4",
   "molt.release-targets.v1",
   "molt-release-exit/3",

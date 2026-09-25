@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 183 |
+| Hashed executable authority inputs | 1 | 186 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -43,7 +43,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 15 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 75 min | 4260 s | 240 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 11 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 22 |
+| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -116,7 +116,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-ranlib` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-nm` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-strip` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `wasm-ld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `wasm-ld` | `executable` | — | `\bLLD 22\.1\.0\b` | `.` | `22.1.0` | 2 |
 | `wasm-tools` | `executable` | — | `^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.259.0` | 2 |
 
 ## Cargo execution contracts

@@ -1,13 +1,13 @@
 name: Setup canonical LLVM and WASI SDK
-description: Install and verify Molt's manifest-owned LLVM profiles and pinned WASI sysroot
+description: Install and verify Molt's manifest-owned LLVM profile and host wasi-sdk
 
 inputs:
   profile:
-    description: Full LLVM/MLIR SDK or the minimal WebAssembly linker profile
+    description: Full Linux LLVM/MLIR SDK, or the wasi-sdk-only WebAssembly profile
     required: false
     default: full
   wasi:
-    description: Provision and verify the manifest-owned WASI sysroot
+    description: Provision and verify the manifest-owned host wasi-sdk
     required: false
     default: "false"
 
@@ -18,31 +18,58 @@ outputs:
   env_var:
     description: llvm-sys prefix environment variable
     value: ${{ steps.contract.outputs.env_var }}
+  wasi_sdk:
+    description: Verified identity-addressed wasi-sdk install prefix when wasi=true
+    value: ${{ steps.wasi-sdk.outputs.install }}
   wasi_sysroot:
-    description: Verified WASI sysroot path when wasi=true
-    value: ${{ steps.wasi-path.outputs.path }}
+    description: WASI sysroot inside that verified wasi-sdk when wasi=true
+    value: ${{ steps.wasi-sdk.outputs.sysroot }}
 
 runs:
   using: composite
   steps:
+    - name: Validate SDK profile
+      shell: bash
+      env:
+        LLVM_PROFILE: ${{ inputs.profile }}
+        PROVISION_WASI: ${{ inputs.wasi }}
+      run: |
+        set -euo pipefail
+        case "$LLVM_PROFILE" in
+          full|wasm) ;;
+          *) printf 'unsupported LLVM SDK profile: %s\n' "$LLVM_PROFILE" >&2; exit 2 ;;
+        esac
+        case "$PROVISION_WASI" in
+          true|false) ;;
+          *) printf 'wasi input must be true or false: %s\n' "$PROVISION_WASI" >&2; exit 2 ;;
+        esac
+        if [ "$LLVM_PROFILE" = "wasm" ] && [ "$PROVISION_WASI" != "true" ]; then
+          printf 'the wasm SDK profile requires wasi=true\n' >&2
+          exit 2
+        fi
+
     - name: Resolve SDK contract
       id: contract
       shell: bash
       run: |
         set -euo pipefail
-        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+        PYTHONPATH=src python -m molt.llvm_toolchain \
           --github-output "$GITHUB_OUTPUT"
 
-    - name: Provision SDK components
+    - name: Provision full LLVM SDK packages
+      if: inputs.profile == 'full'
       shell: bash
       env:
         LLVM_MAJOR: ${{ steps.contract.outputs.major }}
         LLVM_APT_PACKAGES: ${{ steps.contract.outputs.apt_packages }}
         LLVM_APT_INSTALLER_URL: ${{ steps.contract.outputs.apt_installer_url }}
         LLVM_APT_INSTALLER_SHA256: ${{ steps.contract.outputs.apt_installer_sha256 }}
-        LLVM_PROFILE: ${{ inputs.profile }}
       run: |
         set -euo pipefail
+        if [ "$RUNNER_OS" != "Linux" ]; then
+          printf 'the full LLVM SDK package profile is Linux-only: %s\n' "$RUNNER_OS" >&2
+          exit 2
+        fi
         installer="$RUNNER_TEMP/molt-llvm-apt.sh"
         curl --fail --location --proto '=https' --tlsv1.2 \
           --output "$installer" "$LLVM_APT_INSTALLER_URL"
@@ -50,54 +77,50 @@ runs:
           | sha256sum --check --strict
         chmod +x "$installer"
         sudo "$installer" "$LLVM_MAJOR"
-        case "$LLVM_PROFILE" in
-          full) read -r -a packages <<< "$LLVM_APT_PACKAGES" ;;
-          wasm) packages=("llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR") ;;
-          *) printf 'unsupported LLVM SDK profile: %s\n' "$LLVM_PROFILE" >&2; exit 2 ;;
-        esac
+        read -r -a packages <<< "$LLVM_APT_PACKAGES"
         sudo apt-get install -y "${packages[@]}"
 
-    - name: Provision pinned WASI sysroot
+    # The archive cache is keyed by the host asset's manifest digest; the
+    # provisioner still re-verifies size and SHA-256 before any reuse.
+    - name: Restore verified wasi-sdk archive
       if: inputs.wasi == 'true'
-      id: wasi-path
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ runner.temp }}/molt-wasi-sdk-downloads
+        key: ${{ steps.contract.outputs.wasi_sdk_cache_key }}
+
+    - name: Provision pinned host wasi-sdk
+      if: inputs.wasi == 'true'
+      id: wasi-sdk
       shell: bash
-      env:
-        WASI_SYSROOT_URL: ${{ steps.contract.outputs.wasi_sysroot_url }}
-        WASI_SYSROOT_SIZE: ${{ steps.contract.outputs.wasi_sysroot_size }}
-        WASI_SYSROOT_SHA256: ${{ steps.contract.outputs.wasi_sysroot_sha256 }}
-        WASI_SYSROOT_ARCHIVE_ROOT: ${{ steps.contract.outputs.wasi_sysroot_archive_root }}
       run: |
         set -euo pipefail
-        archive="$RUNNER_TEMP/${WASI_SYSROOT_ARCHIVE_ROOT}.tar.gz"
-        sysroot="$RUNNER_TEMP/$WASI_SYSROOT_ARCHIVE_ROOT"
-        curl --fail --location --proto '=https' --tlsv1.2 \
-          --output "$archive" "$WASI_SYSROOT_URL"
-        test "$(stat --format '%s' "$archive")" = "$WASI_SYSROOT_SIZE"
-        printf '%s  %s\n' "$WASI_SYSROOT_SHA256" "$archive" \
-          | sha256sum --check --strict
-        tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP"
-        printf 'path=%s\n' "$sysroot" >> "$GITHUB_OUTPUT"
+        PYTHONPATH=src python -m tools.provision_wasi_sdk \
+          --toolchain-root "$RUNNER_TEMP/molt-toolchains" \
+          --downloads "$RUNNER_TEMP/molt-wasi-sdk-downloads" \
+          --github-output "$GITHUB_OUTPUT"
 
     - name: Verify and project full SDK identity
       if: inputs.profile == 'full'
       shell: bash
       run: |
         set -euo pipefail
-        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+        PYTHONPATH=src python -m molt.llvm_toolchain \
           --verify \
           --format json \
           --github-env "$GITHUB_ENV"
 
+    # Explicit WASM selectors preserve the native SDK's PATH and compiler policy.
     - name: Verify and project WebAssembly SDK identity
       if: inputs.wasi == 'true'
       shell: bash
       env:
-        WASI_SYSROOT: ${{ steps.wasi-path.outputs.path }}
+        WASI_SDK_INSTALL: ${{ steps.wasi-sdk.outputs.install }}
       run: |
         set -euo pipefail
-        test -n "$WASI_SYSROOT"
-        PYTHONPATH=src python3 -m molt.llvm_toolchain \
+        test -n "$WASI_SDK_INSTALL"
+        PYTHONPATH=src python -m molt.llvm_toolchain \
           --verify-wasm \
-          --wasi-sysroot "$WASI_SYSROOT" \
+          --wasi-sdk "$WASI_SDK_INSTALL" \
           --format json \
           --github-env "$GITHUB_ENV"

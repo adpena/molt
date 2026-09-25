@@ -36,6 +36,7 @@ authority_inputs = [
   "src/sitecustomize.py",
   "src/molt/_host_exit.py",
   "src/molt/pytest_memory_guard_bootstrap.py",
+  "src/molt/source_root.py",
   "src/molt/temporary_artifacts.py",
   "src/molt/disk_capacity.py",
   "src/molt/file_deletion.py",
@@ -51,6 +52,8 @@ authority_inputs = [
   "src/molt/cargo_workspace.py",
   "src/molt/process_guard.py",
   "src/molt/llvm_toolchain.py",
+  "src/molt/wasi_sdk_identity.py",
+  "tools/provision_wasi_sdk.py",
   "tools/artifact_publish.py",
   "tools/nightly_prepare.py",
   "tools/nightly_profile_feedback.py",
@@ -475,9 +478,12 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 name = "wasm-ld"
 executable = "wasm-ld"
 version_args = ["--version"]
-version_pattern = '\bLLD 22\.1\.8\b'
-setup_value = "22.1.8"
-setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+version_pattern = '\bLLD 22\.1\.0\b'
+setup_value = "22.1.0"
+setup_evidence = [
+  "config/llvm_toolchain_releases.toml::llvm_version = \"22.1.0\"",
+  ".github/actions/setup-llvm/action.yml::python -m tools.provision_wasi_sdk",
+]
 
 [[toolchain_policy]]
 name = "wasm-tools"
@@ -758,7 +764,7 @@ dependencies = []
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -1685,7 +1691,7 @@ resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py"]
 toolchains = ["python", "uv"]
 
 [[command]]

@@ -16,11 +16,20 @@ fn numeric_scalar_layout_has_one_header_authority() {
     let linked_header =
         std::fs::read_to_string(root.join("runtime/molt-cpython-abi/include/Python.h"))
             .expect("read linked ABI header");
-    let authority = std::fs::read_to_string(root.join("include/molt/_numeric_scalar_abi.h"))
+    let authority = std::fs::read_to_string(root.join("include/molt/shared/_numeric_scalar_abi.h"))
         .expect("read scalar layout authority");
 
-    assert!(source_header.contains("#include \"_numeric_scalar_abi.h\""));
-    assert!(linked_header.contains("#include \"../../../include/molt/_numeric_scalar_abi.h\""));
+    assert!(source_header.contains("#include \"shared/_numeric_scalar_abi.h\""));
+    assert!(linked_header.contains("#include <_numeric_scalar_abi.h>"));
+    assert!(!linked_header.contains("../../../include/"));
+    for name in [
+        "_numeric_scalar_abi.h",
+        "_gil_state_abi.h",
+        "_c_data_model.h",
+    ] {
+        assert!(root.join("include/molt/shared").join(name).is_file());
+        assert!(!root.join("include/molt").join(name).exists());
+    }
     for header in [&source_header, &linked_header] {
         assert!(header.contains("molt_capi_semantic_type"));
         assert!(header.contains("molt_capi_set_semantic_type"));

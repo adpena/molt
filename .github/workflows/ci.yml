@@ -285,10 +285,10 @@ jobs:
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
-      - name: Setup canonical WebAssembly linker and WASI sysroot
+      - name: Setup canonical native LLVM and WASI SDK
         uses: ./.github/actions/setup-llvm
         with:
-          profile: wasm
+          profile: full
           wasi: "true"
 
       - name: Install pinned executable Luau proof runner

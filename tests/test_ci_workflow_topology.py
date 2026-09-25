@@ -148,6 +148,31 @@ def test_composite_action_shells_never_interpolate_inputs_directly() -> None:
     assert checked >= 5
 
 
+def test_release_candidate_admits_both_installed_guest_targets() -> None:
+    steps = yaml.safe_load(_read(".github/workflows/release.yml"))["jobs"][
+        "candidates"
+    ]["steps"]
+    setups = [
+        step for step in steps if step.get("uses") == "./.github/actions/setup-project"
+    ]
+    assert len(setups) == 1
+    setup = setups[0]["with"]
+    policy = tomllib.loads(_read("tools/proof_plan.toml"))
+    node = next(item for item in policy["toolchain_policy"] if item["name"] == "node")
+    rust = tomllib.loads(_read("rust-toolchain.toml"))["toolchain"]
+    assert setup["node-version"] == node["setup_value"]
+    assert setup["rust-toolchain"] == rust["channel"]
+    assert {part.strip() for part in setup["rust-targets"].split(",")} >= set(
+        rust["targets"]
+    )
+    consumer_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tools.release.verify_consumer" in str(step.get("run", ""))
+    )
+    assert steps.index(setups[0]) < consumer_index
+
+
 @pytest.mark.parametrize(
     ("event", "selected", "expected"),
     [
@@ -402,29 +427,73 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     perf_text = _read(".github/workflows/perf-gate.yml")
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
     action_text = _read(".github/actions/setup-llvm/action.yml")
+    action = yaml.safe_load(action_text)
+    action_steps = action["runs"]["steps"]
+    steps = {step["name"]: step for step in action_steps}
 
     assert "uses: ./.github/actions/setup-llvm" in ci_text
     assert "uses: ./.github/actions/setup-llvm" in perf_text
-    assert "PYTHONPATH=src python3 -m molt.llvm_toolchain" in action_text
+    assert "PYTHONPATH=src python -m molt.llvm_toolchain" in action_text
+    assert "python3" not in action_text
     assert '--github-output "$GITHUB_OUTPUT"' in action_text
     assert '--github-env "$GITHUB_ENV"' in action_text
     assert "steps.contract.outputs.apt_packages" in action_text
     assert "steps.contract.outputs.apt_installer_url" in action_text
     assert "steps.contract.outputs.apt_installer_sha256" in action_text
-    assert "steps.contract.outputs.wasi_sysroot_url" in action_text
-    assert "steps.contract.outputs.wasi_sysroot_sha256" in action_text
-    assert "steps.contract.outputs.wasi_sysroot_archive_root" in action_text
     assert 'installer="$RUNNER_TEMP/molt-llvm-apt.sh"' in action_text
     assert "sha256sum --check --strict" in action_text
     assert "wget -qO /tmp" not in action_text
-    assert "--verify" in action_text
-    assert "--verify-wasm" in action_text
-    assert "--wasi-sysroot" in action_text
-    assert "Setup canonical WebAssembly linker and WASI sysroot" in ci_text
-    assert "profile: wasm" in ci_text
-    assert 'wasi: "true"' in ci_text
-    setup_llvm = _read(".github/actions/setup-llvm/action.yml")
-    assert 'wasm) packages=("llvm-$LLVM_MAJOR" "lld-$LLVM_MAJOR") ;;' in setup_llvm
+    assert "the wasm SDK profile requires wasi=true" in action_text
+    # Host packages serve only the Linux full SDK. Every WebAssembly tool comes
+    # from the one manifest-owned wasi-sdk provisioner on every host.
+    apt_step = steps["Provision full LLVM SDK packages"]
+    assert apt_step["if"] == "inputs.profile == 'full'"
+    assert 'if [ "$RUNNER_OS" != "Linux" ]' in apt_step["run"]
+    assert sum("apt-get" in str(step.get("run", "")) for step in action_steps) == 1
+    assert "lld-$LLVM_MAJOR" not in action_text
+    cache = steps["Restore verified wasi-sdk archive"]
+    assert cache["if"] == "inputs.wasi == 'true'"
+    assert re.fullmatch(r"actions/cache@[0-9a-f]{40}", cache["uses"])
+    assert cache["with"] == {
+        "path": "${{ runner.temp }}/molt-wasi-sdk-downloads",
+        "key": "${{ steps.contract.outputs.wasi_sdk_cache_key }}",
+    }
+    provision = steps["Provision pinned host wasi-sdk"]
+    assert provision["if"] == "inputs.wasi == 'true'"
+    assert provision["id"] == "wasi-sdk"
+    assert "PYTHONPATH=src python -m tools.provision_wasi_sdk" in provision["run"]
+    assert '--downloads "$RUNNER_TEMP/molt-wasi-sdk-downloads"' in provision["run"]
+    assert '--github-output "$GITHUB_OUTPUT"' in provision["run"]
+    for shell_install in ("curl", "tar ", "sha256sum", "stat "):
+        assert shell_install not in provision["run"]
+    verify_wasm = steps["Verify and project WebAssembly SDK identity"]
+    assert verify_wasm["env"] == {
+        "WASI_SDK_INSTALL": "${{ steps.wasi-sdk.outputs.install }}"
+    }
+    assert "--verify-wasm" in verify_wasm["run"]
+    assert '--wasi-sdk "$WASI_SDK_INSTALL"' in verify_wasm["run"]
+    assert "--verify" in steps["Verify and project full SDK identity"]["run"]
+    step_names = list(steps)
+    full_verify = step_names.index("Verify and project full SDK identity")
+    assert full_verify < step_names.index("Verify and project WebAssembly SDK identity")
+    assert action["outputs"]["wasi_sdk"]["value"] == (
+        "${{ steps.wasi-sdk.outputs.install }}"
+    )
+    assert action["outputs"]["wasi_sysroot"]["value"] == (
+        "${{ steps.wasi-sdk.outputs.sysroot }}"
+    )
+    assert "--wasi-sysroot" not in action_text
+    assert "wasi_sysroot_url" not in action_text
+    # These command families declare both native ld.lld and SDK wasm-ld. The
+    # WebAssembly-only SDK must never stand in for the full native LLVM SDK.
+    rust_steps = yaml.safe_load(ci_text)["jobs"]["rust-build-unit-smoke"]["steps"]
+    rust_llvm_steps = [
+        step
+        for step in rust_steps
+        if step.get("uses") == "./.github/actions/setup-llvm"
+    ]
+    assert len(rust_llvm_steps) == 1
+    assert rust_llvm_steps[0]["with"] == {"profile": "full", "wasi": "true"}
     wasm_steps = yaml.safe_load(wasm_text)["jobs"]["wasm-build"]["steps"]
     llvm_steps = [
         step
@@ -432,8 +501,26 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
         if step.get("uses") == "./.github/actions/setup-llvm"
     ]
     assert len(llvm_steps) == 1
-    assert llvm_steps[0]["with"] == {"profile": "wasm", "wasi": "true"}
+    assert llvm_steps[0]["with"] == {"profile": "full", "wasi": "true"}
     assert all("wasi-libc" not in str(step.get("run", "")) for step in wasm_steps)
+    release_steps = yaml.safe_load(_read(".github/workflows/release.yml"))["jobs"][
+        "candidates"
+    ]["steps"]
+    release_llvm = [
+        index
+        for index, step in enumerate(release_steps)
+        if step.get("uses") == "./.github/actions/setup-llvm"
+    ]
+    assert [release_steps[index]["with"] for index in release_llvm] == [
+        {"profile": "wasm", "wasi": "true"}
+    ]
+    identity_index = next(
+        index
+        for index, step in enumerate(release_steps)
+        if step.get("name") == "Verify candidate toolchain identity"
+    )
+    assert release_llvm[0] < identity_index
+    assert '"$MOLT_WASM_LD" --version' in release_steps[identity_index]["run"]
     assert "grep -oE" not in ci_text
     assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text

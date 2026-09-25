@@ -54,8 +54,9 @@ this page explains them and never restates their content.
   Ordinary invocations may inspect readiness but may not implicitly install
   tooling, edit PATH or remove competing installations; setup must explain its
   changes and require explicit authorization. These are release acceptance
-  obligations: the current surface gate and native smoke consumer do not yet
-  establish this complete command matrix. Use the existing release/phase
+  obligations: the current surface gate and installed native/WASM smoke
+  consumer do not yet establish this complete command matrix, and smoke success
+  is not verified-subset determinism. Use the existing release/phase
   authorities for closure, not a parallel checklist.
 - Releases follow semver. `molt --version` and the wheel version are the
   `pyproject.toml` project version resolved through `molt._version`.

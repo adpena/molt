@@ -2067,11 +2067,13 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
 
     def resolve_family(
         *,
+        target_family: cli_llvm_wasi_tools.LlvmTargetFamily,
         explicit_commands: dict[cli_llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
         environment: object,
     ) -> cli_llvm_wasi_tools.LlvmWasiToolFamily:
         del sibling_directories, environment
+        assert target_family == "native"
         return cli_llvm_wasi_tools.LlvmWasiToolFamily(
             cc=_resolved_llvm_tool("cc", explicit_commands["cc"]),
             cxx=None,
@@ -3383,11 +3385,13 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
 
     def resolve_family(
         *,
+        target_family: cli_llvm_wasi_tools.LlvmTargetFamily,
         explicit_commands: dict[cli_llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
         environment: object,
     ) -> cli_llvm_wasi_tools.LlvmWasiToolFamily:
         del sibling_directories, environment
+        assert target_family == "native"
         seen_explicit.append(dict(explicit_commands))
         return cli_llvm_wasi_tools.LlvmWasiToolFamily(
             cc=_resolved_llvm_tool("cc", explicit_commands["cc"]),
@@ -6714,7 +6718,7 @@ def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
             "-Wextra",
             "-Werror",
             f"-I{ROOT / 'runtime' / 'molt-cpython-abi' / 'include'}",
-            f"-I{ROOT / 'include'}",
+            f"-I{ROOT / 'include' / 'molt' / 'shared'}",
             "-fsyntax-only",
             str(source),
         ],
@@ -6726,7 +6730,7 @@ def test_datetime_header_cpython_abi_tier_smoke(tmp_path: Path) -> None:
 
 
 def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -> None:
-    """The cpython-abi tier is ONE header home: the ABI authority only.
+    """The linked tier has one public home plus shared scalar primitives.
 
     It must NOT also inject the repo-root ``include/`` tier. The source-compat
     tier is a separate libmolt header authority, while package headers such as
@@ -6744,7 +6748,7 @@ def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -
             )
         )
     )
-    assert cpython_abi_dirs == (abi_authority,)
+    assert cpython_abi_dirs == (abi_authority, ROOT / "include" / "molt" / "shared")
     assert repo_root_include not in cpython_abi_dirs
 
     # The ABI authority must be self-complete for a generic C extension: the
@@ -6767,10 +6771,12 @@ def test_source_extension_cpython_abi_tier_is_single_self_complete_authority() -
     assert source_compat_dirs == (repo_root_include,)
 
 
+@pytest.mark.parametrize("installed", [False, True], ids=["source-tree", "installed"])
 def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
     tmp_path: Path,
+    installed: bool,
 ) -> None:
-    """A minimal C extension compiles against the ABI authority ALONE.
+    """Linked headers and their shared primitives work independently of checkout.
 
     No ``-I include`` on the command line. Proves ``structmember.h`` /
     ``pymem.h`` / ``pyerrors.h`` resolve ``<Python.h>`` to the tier's own
@@ -6780,6 +6786,10 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
     if clang is None:
         pytest.skip("clang is required for the CPython-ABI authority smoke test")
     abi_authority = ROOT / "runtime" / "molt-cpython-abi" / "include"
+    shared = ROOT / "include" / "molt" / "shared"
+    if installed:
+        abi_authority = Path(shutil.copytree(abi_authority, tmp_path / "sdk" / "abi"))
+        shared = Path(shutil.copytree(shared, tmp_path / "primitives"))
     source = tmp_path / "cpython_abi_self_complete_smoke.c"
     source.write_text(
         "\n".join(
@@ -6788,6 +6798,19 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
                 "#include <structmember.h>",
                 "#include <pymem.h>",
                 "#include <pyerrors.h>",
+                "#if SIZEOF_VOID_P != 4 && SIZEOF_VOID_P != 8",
+                '#error "SIZEOF_VOID_P must be a preprocessing integer"',
+                "#endif",
+                "#if SIZEOF_INT != 4 || SIZEOF_LONG_LONG != 8 || SIZEOF_SIZE_T != SIZEOF_VOID_P",
+                '#error "scalar model must be preprocessing integers"',
+                "#endif",
+                "#if LONG_BIT != SIZEOF_LONG * CHAR_BIT",
+                '#error "long model must agree"',
+                "#endif",
+                '_Static_assert(SIZEOF_VOID_P == sizeof(void *), "pointer width");',
+                '_Static_assert(SIZEOF_LONG == sizeof(long), "long width");',
+                '_Static_assert(SIZEOF_SIZE_T == sizeof(size_t), "size_t width");',
+                '_Static_assert(sizeof(((PyTypeObject *)0)->tp_version_tag) == sizeof(unsigned int), "CPython version tag width");',
                 "",
                 "/* structmember legacy aliases resolve to the Py_T_* / Py_* */",
                 "/* constants defined by this tier's own Python.h.           */",
@@ -6818,6 +6841,7 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
             "-Wextra",
             "-Werror",
             f"-I{abi_authority}",
+            f"-I{shared}",
             "-fsyntax-only",
             str(source),
         ],
@@ -6828,16 +6852,37 @@ def test_cpython_abi_authority_self_complete_without_repo_include_smoke(
     assert result.returncode == 0, result.stderr
 
 
-def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> None:
+@pytest.mark.parametrize("installed", [False, True], ids=["source-tree", "installed"])
+def test_l7_numeric_headers_expose_one_external_authority(
+    tmp_path: Path, installed: bool
+) -> None:
     clang = shutil.which("clang")
     if clang is None:
         pytest.skip("clang is required for the L7 integer header smoke test")
 
     abi_authority = ROOT / "runtime" / "molt-cpython-abi" / "include"
+    source_authority = ROOT / "include"
+    if installed:
+        abi_authority = Path(shutil.copytree(abi_authority, tmp_path / "linked-sdk"))
+        source_authority = Path(
+            shutil.copytree(source_authority, tmp_path / "source-sdk")
+        )
     source = tmp_path / "l7_integer_header_smoke.c"
     smoke_source = "\n".join(
         [
             "#include <Python.h>",
+            "#if SIZEOF_VOID_P != SIZEOF_SIZE_T || SIZEOF_INT != 4 || SIZEOF_LONG_LONG != 8",
+            '#error "shared scalar widths must be preprocessing constants"',
+            "#endif",
+            "#if SIZEOF_LONG != 4 && SIZEOF_LONG != 8",
+            '#error "shared long width must be a preprocessing constant"',
+            "#endif",
+            '_Static_assert(SIZEOF_VOID_P == sizeof(void *), "pointer width");',
+            '_Static_assert(SIZEOF_LONG == sizeof(long), "long width");',
+            '_Static_assert(SIZEOF_INT == sizeof(int), "int width");',
+            '_Static_assert(SIZEOF_LONG_LONG == sizeof(long long), "long long width");',
+            '_Static_assert(SIZEOF_SIZE_T == sizeof(size_t), "size_t width");',
+            '_Static_assert(LONG_BIT == sizeof(long) * CHAR_BIT, "long bits");',
             "int probe(PyObject *value, PyLongObject *long_value, void *out) {",
             "    char *end = NULL;",
             "    unsigned char bytes[2] = {0};",
@@ -6880,7 +6925,7 @@ def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> Non
     )
     for include_root, header in (
         (abi_authority, "Python.h"),
-        (ROOT / "include", "molt/Python.h"),
+        (source_authority, "molt/Python.h"),
     ):
         source.write_text(
             smoke_source.replace("#include <Python.h>", f"#include <{header}>"),
@@ -6894,6 +6939,7 @@ def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> Non
                 "-Wextra",
                 "-Werror",
                 f"-I{include_root}",
+                f"-I{source_authority / 'molt' / 'shared'}",
                 "-fsyntax-only",
                 str(source),
             ],
@@ -6938,6 +6984,92 @@ def test_l7_numeric_headers_expose_one_external_authority(tmp_path: Path) -> Non
             line.startswith("extern ") and symbol in line
             for line in source_overlay.splitlines()
         ), symbol
+
+
+@pytest.mark.parametrize(
+    ("target", "pointer_width", "long_width"),
+    [
+        ("x86_64-unknown-linux-gnu", 8, 8),
+        ("aarch64-unknown-linux-gnu", 8, 8),
+        ("x86_64-apple-darwin", 8, 8),
+        ("aarch64-apple-darwin", 8, 8),
+        ("x86_64-pc-windows-msvc", 8, 4),
+        ("aarch64-pc-windows-msvc", 8, 4),
+        ("wasm32-unknown-unknown", 4, 4),
+    ],
+)
+def test_shared_c_data_model_target_compiler(
+    tmp_path: Path, target: str, pointer_width: int, long_width: int
+) -> None:
+    """Real target frontend proof, not an OS macro simulation or runtime claim.
+
+    Freestanding Clang provides its target limits/stdint/stddef headers without
+    requiring unrelated SDK libc headers. The installed shared primitives must
+    agree with both #if and C sizeof on each supported scalar model.
+    """
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for target C data-model compilation")
+    shared = Path(
+        shutil.copytree(ROOT / "include" / "molt" / "shared", tmp_path / "sdk")
+    )
+    source = tmp_path / "data_model.c"
+    source.write_text(
+        f"""#include <_c_data_model.h>
+#if SIZEOF_VOID_P != {pointer_width} || SIZEOF_LONG != {long_width}
+#error "wrong target model"
+#endif
+#if SIZEOF_INT != 4 || SIZEOF_LONG_LONG != 8 || SIZEOF_SIZE_T != {pointer_width}
+#error "wrong scalar model"
+#endif
+#if LONG_BIT != {long_width * 8}
+#error "wrong target long bits"
+#endif
+_Static_assert(SIZEOF_VOID_P == sizeof(void *), "pointer width");
+_Static_assert(SIZEOF_LONG == sizeof(long), "long width");
+_Static_assert(SIZEOF_INT == sizeof(int), "int width");
+_Static_assert(SIZEOF_LONG_LONG == sizeof(long long), "long long width");
+_Static_assert(SIZEOF_SIZE_T == sizeof(size_t), "size_t width");
+typedef intptr_t Py_ssize_t;
+typedef uint32_t digit;
+typedef struct {{ double real, imag; }} Py_complex;
+#include <_numeric_scalar_abi.h>
+#include <_gil_state_abi.h>
+_Static_assert(sizeof(PyObject) == 2 * SIZEOF_VOID_P, "object head");
+_Static_assert(offsetof(PyLongObject, long_value) == 2 * SIZEOF_VOID_P, "long head");
+_Static_assert(PyGILState_LOCKED == 0 && PyGILState_UNLOCKED == 1, "GIL enum");
+""",
+        encoding="utf-8",
+    )
+    command = [
+        clang,
+        f"--target={target}",
+        "-ffreestanding",
+        "-std=c11",
+        "-Werror",
+        f"-I{shared}",
+        "-fsyntax-only",
+        str(source),
+    ]
+    result = run_cli_test_process(command, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+    # A consumer-provided model must not silently override compiler facts.
+    # Exercise every public override on LLP64, where pointer != long is critical.
+    if target == "x86_64-pc-windows-msvc":
+        for macro in (
+            "SIZEOF_VOID_P",
+            "SIZEOF_INT",
+            "SIZEOF_LONG",
+            "SIZEOF_LONG_LONG",
+            "SIZEOF_SIZE_T",
+            "LONG_BIT",
+        ):
+            result = run_cli_test_process(
+                [*command, f"-D{macro}=1"], capture_output=True, text=True, check=False
+            )
+            assert result.returncode != 0
+            assert f"{macro} conflicts with the target C data model" in result.stderr
 
 
 def test_cpython_abi_tier_does_not_shadow_package_numpy_headers(

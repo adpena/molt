@@ -1897,7 +1897,15 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
-    path = shutil.which(requested)
+    if requested == "wasm-ld":
+        from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
+
+        try:
+            path = str(resolve_wasi_sdk_tool(ROOT, "wasm-ld", environ=dict(os.environ)))
+        except LlvmToolchainConfigError as exc:
+            raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
+    else:
+        path = shutil.which(requested)
     if path is None:
         return None
     probe_cwd, probe_directory = _toolchain_probe_cwd(policy)

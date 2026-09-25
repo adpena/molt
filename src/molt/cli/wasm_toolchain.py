@@ -246,6 +246,7 @@ def resolve_wasm_linker(
             sibling_directories = (sdk_root / "bin",)
     candidates = llvm_linker_candidates(
         "wasm-ld",
+        target_family="wasm",
         explicit_commands=explicit_commands,
         sibling_directories=sibling_directories,
         environment=environment,

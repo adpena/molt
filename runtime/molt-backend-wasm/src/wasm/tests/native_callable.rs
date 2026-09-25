@@ -1,6 +1,7 @@
 use super::support::*;
 use crate::wasm::test_execution::{
-    real_execution_tool, run_execution_command, run_node_test_script, wasm_test_temp_dir,
+    real_execution_tool, run_execution_command, run_node_test_script, wasm_ld_path,
+    wasm_test_temp_dir,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -9,12 +10,6 @@ use wasm_encoder::{
     CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, LinkingSection,
     Module, SymbolTable, TypeSection, ValType,
 };
-
-fn wasm_ld_path() -> PathBuf {
-    std::env::var_os("MOLT_WASM_LD")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("wasm-ld"))
-}
 
 #[test]
 fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
