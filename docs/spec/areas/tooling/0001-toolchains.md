@@ -194,6 +194,35 @@ support; shipping native runtimes use `release-output`/`release-size`, and WASM
 uses `wasm-release`. Select profiles explicitly rather than changing policy by
 launching Cargo from a different directory.
 
+Host and guest profiles are independent. The CLI defaults to the production
+`release` compiler for both guest `dev` and guest `release`; guest runtime Cargo
+overrides never select the host compiler. Compiler developers may explicitly use
+`MOLT_BACKEND_PROFILE=dev` (host `dev-fast`) or a host-specific
+`MOLT_{DEV,RELEASE}_BACKEND_CARGO_PROFILE` in a source checkout. Packaged compilers
+are immutable release inputs: unsupported features or host-profile overrides
+fail with a diagnostic rather than rebuilding/replacing the installed binary.
+The selected binary identity flows through cache keys, daemon/one-shot execution,
+native linking, build diagnostics, and the installed-consumer receipt.
+
+`tools/release/build_compiler.py` enforces the production host policy from the
+root manifest and pinned toolchain: developer profile/CPU flags and compiler
+wrappers cannot change the distributed compiler. Cargo configuration that
+overrides this policy is rejected, not silently combined with it. The installed
+consumer runs the shipped launcher for both guest profiles and binds each
+build/run command and compiler identity into admission; Windows also exercises
+PowerShell help. That additional launcher check is not a second native/WASM
+semantic matrix. Source and transport fixtures do not establish release acceptance.
+
+The shipped bootstrap consumes the committed `uv.lock` directly with a frozen uv
+sync, preserving artifact hashes and Python/platform markers. It verifies the
+wheel and lock inputs first, then installs only the bundled wheel using uv's
+hash-required, dependency-free installer. Environment generations are keyed by
+release inputs and interpreter identity under `MOLT_HOME`; uv owns creation,
+locking and warm reuse. The dependency sync is inexact only to retain that
+separately installed wheel in this private environment. Ambient project and uv
+resolver/install overrides cannot select another dependency closure. There is no
+exported-requirements resolver or independent Molt venv/locking implementation.
+
 Development dependency symbols have one Cargo-native owner:
 `[profile.dev.package."*"] debug = 0`. The wildcard covers non-workspace
 dependencies, including external path dependencies and future additions; it

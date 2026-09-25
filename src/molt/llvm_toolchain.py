@@ -18,6 +18,7 @@ import tomllib
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from molt.source_root import compiler_source_root
 from molt.file_hashing import content_change_time_ns
 from molt.file_publication import staged_file_path
 from molt.llvm_linker_roles import (
@@ -244,9 +245,7 @@ def llvm_architecture_contract_path(root: Path) -> Path:
 
 
 def llvm_release_manifest_path(root: Path | None = None) -> Path:
-    resolved_root = (
-        root.resolve() if root is not None else Path(__file__).resolve().parents[2]
-    )
+    resolved_root = root.resolve() if root is not None else compiler_source_root()
     return resolved_root / "config" / "llvm_toolchain_releases.toml"
 
 
@@ -2235,7 +2234,7 @@ def project_llvm_toolchain_environment(
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return compiler_source_root()
 
 
 def main(argv: list[str] | None = None) -> int:

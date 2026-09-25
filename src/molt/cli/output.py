@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import Any, TextIO
+
+from molt.cli import progress
 
 
 JSON_SCHEMA_VERSION = "1.0"
 CliFailure = int
+
+
+def success(message: str, *, file: TextIO | None = None) -> None:
+    """Emit human success text without crossing JSON or quiet presentation."""
+    progress.finish()
+    if progress.success_is_visible():
+        print(message, file=file)
 
 
 def emit_json(payload: dict[str, Any], json_output: bool) -> None:
@@ -40,6 +49,7 @@ def fail(
     *,
     data: dict[str, Any] | None = None,
 ) -> int:
+    progress.finish()
     if json_output:
         failure_data = dict(data or {})
         # The process return code is owned by this failure authority; structured

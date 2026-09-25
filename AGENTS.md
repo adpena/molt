@@ -61,6 +61,9 @@ tests, measurements, and explicit user direction over stale prose.
   Gate only on demonstrated capability, correctness, or performance—not on
   implementation convenience. Unsupported cells fail early with useful
   diagnostics.
+- Portability covers compiler/runtime, CLI, tests, build/release tooling, and
+  developer apparatus alike; host-specific assumptions must not leak into
+  target semantics or shared infrastructure.
 
 ## Performance is part of correctness
 
@@ -130,6 +133,10 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Verify the claim, not the ritual
 
+- Tests must distinguish correct behavior from a plausible defect using an
+  independent oracle. Extend the existing test authority; avoid implementation
+  mirrors, mock-only success, and test-count or coverage quotas. When adding or
+  reviewing tests, use `docs/spec/areas/testing/0007-testing.md` for test quality.
 - Prove the exact changed contract first, then widen in proportion to the claim.
   Use focused static checks, unit tests, differential tests, integration tests,
   target execution, profiling, and benchmarks as appropriate.

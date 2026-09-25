@@ -17,6 +17,7 @@ from molt.cli.binary_image_analysis import (
 )
 from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
 from molt.cli.command_runtime import _run_completed_command
+from molt.cli.output import success as _success
 from molt.cli.extension_manifest import _cpu_baseline
 from molt.cli.models import _StagedExternalPackageNativeArtifact
 from molt.cli.llvm_wasi_tools import llvm_tool_candidates
@@ -539,7 +540,7 @@ def _emit_native_link_result(
                 json_output=json_output,
             )
         else:
-            print(f"Successfully built {output_binary}", file=sys.stderr)
+            _success(f"Successfully built {output_binary}", file=sys.stderr)
     else:
         if json_output:
             cache_info = _build_cache_info(
@@ -690,7 +691,7 @@ def _emit_non_native_build_result(
         )
     else:
         for message in success_messages:
-            print(message)
+            _success(message)
     _emit_build_diagnostics_if_present(
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,

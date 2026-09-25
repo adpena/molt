@@ -8,11 +8,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[3]
-SPEC_PATH = ROOT / "docs/spec/areas/compiler/0100_MOLT_IR.md"
-FRONTEND_SOURCE_ROOT = ROOT / "src/molt/frontend"
-NATIVE_BACKEND_SOURCE_ROOT = ROOT / "runtime/molt-backend-native/src/native_backend"
-WASM_BACKEND_SOURCE_ROOT = ROOT / "runtime/molt-backend-wasm/src"
+from molt.source_root import compiler_source_root
+
+# Writable differential evidence retains its existing output authority.
+_DEFAULT_DIFF_ROOT = Path(__file__).resolve().parents[3]
 
 ALIASES: dict[str, list[str]] = {
     "ConstInt": ["CONST", "CONST_BIGINT"],
@@ -366,8 +365,9 @@ def check_semantic_assertions(
 
 
 def check_required_diff_probes(
-    root: Path = ROOT, required_probes: tuple[str, ...] = REQUIRED_DIFF_PROBES
+    root: Path | None = None, required_probes: tuple[str, ...] = REQUIRED_DIFF_PROBES
 ) -> list[str]:
+    root = root if root is not None else compiler_source_root()
     return [rel_path for rel_path in required_probes if not (root / rel_path).exists()]
 
 
@@ -379,7 +379,7 @@ def _default_diff_root() -> Path:
     raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
-    return ROOT
+    return _DEFAULT_DIFF_ROOT
 
 
 def _load_rss_metrics(path: Path) -> list[dict[str, Any]]:
@@ -504,12 +504,17 @@ def _read_production_source_tree(root: Path, suffix: str) -> str:
 
 
 def _read_backend_texts() -> tuple[str, str, str, str]:
-    spec_text = SPEC_PATH.read_text(encoding="utf-8")
-    frontend_text = _read_production_source_tree(FRONTEND_SOURCE_ROOT, ".py")
-    native_backend_text = _read_production_source_tree(
-        NATIVE_BACKEND_SOURCE_ROOT, ".rs"
+    root = compiler_source_root()
+    spec_text = (root / "docs/spec/areas/compiler/0100_MOLT_IR.md").read_text(
+        encoding="utf-8"
     )
-    wasm_backend_text = _read_production_source_tree(WASM_BACKEND_SOURCE_ROOT, ".rs")
+    frontend_text = _read_production_source_tree(root / "src/molt/frontend", ".py")
+    native_backend_text = _read_production_source_tree(
+        root / "runtime/molt-backend-native/src/native_backend", ".rs"
+    )
+    wasm_backend_text = _read_production_source_tree(
+        root / "runtime/molt-backend-wasm/src", ".rs"
+    )
     return spec_text, frontend_text, native_backend_text, wasm_backend_text
 
 
@@ -599,7 +604,11 @@ def run_default_verify_checks(
             "name": "ir-inventory",
             "status": "error" if inventory_messages else "ok",
             "findings": _build_findings(
-                "ir-inventory", inventory_messages, artifact=str(SPEC_PATH)
+                "ir-inventory",
+                inventory_messages,
+                artifact=str(
+                    compiler_source_root() / "docs/spec/areas/compiler/0100_MOLT_IR.md"
+                ),
             ),
         }
     )
@@ -612,7 +621,7 @@ def run_default_verify_checks(
             "findings": _build_findings(
                 "semantic-assertions",
                 semantic_failures,
-                artifact=str(FRONTEND_SOURCE_ROOT),
+                artifact=str(compiler_source_root() / "src/molt/frontend"),
             ),
         }
     )

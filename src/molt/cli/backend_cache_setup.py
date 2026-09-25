@@ -26,7 +26,6 @@ from molt.cli.backend_cache import (
     _try_cached_backend_candidates,
 )
 from molt.cli.backend_execution import (
-    _backend_bin_path,
     _backend_binary_identity,
     _backend_codegen_env_digest,
     _backend_features_for_build_target,
@@ -298,6 +297,7 @@ def _build_cache_variant(
 
 def _prepare_backend_cache_setup(
     *,
+    backend_bin: Path,
     cache_enabled: bool,
     ir: Mapping[str, Any],
     target: str,
@@ -353,11 +353,6 @@ def _prepare_backend_cache_setup(
     stage_start = time.perf_counter()
     backend_features = _backend_features_for_build_target(
         target=target, is_wasm=is_wasm
-    )
-    backend_bin = _backend_bin_path(
-        project_root,
-        backend_cargo_profile,
-        backend_features,
     )
     backend_binary_identity = _backend_binary_identity(backend_bin)
     _record_backend_cache_stage_ms(

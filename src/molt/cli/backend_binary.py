@@ -47,6 +47,7 @@ from molt.cli.setup_readiness import (
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.llvm_toolchain import LlvmToolchainConfigError, required_llvm_backend_pin
 from molt.exact_json import canonical_json_sha256, read_exact
+from molt.compiler_distribution import installed_compiler
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -333,6 +334,24 @@ def _ensure_backend_binary(
     backend_features: tuple[str, ...],
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendBinaryEnsureResult:
+    # Installed compilers are immutable release inputs, never Cargo outputs.
+    # Admit before every developer skip/hydration/rebuild path.
+    try:
+        installed = installed_compiler(project_root)
+        if installed is not None:
+            if backend_bin != installed.binary:
+                raise ValueError(
+                    "Selected compiler differs from the installed compiler"
+                )
+            identity = installed.verify_binary(backend_features, cargo_profile)
+            return _BackendBinaryEnsureResult(
+                ok=True,
+                cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(
+                    {"hash": installed.source_sha}, identity
+                ),
+            )
+    except (OSError, ValueError) as exc:
+        return _backend_ensure_failure("installed_compiler", str(exc))
     # MOLT_SKIP_RUNTIME_REBUILD=1 also skips the backend fingerprint check.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if backend_bin.exists():

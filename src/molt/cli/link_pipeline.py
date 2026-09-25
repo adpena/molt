@@ -18,8 +18,6 @@ from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.backend_cache import (
     _stage_shared_stdlib_object_for_link,
 )
-from molt.cli.backend_execution import _backend_bin_path
-from molt.cli.cargo_profiles import _resolve_backend_cargo_profile_name
 from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _run_completed_command,
@@ -195,6 +193,7 @@ def _validate_darwin_link_output(
 def _prepare_native_link(
     *,
     output_artifact: Path,
+    backend_bin: Path,
     resolved_capability_policy: ResolvedRuntimePolicy,
     artifacts_root: Path,
     json_output: bool,
@@ -385,8 +384,6 @@ def _prepare_native_link(
             # the backend is rebuilt, which changes how .o files are generated.
             # Even if the .o content is identical (TIR cache), the binary must
             # be relinked because the runtime library was also rebuilt.
-            backend_cargo_profile, _ = _resolve_backend_cargo_profile_name(profile)
-            backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
             deps = [
                 resolved_runtime_lib,
                 output_obj,

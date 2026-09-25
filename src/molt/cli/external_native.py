@@ -12,6 +12,7 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
+from molt.source_root import compiler_source_root
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_IMPORT_REGISTRY,
@@ -741,7 +742,7 @@ def _wasm_relocatable_external_symbols(
 
 
 def _molt_root_for_external_native_scan() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return compiler_source_root()
 
 
 def _c_api_scan_header_for_manifest(

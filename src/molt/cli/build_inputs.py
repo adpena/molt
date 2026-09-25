@@ -535,7 +535,7 @@ def _prepare_build_config(
     if timeout_err:
         return None, _fail(timeout_err, json_output, command="build")
 
-    backend_profile, profile_err = _resolve_backend_profile(profile)
+    backend_profile, profile_err = _resolve_backend_profile()
     if profile_err:
         return None, _fail(profile_err, json_output, command="build")
     runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)

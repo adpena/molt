@@ -36,6 +36,7 @@ from molt.cli.extension_seal import extension_seal
 from molt.cli.maintenance import clean, show_config
 from molt.cli.models import BuildProfile
 from molt.cli.output import fail as _fail
+from molt.cli.progress import present_build
 from molt.cli.package_distribution import package, publish, verify
 from molt.cli.package_registry import _is_remote_registry
 from molt.cli.queue_cli import handle_queue_command
@@ -95,6 +96,13 @@ def _dispatch_entrypoint_command(
         return handle_queue_command(args)
 
     if args.command == "build":
+        build_fn = present_build(
+            build_fn,
+            mode=getattr(args, "progress", "auto"),
+            headless=getattr(args, "headless", False),
+            quiet=getattr(args, "quiet", False),
+            json_output=args.json,
+        )
         target = args.target or build_cfg.get("target") or "native"
         codec = args.codec or build_cfg.get("codec") or "msgpack"
         type_hints = args.type_hints or build_cfg.get("type_hints") or "check"
@@ -653,7 +661,22 @@ def _dispatch_entrypoint_command(
             deterministic_warn,
         )
     if args.command == "run":
+        presentation = {
+            "mode": getattr(args, "progress", "auto"),
+            "headless": getattr(args, "headless", False),
+            "quiet": getattr(args, "quiet", False),
+            "json_output": args.json,
+        }
+        run_script = present_build(_script_commands.run_script, **presentation)
+        run_cross = present_build(_script_commands._run_script_cross, **presentation)
         build_args = _strip_leading_double_dash(args.build_arg)
+        if getattr(args, "quiet", False):
+            build_args.append("--quiet")
+        if getattr(args, "headless", False):
+            build_args.append("--headless")
+        progress_mode = getattr(args, "progress", "auto")
+        if progress_mode != "auto":
+            build_args.extend(("--progress", progress_mode))
         if args.rebuild and not _build_args_has_cache_flag(build_args):
             build_args.append("--no-cache")
         # Forward --backend to the build subprocess when specified.
@@ -693,7 +716,7 @@ def _dispatch_entrypoint_command(
             # Inject --target into build_args so run_script_cross handles it
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", run_target])
-            return _script_commands._run_script_cross(
+            return run_cross(
                 run_target,
                 args.file,
                 args.module,
@@ -715,7 +738,7 @@ def _dispatch_entrypoint_command(
             # MLIR target: build to get MLIR text (no JIT in run mode yet).
             if not any(a.startswith("--target") for a in build_args):
                 build_args.extend(["--target", "mlir"])
-            return _script_commands._run_script_cross(
+            return run_cross(
                 run_target,
                 args.file,
                 args.module,
@@ -733,7 +756,7 @@ def _dispatch_entrypoint_command(
                 io_mode=getattr(args, "io_mode", None),
                 type_gate=getattr(args, "type_gate", False),
             )
-        return _script_commands.run_script(
+        return run_script(
             args.file,
             args.module,
             _strip_leading_double_dash(args.script_args),

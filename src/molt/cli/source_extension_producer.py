@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion
+from molt.source_root import compiler_source_root
 from molt.cli.source_build_inventory import SourceBuildInventory
 
 from molt.cli import extension_commands
@@ -156,7 +157,6 @@ from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt import process_guard
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
 _GENERATED_INPUT_SUFFIXES = {
     ".c",
     ".cc",
@@ -638,7 +638,7 @@ def _run_locked_source_extension_producer(
         str(environment.python_executable)
     )
     child_environment = os.environ.copy()
-    current_src = str((_REPO_ROOT / "src").resolve())
+    current_src = str((compiler_source_root() / "src").resolve())
     child_environment["PYTHONPATH"] = current_src
     child_environment.pop("PYTHONHOME", None)
     child_environment["PYTHONNOUSERSITE"] = "1"
@@ -649,7 +649,7 @@ def _run_locked_source_extension_producer(
     )
     return process_guard.run_completed_command(
         argv,
-        cwd=_REPO_ROOT,
+        cwd=compiler_source_root(),
         env=child_environment,
         check=False,
     ).returncode
@@ -1080,7 +1080,7 @@ def _audit_producer_contract(
     expected_target_python: TargetPythonVersion,
     expected_package_version: str,
 ) -> None:
-    current_abi = _default_molt_c_api_version(_REPO_ROOT)
+    current_abi = _default_molt_c_api_version(compiler_source_root())
     expected = {
         "deterministic": True,
         "loader_kind": "libmolt_source",
@@ -1962,7 +1962,7 @@ def _producer_location_roots(
         if isinstance(wasi_sysroot, str) and wasi_sysroot:
             roots.append((Path(wasi_sysroot), "@wasi-sysroot"))
     roots.extend(toolchain_prefixes)
-    roots.append((_REPO_ROOT, "@molt"))
+    roots.append((compiler_source_root(), "@molt"))
     roots.append((PurePosixPath(MESON_INSTALL_PREFIX), "@install-prefix"))
     # Deduplicate by real directory but keep the spelling the producer was
     # handed: the canonicalizer neutralizes both the lexical and the resolved
@@ -2298,13 +2298,15 @@ def _build_source_extension_set(
             if candidate_mode:
                 invocation = replace(invocation, candidate_output=str(destination))
         locked_environment = source_build_environment(
-            _REPO_ROOT, extension_set.build_dependency_group, provision=False
+            compiler_source_root(),
+            extension_set.build_dependency_group,
+            provision=False,
         )
         if not prepared:
             locked_environment = prepare_source_extension_prerequisites(
                 extension_set,
                 source_root,
-                repo_root=_REPO_ROOT,
+                repo_root=compiler_source_root(),
                 planned_environment=locked_environment,
                 registry=registry,
             )
@@ -2319,7 +2321,7 @@ def _build_source_extension_set(
             )
         verify_source_extension_checkout(extension_set, source_root, registry=registry)
         submodules = _verify_recursive_submodules(source_root)
-        verify_source_extension_abi_headers(variant, repo_root=_REPO_ROOT)
+        verify_source_extension_abi_headers(variant, repo_root=compiler_source_root())
         destination = resolve_source_extension_destination(
             extension_set,
             variant=variant,
@@ -2442,7 +2444,7 @@ def _build_source_extension_set(
         publish_root.mkdir()
         metadata_root = transaction_root / "target-metadata"
         metadata, metadata_errors = _materialize_source_extension_target_metadata(
-            molt_root=_REPO_ROOT,
+            molt_root=compiler_source_root(),
             out_dir=metadata_root,
             target_plan=target_plan,
             python_version=variant.cpython,

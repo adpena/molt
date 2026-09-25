@@ -1027,6 +1027,7 @@ def test_prepare_native_link_resolves_runtime_alias_for_stdlib_profile(
     )
 
     prepared, error = cli_link_pipeline._prepare_native_link(
+        backend_bin=tmp_path / "molt-backend",
         output_artifact=output_obj,
         resolved_capability_policy=CapabilityManifest().resolve(),
         artifacts_root=artifacts_root,

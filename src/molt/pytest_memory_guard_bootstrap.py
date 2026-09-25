@@ -16,6 +16,7 @@ import uuid
 
 from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.dx import checkout_custody
+from molt.source_root import compiler_source_root
 from molt.temporary_artifacts import guard_scratch
 from molt.process_spawn import (
     ProcessGroupKwargs,
@@ -31,6 +32,8 @@ from molt.memory_guard_paths import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+# Test/guard inputs follow source selection; writable custody remains separate.
+SOURCE_ROOT = compiler_source_root()
 PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
 WINDOWS_PYTEST_CACHE_DIR_NAME = "pytest-cache"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
@@ -49,8 +52,8 @@ PYTEST_GUARD_PLUGIN_NAMES = frozenset(
         "molt.pytest_memory_guard_config_plugin",
     }
 )
-SAFE_CONF_CUT_DIRS = frozenset({ROOT, ROOT / "tests"})
-SAFE_CONFIG_FILES = frozenset({ROOT / "pyproject.toml"})
+SAFE_CONF_CUT_DIRS = frozenset({SOURCE_ROOT, SOURCE_ROOT / "tests"})
+SAFE_CONFIG_FILES = frozenset({SOURCE_ROOT / "pyproject.toml"})
 PYTHON_OPTIONS_WITH_ARGUMENT = frozenset({"-W", "-X"})
 MAX_CURRENT_TEST_TEXT = 4096
 _ATOMIC_REPLACE = os.replace
@@ -73,7 +76,7 @@ def _bind_confirmed_test_repository() -> None:
     Importing this package or its sitecustomize entry point must not turn the
     entire checkout (including artifacts) into an ordinary Python import root.
     """
-    root = str(ROOT)
+    root = str(SOURCE_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
 
@@ -458,7 +461,9 @@ def _repo_pytest_addopts() -> tuple[str, ...]:
     try:
         import tomllib
 
-        payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        payload = tomllib.loads(
+            (SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        )
     except (OSError, tomllib.TOMLDecodeError):
         return ()
     tool = payload.get("tool")
@@ -593,7 +598,7 @@ def _guard_pid_from_env(environ: Mapping[str, str]) -> int | None:
 
 
 def _command_is_repo_memory_guard(command: str) -> bool:
-    guard_path = str(ROOT / "tools" / "memory_guard.py")
+    guard_path = str(SOURCE_ROOT / "tools" / "memory_guard.py")
     return guard_path in command or "tools/memory_guard.py" in command
 
 
@@ -634,7 +639,7 @@ def _active_guard_marker_valid(
         return False
     try:
         return Path(guard_path).resolve(strict=False) == (
-            ROOT / "tools" / "memory_guard.py"
+            SOURCE_ROOT / "tools" / "memory_guard.py"
         ).resolve(strict=False)
     except OSError:
         return False
@@ -719,7 +724,7 @@ def outer_guard_argv(
     )
     return [
         sys.executable,
-        str(ROOT / "tools" / "memory_guard.py"),
+        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -753,7 +758,7 @@ def repo_test_script_invocation_args(
         script = Path.cwd() / script
     try:
         resolved = script.resolve()
-        tests_root = (ROOT / "tests").resolve()
+        tests_root = (SOURCE_ROOT / "tests").resolve()
         resolved.relative_to(tests_root)
     except (OSError, ValueError):
         return None
@@ -800,7 +805,7 @@ def repo_test_module_outer_guard_argv(
     )
     return [
         sys.executable,
-        str(ROOT / "tools" / "memory_guard.py"),
+        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -860,7 +865,7 @@ def repo_test_script_outer_guard_argv(
     )
     return [
         sys.executable,
-        str(ROOT / "tools" / "memory_guard.py"),
+        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",

@@ -2138,4 +2138,22 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    for command_parser in (build_parser, run_parser):
+        command_parser.add_argument(
+            "--progress",
+            choices=("auto", "plain", "off"),
+            default="auto",
+            help="Build progress: terminal animation, plain phase lines, or off.",
+        )
+        command_parser.add_argument(
+            "--headless",
+            action="store_true",
+            help="Use plain build progress without terminal control codes.",
+        )
+        command_parser.add_argument(
+            "-q",
+            "--quiet",
+            action="store_true",
+            help="Hide build progress and success messages; retain errors.",
+        )
     return parser

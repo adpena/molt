@@ -13,12 +13,12 @@ from typing import Any
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.source_root import compiler_source_root
 
 
 _CLI_PACKAGE_ROOT = Path(__file__).resolve().parent
 _MOLT_PACKAGE_ROOT = _CLI_PACKAGE_ROOT.parent
 _SRC_ROOT = _MOLT_PACKAGE_ROOT.parent
-_COMPILER_ROOT = _SRC_ROOT.parent
 _RUSTC_VERSION_CACHE_SCHEMA_VERSION = 1
 _GIT_CLEAN_SOURCE_STATE_SCHEMA_VERSION = 1
 _GIT_CLEAN_PATHSPEC_SOURCE_STATE_SCHEMA_VERSION = 1
@@ -26,7 +26,7 @@ _GIT_CLEAN_SOURCE_STATUS_TIMEOUT_SEC = 5.0
 
 
 def _compiler_root() -> Path:
-    return _COMPILER_ROOT
+    return compiler_source_root()
 
 
 def _compiler_python_source_root(project_root: Path) -> Path:
