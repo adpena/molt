@@ -244,7 +244,9 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
         }
         frame_stack_push_owned(_py, code_bits, binding.globals_bits, builtins_bits);
         TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(true));
-        code_bits
+        // The frame stack now owns the code edge; an owned-result sink must
+        // never receive that borrowed edge as the result of this mutator.
+        MoltObject::none().bits()
     })
 }
 

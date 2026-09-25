@@ -106,7 +106,11 @@ def _validate_wasm_structural(
         )
         return False
     try:
-        validate_data = context["_strip_debug_sections"](data) or data
+        # The validator may inspect a temporary debug-free view; publication
+        # still owns the only mutation of the artifact's debug sections.
+        validate_data = context["strip_wasm_publication_sections"](
+            data, final_artifact=False, preserve_debug=False
+        )
     except ValueError as exc:
         print(
             f"{description} debug-section stripping warning: {exc}; "

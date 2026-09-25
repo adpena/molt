@@ -643,7 +643,9 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         for bits in pending {
             dec_ref_bits(py, bits);
         }
-        assert_eq!(crate::molt_trace_enter_slot(0), original);
+        let entry_result = crate::molt_trace_enter_slot(0);
+        assert!(obj_from_bits(entry_result).is_none());
+        dec_ref_bits(py, entry_result);
         assert_eq!(
             FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
             original
@@ -725,6 +727,43 @@ fn invalid_compiled_namespace_is_diagnosed_without_publishing_an_invocation() {
 }
 
 #[test]
+fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let (_, code) = super::tests::alloc_test_code(py);
+        let globals = dict(py);
+        crate::molt_code_slots_init(1);
+        crate::molt_code_slot_set(0, code, globals);
+        let baseline = refs(code);
+        assert_eq!(baseline, 2, "caller and lexical code slot own the code");
+        for invoked in [false, true] {
+            for _ in 0..4 {
+                let invocation = invoked
+                    .then(|| FrameInvocationGuard::for_namespace(py, code, globals).unwrap());
+                let result = crate::molt_trace_enter_slot(0);
+                assert!(obj_from_bits(result).is_none());
+                // Every backend can discard this owned ABI result. The frame's
+                // code must remain retained independently of result disposal.
+                dec_ref_bits(py, result);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(refs(code), baseline + 1);
+                assert_eq!(
+                    FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
+                    code
+                );
+                dec_ref_bits(py, crate::molt_trace_exit());
+                drop(invocation);
+                assert_eq!(refs(code), baseline);
+                assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
+            }
+        }
+        for bits in [code, globals] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
 fn compiled_code_slot_identity_cannot_be_reassigned() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
@@ -736,7 +775,11 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
         assert!(crate::exception_pending(py));
         assert_eq!(compiled_slot_for_code(code), Some(0));
         crate::molt_exception_clear();
-        assert_eq!(crate::molt_trace_enter_slot(0), code);
+        assert!(obj_from_bits(crate::molt_trace_enter_slot(0)).is_none());
+        assert_eq!(
+            FRAME_STACK.with(|stack| stack.borrow().last().unwrap().code_bits),
+            code
+        );
         crate::molt_trace_exit();
         crate::molt_trace_enter_slot(1);
         assert!(crate::exception_pending(py));

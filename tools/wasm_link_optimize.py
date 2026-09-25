@@ -7,7 +7,6 @@ from collections.abc import Callable
 
 from molt.wasm_artifact import (
     skip_wasm_import_description as _parse_import_desc,
-    strip_wasm_publication_sections,
 )
 
 from wasm_link_edit import _strip_internal_exports
@@ -30,16 +29,6 @@ from wasm_link_format import (
     _write_string,
     _write_varuint,
 )
-
-
-def _strip_debug_sections(data: bytes) -> bytes | None:
-    """Compatibility wrapper over the canonical final-publication policy."""
-    stripped = strip_wasm_publication_sections(
-        data,
-        final_artifact=True,
-        preserve_debug=False,
-    )
-    return stripped if stripped != data else None
 
 
 def _fact_index_set(
@@ -800,10 +789,9 @@ def _post_link_optimize(
 ) -> bytes:
     """Apply post-link optimizations to reduce V8 compilation memory pressure.
 
-    This is the key fix for MOL-183/MOL-186: the linked artifact was
-    overwhelming V8 because of debug sections, internal exports, and
-    duplicate data.  Stripping them reduces the module size by 30-60%
-    which directly translates to less compilation memory.
+    Internal exports and duplicate data are removed here. Debug section
+    disposition belongs exclusively to final publication, after all linked
+    and split optimizer paths have completed.
 
     *reference_data*, when provided, is the original (pre-link) user module;
     its function exports are preserved through the internal-export strip.
@@ -811,10 +799,6 @@ def _post_link_optimize(
     preserved_export_names = set(preserve_exports or ())
     if preserve_reference_exports and reference_data is not None:
         preserved_export_names.update(_collect_function_exports(reference_data))
-
-    updated = _strip_debug_sections(data)
-    if updated is not None:
-        data = updated
 
     updated = _strip_internal_exports(
         data,

@@ -653,7 +653,8 @@ def run_wasm_ld_with_custodied_inputs(
             return 1
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
-        # Strip debug sections, internal exports, and report data duplicates.
+        # Reduce internal exports and data duplicates; the final publication
+        # policy alone decides whether to retain debug sections.
         # Pass the original user module as reference_data so the type-index
         # repair can use exact signature matching (Strategy 1) instead of
         # the heuristic body-scan fallback.
@@ -698,6 +699,7 @@ def run_wasm_ld_with_custodied_inputs(
                     set(api["_collect_function_exports"](linked_bytes))
                     & post_link_preserve_exports
                 ),
+                preserve_debug=preserve_debug_sections,
             ):
                 print("Required linked WASM optimization failed.", file=sys.stderr)
                 return 1
@@ -1018,6 +1020,7 @@ def run_wasm_ld_with_custodied_inputs(
                     reference_data=output_data,
                     optimize=optimize,
                     optimize_level=optimize_level,
+                    preserve_debug=preserve_debug_sections,
                     contract_keep_set=(
                         split_app_contract_keep_set | set(app_identity_exports)
                     ),
@@ -1165,6 +1168,7 @@ def run_wasm_ld_with_custodied_inputs(
                     canonical_required_exports,
                     facts_provider=facts_provider,
                     operation_counts=operation_counts,
+                    preserve_debug=preserve_debug_sections,
                 )
                 rt_stage.write_bytes(shaken_runtime)
             except Exception as exc:
@@ -1199,16 +1203,12 @@ def run_wasm_ld_with_custodied_inputs(
             max(0.0, (time.perf_counter() - validation_start) * 1000.0), 6
         )
         strip_start = time.perf_counter()
-        stripped_debug = api["_strip_debug_sections"](linked_bytes)
-        if stripped_debug is not None:
-            work_linked.write_bytes(stripped_debug)
-            linked_bytes = stripped_debug
         canonical_sections = api["_canonicalize_standard_section_order"](linked_bytes)
         if canonical_sections is not None:
             work_linked.write_bytes(canonical_sections)
             linked_bytes = canonical_sections
         published_linked = api["strip_wasm_publication_sections"](
-            work_linked.read_bytes(),
+            linked_bytes,
             final_artifact=True,
             preserve_debug=preserve_debug_sections,
         )

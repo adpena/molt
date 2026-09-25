@@ -79,6 +79,13 @@ Explicit and inherited builtin namespaces remain authoritative; initialization
 does not re-import `builtins` unconditionally or refill a mutated namespace.
 Generated annotation callables and module chunks run after this bootstrap.
 
+Cache publication borrows its name and module arguments and returns `None` on
+every successful path, including first-init-wins duplicate initialization.
+It never hands a borrowed cache entry to a caller as an owned result. Each
+cache or module-table slot retains its own reference; re-publishing an aliased
+entry acquires the replacement owner before releasing the old one. Native,
+WASM, intrinsic and C-API callers share this ownership contract.
+
 Module/code publication failures occur before any frame-entry attempt and must
 not exit the caller's frame. From the frame-entry attempt onward, failure cleanup
 balances that attempt exactly once, including a failed builtin capture that did
