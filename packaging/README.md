@@ -10,8 +10,8 @@ passed release acceptance. For a source-checkout install, use
 - `install.sh` / `install.ps1`: end-user installers (download + PATH setup).
 - `INSTALL.md`: bundled in release artifacts as offline install notes.
 - `templates/`: boilerplate for Homebrew, Scoop, and Winget.
-- `../config/release_supply_chain.toml`: sole repository, target-matrix, and pinned-download
-  authority used by release execution.
+- `../config/release_supply_chain.toml`: repository and pinned-download authority.
+- `../config/release_targets.toml`: canonical target matrix projected by release execution.
 
 ## Release workflow
 
@@ -45,7 +45,7 @@ signed release manifest. They do not rebuild, rehash, or republish artifacts.
 After a release, download `release_manifest.json` and run:
 
 ```bash
-uv run --python 3.12 python tools/release/update_manifests.py release_manifest.json
+uv run --python 3.12 python -m tools.release.update_manifests release_manifest.json
 ```
 
 Rendered files land in `packaging/out/` for copy/paste into external repos.

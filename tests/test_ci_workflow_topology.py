@@ -733,7 +733,9 @@ def test_checkouts_drop_persisted_credentials_and_permissions_are_bounded() -> N
         assert "\npermissions:\n  contents: read\n" in text, workflow
 
     release = _read(".github/workflows/release.yml")
-    assert release.count("contents: write") == 1
+    assert (
+        release.count("contents: write") == 2
+    )  # Draft read admission and protected promotion.
     assert release.count("id-token: write") == 1
     assert release.count("attestations: write") == 1
     assert release.count("artifact-metadata: write") == 1
@@ -1137,8 +1139,8 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     release_text = _read(".github/workflows/release.yml")
     perf_text = _read(".github/workflows/perf-gate.yml")
 
-    assert "push:" in release_text
-    assert "tags:" in release_text
+    assert "push:" not in release_text
+    assert 'test "$GITHUB_REF" = "refs/tags/$REQUESTED_VERSION"' in release_text
     assert "workflow_dispatch:" in release_text
     release_config = _read("config/release_targets.toml")
     assert "macos-15" in release_config

@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from molt.exact_json import canonical_json_sha256, loads_exact, write_exact
+from molt.exact_json import (
+    canonical_json_bytes,
+    canonical_json_sha256,
+    loads_exact,
+    write_exact,
+)
 from molt.toolchain_identity import stable_file_sha256
 from tools import legacy_inventory as li
 from tools import phase_exit_manifest as pem
@@ -84,6 +90,18 @@ def _receipt_payload(role: str, *, status: str = "PASS") -> dict[str, Any]:
     return {**common, "kind": role, "status": status}
 
 
+def test_real_h0_projection_uses_exact_release_bundle_e3_roles() -> None:
+    phase = pem.load_phases()["H0"]
+    matrix = pem.generated_matrix()
+    expanded = pem.expand_requirements(phase, matrix)
+    roles = {row.evidence_role for row in expanded}
+    assert roles == pem.reg._expected_evidence_roles()
+    for coordinate in matrix["include"]:
+        role = f"e3_verified_subset.{coordinate['id']}"
+        assert role in roles
+        assert pem._receipt_cells(role, {}) == (f"verified-subset:{coordinate['id']}",)
+
+
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     root = tmp_path / "repo"
@@ -107,7 +125,12 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     )
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    roles = ("e1_native", "e2_scoreboard", f"e3_{COORDINATE}", "e4_structural_audit")
+    roles = (
+        "e1_native",
+        "e2_scoreboard",
+        pem.reg.verified_subset_evidence_role(COORDINATE),
+        "e4_structural_audit",
+    )
     records = []
     for role in roles:
         path = bundle / "evidence" / f"{role}.json"
@@ -330,3 +353,257 @@ def test_live_registry_loads_and_h0_expands_over_the_generated_matrix() -> None:
     e3 = [r for r in expanded if r.evidence_role.startswith("e3_")]
     assert len(e3) == len(pem.generated_matrix()["include"]) >= 36
     assert len(pem.generated_matrix_digest()) == 64
+
+
+def _prepare(ws: dict[str, Any]) -> Path:
+    return pem.prepare_phase_signing_subject(
+        phase_id="T0",
+        commit=COMMIT,
+        bundle_manifest=ws["bundle"],
+        output=ws["out"].with_name("T0.subject.json"),
+        root=ws["root"],
+    )
+
+
+def _seal(
+    ws: dict[str, Any], subject: Path, attestation: Path
+) -> tuple[Path, pem.PhaseReport]:
+    return pem.seal_phase_manifest(
+        subject=subject,
+        attestation=attestation,
+        bundle_manifest=ws["bundle"],
+        output=ws["out"],
+        root=ws["root"],
+    )
+
+
+def test_signing_subject_bytes_have_one_canonical_identity(
+    workspace: dict[str, Any],
+) -> None:
+    output, report = _assemble(workspace)
+    assert report.green
+    manifest = loads_exact(output.read_text(encoding="utf-8"))
+    unsigned = {**manifest, "signed_attestation": None}
+    expected = canonical_json_bytes(unsigned)
+    assert pem.signing_subject_bytes(manifest) == expected
+    assert pem.signing_subject_bytes(unsigned) == expected
+    assert pem._manifest_bytes_sha256(manifest) == hashlib.sha256(expected).hexdigest()
+    assert manifest["signed_attestation"] is not None
+
+
+def test_prepare_publishes_exact_subject_but_never_waives_signature(
+    workspace: dict[str, Any],
+) -> None:
+    subject = _prepare(workspace)
+    payload = loads_exact(subject.read_text(encoding="utf-8"))
+    assert subject.read_bytes() == pem.signing_subject_bytes(payload)
+    assert not subject.read_bytes().endswith(b"\n")
+    assert payload["signed_attestation"] is None
+    report = pem.verify_phase_manifest(
+        subject,
+        release_commit=COMMIT,
+        bundle_manifest=workspace["bundle"],
+        root=workspace["root"],
+    )
+    assert not report.green
+    assert report.problems == ("signature: manifest carries no signed attestation",)
+
+
+def test_prepare_refuses_semantically_failing_subject(
+    workspace: dict[str, Any],
+) -> None:
+    path = workspace["bundle"].parent / "evidence/e1_native.json"
+    write_exact(path, _receipt_payload("e1_native", status="FAIL"))
+    with pytest.raises(ValueError, match="not ready"):
+        _prepare(workspace)
+    assert not workspace["out"].with_name("T0.subject.json").exists()
+
+
+def test_seal_uses_existing_subject_without_reprojection(
+    workspace: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subject = _prepare(workspace)
+    raw = subject.read_bytes()
+    attestation = _attest(subject)
+
+    def forbidden_projection(**_kwargs):
+        pytest.fail(
+            "seal attempted to replace the signed subject with a new projection"
+        )
+
+    monkeypatch.setattr(pem, "_project_phase_manifest", forbidden_projection)
+    output, report = _seal(workspace, subject, attestation)
+    assert report.green, report.problems
+    assert (
+        pem.signing_subject_bytes(loads_exact(output.read_text(encoding="utf-8")))
+        == raw
+    )
+    assert subject.read_bytes() == raw
+
+
+def test_seal_refuses_evidence_changed_after_prepare(workspace: dict[str, Any]) -> None:
+    subject = _prepare(workspace)
+    attestation = _attest(subject)
+    path = workspace["bundle"].parent / "evidence/e1_native.json"
+    payload = _receipt_payload("e1_native")
+    payload["command"] = "different command"
+    write_exact(path, payload)
+    with pytest.raises(
+        ValueError, match="bundle evidence bytes|current bundle projection"
+    ):
+        _seal(workspace, subject, attestation)
+    assert not workspace["out"].exists()
+    assert not list(workspace["out"].parent.glob(".molt-phase-seal-*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("command", "forged command"),
+        ("observed_at", "2026-09-24T00:00:00Z"),
+        ("toolchain_digest", "0" * 64),
+        ("matrix_cells", ["pact-witness:native:py312:cpython-abi", "invented"]),
+    ],
+)
+def test_even_resigned_rows_must_match_all_current_receipt_fields(
+    workspace: dict[str, Any], field: str, value: object
+) -> None:
+    subject = _prepare(workspace)
+    payload = loads_exact(subject.read_text(encoding="utf-8"))
+    payload["evidence"][0][field] = value
+    subject.write_bytes(pem.signing_subject_bytes(payload))
+    attestation = _attest(subject)
+    with pytest.raises(ValueError, match="current bundle projection"):
+        _seal(workspace, subject, attestation)
+    assert not workspace["out"].exists()
+
+
+def test_seal_refuses_noncanonical_unsigned_bytes(workspace: dict[str, Any]) -> None:
+    subject = _prepare(workspace)
+    attestation = _attest(subject)
+    subject.write_bytes(subject.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="canonical unsigned bytes"):
+        _seal(workspace, subject, attestation)
+    assert not workspace["out"].exists()
+
+
+def test_seal_refuses_an_already_attached_subject(workspace: dict[str, Any]) -> None:
+    output, report = _assemble(workspace)
+    assert report.green
+    payload = loads_exact(output.read_text(encoding="utf-8"))
+    subject = output.with_name("already-signed.json")
+    subject.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError, match="canonical unsigned bytes"):
+        _seal(workspace, subject, output.parent / "T0.sigstore.json")
+
+
+def test_seal_requires_adjacent_attestation(workspace: dict[str, Any]) -> None:
+    subject = _prepare(workspace)
+    attestation = _attest(subject)
+    foreign = subject.parent.parent / attestation.name
+    attestation.rename(foreign)
+    with pytest.raises(ValueError, match="adjacent"):
+        _seal(workspace, subject, foreign)
+    assert not workspace["out"].exists()
+
+
+def test_verify_rejects_non_adjacent_signature_path(workspace: dict[str, Any]) -> None:
+    _assemble(workspace)
+    _rewrite(
+        workspace,
+        lambda manifest: manifest["signed_attestation"].__setitem__(
+            "path", "../T0.sigstore.json"
+        ),
+    )
+    report = _verify(workspace)
+    assert not report.green
+    assert any(
+        "signature: attestation is unreadable" in problem for problem in report.problems
+    )
+
+
+def test_seal_refuses_signature_of_another_subject(workspace: dict[str, Any]) -> None:
+    subject = _prepare(workspace)
+    payload = loads_exact(subject.read_text(encoding="utf-8"))
+    other = subject.with_name("other.json")
+    other.write_bytes(pem.signing_subject_bytes({**payload, "commit": "c" * 40}))
+    attestation = _attest(other)
+    with pytest.raises(ValueError, match="does not bind these manifest bytes"):
+        _seal(workspace, subject, attestation)
+    assert not workspace["out"].exists()
+
+
+def test_prepare_requires_current_source_bound_bundle(
+    workspace: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        pem.reg,
+        "verify_release_bundle",
+        lambda *_args, **_kwargs: pem.reg.ReleaseGateReport(None, "PASS", True, ()),
+    )
+    with pytest.raises(ValueError, match="source_sha is not the release commit"):
+        _prepare(workspace)
+
+
+def test_seal_does_not_replace_existing_manifest(workspace: dict[str, Any]) -> None:
+    subject = _prepare(workspace)
+    attestation = _attest(subject)
+    workspace["out"].write_bytes(b"foreign output")
+    with pytest.raises(FileExistsError):
+        _seal(workspace, subject, attestation)
+    assert workspace["out"].read_bytes() == b"foreign output"
+
+
+def test_prepare_and_seal_cli_route_through_the_same_authority(
+    workspace: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prepare = pem.prepare_phase_signing_subject
+    seal = pem.seal_phase_manifest
+    monkeypatch.setattr(
+        pem,
+        "prepare_phase_signing_subject",
+        lambda **kwargs: prepare(**kwargs, root=workspace["root"]),
+    )
+    monkeypatch.setattr(
+        pem,
+        "seal_phase_manifest",
+        lambda **kwargs: seal(**kwargs, root=workspace["root"]),
+    )
+    subject = workspace["out"].with_name("T0.subject.json")
+    assert (
+        pem.main(
+            [
+                "prepare",
+                "--phase",
+                "T0",
+                "--commit",
+                COMMIT,
+                "--release-exit-manifest",
+                str(workspace["bundle"]),
+                "--output",
+                str(subject),
+            ]
+        )
+        == 0
+    )
+    assert "PREPARED (unsigned, not phase green)" in capsys.readouterr().out
+    attestation = _attest(subject)
+    assert (
+        pem.main(
+            [
+                "seal",
+                "--subject",
+                str(subject),
+                "--attestation",
+                str(attestation),
+                "--release-exit-manifest",
+                str(workspace["bundle"]),
+                "--output",
+                str(workspace["out"]),
+            ]
+        )
+        == 0
+    )
+    assert "T0 GREEN" in capsys.readouterr().out
