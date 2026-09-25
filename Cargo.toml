@@ -109,6 +109,34 @@ debug = 0
 opt-level = 1
 debug = 0
 
+# Preserve the compiler's policy across crate extraction. These shared IR,
+# pass, ABI, publication, and WASM implementation crates originated in the
+# optimized backend; workspace membership must not silently reset them to O0.
+# dev-fast and test inherit this policy without a second package list.
+[profile.dev.package.molt-backend-wasm]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-tir]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-passes]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-ir]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-codegen-abi]
+opt-level = 1
+debug = 0
+
+[profile.dev.package.molt-artifact-publish]
+opt-level = 1
+debug = 0
+
 [profile.dev.package.cranelift-codegen]
 opt-level = 1
 
