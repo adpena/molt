@@ -6,6 +6,7 @@ from pathlib import Path
 
 import harness_memory_guard
 import bench_wasm
+from molt.node_runtime import resolve_node_runtime
 
 
 def _resolve_bench(spec: str) -> str:
@@ -28,7 +29,13 @@ def _run_node_profile(
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> bool:
     try:
-        node_bin = bench_wasm.resolve_node_binary()
+        node_bin = str(
+            resolve_node_runtime(
+                source_root=bench_wasm.REPO_ROOT,
+                environment=env,
+                guard_prefix="MOLT_BENCH",
+            ).path
+        )
     except RuntimeError as exc:
         print(f"Node resolver error: {exc}", file=sys.stderr)
         return False

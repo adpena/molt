@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -23,7 +22,7 @@ from molt.scientific_stack_versions import (
     scientific_witness_seal_root,
     scientific_witness_variant,
 )
-from molt.tool_releases import pinned_executable
+from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
 from molt.wasm_artifact import wasm_runtime_manifest_entry_path
 
 try:
@@ -206,18 +205,18 @@ def _iteration_mode() -> bool:
 
 
 def _node_bin() -> str:
-    requested = os.environ.get("MOLT_NODE_BIN", "").strip()
-    if requested:
-        return requested
-    # The pinned release under custody first (what the proof-queue lane runs),
-    # then the host's Node.
-    pinned = pinned_executable("node", ROOT)
-    if pinned is not None:
-        return str(pinned)
-    found = shutil.which("node")
-    if found:
-        return found
-    raise SystemExit("node is required to execute the Pact witness WASM artifact")
+    try:
+        return str(
+            resolve_node_runtime(
+                source_root=ROOT,
+                environment=os.environ,
+                guard_prefix="MOLT_CROSS",
+            ).path
+        )
+    except NodeRuntimeError as exc:
+        raise SystemExit(
+            f"node is required to execute the Pact witness WASM artifact: {exc}"
+        ) from exc
 
 
 def _assert_owned_tmp(path: Path) -> Path:

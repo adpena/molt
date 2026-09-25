@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import molt.cli as cli
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import typecheck as cli_typecheck
@@ -99,70 +100,76 @@ def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
     assert captured["kwargs"]["timeout"] == 12.0
 
 
-def test_rustup_target_install_uses_build_memory_guard(monkeypatch) -> None:
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((cmd, kwargs))
-        if cmd[1:] == ["target", "list", "--installed"]:
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return subprocess.CompletedProcess(cmd, 0, "installed", "")
-
-    monkeypatch.setattr(
-        SETUP_READINESS.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}",
-    )
-    monkeypatch.setattr(WASM_TOOLCHAIN, "_run_completed_command", fake_run)
-
-    warnings: list[str] = []
-    assert cli._ensure_rustup_target("wasm32-wasip1", warnings) is True
-    assert warnings == []
-    assert calls[0][0] == ["/usr/bin/rustup", "target", "list", "--installed"]
-    assert calls[1][0] == ["/usr/bin/rustup", "target", "add", "wasm32-wasip1"]
-    assert calls[0][1]["memory_guard_prefix"] == "MOLT_BUILD"
-    assert calls[1][1]["memory_guard_prefix"] == "MOLT_BUILD"
-
-
-def test_root_pinned_rustup_target_install_uses_checked_in_toolchain(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "target", ["wasm32-wasip1", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+)
+def test_rust_target_readiness_is_source_bound_guarded_and_non_mutating(
+    monkeypatch, tmp_path: Path, target: str
 ) -> None:
+    inputs = WASM_TOOLCHAIN.wasm_link_inputs
+    source = tmp_path / "compiler source"
+    source.mkdir()
+    (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="9.8.7"\n')
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    monkeypatch.chdir(guest)
+    rustc = tmp_path / "rustc"
+    rustc.write_bytes(b"selected compiler")
+    libdir = tmp_path / "selected target lib"
+    libdir.mkdir()
+    # Another installed compiler must not satisfy the selected compiler's target.
+    other = tmp_path / "rustup/toolchains/9.8.7-other/lib/rustlib" / target / "lib"
+    other.mkdir(parents=True)
+    (other / "libstd-other.rlib").write_bytes(b"other standard library")
+    monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "rustup"))
+    monkeypatch.setattr(inputs, "find_executable", lambda *args, **kwargs: rustc)
+
+    def resolve(selected, *, role, root, env):
+        assert selected == rustc and role == "rustc" and root == source
+        return selected
+
+    monkeypatch.setattr(inputs, "resolve_rustup_proxy", resolve)
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((cmd, kwargs))
-        if cmd[1:3] == ["target", "list"]:
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return subprocess.CompletedProcess(cmd, 0, "installed", "")
+        assert cmd == [str(rustc), "--print", "target-libdir", "--target", target]
+        assert kwargs["cwd"] == source
+        assert kwargs["memory_guard_prefix"] == "MOLT_BUILD"
+        return subprocess.CompletedProcess(cmd, 0, str(libdir) + "\n", "")
 
-    monkeypatch.setattr(
-        SETUP_READINESS.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}",
-    )
-    monkeypatch.setattr(WASM_TOOLCHAIN, "_run_completed_command", fake_run)
+    monkeypatch.setattr(inputs, "_run_completed_command", fake_run)
+    inputs.clear_rust_target_libdir_cache()
+    missing = WASM_TOOLCHAIN.rust_target_readiness_error(target, root=source)
+    assert missing is not None
+    assert f"rustup target add {target} --toolchain 9.8.7" in missing
+    assert "No toolchains were installed or changed" in missing
+    std = libdir / "libstd-selected.rlib"
+    std.write_bytes(b"")
+    assert WASM_TOOLCHAIN.rust_target_readiness_error(target, root=source) == missing
+    std.write_bytes(b"standard library")
+    assert WASM_TOOLCHAIN.rust_target_readiness_error(target, root=source) is None
+    std.unlink()
+    assert WASM_TOOLCHAIN.rust_target_readiness_error(target, root=source) == missing
+    assert len(calls) == 1  # Query cache never caches library availability.
 
-    warnings: list[str] = []
-    assert cli._ensure_rustup_target("wasm32-wasip1", warnings, root=Path.cwd()) is True
-    assert warnings == []
-    assert calls[0][0] == [
-        "/usr/bin/rustup",
-        "target",
-        "list",
-        "--installed",
-        "--toolchain",
-        "1.96.1",
-    ]
-    assert calls[1][0] == [
-        "/usr/bin/rustup",
-        "target",
-        "add",
-        "wasm32-wasip1",
-        "--toolchain",
-        "1.96.1",
-    ]
-    assert calls[0][1]["cwd"] == Path.cwd()
-    assert calls[1][1]["cwd"] == Path.cwd()
+
+@pytest.mark.parametrize(
+    "failure",
+    [PermissionError("access denied"), subprocess.TimeoutExpired("rustc", 30)],
+)
+def test_rust_target_readiness_reports_failed_inspection(
+    monkeypatch, tmp_path, failure
+):
+    def inspect(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(WASM_TOOLCHAIN.wasm_link_inputs, "rust_target_libdir", inspect)
+    error = WASM_TOOLCHAIN.rust_target_readiness_error("wasm32-wasip1", root=tmp_path)
+    assert error is not None
+    assert "Cannot inspect Rust target wasm32-wasip1" in error
+    assert str(failure) in error
+    assert "No toolchains were installed or changed" in error
 
 
 def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
@@ -359,7 +366,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         target_triple=None,
-        config_digest=None,
+        config_digest="a" * 64,
         startup_timeout=1.0,
         json_output=True,
         warnings=[],
@@ -368,8 +375,6 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     assert ok is True
     assert captured["context"]["prefix"] == "MOLT_BUILD"
     assert captured["contexts"][0]["prefix"] == "MOLT_BUILD"
-    assert captured["run_calls"][0]["command"] == ["rustc", "-Vv"]
-    assert captured["run_calls"][0]["kwargs"]["capture_output"] is True
     assert captured["sentinel_kwargs"]["label"] == "backend_daemon_start"
     assert captured["sentinel_kwargs"]["drain_on_exit"] is False
     assert captured["popen_cmd"] == [

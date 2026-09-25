@@ -104,6 +104,8 @@ no progress chatter.
 Release bundles keep one immutable CLI/compiler source and a separate private
 dependency environment. `molt setup --install-cli-dependencies` explicitly
 authorizes dependency installation; normal launches do not install or repair it.
+Compilation and readiness checks do not install Rust targets either; missing
+toolchains produce actionable setup diagnostics for you to review and run.
 `molt doctor` identifies the active installation and competing PATH entries
 without changing them. See [binary installation](packaging/INSTALL.md).
 

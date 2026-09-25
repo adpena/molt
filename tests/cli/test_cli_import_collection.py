@@ -53,6 +53,7 @@ from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli import script_commands as cli_commands
+from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.cli import config_resolution as cli_config_resolution
 from molt.cli import external_native as cli_external_native
 from molt.cli import frontend_execution as cli_frontend_execution
@@ -9449,7 +9450,6 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         namespace_module_names=set(import_plan.namespace_module_names),
         module_source_catalog=analysis.module_source_catalog,
         is_wasm=True,
-        target_triple="wasm32-wasip1",
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         source_recompiled_external_packages=policy.native_artifact_source_packages,
@@ -19409,7 +19409,6 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
             module_sources={"entry": "print('ok')\n"},
         ),
         is_wasm=False,
-        target_triple=None,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         source_recompiled_external_packages=set(),
@@ -19467,7 +19466,6 @@ def test_prepare_frontend_lowering_config_skips_ty_for_source_recompiled_native_
             },
         ),
         is_wasm=True,
-        target_triple="wasm32-wasip1",
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         source_recompiled_external_packages={"scipy"},
@@ -25328,7 +25326,9 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     out_dir.mkdir()
     output_wasm = out_dir / "output.wasm"
     linked_wasm = out_dir / "output_linked.wasm"
+    manifest = out_dir / "manifest.json"
     linked_wasm.write_text("")
+    manifest.write_text("{}")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -25339,6 +25339,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
             "artifacts": {
                 "wasm": str(output_wasm),
                 "linked_wasm": str(linked_wasm),
+                "manifest": str(manifest),
             },
         },
     )
@@ -25362,12 +25363,18 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         cli_commands, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands.shutil, "which", lambda name: f"/usr/bin/{name}")
+    node_path = tmp_path / "node runtime"
+    monkeypatch.setattr(
+        cli_commands,
+        "resolve_node_runtime",
+        lambda **kwargs: NodeRuntime(node_path, "24.0.0", 24),
+    )
 
     rc = cli_commands._run_script_cross(
         "wasm",
         str(entry),
         None,
-        [],
+        ["--sample", "value"],
         build_args=["--out-dir", str(out_dir)],
         json_output=False,
     )
@@ -25381,9 +25388,64 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         "--json",
         "--out-dir",
         str(out_dir),
+        "--linked",
+        "--require-linked",
         str(entry),
     ]
-    assert seen_cmds[1] == ["/usr/bin/wasmtime", "run", str(linked_wasm), "--"]
+    assert seen_cmds[1] == [
+        str(node_path),
+        str(ROOT / "wasm" / "run_wasm.js"),
+        str(manifest),
+        "--sample",
+        "value",
+    ]
+
+
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        ["--no-linked"],
+        ["--no-require-linked"],
+        ["--split-runtime"],
+        ["--target", "native"],
+        ["--target=wasm-freestanding"],
+    ],
+)
+def test_wasm_run_rejects_incompatible_build_flags(build_args: list[str]) -> None:
+    with pytest.raises(ValueError, match="molt run --target wasm"):
+        cli_commands._wasm_run_build_args(build_args)
+
+
+def test_wasm_run_rejects_unavailable_node_before_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    entry = project / "demo.py"
+    entry.write_text("print('ok')\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
+    monkeypatch.setattr(cli_commands, "_find_molt_root", lambda start, cwd=None: ROOT)
+
+    def unavailable(**kwargs: object) -> NodeRuntime:
+        raise NodeRuntimeError("MOLT_NODE_BIN is invalid")
+
+    monkeypatch.setattr(cli_commands, "resolve_node_runtime", unavailable)
+    monkeypatch.setattr(
+        cli_commands,
+        "_run_wrapper_build",
+        lambda **kwargs: pytest.fail(
+            "unavailable Node must fail before compiler build"
+        ),
+    )
+
+    rc = cli_commands._run_script_cross("wasm", str(entry), None, [], json_output=False)
+
+    assert rc != 0
+    output = capsys.readouterr()
+    assert "MOLT_NODE_BIN is invalid" in output.out + output.err
 
 
 def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(

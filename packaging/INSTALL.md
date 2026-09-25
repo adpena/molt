@@ -74,6 +74,8 @@ option use the printed absolute executable path or adjust PATH yourself.
 
 1. Review and run `molt setup --install-cli-dependencies` to authorize CLI dependencies.
 2. Run `molt doctor` to inspect toolchains and installation ambiguity.
+   Builds and readiness checks never add Rust targets automatically. If a target
+   is missing, review and run the setup command in the diagnostic, then retry.
 3. Build and run with an explicit output:
 
 ```bash

@@ -164,6 +164,14 @@ molt run app.py -- --arg1 val            # Pass args to your script
 molt run --module mypackage              # Run a package
 ```
 
+The WASM run command requires linked output and its `manifest.json`, then
+executes the compiler-source Node runner against that manifest. It adds
+`--linked --require-linked` to the build; conflicting `--build-arg` values
+(`--no-linked`, `--no-require-linked`, `--split-runtime`, or another target)
+fail before compilation. Script arguments after `--` reach the WASI guest.
+Set `MOLT_NODE_BIN` to select a Node executable explicitly; otherwise Molt
+uses its provisioned pinned Node when available, then Node on `PATH`.
+
 | Flag | Description |
 |------|-------------|
 | `--target TARGET` | Build target: `native`, `wasm`, `luau`, `mlir`, or a target triple. |

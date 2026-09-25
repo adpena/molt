@@ -39,6 +39,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     copy_wasm_runtime_manifest_for_artifact,
     wasm_runtime_manifest_path,
@@ -547,20 +548,6 @@ def _measure_executable(
     )
 
 
-def _resolve_node_binary(env: dict[str, str]) -> str | None:
-    requested = env.get("MOLT_NODE_BIN", "").strip()
-    if requested:
-        return requested if Path(requested).exists() else None
-    for candidate in (
-        shutil.which("node"),
-        "/opt/homebrew/bin/node",
-        "/usr/local/bin/node",
-    ):
-        if candidate and Path(candidate).exists():
-            return candidate
-    return None
-
-
 def _node_runner_factory(node_bin: str) -> RunnerFactory:
     def runner(path: Path, _env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
         manifest = wasm_runtime_manifest_path(path)
@@ -674,10 +661,17 @@ def _measure_case_startup(
     if case.target == "wasm":
         if not WASM_RUNNER.exists():
             return {"runner": "node", "skipped": f"missing runner: {WASM_RUNNER}"}
-        node_bin = _resolve_node_binary(env)
-        if node_bin is None:
-            return {"runner": "node", "skipped": "node >=18 not found"}
-        runner = _node_runner_factory(node_bin)
+        try:
+            node = resolve_node_runtime(
+                source_root=ROOT, environment=env, guard_prefix="MOLT_BENCH"
+            )
+        except NodeRuntimeError as exc:
+            # An explicit MOLT_NODE_BIN is a measurement request, not optional
+            # runner discovery: report it as a failed run instead of a skip.
+            if env.get("MOLT_NODE_BIN", "").strip():
+                return {"runner": "node", "error": str(exc)}
+            return {"runner": "node", "skipped": str(exc)}
+        runner = _node_runner_factory(str(node.path))
         cold = _measure_cold_first_sighting(
             artifact,
             env=env,
@@ -687,6 +681,7 @@ def _measure_case_startup(
         )
         return {
             "runner": "node",
+            "node": {"path": str(node.path), "version": node.version},
             "cold_first_sighting": cold,
             "same_path": _measure_artifact(
                 artifact,
@@ -1174,8 +1169,11 @@ def format_report(report: dict[str, Any]) -> str:
         size = f"{artifact['bytes']} bytes ({artifact['mb']:.2f} MB)"
         startup = row.get("startup") or {}
         skipped = startup.get("skipped") if isinstance(startup, dict) else None
+        error = startup.get("error") if isinstance(startup, dict) else None
         if skipped:
             lines.append(f"  {label}: {size}; startup skipped: {skipped}")
+        elif error:
+            lines.append(f"  {label}: {size}; startup error: {error}")
         else:
             same = _case_startup_median(row, "same_path")
             page_cold = _case_startup_median(row, "page_cache_cold")

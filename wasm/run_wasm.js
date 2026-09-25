@@ -341,6 +341,7 @@ const createWasiContext = () => {
   };
   const contextWasi = new WASI({
     version: 'preview1',
+    args: ['molt', ...process.argv.slice(3)],
     env: wasmEnv,
     preopens,
   });

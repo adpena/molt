@@ -15,14 +15,52 @@ from molt.cli.wasm_host import (
     molt_wasm_host_exe_name,
     resolve_molt_wasm_host_binary,
 )
+from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.wasm_artifact import wasm_runtime_manifest_path
 
 
-def _require_node_binary() -> str:
-    node_bin = wasm_runner._select_node_binary()
-    if node_bin is None:
-        pytest.skip("Node >= 18 is required for explicit JS-runner coverage.")
-    return node_bin
+def test_require_node_binary_uses_shared_selector_with_test_guard(
+    monkeypatch, tmp_path: Path
+) -> None:
+    node = tmp_path / "node"
+    calls: list[dict[str, Any]] = []
+
+    def fake_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs)
+        return NodeRuntime(path=node, version="22.1.0", major=22)
+
+    monkeypatch.setattr(wasm_runner, "resolve_node_runtime", fake_resolve)
+
+    assert wasm_runner.require_node_binary() == str(node)
+    assert calls == [
+        {
+            "source_root": Path(wasm_runner.__file__).resolve().parents[1],
+            "guard_prefix": "MOLT_WASM_TEST",
+        }
+    ]
+
+
+def test_require_node_binary_skips_with_diagnostic_when_node_unavailable(
+    monkeypatch,
+) -> None:
+    def fake_resolve(**kwargs):  # type: ignore[no-untyped-def]
+        raise NodeRuntimeError("Node >= 18 is unavailable on PATH")
+
+    monkeypatch.delenv("MOLT_NODE_BIN", raising=False)
+    monkeypatch.setattr(wasm_runner, "resolve_node_runtime", fake_resolve)
+
+    with pytest.raises(pytest.skip.Exception, match="unavailable on PATH"):
+        wasm_runner.require_node_binary()
+
+
+def test_require_node_binary_fails_on_unusable_explicit_selection(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # The real selector rejects a missing explicit path before any probe runs.
+    monkeypatch.setenv("MOLT_NODE_BIN", str(tmp_path / "missing-node"))
+
+    with pytest.raises(pytest.fail.Exception, match="MOLT_NODE_BIN"):
+        wasm_runner.require_node_binary()
 
 
 def test_wasm_test_process_uses_memory_guard(monkeypatch, tmp_path: Path) -> None:
@@ -58,11 +96,13 @@ def test_wasm_test_process_preserves_timeout_semantics(
     monkeypatch, tmp_path: Path
 ) -> None:
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        return subprocess.CompletedProcess(
+        return wasm_runner.process_guard_common.harness_memory_guard.GuardedCompletedProcess(
             cmd,
             wasm_runner.process_guard_common.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE,
             stdout="partial",
             stderr="memory_guard: timeout after 2.00s\n",
+            elapsed_s=2.0,
+            timed_out=True,
         )
 
     monkeypatch.setattr(
@@ -486,7 +526,7 @@ def test_run_wasm_linked_does_not_require_runtime_sidecar_when_linked(
     # flushing in one host must not hide missing teardown in the other.
     node = wasm_runner._run_wasm_test_process(
         [
-            _require_node_binary(),
+            wasm_runner.require_node_binary(),
             "wasm/run_wasm.js",
             str(wasm_runtime_manifest_path(output_wasm)),
         ],
@@ -521,7 +561,7 @@ def test_run_wasm_direct_bootstraps_split_runtime_before_main(
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     wasm_runner.require_wasm_build_toolchain()
-    node_bin = _require_node_binary()
+    node_bin = wasm_runner.require_node_binary()
     src = tmp_path / "direct_bootstrap.py"
     src.write_text("import abc\nprint('after')\n", encoding="utf-8")
 
@@ -573,7 +613,7 @@ def test_linked_wasm_exports_table_base_setter_when_available(
     wasm_runner.require_wasm_toolchain()
     src = root / "examples" / "hello.py"
     output_wasm = wasm_runner.build_wasm_linked(root, src, tmp_path)
-    node_bin = _require_node_binary()
+    node_bin = wasm_runner.require_node_binary()
     probe = wasm_runner._run_wasm_test_process(
         [
             node_bin,
