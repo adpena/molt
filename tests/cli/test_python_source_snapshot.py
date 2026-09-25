@@ -9,7 +9,7 @@ import pytest
 
 from molt.cli.module_source import PythonSourceSnapshot, _read_module_source
 from molt.cli.python_import_resolution import LocalPythonModuleResolver
-from molt.compiler_analysis.python_binding_flow import python_ast_digest
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 
 
 @pytest.mark.parametrize(

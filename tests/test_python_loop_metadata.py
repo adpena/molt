@@ -7,10 +7,8 @@ import ast
 import pytest
 
 from molt.cli import module_import_scanner
-from molt.compiler_analysis.python_binding_flow import (
-    analyze_python_bindings,
-    python_ast_digest,
-)
+from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,

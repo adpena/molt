@@ -32,6 +32,10 @@ from molt.compiler_analysis.python_effects_generated import (
     PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS,
     effect_mask_satisfies_capability,
 )
+from molt.compiler_analysis.python_source_keys import (
+    python_ast_digest,
+    python_source_digest,
+)
 from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
@@ -1880,7 +1884,7 @@ def test_context_projections_share_complete_facts_and_preserve_import_flow(
     flow = python_binding_flow
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache(max_entries=2))
     tree = ast.parse(source)
-    digest = flow.python_source_digest(source)
+    digest = python_source_digest(source)
     policy = PythonBindingPolicy(target_python=version)
     core = flow.analyze_python_binding_facts(
         tree, source_digest=digest, policy=policy.flow_policy()
@@ -2088,15 +2092,13 @@ def test_ast_cache_identity_includes_spans_used_by_fact_lookup() -> None:
     tree = ast.parse(source)
     shifted_tree = ast.parse(shifted_source)
 
-    assert python_binding_flow.python_ast_digest(
-        tree
-    ) != python_binding_flow.python_ast_digest(shifted_tree)
+    assert python_ast_digest(tree) != python_ast_digest(shifted_tree)
     index = python_binding_flow.analyze_python_bindings(
-        tree, source_digest=python_binding_flow.python_ast_digest(tree)
+        tree, source_digest=python_ast_digest(tree)
     )
     shifted_index = python_binding_flow.analyze_python_bindings(
         shifted_tree,
-        source_digest=python_binding_flow.python_ast_digest(shifted_tree),
+        source_digest=python_ast_digest(shifted_tree),
     )
     call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
     shifted_call = next(

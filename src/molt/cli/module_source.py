@@ -53,7 +53,7 @@ class PythonSourceSnapshot:
 
     @functools.cached_property
     def ast_digest(self) -> str:
-        from molt.compiler_analysis.python_binding_flow import python_ast_digest
+        from molt.compiler_analysis.python_source_keys import python_ast_digest
 
         return python_ast_digest(self.tree)
 

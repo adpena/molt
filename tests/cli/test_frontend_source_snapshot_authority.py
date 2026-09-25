@@ -28,8 +28,8 @@ from molt.cli.models import (
     _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
-from molt.compiler_analysis import python_binding_flow
-from molt.compiler_analysis.python_binding_flow import python_ast_digest
+from molt.compiler_analysis import python_source_keys
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 
 
 @pytest.fixture
@@ -384,14 +384,14 @@ def test_complete_cold_scan_hashes_one_exact_ast_generation(
     )
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
-    digest = python_binding_flow.python_ast_digest
+    digest = python_source_keys.python_ast_digest
     digested_trees: list[ast.AST] = []
 
     def record_digest(tree: ast.AST) -> str:
         digested_trees.append(tree)
         return digest(tree)
 
-    monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
+    monkeypatch.setattr(python_source_keys, "python_ast_digest", record_digest)
     loaded = discovery._load_module_import_scan(
         source,
         module_name="entry",

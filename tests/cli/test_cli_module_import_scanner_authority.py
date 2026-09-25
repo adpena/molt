@@ -10,7 +10,7 @@ import molt.cli as cli
 from molt.cli import module_graph
 from molt.cli import module_import_scanner
 from molt.cli.models import _StaticSourceExecutionRequest
-from molt.compiler_analysis import python_binding_flow
+from molt.compiler_analysis import python_binding_flow, python_source_keys
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import TargetPythonVersion
 
@@ -116,7 +116,7 @@ def test_direct_synthetic_scans_retain_digest_fallback(
         "from importlib.util import spec_from_file_location\n"
         "spec_from_file_location('loaded', 'loaded.py')\n"
     )
-    digest = python_binding_flow.python_ast_digest
+    digest = python_source_keys.python_ast_digest
     calls = 0
 
     def record_digest(candidate: ast.AST) -> str:
@@ -124,7 +124,7 @@ def test_direct_synthetic_scans_retain_digest_fallback(
         calls += 1
         return digest(candidate)
 
-    monkeypatch.setattr(python_binding_flow, "python_ast_digest", record_digest)
+    monkeypatch.setattr(python_source_keys, "python_ast_digest", record_digest)
     assert "pkg" in module_import_scanner._collect_imports(tree)
     assert module_import_scanner._collect_import_star_modules(tree) == ("pkg",)
     assert module_import_scanner._collect_static_source_execution_requests(
