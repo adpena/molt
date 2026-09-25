@@ -185,7 +185,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f0274fb5f12f01c24595cbe1193e735711d00bc1e9aeaca95353c79c13370804",
+  "authority_sha256": "d4721e50746d4252539b131d9f77c1da63c30acf24bfc800477bebb25344ef15",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -408,7 +408,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 70,
+      "timeout_minutes": 75,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3577,6 +3577,47 @@
     {
       "argv": [
         "cargo",
+        "test",
+        "--timings",
+        "--profile",
+        "dev-fast",
+        "--config",
+        "profile.dev-fast.package.molt-runtime.opt-level=0",
+        "--lib",
+        "-p",
+        "molt-runtime",
+        "--no-default-features",
+        "--features",
+        "molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set",
+        "--",
+        "state::lifecycle::shutdown_tests::",
+        "state::runtime_state::",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [
+        "rust.test.ir-wasm-runtime-authorities"
+      ],
+      "family": "rust",
+      "id": "rust.test.runtime-cold-lifecycle",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
+      "toolchains": [
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "clippy",
         "--locked",
         "--workspace",
@@ -4137,12 +4178,12 @@
         }
       },
       "rust": {
-        "budget_seconds": 4200,
+        "budget_seconds": 4500,
         "critical_path_seconds": 3000,
         "headroom_seconds": 240,
-        "projected_makespan_seconds": 3960,
+        "projected_makespan_seconds": 4260,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 3960
+          "compiler-build-resource": 4260
         }
       },
       "rust_security": {

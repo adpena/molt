@@ -310,6 +310,44 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }.issubset(filters)
 
 
+def test_cold_lifecycle_partition_selects_only_serialized_ignored_families() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    core = commands["rust.test.ir-wasm-runtime-authorities"]
+    cold = commands["rust.test.runtime-cold-lifecycle"]
+    assert cold.family == core.family
+    assert cold.data["cell"] == core.data["cell"]
+    assert cold.data["tiers"] == core.data["tiers"]
+    assert cold.data["dependencies"] == [core.id]
+    assert cold.data["timeout_budget"] == "warm"
+    assert cold.data["resource_class"] == core.data["resource_class"]
+    assert set(cold.toolchains) == {"cargo"}
+    assert {"cargo", "rustc", "git"} <= set(PLAN.required_toolchains(cold))
+
+    cargo_args = cold.argv[: cold.argv.index("--")]
+    assert cargo_args[cargo_args.index("-p") + 1] == "molt-runtime"
+    assert cargo_args.count("-p") == 1
+    assert "--lib" in cargo_args
+    assert "--bins" not in cargo_args
+    assert "--test" not in cargo_args
+    assert "--no-default-features" in cargo_args
+    for option in ("--profile", "--config"):
+        expected = core.argv[core.argv.index(option) + 1]
+        assert cargo_args[cargo_args.index(option) + 1] == expected
+    core_features = core.argv[core.argv.index("--features") + 1].split(",")
+    assert set(cargo_args[cargo_args.index("--features") + 1].split(",")) == {
+        feature for feature in core_features if feature.startswith("molt-runtime/")
+    }
+    assert cold.argv[cold.argv.index("--") + 1 :] == (
+        "state::lifecycle::shutdown_tests::",
+        "state::runtime_state::",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    )
+    assert "--include-ignored" not in core.argv
+    assert "--ignored" not in core.argv
+
+
 def test_libtest_accounting_is_hashed_and_selects_rust_consumers() -> None:
     path = "tools/libtest_results.py"
     assert path in PLAN.authority_inputs

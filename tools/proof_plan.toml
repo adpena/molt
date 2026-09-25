@@ -749,9 +749,9 @@ admission_job = "rust-build-unit-smoke"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-# The added runtime ownership shard has its own bounded compile; the serialized
-# command envelope is 66 minutes. This is a ceiling, not a performance claim.
-timeout_minutes = 70
+# Runtime ownership and serialized cold-lifecycle tests have distinct selectors;
+# the command envelope is 71 minutes. This is a ceiling, not a performance claim.
+timeout_minutes = 75
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -2087,6 +2087,22 @@ dependencies = ["rust.test.default-truth"]
 # erase the earlier mismatch diagnostics held by libtest's output capture.
 argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "node", "wasm-ld"]
+
+[[command]]
+id = "rust.test.runtime-cold-lifecycle"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "warm"
+cache_domain = "cargo-workspace"
+dependencies = ["rust.test.ir-wasm-runtime-authorities"]
+# These tests require a cold process-global runtime and are deliberately ignored
+# by ordinary libtest runs. Select their families explicitly and serialize them;
+# do not enable unrelated ignored GC/performance probes or repeat ordinary tests.
+# Match the prerequisite runtime profile/features; this is not a cache-hit claim.
+argv = ["cargo", "test", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--lib", "-p", "molt-runtime", "--no-default-features", "--features", "molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "state::lifecycle::shutdown_tests::", "state::runtime_state::", "--ignored", "--nocapture", "--test-threads=1"]
+toolchains = ["cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
