@@ -51,7 +51,6 @@ from molt.cli.models import (
 )
 
 
-_DEAD_FUNCTION_ELIM_REFERENCE_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
 _emitted_name_matches_module_symbol = (
     _function_references.emitted_name_matches_module_symbol
 )

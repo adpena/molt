@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from molt import intrinsics as _intrinsics
+from _intrinsics import runtime_active as _runtime_active
 
 if TYPE_CHECKING:
     from moltlib import _concurrency_runtime as _concurrency
@@ -34,7 +34,7 @@ _RUNTIME_EXPORTS = set(__all__) | {"_call_intrinsic"}
 def __getattr__(name: str) -> Any:
     if name not in _RUNTIME_EXPORTS:
         raise AttributeError(name)
-    if not _intrinsics.runtime_active():
+    if not _runtime_active():
         raise RuntimeError(
             "molt runtime intrinsics are unavailable outside compiled binaries"
         )

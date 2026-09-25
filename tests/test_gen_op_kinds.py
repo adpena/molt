@@ -5837,6 +5837,89 @@ def test_runtime_symbol_roles_union_requirements_and_reject_malformed_symbols(
             gen.load_table(table)
 
 
+def test_defined_function_reference_authority_is_distinct_and_generated() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    expected = {
+        "call",
+        "call_internal",
+        "func_new",
+        "func_new_closure",
+        "func_new_builtin",
+        "code_new",
+        "call_guarded",
+        "call_indirect",
+        "alloc_task",
+        "call_async",
+        "asyncgen_locals_register",
+        "gen_locals_register",
+        "task_new",
+        "generator_send",
+        "spawn",
+        "call_func",
+        "call_method",
+        "import_from",
+        "import_name",
+        "class_def",
+        "decorator",
+        "super_call",
+        "yield_from",
+        "await",
+    }
+    assert set(data["simpleir_defined_function_reference_s_value_kinds"]) == expected
+    assert data["simpleir_function_reference_s_value_kinds"] == [
+        "func_new",
+        "func_new_closure",
+    ]
+    projected: dict[str, object] = {}
+    exec(gen.render_py(data), projected)
+    assert projected["SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS"] == expected
+    rendered = gen.render_rs(data)
+    table = rendered.split(
+        "pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS", 1
+    )[1]
+    table = table.split("];", 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', table)) == expected
+    predicate = rendered.split("pub fn simpleir_kind_references_defined_function", 1)[1]
+    predicate = predicate.split("\n}", 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', predicate)) == expected
+    runtime_carriers = rendered.split(
+        "pub fn simpleir_kind_has_function_reference_s_value", 1
+    )[1]
+    runtime_carriers = runtime_carriers.split("\n}", 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', runtime_carriers)) == {
+        "func_new",
+        "func_new_closure",
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, [], "call", ["call", "call"], [""], ["call", 7], ["Call"], ['call"bad']],
+)
+def test_defined_function_reference_authority_rejects_malformed_rows(
+    tmp_path: Path, value: object
+) -> None:
+    gen = _gen()
+    source = TABLE.read_text(encoding="utf-8")
+    pattern = r"(?ms)^simpleir_defined_function_reference_s_value_kinds = \[.*?^\]\n"
+    replacement = (
+        ""
+        if value is None
+        else "simpleir_defined_function_reference_s_value_kinds = "
+        + json.dumps(value)
+        + "\n"
+    )
+    source, count = re.subn(pattern, lambda _match: replacement, source, count=1)
+    assert count == 1
+    path = tmp_path / "defined-function-refs.toml"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(
+        gen.OpKindTableError, match="simpleir_defined_function_reference_s_value_kinds"
+    ):
+        gen.load_table(path)
+
+
 def test_frontend_repoll_publication_uses_shared_control_authority() -> None:
     gen = _gen()
     data = gen.load_table()

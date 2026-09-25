@@ -783,11 +783,6 @@ def _build_wasm_output(
     )
     build_s = time.perf_counter() - start
     if build_res.timed_out:
-        print(
-            f"WASM build timed out for {script} after {build_timeout_s:.1f}s; "
-            "retrying once with stricter midend limits.",
-            file=sys.stderr,
-        )
         _write_build_timeout_diag(
             output_path=output_path,
             script=script,
@@ -797,133 +792,29 @@ def _build_wasm_output(
             attempt="primary",
             result=build_res,
         )
-        retry_env = env.copy()
-        retry_env["MOLT_MIDEND_MAX_ROUNDS"] = "2"
-        retry_env["MOLT_SCCP_MAX_ITERS"] = "2"
-        retry_env["MOLT_CSE_MAX_ITERS"] = "2"
-        retry_env["MOLT_BUILD_LOCK_TIMEOUT"] = "30"
-        retry_env["MOLT_BUILD_STATE_DIR"] = str(
-            output_path.parent / ".molt_state_wasm_retry"
-        )
-        start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
-            env=retry_env,
-            capture=not tty,
-            tty=tty,
-            log=log,
-            timeout_s=build_timeout_s,
-            limits=limits,
-        )
-        build_s = time.perf_counter() - start
-        if build_res.timed_out:
-            _write_build_timeout_diag(
-                output_path=output_path,
-                script=script,
-                cmd=build_cmd,
-                env=retry_env,
-                timeout_s=build_timeout_s,
-                attempt="retry",
-                result=build_res,
-            )
-            print(
-                f"WASM build timed out again for {script}; aborting benchmark compile.",
-                file=sys.stderr,
-            )
-            _LAST_BUILD_FAILURE_DETAIL = (
-                f"build_timeout_after_retry timeout_s={build_timeout_s:.1f}"
-            )
-            return None
-
-    lock_wait_timeout = "Timed out waiting for build lock"
-    if build_res.returncode != 0 and lock_wait_timeout in (
-        (build_res.stderr or "") + (build_res.stdout or "")
-    ):
         print(
-            f"WASM build hit build-lock timeout for {script}; retrying with isolated build state.",
+            f"WASM build timed out for {script} after {build_timeout_s:.1f}s.",
             file=sys.stderr,
         )
-        retry_env = env.copy()
-        retry_env["MOLT_BUILD_LOCK_TIMEOUT"] = "30"
-        retry_env["MOLT_BUILD_STATE_DIR"] = str(
-            output_path.parent / ".molt_state_wasm_lock_retry"
-        )
-        start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
-            env=retry_env,
-            capture=not tty,
-            tty=tty,
-            log=log,
-            timeout_s=build_timeout_s,
-            limits=limits,
-        )
-        build_s = time.perf_counter() - start
-
+        _LAST_BUILD_FAILURE_DETAIL = f"build_timeout timeout_s={build_timeout_s:.1f}"
+        return None
     if build_res.returncode != 0:
-        if build_res.stderr or build_res.stdout:
-            err = (build_res.stderr or build_res.stdout).strip()
-            if err:
-                print(f"WASM build failed for {script}: {err}", file=sys.stderr)
-                _LAST_BUILD_FAILURE_DETAIL = _summarize_error_text(err)
-        else:
-            print(f"WASM build failed for {script}.", file=sys.stderr)
-            _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"
+        err = (build_res.stderr or build_res.stdout).strip()
+        _LAST_BUILD_FAILURE_DETAIL = (
+            _summarize_error_text(err) if err else "wasm_build_failed"
+        )
+        print(
+            f"WASM build failed for {script}: {_LAST_BUILD_FAILURE_DETAIL}",
+            file=sys.stderr,
+        )
         return None
     if _linked_wasm_output(output_path) is None:
         print(
-            f"WASM build produced no valid manifest-bound linked output for {script}; "
-            "retrying once.",
+            f"WASM build produced no valid manifest-bound linked output for {script}.",
             file=sys.stderr,
         )
-        output_path.with_name("output_linked.wasm").unlink(missing_ok=True)
-        output_path.with_name("manifest.json").unlink(missing_ok=True)
-        start = time.perf_counter()
-        build_res = _run_cmd(
-            build_cmd,
-            env=env,
-            capture=not tty,
-            tty=tty,
-            log=log,
-            timeout_s=build_timeout_s,
-            limits=limits,
-        )
-        build_s = time.perf_counter() - start
-        if build_res.timed_out:
-            _write_build_timeout_diag(
-                output_path=output_path,
-                script=script,
-                cmd=build_cmd,
-                env=env,
-                timeout_s=build_timeout_s,
-                attempt="integrity_retry",
-                result=build_res,
-            )
-            print(
-                f"WASM build retry timed out for {script}; aborting benchmark compile.",
-                file=sys.stderr,
-            )
-            _LAST_BUILD_FAILURE_DETAIL = (
-                f"build_timeout_integrity_retry timeout_s={build_timeout_s:.1f}"
-            )
-            return None
-        if build_res.returncode != 0:
-            err = (build_res.stderr or build_res.stdout).strip()
-            if err:
-                print(f"WASM build retry failed for {script}: {err}", file=sys.stderr)
-                _LAST_BUILD_FAILURE_DETAIL = _summarize_error_text(err)
-            else:
-                print(f"WASM build retry failed for {script}.", file=sys.stderr)
-                _LAST_BUILD_FAILURE_DETAIL = "wasm_build_retry_failed"
-            return None
-        if _linked_wasm_output(output_path) is None:
-            print(
-                f"WASM build produced no valid manifest-bound linked output for {script} "
-                "after retry.",
-                file=sys.stderr,
-            )
-            _LAST_BUILD_FAILURE_DETAIL = "wasm_linked_manifest_invalid_after_retry"
-            return None
+        _LAST_BUILD_FAILURE_DETAIL = "wasm_linked_manifest_invalid"
+        return None
     return build_s
 
 
@@ -973,23 +864,6 @@ def prepare_wasm_binary(
         limits=resolved_limits,
         use_molt_build_cache=use_molt_build_cache,
     )
-    if build_s is None:
-        print(
-            "Backend build failed; pruning stale daemons and retrying...",
-            file=sys.stderr,
-        )
-        _prune_backend_daemons(base_env)
-        time.sleep(1)
-        build_s = _build_wasm_output(
-            python_cmd,
-            env,
-            output_path,
-            script,
-            tty=tty,
-            log=log,
-            limits=resolved_limits,
-            use_molt_build_cache=use_molt_build_cache,
-        )
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
             _LAST_BUILD_FAILURE_DETAIL = "wasm_build_failed"

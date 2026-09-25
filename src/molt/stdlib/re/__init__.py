@@ -6,26 +6,11 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 from typing import Any, Iterator
 import warnings as _warnings
 
-# Reachability-driven feature elimination
-# (docs/design/foundation/feature_reachability_tree_shaking.md, Option b): the
-# regex intrinsic handles are bound lazily inside the functions that use them,
-# NOT eagerly in the always-run module body. The frontend lowers
-# ``_require_intrinsic("molt_re_compile")`` to a ``builtin_func`` op that directly
-# link-references the ``molt_re_compile`` symbol; binding every handle at module
-# top-level made all ~15 regex symbols a hard link dependency the instant ``re``
-# is imported (even transitively via ``warnings``/``typing``, even when no regex
-# operation is ever executed), forcing the ``stdlib_regex`` feature (an
-# undefined-symbol link failure) onto lean profiles. Moving each binding into
-# its single consuming function makes the symbol reach the reached SimpleIR only
-# on a code path that actually performs that regex operation, so
-# ``molt.cli.required_features`` (which scans the reached SimpleIR for
-# ``builtin_func``/``const_str`` intrinsic names) requires ``stdlib_regex`` only
-# when a regex op is genuinely reached, and an ``import re`` with no reached regex
-# call links zero ``molt_re_*`` symbols.
-#
-# The module-body probe stays: ``molt_stdlib_probe`` is a core, ungated,
-# always-linkable intrinsic that marks ``re`` as a real intrinsic-backed stdlib
-# module for the import-policy classifier; it carries no regex link dependency.
+# Bind intrinsics in their consuming functions. Static link reachability still
+# retains a published function's body even when no caller invokes it, so lazy
+# binding alone does not make an imported regex module feature-free. The shared
+# required_features authority accounts for these references and registry roots.
+# This module-body probe is core/ungated and carries no regex link dependency.
 _require_intrinsic("molt_stdlib_probe")
 
 __all__ = [

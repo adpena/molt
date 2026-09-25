@@ -25,12 +25,12 @@ runtime; that name is likewise a reached-intrinsic candidate.
 ``s_value`` is a runtime intrinsic symbol, scanned over the set of **reachable**
 SimpleIR functions. Reachability is the same call-graph closure the native/WASM
 backends use to dead-strip functions (``molt-tir`` ``eliminate_dead_functions``):
-a BFS from the program entry (``molt_main``) plus the protected runtime
-entrypoints, following the reference-bearing op kinds. A function that is never
-referenced from a reachable function contributes nothing - so an ``import re``
-whose regex methods are never reached links zero ``molt_re_*`` symbols, while a
-program that reaches ``re.compile`` link-references exactly the ``molt_re_*``
-symbols on the reached path.
+a BFS from the program entry (``molt_main``), protected runtime entrypoints and
+registry relocation roots, following reference-bearing op kinds. This is static
+link reachability, not evidence that a function executes. Publishing a function
+with ``func_new`` retains its body, including lazily bound intrinsic references.
+Only bodies eliminated from this closure contribute no requirement; importing
+``re`` can retain regex symbols even without an explicit regex call.
 
 ``RequiredLinkFeatures`` maps each reached intrinsic to its link-affecting Cargo
 feature via the generated
@@ -61,8 +61,6 @@ from molt._runtime_feature_gates import (
 )
 from molt.cli import function_references as _function_references
 
-_FUNCTION_REFERENCE_OP_KINDS = _function_references.FUNCTION_REFERENCE_OP_KINDS
-_POLL_COMPANION_OP_KINDS = _function_references.POLL_COMPANION_OP_KINDS
 _PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES = (
     _function_references.PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
 )
@@ -74,17 +72,12 @@ _RUNTIME_INTRINSIC_SYMBOL_NAMES: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Reachability primitives - mirror ``molt-tir`` ``eliminate_dead_functions``.
+# Reachability primitives - shared generated defined-function edges.
 # ---------------------------------------------------------------------------
 #
-# These two sets are the Python mirror of the Rust dead-function call-graph
-# authority (``runtime/molt-tir/src/passes/dead_functions.rs`` /
-# ``runtime/molt-tir/src/passes/runtime_roots.rs``). They MUST stay in lockstep
-# with that authority: if the backend treats an op kind as a function reference
-# (keeping the referenced function), this requirement scan must treat it as a
-# reachability edge too, or the requirement could under-approximate and let an
-# undefined-symbol link error slip past the compile-time refusal. The agreement
-# is pinned by ``test_required_features_reachability.py`` against the Rust source.
+# function_references and the Rust dead-function pass consume the same generated
+# op-kind authority. Runtime entry roots remain owned by runtime_roots.rs; the
+# exact-name graph contributes features only from statically retained bodies.
 
 #: Op kinds whose ``s_value`` directly references a *runtime intrinsic symbol* and
 #: thus makes it a reached-intrinsic candidate. ``builtin_func`` is the direct
@@ -247,16 +240,13 @@ def reachability_profile_feature_refusal(
     )
     return (
         f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
-        f"REACHED code requires.\n"
-        f"These runtime intrinsics are reached by executed code paths, so their "
+        f"statically retained code requires.\n"
+        f"These runtime intrinsics are referenced by retained function bodies, so their "
         f"symbols would be undefined at link under '{profile_name}':\n"
         + "\n".join(lines)
-        + "\n\nFeature selection is reachability-driven, not import-driven: the "
-        "'micro' profile omits heavy domains (regex, ast, crypto, compression, "
-        "...) to keep small binaries small, and the requirement is computed from "
-        "the intrinsics your reached code actually links, not from the mere "
-        "presence of a module in the import graph.\n"
-        "Either remove the reached usage of these intrinsics, or rebuild with the "
+        + "\n\nRequirements follow the static link closure, including published "
+        "functions and module-registry roots; they do not prove execution. "
+        "Remove the dependency that retains these bodies, or rebuild with the "
         "full stdlib profile, which includes these features:\n"
         "    --stdlib-profile full\n"
         "or set the environment knob the build reads as its canonical profile:\n"

@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 import importlib
 
-__all__ = ["asgi", "concurrency", "molt_db", "net"]
+__all__ = ["asgi", "concurrency", "io", "molt_db", "net"]
 
-_LAZY_SUBMODULES = {"asgi", "concurrency", "molt_db", "net"}
+_LAZY_SUBMODULES = frozenset(__all__)
 
 
 def __getattr__(name: str) -> Any:

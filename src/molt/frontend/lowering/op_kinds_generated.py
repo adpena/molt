@@ -1476,6 +1476,37 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "YIELD_FROM": True,
 }
 
+# Exact s_value edges retaining defined functions at static link time.
+# Independent of first-class runtime-requirement provenance carriers.
+SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
+    {
+        "alloc_task",
+        "asyncgen_locals_register",
+        "await",
+        "call",
+        "call_async",
+        "call_func",
+        "call_guarded",
+        "call_indirect",
+        "call_internal",
+        "call_method",
+        "class_def",
+        "code_new",
+        "decorator",
+        "func_new",
+        "func_new_builtin",
+        "func_new_closure",
+        "gen_locals_register",
+        "generator_send",
+        "import_from",
+        "import_name",
+        "spawn",
+        "super_call",
+        "task_new",
+        "yield_from",
+    }
+)
+
 SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES: frozenset[str] = frozenset(
     {
         "builtins.getattr",

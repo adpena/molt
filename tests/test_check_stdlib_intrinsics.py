@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -20,6 +21,139 @@ def _load_gate_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import molt",
+        "import molt.net as networking",
+        "import os, molt.intrinsics as loader",
+        "import molt.stdlib.io, molt.net as networking",
+        "from molt import intrinsics as loader",
+        "from molt import (\n    net as networking,  # runtime edge\n    intrinsics,\n)",
+        "from molt import stdlib",
+        "from molt import *",
+        "from molt.net import Stream",
+        "from molt.stdlib_intrinsic_policy import intrinsic_names_from_source",
+        "from molt.stdlib_extra import helper",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from molt._intrinsics import molt_spawn",
+        "def lazy():\n    from molt import net",
+        "if False:\n    import molt.frontend",
+    ],
+)
+def test_runtime_boundary_rejects_compiler_imports(tmp_path: Path, source: str) -> None:
+    module = _load_gate_module()
+    path = tmp_path / "runtime.py"
+    path.write_text(source + "\n", encoding="utf-8")
+
+    errors, _, _, _ = module._scan_file(path)
+
+    assert len(errors) == 1
+    assert "Importing the host molt compiler package" in errors[0]
+    assert errors[0].startswith("Line ")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import moltlib.net, molten, molt_extra",
+        "from moltlib import net as networking",
+        "from _intrinsics import require_intrinsic as require",
+        "import molt.stdlib as stdlib",
+        "import os, molt.stdlib.io as io",
+        "from molt.stdlib import io, os",
+        "from molt.stdlib._intrinsics import require_intrinsic as require",
+        "from . import molt",
+        "from .molt import helper",
+        "# from molt import intrinsics\ntext = 'import molt.net'",
+        '"""\nimport molt\nfrom molt import intrinsics\n"""',
+    ],
+)
+def test_runtime_boundary_allows_runtime_and_normalized_imports(
+    tmp_path: Path, source: str
+) -> None:
+    module = _load_gate_module()
+    path = tmp_path / "runtime.py"
+    path.write_text(source + "\n", encoding="utf-8")
+
+    errors, _, _, _ = module._scan_file(path)
+
+    assert errors == []
+
+
+@pytest.mark.parametrize("owner", ["stdlib", "moltlib"])
+def test_runtime_boundary_is_enforced_for_both_source_roots(
+    tmp_path: Path, monkeypatch, capsys, owner: str
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    moltlib_root = tmp_path / "moltlib"
+    moltlib_root.mkdir()
+    _seed_bootstrap_strict_modules(stdlib_root)
+    bad_path = tmp_path / owner / "bad.py"
+    bad_path.write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from molt._intrinsics import molt_spawn\n",
+        encoding="utf-8",
+    )
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "MOLTLIB_ROOT", moltlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    assert module.main() == 1
+    output = capsys.readouterr().out
+    assert module._display_path(bad_path) in output
+    assert "Line 3: Importing the host molt compiler package" in output
+
+
+def test_moltlib_boundary_scan_does_not_change_stdlib_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    moltlib_root = tmp_path / "moltlib"
+    nested = moltlib_root / "nested"
+    nested.mkdir(parents=True)
+    _seed_bootstrap_strict_modules(stdlib_root)
+    # Pure runtime support is not subject to the CPython intrinsic-coverage gate.
+    (nested / "runtime_helper.py").write_text("value = 1\n", encoding="utf-8")
+    # Generated typing declarations are not compiled runtime sources.
+    (nested / "runtime_helper.pyi").write_text("import molt\n", encoding="utf-8")
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "MOLTLIB_ROOT", moltlib_root)
+    audit_path = tmp_path / "audit.md"
+    report_path = tmp_path / "report.json"
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--update-doc",
+            "--json-out",
+            str(report_path),
+        ],
+    )
+
+    assert module.main() == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert {entry["module"] for entry in report["modules"]} == {
+        "builtins",
+        "sys",
+        "types",
+        "importlib",
+        "importlib.machinery",
+        "importlib.util",
+    }
+    assert sum(report["status_counts"].values()) == 6
+    assert "runtime_helper" not in audit_path.read_text(encoding="utf-8")
 
 
 def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> None:
@@ -207,6 +341,262 @@ def _disable_full_coverage_contract(module, monkeypatch) -> None:
         "_load_full_coverage_required_intrinsics",
         lambda _path: {},
     )
+
+
+def _configure_report_test(tmp_path: Path, monkeypatch, *options: str):
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    _seed_bootstrap_strict_modules(stdlib_root)
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    audit_path = tmp_path / "audit.md"
+    report_path = tmp_path / "audit.json"
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "MOLTLIB_ROOT", tmp_path / "moltlib")
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["check_stdlib_intrinsics.py", "--json-out", str(report_path), *options],
+    )
+    return module, stdlib_root, audit_path, report_path
+
+
+@pytest.mark.parametrize("existing_doc", [False, True])
+def test_failed_audit_reports_every_gate_once_without_publishing_docs(
+    tmp_path: Path, monkeypatch, capsys, existing_doc: bool
+) -> None:
+    module, root, doc, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc"
+    )
+    _seed_intrinsic_module(root, "alpha", "import molt.net\nimport orphan\n")
+    (root / "orphan.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _configure_required_top_level(module, monkeypatch, root)
+    monkeypatch.setattr(
+        module, "_load_fully_covered_stdlib_modules", lambda _path: frozenset({"alpha"})
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_full_coverage_required_intrinsics",
+        lambda _path: {"alpha": ("molt_time_time",)},
+    )
+    if existing_doc:
+        doc.write_bytes(b"previous green document\n")
+    scans: list[Path] = []
+    classifications = 0
+    scan_file = module._scan_file
+    classify = module.classify_stdlib_module_statuses
+
+    def scan_once(path):
+        scans.append(path)
+        return scan_file(path)
+
+    def classify_once(*args, **kwargs):
+        nonlocal classifications
+        classifications += 1
+        return classify(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_scan_file", scan_once)
+    monkeypatch.setattr(module, "classify_stdlib_module_statuses", classify_once)
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["analysis_complete"] is True
+    assert payload["ok"] is False
+    assert payload["schema"] == "molt.stdlib-intrinsics-audit.v1"
+    assert {
+        "failures",
+        "full-coverage-missing-intrinsic-wiring",
+        "dependency-violations",
+        "non-intrinsic-modules",
+    } <= {item["code"] for item in payload["diagnostics"]}
+    output = capsys.readouterr().out
+    assert all(
+        message in output
+        for item in payload["diagnostics"]
+        for message in item["messages"]
+    )
+    assert "stdlib intrinsics lint: ok" not in output
+    assert classifications == 1
+    assert len(scans) == len(set(scans)) == len(list(root.rglob("*.py")))
+    if existing_doc:
+        assert doc.read_bytes() == b"previous green document\n"
+    else:
+        assert not doc.exists()
+
+
+def test_unknown_and_non_intrinsic_strict_roots_preserve_remaining_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, root, doc, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc", "--allowlist-modules", "absent,orphan"
+    )
+    (root / "orphan.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _configure_required_top_level(module, monkeypatch, root)
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["analysis_complete"] is True
+    assert payload["unknown_strict_roots"] == ["absent"]
+    assert {
+        "unknown-strict-roots",
+        "strict-root-status-violations",
+        "non-intrinsic-modules",
+    } <= {item["code"] for item in payload["diagnostics"]}
+    assert not doc.exists()
+
+
+@pytest.mark.parametrize("limited", [False, True])
+def test_aggregate_diagnostics_respect_fallback_gate_selection(
+    tmp_path: Path, monkeypatch, limited: bool
+) -> None:
+    options = ("--fallback-intrinsic-backed-only",) if limited else ()
+    module, root, _, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc", *options
+    )
+    _seed_fallback_module(root)
+    _configure_required_top_level(module, monkeypatch, root)
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    codes = {item["code"] for item in payload["diagnostics"]}
+    assert ("all-fallback-violations" in codes) is not limited
+    assert "non-intrinsic-modules" in codes
+    assert payload["all_fallback_violations"]
+
+
+@pytest.mark.parametrize("existing_doc", [False, True])
+def test_document_gate_failure_still_emits_complete_json(
+    tmp_path: Path, monkeypatch, existing_doc: bool
+) -> None:
+    module, _, doc, report = _configure_report_test(tmp_path, monkeypatch)
+    if existing_doc:
+        doc.write_bytes(b"stale audit\n")
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    code = "audit-document-stale" if existing_doc else "audit-document-missing"
+    assert [item["code"] for item in payload["diagnostics"]] == [code]
+    assert payload["analysis_complete"] is True
+    assert payload["ok"] is False
+
+
+def test_green_audit_publishes_document_and_matching_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module, _, doc, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc"
+    )
+    assert module.main() == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["analysis_complete"] is True
+    assert payload["ok"] is True
+    assert payload["diagnostics"] == []
+    assert doc.read_text(encoding="utf-8").startswith("# ")
+
+
+@pytest.mark.parametrize("failure", ["missing-root", "syntax", "manifest"])
+def test_incomplete_audit_emits_failure_without_fabricated_empty_coverage(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    module, root, doc, report = _configure_report_test(
+        tmp_path, monkeypatch, "--update-doc"
+    )
+    if failure == "missing-root":
+        monkeypatch.setattr(module, "STDLIB_ROOT", tmp_path / "absent")
+    elif failure == "syntax":
+        (root / "bad.py").write_text("def broken(\n", encoding="utf-8")
+    else:
+
+        def invalid_manifest(_path):
+            raise RuntimeError("invalid full-coverage manifest")
+
+        monkeypatch.setattr(
+            module, "_load_fully_covered_stdlib_modules", invalid_manifest
+        )
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["analysis_complete"] is False
+    assert payload["ok"] is False
+    assert [item["code"] for item in payload["diagnostics"]] == ["incomplete-analysis"]
+    assert "status_counts" not in payload
+    assert "modules" not in payload
+    assert not doc.exists()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "STDLIB_FULLY_COVERED_MODULES = (UNDEFINED,)",
+        "raise ImportError('manifest dependency missing')",
+        "raise TypeError('invalid manifest input')",
+        "raise ValueError('invalid manifest value')",
+        "raise AttributeError('manifest attribute missing')",
+        "raise SystemExit(0)",
+    ],
+)
+def test_manifest_evaluation_failure_replaces_stale_report(
+    tmp_path: Path, monkeypatch, source: str
+) -> None:
+    module = _load_gate_module()
+    root = tmp_path / "stdlib"
+    root.mkdir()
+    manifest = tmp_path / "broken_manifest.py"
+    manifest.write_text(source + "\n", encoding="utf-8")
+    report = tmp_path / "audit.json"
+    report.write_text('{"ok": true, "modules": ["stale"]}', encoding="utf-8")
+    doc = tmp_path / "audit.md"
+    doc.write_text("previous green document\n", encoding="utf-8")
+    monkeypatch.setattr(module, "STDLIB_ROOT", root)
+    monkeypatch.setattr(module, "AUDIT_DOC", doc)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_stdlib_intrinsics.py",
+            "--full-coverage-manifest",
+            str(manifest),
+            "--json-out",
+            str(report),
+            "--update-doc",
+        ],
+    )
+    assert module.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["analysis_complete"] is False
+    assert payload["ok"] is False
+    assert "modules" not in payload
+    assert "status_counts" not in payload
+    assert [item["code"] for item in payload["diagnostics"]] == ["incomplete-analysis"]
+    assert "failed to evaluate" in payload["diagnostics"][0]["messages"][0]
+    assert doc.read_text(encoding="utf-8") == "previous green document\n"
+
+
+@pytest.mark.parametrize(
+    "loader",
+    [
+        "_load_required_top_level_stdlib",
+        "_load_required_stdlib_submodules",
+        "_load_fully_covered_stdlib_modules",
+        "_load_full_coverage_required_intrinsics",
+    ],
+)
+def test_all_manifest_loaders_normalize_evaluation_errors(
+    tmp_path: Path, monkeypatch, loader: str
+) -> None:
+    module = _load_gate_module()
+    manifest = tmp_path / "broken_manifest.py"
+    manifest.write_text("BROKEN = UNDEFINED\n", encoding="utf-8")
+    monkeypatch.setattr(module, "STDLIB_UNION_BASELINE", manifest)
+    args = () if loader.startswith("_load_required_") else (manifest,)
+    with pytest.raises(RuntimeError, match="failed to evaluate.*NameError"):
+        getattr(module, loader)(*args)
+
+
+def test_report_publication_failure_is_not_a_success(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module, _, _, report = _configure_report_test(tmp_path, monkeypatch, "--update-doc")
+    report.mkdir()
+    assert module.main() == 1
+    output = capsys.readouterr().out
+    assert "audit report publication failed:" in output
+    assert "stdlib intrinsics lint: ok" not in output
 
 
 def test_critical_allowlist_includes_re() -> None:
@@ -435,7 +825,10 @@ def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_i
 
     assert module.main() == 0
     audit_text = audit_doc.read_text(encoding="utf-8")
-    assert "### Intrinsic-owned private support fragments\n- `_pyio_text`" in audit_text
+    assert (
+        "### Intrinsic-owned private support fragments and facades\n- `_pyio_text`"
+        in audit_text
+    )
     assert "- `_pyio_text`" in audit_text
     assert (
         "### Python-only modules (intrinsic missing)\n- `_pyio_text`" not in audit_text

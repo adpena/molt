@@ -3,39 +3,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Iterable, Mapping, NamedTuple, Sequence
 
-
-FUNCTION_REFERENCE_OP_KINDS: frozenset[str] = frozenset(
-    {
-        "call",
-        "call_internal",
-        "func_new",
-        "func_new_closure",
-        "func_new_builtin",
-        "code_new",
-        "call_guarded",
-        "call_indirect",
-        "alloc_task",
-        "generator_create",
-        "coro_create",
-        "asyncgen_locals_register",
-        "gen_locals_register",
-        "task_new",
-        "generator_send",
-        "spawn",
-        "call_func",
-        "call_method",
-        "import_from",
-        "import_name",
-        "class_def",
-        "decorator",
-        "super_call",
-        "yield_from",
-        "await",
-    }
-)
-
-POLL_COMPANION_OP_KINDS: frozenset[str] = frozenset(
-    {"alloc_task", "generator_create", "coro_create"}
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
 )
 
 PROTECTED_RUNTIME_ENTRYPOINTS: frozenset[str] = frozenset(
@@ -114,17 +83,13 @@ def function_references(
         kind = op.get("kind")
         if not isinstance(kind, str):
             continue
-        if kind not in FUNCTION_REFERENCE_OP_KINDS:
+        if kind not in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS:
             continue
         name = op.get("s_value")
         if not isinstance(name, str):
             continue
         if name in defined:
             refs.add(name)
-        if kind in POLL_COMPANION_OP_KINDS and not name.endswith("_poll"):
-            poll = f"{name}_poll"
-            if poll in defined:
-                refs.add(poll)
     return frozenset(refs)
 
 
@@ -209,19 +174,13 @@ def missing_local_function_references(
             kind = op.get("kind")
             if not isinstance(kind, str):
                 continue
-            if kind not in FUNCTION_REFERENCE_OP_KINDS:
+            if kind not in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS:
                 continue
             target = op.get("s_value")
             if not isinstance(target, str):
                 continue
             if target not in defined and _owned_locally(target):
                 missing.append(FunctionReferenceEdge(owner, op_index, kind, target))
-            if kind in POLL_COMPANION_OP_KINDS and not target.endswith("_poll"):
-                poll_target = f"{target}_poll"
-                if poll_target not in defined and _owned_locally(poll_target):
-                    missing.append(
-                        FunctionReferenceEdge(owner, op_index, kind, poll_target)
-                    )
     return tuple(missing)
 
 

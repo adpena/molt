@@ -1,25 +1,15 @@
-"""Capability-gated file I/O stubs for Molt."""
+"""Capability-gated CPython file I/O surface for Molt."""
 
 from __future__ import annotations
 
 import os
-from typing import IO, Any, TYPE_CHECKING
+from typing import IO, Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-if TYPE_CHECKING:
-    from molt import net as _net
-
-    Stream = _net.Stream
-else:
-    Stream = Any
-
-
 _CAP_REQUIRE = None
 _MOLT_FILE_OPEN_EX = None
-_MOLT_FILE_READ = None
-_MOLT_FILE_CLOSE = None
 _MOLT_IO_CLASS = None
 
 
@@ -31,13 +21,9 @@ def _ensure_caps() -> None:
 
 
 def _ensure_io_intrinsics() -> None:
-    global _MOLT_FILE_OPEN_EX, _MOLT_FILE_READ, _MOLT_FILE_CLOSE
+    global _MOLT_FILE_OPEN_EX
     if _MOLT_FILE_OPEN_EX is None:
         _MOLT_FILE_OPEN_EX = _require_intrinsic("molt_file_open_ex")
-    if _MOLT_FILE_READ is None:
-        _MOLT_FILE_READ = _require_intrinsic("molt_file_read")
-    if _MOLT_FILE_CLOSE is None:
-        _MOLT_FILE_CLOSE = _require_intrinsic("molt_file_close")
 
 
 def _ensure_io_class() -> None:
@@ -56,28 +42,6 @@ def _io_class(name: str):
 
 class UnsupportedOperation(OSError, ValueError):
     pass
-
-
-class _StreamIter:
-    def __init__(self, handle, chunk_size: int) -> None:
-        self._handle = handle
-        self._chunk_size = chunk_size
-        self._done = False
-
-    def __iter__(self) -> _StreamIter:
-        return self
-
-    def __next__(self) -> bytes | str:
-        if self._done:
-            raise StopIteration
-        if _MOLT_FILE_READ is None or _MOLT_FILE_CLOSE is None:
-            raise RuntimeError("io intrinsics unavailable")
-        chunk = _MOLT_FILE_READ(self._handle, self._chunk_size)
-        if not chunk:
-            self._done = True
-            _MOLT_FILE_CLOSE(self._handle)
-            raise StopIteration
-        return chunk
 
 
 SEEK_SET = 0
@@ -116,7 +80,6 @@ __all__ = [
     "StringIO",
     "UnsupportedOperation",
     "open",
-    "stream",
 ]
 
 
@@ -156,17 +119,3 @@ def open(
         closefd,
         opener,
     )
-
-
-def stream(
-    file: str | bytes | int | os.PathLike[str] | os.PathLike[bytes],
-    mode: str = "rb",
-    chunk_size: int = 65536,
-    **kwargs: Any,
-) -> Stream:
-    _require_caps_for_mode(mode)
-    handle = open(file, mode, **kwargs)
-
-    from molt import net as _net
-
-    return _net.Stream(_StreamIter(handle, chunk_size))

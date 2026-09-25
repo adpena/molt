@@ -55,7 +55,9 @@ def _configure_fixture_cpython_runner(
 
     monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda _path: {})
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path / "diff-tmp")
+    monkeypatch.setattr(
+        module, "_diff_tmp_root", lambda _environment=None: tmp_path / "diff-tmp"
+    )
     monkeypatch.setattr(module, "_diff_timeout", lambda: 30.0)
     monkeypatch.setattr(
         module, "_resolve_python_command", lambda _python: [sys.executable]
@@ -307,7 +309,7 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
         pytest.fail("a timeout is not evidence of cache corruption")
 
     monkeypatch.setattr(module, "run_molt", timed_out)
-    monkeypatch.setattr(module, "_isolated_retry_env", forbidden_isolation)
+    monkeypatch.setattr(module, "_run_isolated_retry", forbidden_isolation)
     context = module.compat_backends.BackendExecutionContext(
         target_python=module.TargetPythonVersion(3, 12, 0),
         build_profile="dev",
@@ -1035,7 +1037,7 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
     subprocess_calls = []
     metric_statuses = []
 
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path / "diff-root")
     monkeypatch.setattr(
         module, "_diff_cargo_target_root", lambda: tmp_path / "target-root"
@@ -1104,7 +1106,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
     monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
@@ -1180,7 +1182,7 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path / "diff-root")
     monkeypatch.setattr(
         module, "_diff_cargo_target_root", lambda: tmp_path / "target-root"
@@ -1233,7 +1235,7 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
 
     monkeypatch.setenv("MOLT_DIFF_STDLIB_PROFILE", "full")
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
     monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
@@ -1281,7 +1283,7 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
 
     monkeypatch.delenv("MOLT_DIFF_STDLIB_PROFILE", raising=False)
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
     monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
@@ -1329,7 +1331,7 @@ def test_run_molt_build_only_rejects_conflicting_metadata_stdlib_profile(
         "_run_with_optional_time",
         lambda cmd, **kwargs: seen_cmds.append(list(cmd)),
     )
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
     monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
     monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
@@ -1365,7 +1367,7 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     module = _load_diff_module()
     seen_envs: list[dict[str, str]] = []
     diff_root = tmp_path / "diff-root"
-    diff_cache = tmp_path / "persistent-cache"
+    diff_cache = tmp_path / ".molt_cache"
     target_root = tmp_path / "target-root"
 
     def fake_run_with_optional_time(
@@ -1380,11 +1382,11 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.delenv("MOLT_CACHE", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(diff_root))
+    monkeypatch.setenv("MOLT_DIFF_CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
-    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
-    monkeypatch.setattr(module, "_diff_cache_root", lambda: diff_cache)
-    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
     monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
@@ -1435,7 +1437,7 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
 
     monkeypatch.setenv("MOLT_CACHE", str(explicit_cache))
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
-    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda _environment=None: tmp_path)
     monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
     monkeypatch.setattr(module, "_diff_cache_root", fail_diff_cache_root)
     monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
@@ -1512,6 +1514,503 @@ def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
     assert layout.tmp_root == ext_root / "tmp"
 
 
+@pytest.fixture
+def admitted_guest_environment(tmp_path, monkeypatch):
+    from tools.compat import diff_output_layout as output
+
+    repo = tmp_path / "repo"
+    canonical = tmp_path / "canonical"
+    guest = tmp_path / "guest"
+    for root in (repo, canonical, guest):
+        root.mkdir()
+    env = {
+        "MOLT_EXT_ROOT": str(canonical),
+        "MOLT_DIFF_ROOT": str(canonical / "receipts"),
+        output.ROOT_ENV: str(guest),
+    }
+    monkeypatch.setattr(
+        output.disk_capacity, "require_build_capacity", lambda *_a, **_k: None
+    )
+    output.admit(env, repo_root=repo, custody_root=canonical / "receipts")
+    return repo, env
+
+
+@pytest.mark.parametrize("mode", ["dyld", "isolated-retry"])
+def test_guest_readmission_preserves_selected_mode(admitted_guest_environment, mode):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    root = Path(env[output.ROOT_ENV])
+    parent = root / "guest-tmp"
+    target = (
+        parent / "dyld_quarantine" / "run" / "target"
+        if mode == "dyld"
+        else parent / "molt_diff_retry_run" / "target"
+    )
+    env.update(
+        CARGO_TARGET_DIR=str(target),
+        MOLT_DIFF_CARGO_TARGET_DIR=str(target),
+        MOLT_DIFF_TARGET_MODE=mode,
+    )
+    original = dict(env)
+    output.admit(env, repo_root=repo, custody_root=Path(env["MOLT_DIFF_ROOT"]))
+    assert env == original
+    env["MOLT_DIFF_TMPDIR"] = str(repo / "wrong")
+    with pytest.raises(ValueError, match="escaped"):
+        output.admit(env, repo_root=repo, custody_root=Path(env["MOLT_DIFF_ROOT"]))
+
+
+@pytest.mark.parametrize("raw", ['{"schema":1,"schema":2}', '{"device":NaN}', "null"])
+def test_guest_identity_requires_exact_json(admitted_guest_environment, raw):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    env[output.IDENTITY_ENV] = raw
+    with pytest.raises(ValueError, match="malformed"):
+        output.enforce_child(env, repo_root=repo)
+
+
+def test_guest_root_replaced_during_capacity_is_not_admitted(
+    admitted_guest_environment, monkeypatch
+):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    env.pop(output.IDENTITY_ENV)
+    original = dict(env)
+    root = Path(env[output.ROOT_ENV])
+
+    def replace_root(*_args, **_kwargs):
+        root.rename(root.with_name("old-guest"))
+        root.mkdir()
+
+    monkeypatch.setattr(output.disk_capacity, "require_build_capacity", replace_root)
+    with pytest.raises(ValueError, match="replaced|remounted"):
+        output.admit(env, repo_root=repo, custody_root=Path(env["MOLT_DIFF_ROOT"]))
+    assert env == original
+
+
+def test_guest_configure_rejects_inherited_conflicting_outputs(
+    admitted_guest_environment, monkeypatch
+):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    env.pop(output.IDENTITY_ENV)
+    env["CARGO_TARGET_DIR"] = str(repo / "wrong")
+    module = _load_diff_module()
+    monkeypatch.setattr(
+        module,
+        "development_artifact_env",
+        lambda _root, environment, **_kwargs: dict(environment),
+    )
+    with pytest.raises(ValueError, match="conflicts"):
+        module._configure_diff_artifact_environment(repo_root=repo, environment=env)
+
+
+def test_guest_replaced_leaf_is_never_retired(admitted_guest_environment):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    root = Path(env["MOLT_DIFF_TMPDIR"])
+    lease = output.new_guest_leaf(
+        root, prefix="test_", boundary=root, environment=env, repo_root=repo
+    )
+    lease.path.rename(root / "original")
+    lease.path.mkdir()
+    (lease.path / "unowned").write_text("preserve")
+    error = lease.retire(environment=env, repo_root=repo)
+    assert error and "identity changed" in error
+    assert (lease.path / "unowned").read_text() == "preserve"
+    assert (root / "original").is_dir()
+
+
+@pytest.mark.parametrize("backend", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "exception"])
+def test_guest_backends_preserve_primary_and_cleanup_failure(
+    admitted_guest_environment, monkeypatch, backend, outcome
+):
+    from molt.target_python import TargetPythonVersion
+    from tools.compat import backends, diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    module = _load_diff_module()
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    monkeypatch.setattr(backends, "_REPO_ROOT", repo)
+    # Ambient selection is deliberately incompatible with the supplied context.
+    monkeypatch.setenv(output.ROOT_ENV, str(repo / "ambient-missing"))
+    context = backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment=env,
+    )
+    seen = []
+    primary = LookupError("primary guest failure")
+
+    def owned(*_args, **kwargs):
+        path = kwargs.get(
+            "output_root", kwargs.get("cpython_tmp", kwargs.get("out_dir"))
+        )
+        seen.append(path)
+        assert path.is_relative_to(Path(env[output.ROOT_ENV]))
+        if outcome == "exception":
+            raise primary
+        return backends.BackendResult(
+            "answer",
+            "guest error" if outcome == "failure" else "",
+            7 if outcome == "failure" else 0,
+        )
+
+    def blocked(*_args, **_kwargs):
+        raise OSError("retirement blocked")
+
+    monkeypatch.setattr(output, "durable_remove_path", blocked)
+    # Receipt resolution failure must not replace the guest exception either.
+    resolve = output.resolve_owned_path
+
+    def resolve_receipt(path):
+        if path.name == "guest_output_cleanup_failures.jsonl":
+            raise ValueError("receipt custody changed")
+        return resolve(path)
+
+    monkeypatch.setattr(output, "resolve_owned_path", resolve_receipt)
+    if backend == "cpython":
+        for key in (
+            *output.OUTPUT_KEYS,
+            output.ROOT_ENV,
+            output.IDENTITY_ENV,
+            "MOLT_EXT_ROOT",
+            "MOLT_DIFF_ROOT",
+        ):
+            monkeypatch.setenv(key, env[key])
+        monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+        monkeypatch.delenv("MOLT_DIFF_KEEP", raising=False)
+        monkeypatch.setattr(module, "_run_cpython_owned", owned)
+
+        def run():
+            return module.run_cpython("case.py")
+    elif backend == "native":
+        monkeypatch.setattr(module, "_run_molt_owned", owned)
+
+        def run():
+            return module.run_molt(
+                "case.py", build_profile="dev", execution_context=context
+            )
+    else:
+        adapter = {
+            "wasm": backends.WasmAdapter,
+            "llvm": backends.LlvmAdapter,
+            "luau": backends.LuauAdapter,
+        }[backend]()
+        monkeypatch.setattr(adapter, "_build_and_run_owned", owned)
+
+        def run():
+            return adapter.build_and_run("case.py", context=context)
+
+    if outcome == "exception":
+        with pytest.raises(LookupError) as caught:
+            run()
+        assert caught.value is primary
+        diagnostic = "\n".join(primary.__notes__)
+    else:
+        result = run()
+        assert result.returncode == (7 if outcome == "failure" else 0)
+        assert result.stderr == ("guest error" if outcome == "failure" else "")
+        assert result.infrastructure_failure is not None
+        diagnostic = "\n".join(result.infrastructure_failure.details)
+    assert (
+        "retirement blocked" in diagnostic and "receipt custody changed" in diagnostic
+    )
+    assert seen[0].exists()
+
+
+def test_selected_dyld_and_retry_ignore_inherited_control_override(
+    admitted_guest_environment, monkeypatch
+):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    env["MOLT_BUILD_STATE_DIR"] = str(Path(env["MOLT_EXT_ROOT"]) / "shared-state")
+    module = _load_diff_module()
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    for key in ("MOLT_DIFF_TARGET_MODE", "MOLT_DIFF_KEEP_ISOLATED_RETRY"):
+        monkeypatch.delenv(key, raising=False)
+    for key in ("MOLT_BUILD_STATE_DIR", "MOLT_BACKEND_DAEMON", "MOLT_DIFF_TARGET_MODE"):
+        # Quarantine intentionally mutates these globals; register restoration.
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+    target, state, activated = module._activate_dyld_quarantine_target(use_local=True)
+    assert activated and target.is_relative_to(Path(env[output.ROOT_ENV]))
+    assert state == output.isolated_state_root(
+        target=target, environment=env, repo_root=repo
+    )
+    assert state != Path(env["MOLT_BUILD_STATE_DIR"])
+    assert output.enforce_child(dict(os.environ), repo_root=repo) == Path(
+        env[output.ROOT_ENV]
+    )
+    retry_states: list[Path] = []
+
+    def run_retry(isolated):
+        retry_state = Path(isolated["MOLT_BUILD_STATE_DIR"])
+        assert retry_state != state and retry_state != Path(env["MOLT_BUILD_STATE_DIR"])
+        assert retry_state.exists()
+        retry_states.append(retry_state)
+        return module.compat_backends.BackendResult("retry stdout", "", 0)
+
+    result = module._run_isolated_retry(run_retry, environment=env)
+    assert result.stdout == "retry stdout" and result.infrastructure_failure is None
+    assert len(retry_states) == 1 and not retry_states[0].exists()
+
+
+@pytest.mark.parametrize(
+    "failure", ["body", "state-allocation", "cleanup-success", "cleanup-failure"]
+)
+def test_retry_lease_always_retires_and_reports_failures(
+    admitted_guest_environment, monkeypatch, failure
+):
+    from tools.compat import diff_output_layout as output
+
+    repo, env = admitted_guest_environment
+    module = _load_diff_module()
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    primary = LookupError("primary")
+    if failure == "state-allocation":
+
+        def cannot_claim(*_args, **_kwargs):
+            raise primary
+
+        monkeypatch.setattr(output, "claim_new_guest_leaf", cannot_claim)
+    retired = []
+
+    def blocked_retirement(lease, **_kwargs):
+        retired.append(lease.path)
+        return "cleanup failed"
+
+    if failure != "state-allocation":
+        monkeypatch.setattr(output.GuestOutputLease, "retire", blocked_retirement)
+    guest = module.compat_backends.BackendResult(
+        "guest stdout",
+        "guest stderr",
+        7 if failure == "cleanup-failure" else 0,
+        detail="guest detail",
+    )
+
+    def run_retry(isolated):
+        child = {**env, **isolated}
+        assert output.enforce_child(child, repo_root=repo) == Path(env[output.ROOT_ENV])
+        assert Path(isolated["MOLT_BUILD_STATE_DIR"]).is_relative_to(
+            Path(env["MOLT_EXT_ROOT"])
+        )
+        if failure == "body":
+            raise primary
+        return guest
+
+    if failure in {"body", "state-allocation"}:
+        with pytest.raises(LookupError) as caught:
+            module._run_isolated_retry(run_retry, environment=env)
+        assert caught.value is primary
+        if failure == "state-allocation":
+            assert not list(Path(env["MOLT_DIFF_TMPDIR"]).iterdir())
+        else:
+            assert primary.__notes__ == ["cleanup failed", "cleanup failed"]
+    else:
+        result = module._run_isolated_retry(run_retry, environment=env)
+        assert (result.stdout, result.stderr, result.returncode) == (
+            guest.stdout,
+            guest.stderr,
+            guest.returncode,
+        )
+        assert result.infrastructure_failure is not None
+        assert result.infrastructure_failure.phase == "temporary_artifact_custody"
+        assert result.infrastructure_failure.details == (
+            "cleanup failed",
+            "cleanup failed",
+        )
+        assert result.detail == "guest detail\ncleanup failed\ncleanup failed"
+    if failure != "state-allocation":
+        assert len(retired) == 2
+        assert retired[0].is_relative_to(Path(env["MOLT_EXT_ROOT"]))
+        assert retired[1].is_relative_to(Path(env[output.ROOT_ENV]))
+
+
+def test_diff_lock_rejects_target_drift_without_dropping_held_lock(
+    tmp_path, monkeypatch
+):
+    module = _load_diff_module()
+    first, second = tmp_path / "one.lock", tmp_path / "two.lock"
+    monkeypatch.setattr(module, "_diff_run_lock_path", lambda: first)
+    module._ensure_diff_run_lock()
+    held = module._DIFF_RUN_LOCK_HANDLE
+    try:
+        module._ensure_diff_run_lock()
+        monkeypatch.setattr(module, "_diff_run_lock_path", lambda: second)
+        with pytest.raises(RuntimeError, match="target changed"):
+            module._ensure_diff_run_lock()
+        assert module._DIFF_RUN_LOCK_HANDLE is held
+        assert not second.exists()
+    finally:
+        module._release_diff_run_lock()
+
+
+def test_guest_output_selection_binds_one_root_and_keeps_receipts_canonical(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools.compat import diff_output_layout
+
+    module = _load_diff_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    env = {
+        "MOLT_EXT_ROOT": str(canonical),
+        "MOLT_DIFF_ROOT": str(canonical / "receipt-one"),
+        diff_output_layout.ROOT_ENV: str(output),
+    }
+    measured = []
+    monkeypatch.setattr(
+        diff_output_layout.disk_capacity,
+        "require_build_capacity",
+        lambda paths, **_kw: measured.extend(paths),
+    )
+    diff_output_layout.admit(
+        env, repo_root=repo, custody_root=canonical / "receipt-one"
+    )
+    first = module.DiffArtifactLayout.from_environment(repo_root=repo, environment=env)
+    second = module.DiffArtifactLayout.from_environment(
+        repo_root=repo,
+        environment={**env, "MOLT_DIFF_ROOT": str(canonical / "receipt-two")},
+    )
+    assert first.diff_root == canonical / "receipt-one"
+    assert first.tmp_root == output / "guest-tmp"
+    assert (
+        first.cargo_target_root == second.cargo_target_root == output / "cargo-target"
+    )
+    assert first.cache_root == canonical / ".molt_cache"
+    assert set(measured) == {
+        output / "cargo-target",
+        output / "guest-tmp",
+        output / "compat-scratch",
+    }
+    assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+
+
+def test_guest_output_replacement_refused_after_admission(tmp_path: Path, monkeypatch):
+    from tools.compat import diff_output_layout
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    env = {
+        "MOLT_EXT_ROOT": str(canonical),
+        "MOLT_DIFF_ROOT": str(canonical / "diff"),
+        diff_output_layout.ROOT_ENV: str(output),
+    }
+    monkeypatch.setattr(
+        diff_output_layout.disk_capacity,
+        "require_build_capacity",
+        lambda *_args, **_kwargs: None,
+    )
+    diff_output_layout.admit(env, repo_root=repo, custody_root=canonical / "diff")
+    output.rename(tmp_path / "replaced")
+    output.mkdir()
+    with pytest.raises(ValueError, match="replaced|remounted"):
+        diff_output_layout.enforce_child(env, repo_root=repo)
+
+
+def test_guest_output_capacity_failure_does_not_bind_identity(
+    tmp_path: Path, monkeypatch
+):
+    from tools.compat import diff_output_layout
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    env = {
+        "MOLT_EXT_ROOT": str(canonical),
+        "MOLT_DIFF_ROOT": str(canonical / "diff"),
+        diff_output_layout.ROOT_ENV: str(output),
+    }
+    monkeypatch.setattr(
+        diff_output_layout.disk_capacity,
+        "require_build_capacity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("insufficient")),
+    )
+    with pytest.raises(ValueError, match="insufficient"):
+        diff_output_layout.admit(env, repo_root=repo, custody_root=canonical / "diff")
+    assert diff_output_layout.IDENTITY_ENV not in env
+    assert "CARGO_TARGET_DIR" not in env
+
+
+def test_guest_output_requires_explicit_canonical_artifact_root(tmp_path: Path):
+    from tools.compat import diff_output_layout
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    env = {diff_output_layout.ROOT_ENV: str(output)}
+    with pytest.raises(ValueError, match="requires canonical MOLT_EXT_ROOT"):
+        diff_output_layout.admit(
+            env, repo_root=repo, custody_root=repo / "tmp" / "diff"
+        )
+    assert diff_output_layout.IDENTITY_ENV not in env
+
+
+def test_diff_run_lock_is_same_control_as_plain_cli_across_receipts(
+    tmp_path: Path, monkeypatch
+):
+    from molt.cli.runtime_paths import _build_state_root_cached
+    from tools.compat import diff_output_layout
+
+    module = _load_diff_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setattr(
+        diff_output_layout.disk_capacity,
+        "require_build_capacity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(module, "_repo_root", lambda: repo)
+    env = {
+        "MOLT_EXT_ROOT": str(canonical),
+        diff_output_layout.ROOT_ENV: str(output),
+        "MOLT_DIFF_ROOT": str(canonical / "receipt-one"),
+    }
+    diff_output_layout.admit(
+        env, repo_root=repo, custody_root=canonical / "receipt-one"
+    )
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    first = module._diff_run_lock_path()
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(canonical / "receipt-two"))
+    assert module._diff_run_lock_path() == first
+    cli = _build_state_root_cached(
+        str(repo),
+        None,
+        str(output / "cargo-target"),
+        str(repo),
+        None,
+        str(canonical),
+    )
+    assert first == cli / "diff_run.lock"
+
+
 @pytest.mark.parametrize(
     ("envs", "expected"),
     [
@@ -1538,8 +2037,9 @@ def test_diff_cargo_target_root_respects_priority_order(
     assert environment == original_environment
 
 
+@pytest.mark.parametrize("infrastructure_failure", [False, True])
 def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, infrastructure_failure: bool
 ) -> None:
     module = _load_diff_module()
     repo_root = tmp_path / "repo"
@@ -1609,10 +2109,27 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
             f"{sys.version_info.major}.{sys.version_info.minor}"
         )
         seen_cache_roots.append(os.environ.get("MOLT_CACHE"))
-        return module.compat_backends.BackendResult("", "", 0)
+        return module.compat_backends.BackendResult(
+            "",
+            "",
+            0,
+            infrastructure_failure=(
+                module.memory_guard.GuardInfrastructureFailure(
+                    phase="temporary_artifact_custody", details=("cleanup failed",)
+                )
+                if infrastructure_failure
+                else None
+            ),
+        )
 
     monkeypatch.setattr(module, "run_molt_build_only", fake_run_molt_build_only)
 
+    if infrastructure_failure:
+        with pytest.raises(
+            RuntimeError, match="warm-cache infrastructure failed.*cleanup failed"
+        ):
+            module.run_diff(target_file, "python", warm_cache=True)
+        return
     summary = module.run_diff(target_file, "python", warm_cache=True)
 
     assert summary["failed"] == 0

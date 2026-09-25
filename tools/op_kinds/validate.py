@@ -642,6 +642,25 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_function_reference_s_value_kinds has duplicate members"
         )
 
+    defined_function_refs = data.get(
+        "simpleir_defined_function_reference_s_value_kinds"
+    )
+    if (
+        not isinstance(defined_function_refs, list)
+        or not defined_function_refs
+        or not all(
+            isinstance(kind, str) and re.fullmatch(r"[a-z][a-z0-9_]*", kind)
+            for kind in defined_function_refs
+        )
+    ):
+        raise OpKindTableError(
+            "simpleir_defined_function_reference_s_value_kinds must be a non-empty list of wire kinds"
+        )
+    if len(set(defined_function_refs)) != len(defined_function_refs):
+        raise OpKindTableError(
+            "simpleir_defined_function_reference_s_value_kinds has duplicate members"
+        )
+
     var_field_members: dict[str, str] = {}
     for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
         members = data.get(key, [])

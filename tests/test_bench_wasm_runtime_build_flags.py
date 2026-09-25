@@ -33,6 +33,81 @@ def _runtime_link_response(cmd: list[str]) -> tuple[Path, str]:
     return response_path, response_path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("outcome", ["timeout", "lock", "compile", "manifest", "pass"])
+def test_wasm_benchmark_preserves_one_admitted_build_attempt(
+    tmp_path, monkeypatch, outcome
+) -> None:
+    env = {
+        "CARGO_TARGET_DIR": str(tmp_path / "target"),
+        "MOLT_BUILD_STATE_DIR": str(tmp_path / "control"),
+        "MOLT_MIDEND_MAX_ROUNDS": "12",
+    }
+    original_env = dict(env)
+    output = tmp_path / "output.wasm"
+    output.write_bytes(b"preserved failure evidence")
+    calls = []
+    diagnostics = []
+    ticks = iter((10.0, 12.5))
+    monkeypatch.setattr(bench_wasm.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(bench_wasm, "molt_args_for_benchmark", lambda _script: [])
+    monkeypatch.setattr(bench_wasm, "_parse_env_float", lambda *a, **k: 90.0)
+    monkeypatch.setattr(
+        bench_wasm, "_write_build_timeout_diag", lambda **k: diagnostics.append(k)
+    )
+    monkeypatch.setattr(
+        bench_wasm,
+        "_linked_wasm_output",
+        lambda _path: None if outcome == "manifest" else output,
+    )
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, dict(kwargs["env"])))
+        return bench_wasm._RunResult(
+            returncode=1 if outcome in {"timeout", "lock", "compile"} else 0,
+            timed_out=outcome == "timeout",
+            stderr="Timed out waiting for build lock" if outcome == "lock" else "",
+        )
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", run)
+    result = bench_wasm._build_wasm_output(
+        ["python"], env, output, "bench.py", tty=False, log=None
+    )
+    assert len(calls) == 1
+    assert calls[0][1] == env == original_env
+    assert output.read_bytes() == b"preserved failure evidence"
+    assert result == (2.5 if outcome == "pass" else None)
+    assert bool(diagnostics) == (outcome == "timeout")
+    if outcome == "pass":
+        assert bench_wasm._LAST_BUILD_FAILURE_DETAIL is None
+    else:
+        assert bench_wasm._LAST_BUILD_FAILURE_DETAIL
+
+
+def test_prepare_wasm_binary_does_not_retry_failed_build(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+    prunes: list[dict[str, str]] = []
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(
+        bench_wasm, "_prune_backend_daemons", lambda env: prunes.append(dict(env))
+    )
+    monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["python"])
+
+    def failed_build(_python_cmd, env, _output, script, **_kwargs):
+        calls.append((script, dict(env)))
+        bench_wasm._LAST_BUILD_FAILURE_DETAIL = "build_timeout timeout_s=90.0"
+        return None
+
+    monkeypatch.setattr(bench_wasm, "_build_wasm_output", failed_build)
+    result = bench_wasm.prepare_wasm_binary(
+        "case.py", tty=False, log=None, keep_temp=False, limits=object()
+    )
+    assert result is None
+    assert len(calls) == len(prunes) == 1
+    assert bench_wasm._LAST_BUILD_FAILURE_DETAIL == "build_timeout timeout_s=90.0"
+
+
 def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     monkeypatch,
     tmp_path: Path,
@@ -189,6 +264,7 @@ def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
 ) -> None:
     project_root = tmp_path / "repo with spaces"
     project_root.mkdir()
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(project_root / "state with spaces"))
     link_args = [
         "--import-memory",
         "--export-if-defined=molt_beta",

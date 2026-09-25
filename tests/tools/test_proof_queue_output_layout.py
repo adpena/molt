@@ -355,14 +355,14 @@ def test_explicit_role_binding_owns_temps_without_changing_default_check_inputs(
         "TMP": "caller-tmp",
         "TMPDIR": "caller-tmpdir",
         "PYTHONPYCACHEPREFIX": "caller-cache",
-        "MOLT_DIFF_TMPDIR": "canonical-shared-locks",
+        "MOLT_DIFF_TMPDIR": "caller-diff-payload",
     }
     assert default.caller_environment(env) == env
     target = root / "target"
     target.mkdir()
     bound = selected.bind(env, target=target)
     assert all(bound[name] == str(target) for name in selected.names)
-    assert bound["MOLT_DIFF_TMPDIR"] == "canonical-shared-locks"
+    assert bound["MOLT_DIFF_TMPDIR"] == "caller-diff-payload"
     selected.validate(bound, target=target)
     with pytest.raises(ValueError, match="differs"):
         selected.validate({**bound, "TMPDIR": "escaped"}, target=target)

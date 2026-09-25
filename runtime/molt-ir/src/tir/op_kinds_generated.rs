@@ -1342,6 +1342,67 @@ pub fn simpleir_kind_has_function_reference_s_value(kind: &str) -> bool {
     matches!(kind, "func_new" | "func_new_closure")
 }
 
+/// Exact s_value edges retaining defined functions at static link time.
+/// Independent of runtime-requirement provenance; never invent sibling names.
+pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[&str] = &[
+    "alloc_task",
+    "asyncgen_locals_register",
+    "await",
+    "call",
+    "call_async",
+    "call_func",
+    "call_guarded",
+    "call_indirect",
+    "call_internal",
+    "call_method",
+    "class_def",
+    "code_new",
+    "decorator",
+    "func_new",
+    "func_new_builtin",
+    "func_new_closure",
+    "gen_locals_register",
+    "generator_send",
+    "import_from",
+    "import_name",
+    "spawn",
+    "super_call",
+    "task_new",
+    "yield_from",
+];
+
+/// Whether an exact s_value target retains a body in the defined-function graph.
+#[inline]
+pub fn simpleir_kind_references_defined_function(kind: &str) -> bool {
+    matches!(
+        kind,
+        "alloc_task"
+            | "asyncgen_locals_register"
+            | "await"
+            | "call"
+            | "call_async"
+            | "call_func"
+            | "call_guarded"
+            | "call_indirect"
+            | "call_internal"
+            | "call_method"
+            | "class_def"
+            | "code_new"
+            | "decorator"
+            | "func_new"
+            | "func_new_builtin"
+            | "func_new_closure"
+            | "gen_locals_register"
+            | "generator_send"
+            | "import_from"
+            | "import_name"
+            | "spawn"
+            | "super_call"
+            | "task_new"
+            | "yield_from"
+    )
+}
+
 /// Map a SimpleIR `kind` string to its first-class TIR `OpCode`, or
 /// `None` when the kind has no first-class opcode (the caller lifts it to
 /// `OpCode::Copy{_original_kind}`). Mirrors the `|`-grouped arms in the

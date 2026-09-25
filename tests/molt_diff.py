@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -49,6 +49,7 @@ from molt.dx import (  # noqa: E402
     development_artifact_env,
 )
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt import file_locks  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
@@ -58,11 +59,13 @@ from molt.target_python import (  # noqa: E402
 from tests import process_guard_common  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
+from tools.compat import diff_output_layout  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
+from molt.build_state_layout import build_state_root  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
-_DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
+_DIFF_RUN_LOCK_HANDLE: file_locks._FileLockHandle | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
 _BATCH_COMPILE_SERVER_CLIENT_PID = 0
@@ -82,12 +85,6 @@ _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB = harness_memory_guard.HARD_RSS_LIMIT_GB
 _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB = memory_guard.max_rss_kb_from_gb(
     _DIFF_MEMORY_GUARD_HARD_GLOBAL_GB
 )
-
-try:
-    import fcntl  # type: ignore
-except Exception:  # pragma: no cover - non-posix fallback
-    fcntl = None
-
 
 PythonCommand = str | Sequence[str]
 
@@ -188,6 +185,11 @@ def _configure_diff_artifact_environment(
 ) -> None:
     """Install canonical artifact custody at the CLI execution boundary."""
 
+    inherited_outputs = {
+        key: environment[key]
+        for key in diff_output_layout.OUTPUT_KEYS
+        if environment.get(key)
+    }
     resolved = development_artifact_env(
         repo_root,
         environment,
@@ -198,6 +200,12 @@ def _configure_diff_artifact_environment(
     for key in (*CANONICAL_RUN_ENV_KEYS, *DX_ENV_KEYS, "PYTHONPATH"):
         if key in resolved:
             environment[key] = resolved[key]
+    diff_output_layout.admit(
+        environment,
+        repo_root=repo_root,
+        custody_root=Path(environment["MOLT_DIFF_ROOT"]),
+        explicit_outputs=inherited_outputs,
+    )
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
@@ -436,15 +444,23 @@ class DiffArtifactLayout:
 
         artifact_root = configured_path("MOLT_EXT_ROOT") or repository
         diff_root = configured_path("MOLT_DIFF_ROOT") or artifact_root / "tmp" / "diff"
-        tmp_root = configured_path("MOLT_DIFF_TMPDIR") or artifact_root / "tmp"
-        cargo_target_root = (
-            configured_path("MOLT_DIFF_CARGO_TARGET_DIR")
-            or configured_path("CARGO_TARGET_DIR")
-            or cargo_target_dir_for_artifact_root(
-                artifact_root,
-                environment.get("MOLT_SESSION_ID"),
-            )
+        selected = diff_output_layout.selected_root(
+            environment, repo_root=repository, custody_root=diff_root
         )
+        if selected is None:
+            tmp_root = configured_path("MOLT_DIFF_TMPDIR") or artifact_root / "tmp"
+            cargo_target_root = (
+                configured_path("MOLT_DIFF_CARGO_TARGET_DIR")
+                or configured_path("CARGO_TARGET_DIR")
+                or cargo_target_dir_for_artifact_root(
+                    artifact_root, environment.get("MOLT_SESSION_ID")
+                )
+            )
+        else:
+            tmp_root = selected / "guest-tmp"
+            cargo_target_root = diff_output_layout.projected_target(
+                environment, selected
+            )
         return cls(
             repo_root=repository,
             artifact_root=artifact_root,
@@ -524,8 +540,10 @@ def _record_diff_result(record: dict[str, object]) -> None:
         ) from exc
 
 
-def _diff_tmp_root() -> Path:
-    return _materialize_artifact_root(_diff_artifact_layout().tmp_root)
+def _diff_tmp_root(environment: Mapping[str, str] | None = None) -> Path:
+    return _materialize_artifact_root(
+        _diff_artifact_layout(environment=environment).tmp_root
+    )
 
 
 def _diff_cargo_target_root() -> Path:
@@ -537,15 +555,20 @@ def _diff_cache_root() -> Path:
 
 
 def _diff_backend_daemon_root() -> Path:
-    return _diff_cargo_target_root() / ".molt_state" / "backend_daemon"
+    return _diff_state_root() / "backend_daemon"
 
 
 def _diff_build_lock_root() -> Path:
-    return _diff_cargo_target_root() / ".molt_state" / "build_locks"
+    return _diff_state_root() / "build_locks"
 
 
 def _diff_state_root() -> Path:
-    return _diff_cargo_target_root() / ".molt_state"
+    layout = _diff_artifact_layout()
+    return build_state_root(
+        project_root=layout.repo_root,
+        cargo_target=layout.cargo_target_root,
+        environment=os.environ,
+    )
 
 
 def _diff_run_lock_path() -> Path:
@@ -572,47 +595,36 @@ def _release_diff_run_lock() -> None:
     _DIFF_RUN_LOCK_HANDLE = None
     if handle is None:
         return
-    if fcntl is not None:
-        with contextlib.suppress(OSError):
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    with contextlib.suppress(OSError):
-        handle.close()
+    file_locks._release_file_lock(handle)
 
 
 def _ensure_diff_run_lock() -> None:
     global _DIFF_RUN_LOCK_HANDLE
-    if _DIFF_RUN_LOCK_HANDLE is not None:
-        return
-    if os.name != "posix" or fcntl is None:
-        return
     lock_path = _diff_run_lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(lock_path, "a+", encoding="utf-8")
+    if _DIFF_RUN_LOCK_HANDLE is not None:
+        if _DIFF_RUN_LOCK_HANDLE.registry_key != file_locks._in_process_lock_key(
+            lock_path
+        ):
+            raise RuntimeError("differential run target changed while its lock is held")
+        return
     wait_sec = _diff_run_lock_wait_sec()
     poll_sec = _diff_run_lock_poll_sec()
-    deadline = time.monotonic() + wait_sec
-    announced_wait = False
-    while True:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            if not announced_wait:
-                print(
-                    "[INFO] Waiting for active differential run lock at "
-                    f"{lock_path} (timeout={wait_sec:.0f}s)"
-                )
-                announced_wait = True
-            if wait_sec <= 0 or time.monotonic() >= deadline:
-                handle.close()
-                raise RuntimeError(
-                    f"Timed out waiting for differential run lock: {lock_path}"
-                )
-            time.sleep(poll_sec)
-    handle.seek(0)
-    handle.truncate(0)
-    handle.write(f"pid={os.getpid()} started={int(time.time())}\n")
-    handle.flush()
+    handle = file_locks._acquire_file_lock(
+        lock_path,
+        timeout_s=wait_sec,
+        timeout_message=f"Timed out waiting for differential run lock: {lock_path}",
+        poll_s=poll_sec,
+    )
+    try:
+        handle.file.seek(0)
+        handle.file.truncate(0)
+        handle.file.write(
+            f"pid={os.getpid()} started={int(time.time())}\n".encode("utf-8")
+        )
+        handle.file.flush()
+    except BaseException:
+        file_locks._release_file_lock(handle)
+        raise
     _DIFF_RUN_LOCK_HANDLE = handle
     atexit.register(_release_diff_run_lock)
 
@@ -1152,8 +1164,7 @@ def _prune_stale_build_locks() -> None:
 
 
 def _diff_keep_artifacts() -> bool:
-    raw = os.environ.get("MOLT_DIFF_KEEP", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return diff_output_layout.keep_artifacts(os.environ)
 
 
 def _diff_log_passes() -> bool:
@@ -1190,6 +1201,7 @@ def _backend_execution_context(
     if metadata_error is not None:
         raise ValueError(metadata_error)
     env.update(_molt_sys_env_for_python_exe(python_exe))
+    diff_output_layout.enforce_child(env, repo_root=_repo_root())
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
         build_profile=build_profile,
@@ -1516,12 +1528,25 @@ def _activate_dyld_quarantine_target(
 ) -> tuple[Path, Path, bool]:
     run_id = os.environ.get("MOLT_DIFF_RUN_ID", "").strip() or "adhoc"
     safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id)
-    if use_local:
+    selected = diff_output_layout.selected_for_compat(
+        os.environ, repo_root=_repo_root()
+    )
+    if selected is not None:
+        quarantine_root = selected / "guest-tmp" / "dyld_quarantine" / safe_run_id
+    elif use_local:
         quarantine_root = _diff_dyld_local_root() / safe_run_id
     else:
         quarantine_root = _diff_root() / "dyld_quarantine" / safe_run_id
     target_dir = quarantine_root / "target"
-    state_dir = quarantine_root / "state"
+    state_dir = (
+        diff_output_layout.isolated_state_root(
+            repo_root=_repo_root(),
+            target=target_dir,
+            environment=os.environ,
+        )
+        if selected is not None
+        else quarantine_root / "state"
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
     activated = (
@@ -1532,6 +1557,8 @@ def _activate_dyld_quarantine_target(
     os.environ["MOLT_DIFF_CARGO_TARGET_DIR"] = str(target_dir)
     os.environ["MOLT_BUILD_STATE_DIR"] = str(state_dir)
     os.environ["CARGO_TARGET_DIR"] = str(target_dir)
+    if selected is not None:
+        os.environ["MOLT_DIFF_TARGET_MODE"] = "dyld"
     os.environ["MOLT_BACKEND_DAEMON"] = "0"
     return target_dir, state_dir, activated
 
@@ -1543,8 +1570,8 @@ def _diff_retry_isolated_default() -> bool:
     return True
 
 
-def _diff_keep_isolated_retry_dirs() -> bool:
-    raw = os.environ.get("MOLT_DIFF_KEEP_ISOLATED_RETRY", "").strip().lower()
+def _diff_keep_isolated_retry_dirs(environment: Mapping[str, str]) -> bool:
+    raw = environment.get("MOLT_DIFF_KEEP_ISOLATED_RETRY", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -2818,20 +2845,44 @@ def _run_batch_compile_build(
 
 
 def run_cpython(file_path, python_exe=sys.executable) -> compat_backends.BackendResult:
+    environment = os.environ.copy()
+    tmp_root = _diff_tmp_root(environment)
+    lease = diff_output_layout.new_guest_leaf(
+        tmp_root,
+        prefix="cpython_tmp_",
+        boundary=tmp_root,
+        environment=environment,
+        repo_root=_repo_root(),
+    )
+    return compat_backends.run_with_guest_outputs(
+        [lease],
+        lambda: _run_cpython_owned(
+            file_path,
+            python_exe=python_exe,
+            cpython_tmp=lease.path,
+            environment=environment,
+        ),
+        environment=environment,
+        repo_root=_repo_root(),
+    )
+
+
+def _run_cpython_owned(
+    file_path, *, python_exe, cpython_tmp: Path, environment: Mapping[str, str]
+) -> compat_backends.BackendResult:
     python_command = _resolve_python_command(python_exe)
     _apply_memory_limit()
-    env = os.environ.copy()
+    env = dict(environment)
     # Keep CPython baseline path resolution aligned with the Molt build/run env.
     env["PYTHONPATH"] = "src"
     env["PYTHONHASHSEED"] = "0"
     # Keep CPython tempfile roots aligned with Molt subprocess roots so path
     # semantics (especially macOS /var vs /private/var) are compared fairly.
-    cpython_tmp = _diff_tmp_root() / "cpython_tmp"
-    cpython_tmp.mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(cpython_tmp)
     env["TEMP"] = str(cpython_tmp)
     env["TMP"] = str(cpython_tmp)
     env.update(_collect_env_overrides(file_path))
+    diff_output_layout.enforce_child(env, repo_root=_repo_root())
     bootstrap = """
 def _molt_diff_execute_script():
     import builtins as _builtins
@@ -3061,8 +3112,54 @@ def _run_molt(
     extra_env: dict[str, str] | None,
     execution_context: compat_backends.BackendExecutionContext | None,
 ) -> compat_backends.BackendResult:
+    environment = (
+        dict(execution_context.environment)
+        if execution_context is not None
+        else os.environ.copy()
+    )
+    if extra_env:
+        environment.update(extra_env)
+    tmp_root = _diff_tmp_root(environment)
+    lease = diff_output_layout.new_guest_leaf(
+        tmp_root,
+        prefix="molt_diff_",
+        boundary=tmp_root,
+        environment=environment,
+        repo_root=_repo_root(),
+    )
+    return compat_backends.run_with_guest_outputs(
+        [lease],
+        lambda: _run_molt_owned(
+            file_path,
+            build_only=build_only,
+            build_profile=build_profile,
+            daemon_enabled=daemon_enabled,
+            no_cache=no_cache,
+            rebuild=rebuild,
+            extra_env=extra_env,
+            execution_context=execution_context,
+            output_root=lease.path,
+            environment=environment,
+        ),
+        environment=environment,
+        repo_root=_repo_root(),
+    )
+
+
+def _run_molt_owned(
+    file_path: str,
+    *,
+    build_only: bool,
+    build_profile: str,
+    daemon_enabled: bool | None,
+    no_cache: bool,
+    rebuild: bool,
+    extra_env: dict[str, str] | None,
+    execution_context: compat_backends.BackendExecutionContext | None,
+    output_root: Path,
+    environment: Mapping[str, str],
+) -> compat_backends.BackendResult:
     _apply_memory_limit()
-    output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
     tmp_root = output_root / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
     output_binary = output_root / f"{Path(file_path).stem}_molt"
@@ -3080,25 +3177,40 @@ def _run_molt(
         and execution_context.build_profile != build_profile
     ):
         raise ValueError("backend execution context build profile drifted")
-    env = (
-        dict(execution_context.environment)
-        if execution_context is not None
-        else os.environ.copy()
-    )
+    env = dict(environment)
+    layout = _diff_artifact_layout(environment=env)
     env["PYTHONPATH"] = "src"
     env["PYTHONHASHSEED"] = "0"
     # Keep differential builds hermetic to the configured diff roots so host
     # ~/.molt state and inherited shell paths cannot destabilize runs.
-    diff_home = _diff_root() / ".molt_home"
+    selected = diff_output_layout.selected_for_compat(env, repo_root=_repo_root())
+    diff_home = (
+        selected / "guest-tmp" / ".molt_home"
+        if selected is not None
+        else layout.diff_root / ".molt_home"
+    )
     diff_home.mkdir(parents=True, exist_ok=True)
-    env.setdefault("MOLT_HOME", str(diff_home))
-    env.setdefault("MOLT_BIN", str(diff_home / "bin"))
-    env.setdefault("MOLT_BUILD_STATE_DIR", str(_diff_state_root()))
+    if selected is not None:
+        env["MOLT_HOME"] = str(diff_home)
+        env["MOLT_BIN"] = str(diff_home / "bin")
+    else:
+        env.setdefault("MOLT_HOME", str(diff_home))
+        env.setdefault("MOLT_BIN", str(diff_home / "bin"))
+    env.setdefault(
+        "MOLT_BUILD_STATE_DIR",
+        str(
+            build_state_root(
+                project_root=layout.repo_root,
+                cargo_target=layout.cargo_target_root,
+                environment=env,
+            )
+        ),
+    )
     shared_cache = env.get("MOLT_CACHE")
     if shared_cache:
         Path(shared_cache).mkdir(parents=True, exist_ok=True)
     else:
-        cache_root = _diff_cache_root()
+        cache_root = layout.cache_root
         cache_root.mkdir(parents=True, exist_ok=True)
         env["MOLT_CACHE"] = str(cache_root)
     env["TMPDIR"] = str(tmp_root)
@@ -3118,7 +3230,7 @@ def _run_molt(
         env["MOLT_USE_SCCACHE"] = "0"
     # Always route through the diff target root (which itself honors
     # MOLT_DIFF_CARGO_TARGET_DIR) instead of inheriting unrelated shell state.
-    env["CARGO_TARGET_DIR"] = str(_diff_cargo_target_root())
+    env["CARGO_TARGET_DIR"] = str(layout.cargo_target_root)
     if execution_context is None:
         env["MOLT_CAPABILITY_TIER"] = (
             MAXIMUM_BUILTIN_CAPABILITY_TIER
@@ -3141,6 +3253,7 @@ def _run_molt(
             )
     if extra_env:
         env.update(extra_env)
+    diff_output_layout.enforce_child(env, repo_root=_repo_root())
     if daemon_enabled is None:
         daemon_enabled = _diff_backend_daemon_default()
     env["MOLT_BACKEND_DAEMON"] = "1" if daemon_enabled else "0"
@@ -3175,246 +3288,234 @@ def _run_molt(
     timeout = _diff_timeout()
     build_timeout = _diff_build_timeout(timeout)
     rss_limit_kb = _diff_fail_rss_kb()
-    try:
-        build_stdout = ""
-        build_stderr = ""
-        build_rc = 0
-        build_via_batch_server = False
-        batch_requested = _diff_batch_compile_server_enabled()
-        batch_strict = _diff_batch_compile_server_strict()
-        batch_request_timeout = _diff_batch_compile_server_request_timeout(
-            build_timeout
-        )
-        if batch_requested:
-            try:
-                batch_result = _run_batch_compile_build(
-                    env=env,
-                    file_path=file_path,
-                    output_root=output_root,
-                    output_binary=output_binary,
-                    build_profile=build_profile,
-                    target_python=(
-                        execution_context.target_python
-                        if execution_context is not None
-                        else None
-                    ),
-                    no_cache=no_cache,
-                    rebuild=rebuild,
-                    request_timeout=batch_request_timeout,
-                    strict_mode=batch_strict,
-                )
-            except Exception as exc:
-                if batch_strict:
-                    message = f"Batch compile server strict mode failed: {exc}"
-                    _record_rss_metrics(
-                        file_path,
-                        build_metrics=None,
-                        run_metrics=None,
-                        build_rc=127,
-                        run_rc=None,
-                        status="build_batch_server_error",
-                    )
-                    return compat_backends.BackendResult(
-                        None, message, 127, build_failed=True
-                    )
-                print(
-                    "[WARN] Batch compile server unavailable; falling back to subprocess build: "
-                    f"{exc}"
-                )
-            else:
-                if (
-                    batch_result.timed_out
-                    or batch_result.infrastructure_failure is not None
-                ):
-                    _record_rss_metrics(
-                        file_path,
-                        build_metrics=None,
-                        run_metrics=None,
-                        build_rc=batch_result.returncode,
-                        run_rc=None,
-                        status="build_infrastructure_error"
-                        if batch_result.infrastructure_failure is not None
-                        else "build_timeout",
-                    )
-                    return batch_result
-                build_via_batch_server = True
-                build_rc = batch_result.returncode
-                build_stdout = batch_result.stdout or ""
-                build_stderr = batch_result.stderr
-
-        build_cmd = [
-            _resolve_molt_cli_python(),
-            "-m",
-            "molt.cli",
-            "build",
-            file_path,
-            "--build-profile",
-            build_profile,
-            "--respect-pythonpath",
-            "--out-dir",
-            str(output_root),
-            "--output",
-            str(output_binary),
-        ]
-        if execution_context is not None:
-            build_cmd.extend(
-                ["--python-version", execution_context.target_python.short]
-            )
-        # Grant standard capabilities for CPython parity in differential tests.
-        # Without these, compiled binaries cannot access the filesystem (tempfile,
-        # pathlib, os.path), environment variables, or time functions — causing
-        # spurious failures unrelated to the tested semantics.
-        diff_caps = _diff_capabilities(env)
-        if diff_caps:
-            build_cmd.extend(["--capabilities", diff_caps])
-        if no_cache:
-            build_cmd.append("--no-cache")
-        if rebuild:
-            build_cmd.append("--rebuild")
-        if stdlib_profile is not None:
-            build_cmd.extend(["--stdlib-profile", stdlib_profile])
-        codec = env.get("MOLT_CODEC")
-        if codec:
-            build_cmd.extend(["--codec", codec])
-        if not build_via_batch_server:
-            try:
-                build_res = _run_with_optional_time(
-                    build_cmd,
-                    env=env,
-                    timeout=build_timeout,
-                    time_path=build_time_path,
-                )
-            except subprocess.TimeoutExpired as exc:
-                build_metrics = (
-                    _parse_time_metrics(build_time_path)
-                    if build_time_path is not None
+    build_stdout = ""
+    build_stderr = ""
+    build_rc = 0
+    build_via_batch_server = False
+    batch_requested = _diff_batch_compile_server_enabled()
+    batch_strict = _diff_batch_compile_server_strict()
+    batch_request_timeout = _diff_batch_compile_server_request_timeout(build_timeout)
+    if batch_requested:
+        try:
+            batch_result = _run_batch_compile_build(
+                env=env,
+                file_path=file_path,
+                output_root=output_root,
+                output_binary=output_binary,
+                build_profile=build_profile,
+                target_python=(
+                    execution_context.target_python
+                    if execution_context is not None
                     else None
-                )
+                ),
+                no_cache=no_cache,
+                rebuild=rebuild,
+                request_timeout=batch_request_timeout,
+                strict_mode=batch_strict,
+            )
+        except Exception as exc:
+            if batch_strict:
+                message = f"Batch compile server strict mode failed: {exc}"
                 _record_rss_metrics(
                     file_path,
-                    build_metrics=build_metrics,
+                    build_metrics=None,
                     run_metrics=None,
-                    build_rc=124,
+                    build_rc=127,
                     run_rc=None,
-                    status="build_timeout",
+                    status="build_batch_server_error",
                 )
-                return compat_backends.BackendResult.from_timeout(
-                    exc, build_failed=True
+                return compat_backends.BackendResult(
+                    None, message, 127, build_failed=True
                 )
-            if build_time_path is not None:
-                build_metrics = _parse_time_metrics(build_time_path)
-            if getattr(build_res, "infrastructure_failure", None) is not None:
-                return compat_backends.BackendResult.from_process(
-                    build_res
-                ).as_build_failure(
-                    detail="build guard infrastructure failed",
-                    fallback="guard infrastructure failed",
+            print(
+                "[WARN] Batch compile server unavailable; falling back to subprocess build: "
+                f"{exc}"
+            )
+        else:
+            if (
+                batch_result.timed_out
+                or batch_result.infrastructure_failure is not None
+            ):
+                _record_rss_metrics(
+                    file_path,
+                    build_metrics=None,
+                    run_metrics=None,
+                    build_rc=batch_result.returncode,
+                    run_rc=None,
+                    status="build_infrastructure_error"
+                    if batch_result.infrastructure_failure is not None
+                    else "build_timeout",
                 )
-            build_rc = build_res.returncode
-            build_stdout = build_res.stdout
-            build_stderr = build_res.stderr
-        exceeded, detail = _rss_exceeded(build_metrics, rss_limit_kb)
-        if exceeded:
-            message = f"Build RSS limit exceeded: {detail}"
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=125,
-                run_rc=None,
-                status="build_rss_exceeded",
-            )
-            return compat_backends.BackendResult(None, message, 125, build_failed=True)
-        if build_rc != 0:
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=build_rc,
-                run_rc=None,
-                status="build_failed",
-            )
-            return compat_backends.BackendResult(
-                None, build_stderr or build_stdout, build_rc, build_failed=True
-            )
+                return batch_result
+            build_via_batch_server = True
+            build_rc = batch_result.returncode
+            build_stdout = batch_result.stdout or ""
+            build_stderr = batch_result.stderr
 
-        preflight_err = _dyld_preflight_error(output_binary)
-        if preflight_err is not None:
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=126,
-                run_rc=None,
-                status="build_dyld_preflight_failed",
-            )
-            return compat_backends.BackendResult(
-                None, preflight_err, 126, build_failed=True
-            )
-
-        if build_only:
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=None,
-                build_rc=build_rc,
-                run_rc=None,
-                status="build_only_ok",
-            )
-            return compat_backends.BackendResult("", "", 0)
-
-        # Run
+    build_cmd = [
+        _resolve_molt_cli_python(),
+        "-m",
+        "molt.cli",
+        "build",
+        file_path,
+        "--build-profile",
+        build_profile,
+        "--respect-pythonpath",
+        "--out-dir",
+        str(output_root),
+        "--output",
+        str(output_binary),
+    ]
+    if execution_context is not None:
+        build_cmd.extend(["--python-version", execution_context.target_python.short])
+    # Grant standard capabilities for CPython parity in differential tests.
+    # Without these, compiled binaries cannot access the filesystem (tempfile,
+    # pathlib, os.path), environment variables, or time functions — causing
+    # spurious failures unrelated to the tested semantics.
+    diff_caps = _diff_capabilities(env)
+    if diff_caps:
+        build_cmd.extend(["--capabilities", diff_caps])
+    if no_cache:
+        build_cmd.append("--no-cache")
+    if rebuild:
+        build_cmd.append("--rebuild")
+    if stdlib_profile is not None:
+        build_cmd.extend(["--stdlib-profile", stdlib_profile])
+    codec = env.get("MOLT_CODEC")
+    if codec:
+        build_cmd.extend(["--codec", codec])
+    if not build_via_batch_server:
         try:
-            run_res = _run_with_optional_time(
-                [str(output_binary)],
+            build_res = _run_with_optional_time(
+                build_cmd,
                 env=env,
-                timeout=timeout,
-                time_path=run_time_path,
+                timeout=build_timeout,
+                time_path=build_time_path,
             )
         except subprocess.TimeoutExpired as exc:
-            run_metrics = (
-                _parse_time_metrics(run_time_path)
-                if run_time_path is not None
+            build_metrics = (
+                _parse_time_metrics(build_time_path)
+                if build_time_path is not None
                 else None
             )
             _record_rss_metrics(
                 file_path,
                 build_metrics=build_metrics,
-                run_metrics=run_metrics,
-                build_rc=build_rc,
-                run_rc=124,
-                status="run_timeout",
+                run_metrics=None,
+                build_rc=124,
+                run_rc=None,
+                status="build_timeout",
             )
-            return compat_backends.BackendResult.from_timeout(exc)
-        if run_time_path is not None:
-            run_metrics = _parse_time_metrics(run_time_path)
-        if getattr(run_res, "infrastructure_failure", None) is not None:
-            return compat_backends.BackendResult.from_process(run_res)
-        exceeded, detail = _rss_exceeded(run_metrics, rss_limit_kb)
-        if exceeded:
-            message = f"Run RSS limit exceeded: {detail}"
-            _record_rss_metrics(
-                file_path,
-                build_metrics=build_metrics,
-                run_metrics=run_metrics,
-                build_rc=build_rc,
-                run_rc=125,
-                status="run_rss_exceeded",
+            return compat_backends.BackendResult.from_timeout(exc, build_failed=True)
+        if build_time_path is not None:
+            build_metrics = _parse_time_metrics(build_time_path)
+        if getattr(build_res, "infrastructure_failure", None) is not None:
+            return compat_backends.BackendResult.from_process(
+                build_res
+            ).as_build_failure(
+                detail="build guard infrastructure failed",
+                fallback="guard infrastructure failed",
             )
-            return compat_backends.BackendResult("", message, 125)
-        run_status = "ok" if run_res.returncode == 0 else "run_failed"
+        build_rc = build_res.returncode
+        build_stdout = build_res.stdout
+        build_stderr = build_res.stderr
+    exceeded, detail = _rss_exceeded(build_metrics, rss_limit_kb)
+    if exceeded:
+        message = f"Build RSS limit exceeded: {detail}"
+        _record_rss_metrics(
+            file_path,
+            build_metrics=build_metrics,
+            run_metrics=None,
+            build_rc=125,
+            run_rc=None,
+            status="build_rss_exceeded",
+        )
+        return compat_backends.BackendResult(None, message, 125, build_failed=True)
+    if build_rc != 0:
+        _record_rss_metrics(
+            file_path,
+            build_metrics=build_metrics,
+            run_metrics=None,
+            build_rc=build_rc,
+            run_rc=None,
+            status="build_failed",
+        )
+        return compat_backends.BackendResult(
+            None, build_stderr or build_stdout, build_rc, build_failed=True
+        )
+
+    preflight_err = _dyld_preflight_error(output_binary)
+    if preflight_err is not None:
+        _record_rss_metrics(
+            file_path,
+            build_metrics=build_metrics,
+            run_metrics=None,
+            build_rc=126,
+            run_rc=None,
+            status="build_dyld_preflight_failed",
+        )
+        return compat_backends.BackendResult(
+            None, preflight_err, 126, build_failed=True
+        )
+
+    if build_only:
+        _record_rss_metrics(
+            file_path,
+            build_metrics=build_metrics,
+            run_metrics=None,
+            build_rc=build_rc,
+            run_rc=None,
+            status="build_only_ok",
+        )
+        return compat_backends.BackendResult("", "", 0)
+
+    # Run
+    try:
+        run_res = _run_with_optional_time(
+            [str(output_binary)],
+            env=env,
+            timeout=timeout,
+            time_path=run_time_path,
+        )
+    except subprocess.TimeoutExpired as exc:
+        run_metrics = (
+            _parse_time_metrics(run_time_path) if run_time_path is not None else None
+        )
         _record_rss_metrics(
             file_path,
             build_metrics=build_metrics,
             run_metrics=run_metrics,
             build_rc=build_rc,
-            run_rc=run_res.returncode,
-            status=run_status,
+            run_rc=124,
+            status="run_timeout",
         )
+        return compat_backends.BackendResult.from_timeout(exc)
+    if run_time_path is not None:
+        run_metrics = _parse_time_metrics(run_time_path)
+    if getattr(run_res, "infrastructure_failure", None) is not None:
         return compat_backends.BackendResult.from_process(run_res)
-    finally:
-        if not _diff_keep_artifacts():
-            shutil.rmtree(output_root, ignore_errors=True)
+    exceeded, detail = _rss_exceeded(run_metrics, rss_limit_kb)
+    if exceeded:
+        message = f"Run RSS limit exceeded: {detail}"
+        _record_rss_metrics(
+            file_path,
+            build_metrics=build_metrics,
+            run_metrics=run_metrics,
+            build_rc=build_rc,
+            run_rc=125,
+            status="run_rss_exceeded",
+        )
+        return compat_backends.BackendResult("", message, 125)
+    run_status = "ok" if run_res.returncode == 0 else "run_failed"
+    _record_rss_metrics(
+        file_path,
+        build_metrics=build_metrics,
+        run_metrics=run_metrics,
+        build_rc=build_rc,
+        run_rc=run_res.returncode,
+        status=run_status,
+    )
+    return compat_backends.BackendResult.from_process(run_res)
 
 
 def _is_oom_returncode(code: int | None) -> bool:
@@ -3486,25 +3587,74 @@ def _is_backend_daemon_build_error(stderr: str) -> bool:
     )
 
 
-@contextlib.contextmanager
-def _isolated_retry_env(*, local_tmp: bool = False):
-    retry_base = Path(tempfile.gettempdir()) if local_tmp else _diff_tmp_root()
-    retry_root = Path(tempfile.mkdtemp(prefix="molt_diff_retry_", dir=retry_base))
-    target_dir = retry_root / "target"
-    state_dir = retry_root / "state"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    env = {
-        "CARGO_TARGET_DIR": str(target_dir),
-        "MOLT_BUILD_STATE_DIR": str(state_dir),
-        "MOLT_BACKEND_DAEMON": "0",
-        "MOLT_USE_SCCACHE": "0",
-    }
-    try:
-        yield env
-    finally:
-        if not _diff_keep_isolated_retry_dirs():
-            shutil.rmtree(retry_root, ignore_errors=True)
+def _run_isolated_retry(
+    run: Callable[[dict[str, str]], compat_backends.BackendResult],
+    *,
+    local_tmp: bool = False,
+    environment: Mapping[str, str] | None = None,
+) -> compat_backends.BackendResult:
+    environment = dict(os.environ if environment is None else environment)
+    selected = diff_output_layout.selected_for_compat(
+        environment, repo_root=_repo_root()
+    )
+    retry_base = (
+        _diff_tmp_root(environment)
+        if selected is not None
+        else Path(tempfile.gettempdir())
+        if local_tmp
+        else _diff_tmp_root(environment)
+    )
+    retry_lease = diff_output_layout.new_guest_leaf(
+        retry_base,
+        prefix="molt_diff_retry_",
+        boundary=retry_base,
+        environment=environment,
+        repo_root=_repo_root(),
+    )
+    leases = [retry_lease]
+
+    def run_retry() -> compat_backends.BackendResult:
+        retry_root = retry_lease.path
+        target_dir = retry_root / "target"
+        state_dir = (
+            diff_output_layout.isolated_state_root(
+                repo_root=_repo_root(),
+                target=target_dir,
+                environment=environment,
+            )
+            if selected is not None
+            else retry_root / "state"
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if selected is not None:
+            leases.append(
+                diff_output_layout.claim_new_guest_leaf(
+                    state_dir,
+                    boundary=Path(environment["MOLT_EXT_ROOT"]),
+                    environment=environment,
+                    repo_root=_repo_root(),
+                )
+            )
+        else:
+            state_dir.mkdir(parents=True, exist_ok=True)
+        env = {
+            "CARGO_TARGET_DIR": str(target_dir),
+            "MOLT_DIFF_CARGO_TARGET_DIR": str(target_dir),
+            "MOLT_BUILD_STATE_DIR": str(state_dir),
+            "MOLT_BACKEND_DAEMON": "0",
+            "MOLT_USE_SCCACHE": "0",
+        }
+        if selected is not None:
+            env["MOLT_DIFF_TARGET_MODE"] = "isolated-retry"
+        return run(env)
+
+    return compat_backends.run_with_guest_outputs(
+        leases,
+        run_retry,
+        environment=environment,
+        repo_root=_repo_root(),
+        keep=_diff_keep_isolated_retry_dirs(environment),
+    )
 
 
 def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
@@ -3864,8 +4014,8 @@ def _run_native_backend(
                 f"{'local /tmp ' if use_local_retry else ''}"
                 "target/build-state, daemon off, and --rebuild."
             )
-            with _isolated_retry_env(local_tmp=use_local_retry) as isolated_env:
-                outcome = run_molt(
+            outcome = _run_isolated_retry(
+                lambda isolated_env: run_molt(
                     file_path,
                     context.build_profile,
                     daemon_enabled=False,
@@ -3873,7 +4023,10 @@ def _run_native_backend(
                     rebuild=True,
                     extra_env=isolated_env,
                     execution_context=context,
-                )
+                ),
+                local_tmp=use_local_retry,
+                environment=context.environment,
+            )
     if outcome.infrastructure_failure is not None:
         return outcome
     if saw_dyld_retry and _diff_disable_daemon_on_dyld():
@@ -3929,15 +4082,17 @@ def _run_native_backend(
                 f"{file_path} persistent backend daemon/cache failure; retrying with "
                 "isolated target/build-state and --no-cache."
             )
-            with _isolated_retry_env() as isolated_env:
-                outcome = run_molt(
+            outcome = _run_isolated_retry(
+                lambda isolated_env: run_molt(
                     file_path,
                     context.build_profile,
                     daemon_enabled=False,
                     no_cache=True,
                     extra_env=isolated_env,
                     execution_context=context,
-                )
+                ),
+                environment=context.environment,
+            )
         if (
             outcome.infrastructure_failure is None
             and outcome.stdout is None
@@ -4143,6 +4298,18 @@ def diff_test(
     OR any two backends disagree with each other — so a backend-specific
     divergence that was previously invisible (single-backend native) is caught.
     """
+    if os.environ.get(diff_output_layout.ROOT_ENV):
+        if diff_output_layout.IDENTITY_ENV not in os.environ:
+            artifact = Path(os.environ.get("MOLT_EXT_ROOT") or _repo_root())
+            diff_output_layout.admit(
+                os.environ,
+                repo_root=_repo_root(),
+                custody_root=Path(
+                    os.environ.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff"
+                ),
+            )
+        else:
+            diff_output_layout.enforce_child(os.environ, repo_root=_repo_root())
     # Mutable record the inner finalizer fills in; emitted once on every exit
     # path (skip / oom / pass / fail). raw_status is authoritative for honesty.
     record: dict[str, object] = {
@@ -4236,8 +4403,9 @@ def diff_test(
             return resolved_status
 
         if cpython.infrastructure_failure is not None:
-            print(f"[UNCALIBRATED] {file_path} (cpython guard infrastructure failed)")
+            print(f"[UNCALIBRATED] {file_path} (cpython infrastructure failed)")
             print(cp_err)
+            print(cpython.detail)
             record["raw_status"] = record["resolved_status"] = "uncalibrated"
             record["reason_tag"] = "infrastructure_error"
             return "uncalibrated"
@@ -4335,10 +4503,9 @@ def diff_test(
                     outcome,
                     execution_context,
                 )
-                print(
-                    f"[UNCALIBRATED] {file_path} ({backend}: guard infrastructure failed)"
-                )
+                print(f"[UNCALIBRATED] {file_path} ({backend}: infrastructure failed)")
                 print(outcome.stderr)
+                print(outcome.detail)
                 continue
             # Record and diagnose each completed backend immediately. A later
             # resource failure must never discard already observed results.
@@ -4499,6 +4666,14 @@ def run_diff(
     warm_cache: bool = False,
     retry_oom: bool = False,
 ) -> dict:
+    artifact = Path(os.environ.get("MOLT_EXT_ROOT") or _repo_root())
+    diff_output_layout.admit(
+        os.environ,
+        repo_root=_repo_root(),
+        custody_root=Path(
+            os.environ.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff"
+        ),
+    )
     compiler_target_python = _resolve_molt_target_python(
         python_exe,
         target_python,
@@ -4607,6 +4782,11 @@ def run_diff(
                     build_profile,
                     execution_context=context,
                 )
+                if build_result.infrastructure_failure is not None:
+                    raise RuntimeError(
+                        f"warm-cache infrastructure failed for {file_path}: "
+                        + "; ".join(build_result.infrastructure_failure.details)
+                    )
                 if build_result.returncode != 0:
                     print(
                         f"[WARM-CACHE FAIL] {file_path}: {build_result.stderr.strip()}"

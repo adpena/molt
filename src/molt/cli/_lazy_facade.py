@@ -62,10 +62,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_execution",
         "_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION",
     ),
-    "_DEAD_FUNCTION_ELIM_REFERENCE_KINDS": (
-        "backend_cache",
-        "_DEAD_FUNCTION_ELIM_REFERENCE_KINDS",
-    ),
     "_DEFAULT_BACKEND_FEATURES": ("backend_execution", "_DEFAULT_BACKEND_FEATURES"),
     "_FALSY_ENV_VALUES": ("backend_diagnostics", "_FALSY_ENV_VALUES"),
     "_MoltHelpFormatter": ("arg_helpers", "_MoltHelpFormatter"),

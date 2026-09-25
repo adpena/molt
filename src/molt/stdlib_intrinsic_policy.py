@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -138,6 +138,38 @@ def stdlib_module_intrinsic_status(path: Path) -> str:
 
 
 @dataclass(frozen=True)
+class StdlibPrivateFacadeBinding:
+    export_name: str
+    owner_module: str | None
+    imported_name: str
+    line: int
+    # Filled by classification only when the fromlist name is a real graph node.
+    imported_module: str | None = None
+
+
+@dataclass(frozen=True)
+class StdlibPrivateFacadeEvidence:
+    """Pure forwarding syntax, not proof of symbol existence or runtime parity."""
+
+    bindings: tuple[StdlibPrivateFacadeBinding, ...]
+
+    @property
+    def owners(self) -> frozenset[str]:
+        return frozenset(
+            owner
+            for binding in self.bindings
+            for owner in (binding.owner_module, binding.imported_module)
+            if owner is not None
+        )
+
+    @property
+    def resolved(self) -> bool:
+        return bool(self.bindings) and all(
+            binding.owner_module is not None for binding in self.bindings
+        )
+
+
+@dataclass(frozen=True)
 class StdlibModuleImportEvidence:
     """Intrinsic relationships are evidence, not runtime graph admission.
 
@@ -149,12 +181,41 @@ class StdlibModuleImportEvidence:
     source_path: Path
     proven_modules: frozenset[str]
     unresolved_sites: tuple[tuple[int, StaticImportRequest, StaticImportPlan], ...]
+    private_facade: StdlibPrivateFacadeEvidence | None
 
 
 @dataclass(frozen=True)
 class StdlibIntrinsicClassification:
     statuses: Mapping[str, str]
     import_evidence: Mapping[str, StdlibModuleImportEvidence]
+
+    def private_facades_payload(self) -> list[dict[str, object]]:
+        return [
+            {
+                "module": module_name,
+                "path": str(evidence.source_path),
+                "status": self.statuses.get(module_name),
+                "reason": (
+                    "pure-private-reexport"
+                    if self.statuses.get(module_name) == STATUS_INTRINSIC_SUPPORT
+                    else None
+                ),
+                "resolved": facade.resolved,
+                "owners": sorted(facade.owners),
+                "bindings": [
+                    {
+                        "export_name": binding.export_name,
+                        "owner_module": binding.owner_module,
+                        "imported_name": binding.imported_name,
+                        "imported_module": binding.imported_module,
+                        "line": binding.line,
+                    }
+                    for binding in facade.bindings
+                ],
+            }
+            for module_name, evidence in sorted(self.import_evidence.items())
+            if (facade := evidence.private_facade) is not None
+        ]
 
     def unresolved_imports_payload(self) -> list[dict[str, object]]:
         return [
@@ -171,6 +232,76 @@ class StdlibIntrinsicClassification:
             for module_name, evidence in sorted(self.import_evidence.items())
             for line, request, plan in evidence.unresolved_sites
         ]
+
+
+def _pure_private_facade_imports(
+    module_name: str, tree: ast.Module
+) -> tuple[ast.ImportFrom, ...] | None:
+    """Recognize a literal forwarding subset of the existing import AST.
+
+    No export evaluation or alternate import resolution belongs here. Anything
+    outside this subset remains subject to the existing non-facade rules.
+    """
+    if not _is_private_support_module(module_name):
+        return None
+    body = list(tree.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+    future_bindings: set[str] = set()
+    while body:
+        future = body[0]
+        if not (
+            isinstance(future, ast.ImportFrom)
+            and future.level == 0
+            and future.module == "__future__"
+        ):
+            break
+        body.pop(0)
+        for alias in future.names:
+            # Future aliases could mutate module metadata or collide with exports.
+            if alias.name == "*" or alias.asname is not None:
+                return None
+            future_bindings.add(alias.name)
+    if len(body) < 2:
+        return None
+    declaration = body.pop()
+    if not (
+        isinstance(declaration, ast.Assign)
+        and len(declaration.targets) == 1
+        and isinstance(declaration.targets[0], ast.Name)
+        and declaration.targets[0].id == "__all__"
+        and isinstance(declaration.value, (ast.List, ast.Tuple))
+    ):
+        return None
+    exports: list[str] = []
+    for item in declaration.value.elts:
+        if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            return None
+        exports.append(item.value)
+    imports: list[ast.ImportFrom] = []
+    bindings: set[str] = set()
+    for node in body:
+        if not isinstance(node, ast.ImportFrom) or node.module == "__future__":
+            return None
+        for alias in node.names:
+            binding = alias.asname or alias.name
+            if (
+                alias.name == "*"
+                or binding in bindings
+                or binding in future_bindings
+                or (binding.startswith("__") and binding.endswith("__"))
+            ):
+                return None
+            bindings.add(binding)
+        imports.append(node)
+    if not bindings or len(exports) != len(bindings) or set(exports) != bindings:
+        return None
+    return tuple(imports)
 
 
 def stdlib_module_import_evidence(
@@ -206,6 +337,8 @@ def stdlib_module_import_evidence(
         target_python=target_python.feature_version,
     )
     import_flow = analyze_module_import_flow(tree, base_context)
+    facade_imports = _pure_private_facade_imports(module_name, tree)
+    facade_bindings: list[StdlibPrivateFacadeBinding] = []
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         return tuple(
@@ -234,7 +367,37 @@ def stdlib_module_import_evidence(
                 fromlist=tuple(alias.name for alias in node.names),
             ),
         )
-    return StdlibModuleImportEvidence(path, frozenset(imports), tuple(unresolved_sites))
+        if facade_imports is not None and node in facade_imports:
+            # Resolve the owner request itself. A fromlist candidate such as
+            # weakref.WeakSet is not evidence that WeakSet is an owner module.
+            owner_plan = plan_static_import_request(
+                StaticImportRequest.statement(node.module or "", level=node.level),
+                contexts_for(node),
+            )
+            owner = (
+                owner_plan.modules[0]
+                if len(owner_plan.modules) == 1
+                and not owner_plan.errors
+                and not owner_plan.requires_runtime
+                and not owner_plan.requires_runtime_execution
+                else None
+            )
+            facade_bindings.extend(
+                StdlibPrivateFacadeBinding(
+                    alias.asname or alias.name, owner, alias.name, node.lineno
+                )
+                for alias in node.names
+            )
+    return StdlibModuleImportEvidence(
+        path,
+        frozenset(imports),
+        tuple(unresolved_sites),
+        (
+            StdlibPrivateFacadeEvidence(tuple(facade_bindings))
+            if facade_imports is not None
+            else None
+        ),
+    )
 
 
 def stdlib_module_static_imports(
@@ -294,6 +457,30 @@ def _closed_intrinsic_statuses(
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
+    for module_name, evidence in evidence_by_module.items():
+        facade = evidence.private_facade
+        if facade is None:
+            continue
+        bindings: list[StdlibPrivateFacadeBinding] = []
+        for binding in facade.bindings:
+            candidate = (
+                f"{binding.owner_module}.{binding.imported_name}"
+                if binding.owner_module is not None
+                else None
+            )
+            bindings.append(
+                replace(
+                    binding,
+                    imported_module=candidate if candidate in module_graph else None,
+                )
+            )
+        # A real child can be the forwarded value (including when an earlier
+        # import replaced the parent's attribute). Require both the explicit
+        # base and that child, never an invented owner.Symbol graph entry. Use
+        # the full graph so non-Python children without status fail closed too.
+        evidence_by_module[module_name] = replace(
+            evidence, private_facade=StdlibPrivateFacadeEvidence(tuple(bindings))
+        )
     imports_by_module = {
         name: evidence.proven_modules for name, evidence in evidence_by_module.items()
     }
@@ -304,6 +491,19 @@ def _closed_intrinsic_statuses(
             if _is_intrinsic_status(closed.get(module_name)):
                 continue
             if closed.get(module_name) != STATUS_PYTHON_ONLY:
+                continue
+            facade = evidence_by_module[module_name].private_facade
+            if facade is not None:
+                if facade.resolved and all(
+                    owner in evidence_by_module
+                    and _is_intrinsic_status(closed.get(owner))
+                    for owner in facade.owners
+                ):
+                    closed[module_name] = STATUS_INTRINSIC_SUPPORT
+                    changed = True
+                # Pure forwarding has one all-owner authority. Falling through
+                # to an any-edge rule would admit mixed owners or bootstrap a
+                # forwarding cycle without an independently intrinsic anchor.
                 continue
             package_root = module_name.split(".", 1)[0]
             if any(

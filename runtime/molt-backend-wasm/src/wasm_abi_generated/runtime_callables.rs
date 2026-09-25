@@ -667,6 +667,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         result: RuntimeCallableResult::I64,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_is_bound_method",
+        import: WasmRuntimeImport::IsBoundMethod,
+        arity: 1,
+        result: RuntimeCallableResult::I64,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_capabilities_has",
         import: WasmRuntimeImport::CapabilitiesHas,
         arity: 1,
@@ -15957,6 +15963,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_require_intrinsic_runtime" => Some(WasmRuntimeImport::RequireIntrinsicRuntime),
         "molt_load_intrinsic_runtime" => Some(WasmRuntimeImport::LoadIntrinsicRuntime),
         "molt_runtime_active_runtime" => Some(WasmRuntimeImport::RuntimeActiveRuntime),
+        "molt_is_bound_method" => Some(WasmRuntimeImport::IsBoundMethod),
         "molt_capabilities_has" => Some(WasmRuntimeImport::CapabilitiesHas),
         "molt_capabilities_require" => Some(WasmRuntimeImport::CapabilitiesRequire),
         "molt_capabilities_trusted" => Some(WasmRuntimeImport::CapabilitiesTrusted),
@@ -18990,6 +18997,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_require_intrinsic_runtime" => Some(2),
         "molt_load_intrinsic_runtime" => Some(2),
         "molt_runtime_active_runtime" => Some(0),
+        "molt_is_bound_method" => Some(1),
         "molt_capabilities_has" => Some(1),
         "molt_capabilities_require" => Some(1),
         "molt_capabilities_trusted" => Some(0),

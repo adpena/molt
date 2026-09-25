@@ -42,7 +42,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -57,7 +58,7 @@ from molt.llvm_toolchain import (
 )
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
-from tools.compat import test_policy
+from tools.compat import diff_output_layout, test_policy
 
 # molt_diff is imported by the harness before adapters are used; we import the
 # already-bootstrapped module here for its capability/CLI-python helpers so the
@@ -372,6 +373,10 @@ def _guarded_run(
 
 def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
     env = dict(context.environment)
+    selected = diff_output_layout.enforce_child(env, repo_root=_REPO_ROOT)
+    if selected is not None:
+        for name in ("TMPDIR", "TEMP", "TMP"):
+            env[name] = str(selected / "guest-tmp")
     env["PYTHONHASHSEED"] = "0"
     if context.capabilities:
         env["MOLT_CAPABILITIES"] = context.capabilities
@@ -411,21 +416,94 @@ def _build_cmd(
     return cmd
 
 
-def _scratch_dir(backend: str, file_path: str) -> Path:
+def _with_adapter_scratch(
+    backend: str,
+    file_path: str,
+    run: Callable[[Path], BackendResult],
+    *,
+    environment: Mapping[str, str],
+) -> BackendResult:
+    if backend not in {"wasm", "llvm", "luau"}:
+        raise ValueError("unknown adapter scratch namespace")
     npath = test_policy.normalize_repo_relative(file_path)
-    safe = npath.replace("/", "__").replace("\\", "__").replace(".py", "")
-    root = _cross_scratch_root() / backend
-    out_dir = root / safe
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir
+    environment = dict(environment)
+    run_id = environment.get("MOLT_DIFF_RUN_ID", "").strip() or "adhoc"
+    run_key = hashlib.sha256(run_id.encode()).hexdigest()[:16]
+    file_key = hashlib.sha256(npath.encode()).hexdigest()[:16]
+    root = _cross_scratch_root(environment)
+    lease = diff_output_layout.new_guest_leaf(
+        root / backend,
+        prefix=f"{run_key}-{file_key}-",
+        boundary=root,
+        environment=environment,
+        repo_root=_REPO_ROOT,
+    )
+    return run_with_guest_outputs(
+        [lease], lambda: run(lease.path), environment=environment, repo_root=_REPO_ROOT
+    )
 
 
-def _cross_scratch_root() -> Path:
-    raw = os.environ.get("MOLT_COMPAT_SCRATCH_ROOT", "").strip()
+def run_with_guest_outputs(
+    leases: Sequence[diff_output_layout.GuestOutputLease],
+    run: Callable[[], BackendResult],
+    *,
+    environment: Mapping[str, str],
+    repo_root: Path,
+    keep: bool | None = None,
+) -> BackendResult:
+    """Retire owned leases in reverse order without replacing guest evidence.
+
+    A runner may append a newly acquired lease to the supplied list during
+    setup. Both setup failures and returned outcomes drain that same list.
+    """
+    if keep is None:
+        keep = diff_output_layout.keep_artifacts(environment)
+
+    def retire() -> tuple[str, ...]:
+        diagnostics = []
+        for lease in reversed(leases):
+            diagnostic = lease.retire(
+                environment=environment, repo_root=repo_root, keep=keep
+            )
+            if diagnostic:
+                diagnostics.append(diagnostic)
+        return tuple(diagnostics)
+
+    try:
+        result = run()
+    except BaseException as error:
+        for diagnostic in retire():
+            error.add_note(diagnostic)
+        raise
+    diagnostics = retire()
+    if not diagnostics:
+        return result
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    existing = result.infrastructure_failure
+    return replace(
+        result,
+        infrastructure_failure=GuardInfrastructureFailure(
+            phase="temporary_artifact_custody",
+            details=(*existing.details, *diagnostics)
+            if existing is not None
+            else diagnostics,
+        ),
+        detail="\n".join(part for part in (result.detail, *diagnostics) if part),
+    )
+
+
+def _cross_scratch_root(environment: Mapping[str, str]) -> Path:
+    selected = diff_output_layout.selected_for_compat(environment, repo_root=_REPO_ROOT)
+    if selected is not None:
+        root = selected / "compat-scratch"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    raw = environment.get("MOLT_COMPAT_SCRATCH_ROOT", "").strip()
     if raw:
         root = Path(raw).expanduser()
     else:
-        ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
+        ext_root = environment.get("MOLT_EXT_ROOT", "").strip()
         base = Path(ext_root).expanduser() if ext_root else _REPO_ROOT
         root = base / "tmp" / "compat_backends"
     root.mkdir(parents=True, exist_ok=True)
@@ -464,7 +542,18 @@ class WasmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
-        out_dir = _scratch_dir(self.name, file_path)
+        return _with_adapter_scratch(
+            self.name,
+            file_path,
+            lambda out_dir: self._build_and_run_owned(
+                file_path, context=context, out_dir=out_dir
+            ),
+            environment=context.environment,
+        )
+
+    def _build_and_run_owned(
+        self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
+    ) -> BackendResult:
         env = _cross_build_env(context)
         # Build a linked module so the canonical node shim can run it directly.
         env.setdefault("MOLT_WASM_LINKED", "1")
@@ -546,7 +635,18 @@ class LlvmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
-        out_dir = _scratch_dir(self.name, file_path)
+        return _with_adapter_scratch(
+            self.name,
+            file_path,
+            lambda out_dir: self._build_and_run_owned(
+                file_path, context=context, out_dir=out_dir
+            ),
+            environment=context.environment,
+        )
+
+    def _build_and_run_owned(
+        self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
+    ) -> BackendResult:
         env = _cross_build_env(context)
 
         stem = Path(file_path).stem
@@ -606,7 +706,18 @@ class LuauAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
-        out_dir = _scratch_dir(self.name, file_path)
+        return _with_adapter_scratch(
+            self.name,
+            file_path,
+            lambda out_dir: self._build_and_run_owned(
+                file_path, context=context, out_dir=out_dir
+            ),
+            environment=context.environment,
+        )
+
+    def _build_and_run_owned(
+        self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
+    ) -> BackendResult:
         env = _cross_build_env(context)
         stem = Path(file_path).stem
         cmd = _build_cmd(file_path, "luau", out_dir, context)

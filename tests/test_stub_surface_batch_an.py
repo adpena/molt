@@ -15,7 +15,6 @@ UNITTEST_STUBS = [
     ROOT / "src/molt/stdlib/unittest/case.py",
     ROOT / "src/molt/stdlib/unittest/loader.py",
     ROOT / "src/molt/stdlib/unittest/main.py",
-    ROOT / "src/molt/stdlib/unittest/mock.py",
     ROOT / "src/molt/stdlib/unittest/result.py",
     ROOT / "src/molt/stdlib/unittest/runner.py",
     ROOT / "src/molt/stdlib/unittest/signals.py",

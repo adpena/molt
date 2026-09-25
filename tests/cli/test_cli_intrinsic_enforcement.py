@@ -203,3 +203,53 @@ def test_private_support_module_loaded_by_intrinsic_owner_is_not_python_only(
         )
         is None
     )
+
+
+def test_real_weakref_private_facade_uses_shared_intrinsic_classification() -> None:
+    root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    graph = {
+        name: root / f"{name}.py" for name in ("weakref", "_weakref", "_weakrefset")
+    }
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert classification.statuses == {
+        "weakref": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "_weakref": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "_weakrefset": stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT,
+    }
+    assert not stdlib_intrinsic_policy.module_required_intrinsic_names(
+        graph["_weakrefset"]
+    )
+    assert classification.private_facades_payload()[0]["owners"] == ["weakref"]
+    assert (
+        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
+            graph,
+            root,
+            json_output=False,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("owner_source", [None, "class WeakSet: pass\n"])
+def test_private_facade_with_missing_or_python_owner_still_fails_cli_enforcement(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], owner_source: str | None
+) -> None:
+    facade = _write_module(
+        tmp_path, "_facade.py", "from owner import WeakSet\n__all__ = ['WeakSet']\n"
+    )
+    graph = {"_facade": facade}
+    if owner_source is not None:
+        graph["owner"] = _write_module(tmp_path, "owner.py", owner_source)
+    assert (
+        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
+            graph,
+            tmp_path,
+            json_output=False,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+        == 2
+    )
+    assert "_facade" in capsys.readouterr().err
