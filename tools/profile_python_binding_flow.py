@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import ctypes
-from dataclasses import fields
+from dataclasses import fields, replace
 import gc
 import hashlib
 import json
@@ -26,6 +26,7 @@ IMPLEMENTATION_ROOT = Path(
     os.environ.get("MOLT_BINDING_PROFILE_SOURCE_ROOT", ROOT)
 ).resolve()
 IMPLEMENTATION_SRC = IMPLEMENTATION_ROOT / "src"
+sys.path.insert(0, str(IMPLEMENTATION_ROOT))
 sys.path.insert(0, str(IMPLEMENTATION_SRC))
 
 from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
@@ -34,13 +35,16 @@ from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
     analyze_python_source_bindings,
     python_source_digest,
 )
+from molt.compiler_analysis import python_binding_flow  # noqa: E402
 
 try:
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
     from command_execution import CommandExecutor
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(
+    IMPLEMENTATION_ROOT / "tools" / Path(__file__).name
+)
 
 
 def _representative_source(
@@ -193,6 +197,12 @@ def _analysis_telemetry(index: object) -> dict[str, int] | None:
     return {item.name: getattr(telemetry, item.name) for item in fields(telemetry)}
 
 
+def _core_computation_count() -> int | None:
+    # Historical source roots may predate this telemetry; absence is not zero.
+    counter = getattr(python_binding_flow, "python_binding_core_computations", None)
+    return None if counter is None else counter()
+
+
 def _measure_once(
     import_count: int,
     deferred_count: int,
@@ -232,6 +242,40 @@ def _measure_once(
         )
         analysis_ns.append(time.perf_counter_ns() - start)
         assert len(index.calls) == expected_calls
+
+    # Isolate the admission pattern used by scanner/import-flow/lowering:
+    # same source and flow semantics, distinct module execution contexts.
+    # These are measured batches, not historical work counted as time saved.
+    contexts = (
+        policy,
+        replace(policy, module_name="pkg.mod", module_spec_name="pkg.mod"),
+        replace(
+            policy,
+            module_name="pkg",
+            module_spec_name="pkg",
+            module_is_package=True,
+        ),
+        replace(policy, module_name="__main__", module_execution_kind="script"),
+    )
+    context_batch_ns: list[int] = []
+    context_fact_owners: list[int] = []
+    context_core_computations: list[int | None] = []
+    for iteration in range(iterations):
+        before = _core_computation_count()
+        start = time.perf_counter_ns()
+        projections = [
+            analyze_python_bindings(
+                tree, source_digest=f"{digest}:contexts:{iteration}", policy=context
+            )
+            for context in contexts
+        ]
+        context_batch_ns.append(time.perf_counter_ns() - start)
+        assert all(index.calls == reference.calls for index in projections)
+        context_fact_owners.append(len({id(index.calls) for index in projections}))
+        after = _core_computation_count()
+        context_core_computations.append(
+            None if before is None or after is None else after - before
+        )
 
     parse_analysis_ns: list[int] = []
     for iteration in range(iterations):
@@ -290,6 +334,13 @@ def _measure_once(
         "analysis_telemetry": _analysis_telemetry(reference),
         "scopes": len(reference.scopes),
         "iterations": iterations,
+        "context_reuse": {
+            "contexts_per_source": len(contexts),
+            "batch_median_ns": int(statistics.median(context_batch_ns)),
+            "batch_p95_ns": _percentile(context_batch_ns, 0.95),
+            "distinct_call_fact_owners": context_fact_owners,
+            "core_computations": context_core_computations,
+        },
         "analysis_only": {
             "median_ns": median,
             "p95_ns": _percentile(analysis_ns, 0.95),

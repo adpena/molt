@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from molt.cli import python_import_resolution
+from molt.compiler_analysis.python_binding_flow import python_binding_core_computations
 
 
 def main() -> int:
@@ -29,6 +30,7 @@ def main() -> int:
     analyses: list[dict[str, Any]] = []
 
     def measured(tree: ast.Module, **kwargs: Any):
+        before = python_binding_core_computations()
         started = time.perf_counter()
         index = original(tree, **kwargs)
         elapsed = time.perf_counter() - started
@@ -40,7 +42,10 @@ def main() -> int:
                     "ast_nodes": sum(1 for _node in ast.walk(tree)),
                     "seconds": round(elapsed, 6),
                     "states": index.state_count,
-                    "telemetry": asdict(index.telemetry),
+                    "process_core_starts_during_call": (
+                        python_binding_core_computations() - before
+                    ),
+                    "core_fact_telemetry": asdict(index.telemetry),
                 }
             )
         return index
@@ -52,7 +57,11 @@ def main() -> int:
     finally:
         python_import_resolution.analyze_python_bindings = original
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "counter_scope": (
+            "process-global interval deltas; concurrent calls can overlap; "
+            "do not sum per-call rows"
+        ),
         "pytest_target": args.pytest_target,
         "wall_seconds": round(time.perf_counter() - started, 6),
         "exit_code": exit_code,

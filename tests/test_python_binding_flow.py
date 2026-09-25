@@ -10,6 +10,7 @@ import weakref
 from types import ModuleType
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
+from dataclasses import fields, replace
 from threading import Event
 
 import pytest
@@ -23,6 +24,7 @@ from molt.compiler_analysis.python_binding_facts import (
     identity_fact_may_be,
 )
 from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingFlowPolicy,
     PythonBindingPolicy,
     analyze_python_source_bindings,
 )
@@ -540,7 +542,7 @@ def test_plain_class_preserves_explicit_module_binding_writes() -> None:
 def test_annotation_namespace_owner_distinguishes_current_and_captured_typeparams(
     class_global: bool,
 ) -> None:
-    analyzer = python_binding_flow._Analyzer(PythonBindingPolicy(), "scope-policy")
+    analyzer = python_binding_flow._Analyzer(PythonBindingFlowPolicy(), "scope-policy")
     declarations = PythonScopeDeclarations
     empty = frozenset()
     source = ast.parse("T = 0\nclass Prepared:\n    def method[T](value: T): pass\n")
@@ -1215,7 +1217,7 @@ def test_truth_callbacks_precede_branch_consumers_and_not_clean_rebindings(
 
 
 def test_synthetic_node_key_cache_retains_identity_against_id_reuse() -> None:
-    analyzer = python_binding_flow._Analyzer(PythonBindingPolicy(), "synthetic")
+    analyzer = python_binding_flow._Analyzer(PythonBindingFlowPolicy(), "synthetic")
     first = ast.Name(id="first", lineno=1, col_offset=0)
     first_identity = id(first)
     first_key = analyzer._node_key(first)
@@ -1478,7 +1480,9 @@ def test_augmented_member_assignment_evaluates_target_once(
         return original(analyzer, node, state_id, scope)
 
     monkeypatch.setattr(python_binding_flow._Analyzer, "eval_expr", record)
-    analyzer = python_binding_flow._Analyzer(PythonBindingPolicy(), "target-custody")
+    analyzer = python_binding_flow._Analyzer(
+        PythonBindingFlowPolicy(), "target-custody"
+    )
     analyzer.analyze(ast.parse(source))
     assert observed == expected
 
@@ -1693,7 +1697,7 @@ def test_content_cache_is_single_flight_and_filename_independent() -> None:
 
 
 def test_binding_cache_evicts_fifo_in_constant_time_authority() -> None:
-    cache = python_binding_flow._BindingIndexCache(max_entries=2)
+    cache = python_binding_flow._BindingCache(max_entries=2)
     indexes = {
         name: python_binding_flow.analyze_python_bindings(
             ast.parse(f"value = {ordinal}\n"),
@@ -1772,7 +1776,7 @@ def test_recorded_same_shape_store_remains_a_transition_after_owner_collapse() -
 
 
 def test_binding_cache_single_flight_exception_wakes_waiters_and_recovers() -> None:
-    cache = python_binding_flow._BindingIndexCache(max_entries=2)
+    cache = python_binding_flow._BindingCache(max_entries=2)
     index = python_binding_flow.analyze_python_bindings(
         ast.parse("value = 1\n"),
         source_digest="recovered",
@@ -1851,6 +1855,213 @@ def test_policy_context_is_part_of_cache_and_index_identity() -> None:
     assert windows.target_sys_platform == "win32"
     assert linux.module_name == "pkg.mod"
     assert linux.module_execution_kind == "imported"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "value = 1\n",
+        "from . import child\n",
+        "__package__ = 'override'\nfrom . import child\n",
+        "del __spec__\nfrom . import child\n",
+        "(__name__ := 'other.mod')\nfrom . import child\n",
+        "__path__, value = producer()\nfrom . import child\n",
+        "import sys\nsys.modules[__name__].__package__ = 'other'\nfrom . import child\n",
+        "value = arbitrary\nvalue = 1\nfrom . import child\n",
+        "del value\nfrom . import child\n",
+        "receiver().field = value\nfrom . import child\n",
+        "class A: pass\nclass B(A): pass\n(Alias := A)\nfrom . import child\n",
+    ],
+)
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
+def test_context_projections_share_complete_facts_and_preserve_import_flow(
+    source: str, version: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache(max_entries=2))
+    tree = ast.parse(source)
+    digest = flow.python_source_digest(source)
+    policy = PythonBindingPolicy(target_python=version)
+    core = flow.analyze_python_binding_facts(
+        tree, source_digest=digest, policy=policy.flow_policy()
+    )
+    contexts = (
+        policy,
+        replace(policy, module_name="pkg.mod", module_spec_name="pkg.mod"),
+        replace(
+            policy, module_name="pkg", module_spec_name="pkg", module_is_package=True
+        ),
+        replace(policy, module_name="__main__", module_execution_kind="script"),
+        replace(
+            policy,
+            module_name="__main__",
+            module_spec_name="pkg.mod",
+            module_execution_kind="module",
+        ),
+    )
+    for context in contexts:
+        index = flow.analyze_python_bindings(tree, source_digest=digest, policy=context)
+        assert index is flow.analyze_python_bindings(
+            tree, source_digest=digest, policy=context
+        )
+        # Include the four lookup maps, telemetry, and annotation/storage facts.
+        for item in fields(core):
+            assert getattr(index, item.name) is getattr(core, item.name)
+        fresh = flow._Analyzer(context.flow_policy(), digest).analyze(ast.parse(source))
+        expected = flow._project_binding_index(
+            fresh, context, lambda: ast.parse(source)
+        )
+        assert index == expected
+    assert flow.python_binding_core_computations() == 1
+
+
+def test_flow_policy_dimensions_cannot_share_a_fixpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    source = (
+        "import sys\nfrom importlib import import_module\n"
+        "if sys.platform == 'win32':\n    selected = 1\nelse:\n    selected = 2\n"
+        "def deferred():\n    return import_module('pkg.child')\n"
+        "annotation: import_module('pkg.annotation') = None\n"
+    )
+    base = PythonBindingPolicy()
+    policies = (
+        base,
+        replace(base, target_python=(3, 13)),
+        replace(base, target_python=(3, 14)),
+        replace(base, target_sys_platform="win32"),
+        replace(base, target_sys_platform="darwin"),
+        replace(base, target_sys_platform="linux"),
+        replace(base, analyze_deferred_bodies=False),
+        replace(base, standard_imports_are_canonical=False),
+    )
+    indexes = [analyze_python_source_bindings(source, policy=p) for p in policies]
+    assert flow.python_binding_core_computations() == len(policies)
+    assert len({id(index.calls) for index in indexes}) == len(policies)
+    assert len(indexes[6].calls) < len(indexes[0].calls)
+    assert indexes[2].scopes[indexes[2].calls[-1].scope_id].kind == "annotation"
+    with pytest.raises(TypeError, match="flow-only policy"):
+        flow.analyze_python_binding_facts(
+            ast.parse(source), source_digest="wrong-policy-type", policy=base
+        )
+
+
+def test_context_cache_lifetime_is_owned_and_bounded_by_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    cache = flow._BindingCache(max_entries=2)
+    monkeypatch.setattr(flow, "_CORE_CACHE", cache)
+    tree = ast.parse("value = 1\n")
+    weak_tree = weakref.ref(tree)
+    for number in range(20):
+        index = flow.analyze_python_bindings(
+            tree,
+            source_digest="contexts",
+            policy=PythonBindingPolicy(module_name=str(number)),
+        )
+    analysis = next(iter(cache._ready.values()))
+    assert len(analysis.projections._ready) == 8
+    assert flow.python_binding_core_computations() == 1
+    for digest in ("second", "third"):
+        flow.analyze_python_bindings(tree, source_digest=digest)
+    assert len(cache._ready) == 2
+    assert all(entry is not analysis for entry in cache._ready.values())
+    # Cached facts, flows and completed single-flight closures retain no AST.
+    del tree, analysis, index
+    gc.collect()
+    assert weak_tree() is None
+
+
+def test_source_factory_is_lazy_and_projection_failure_does_not_poison_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    parse = ast.parse
+    parses = 0
+
+    def record_parse(*args, **kwargs):
+        nonlocal parses
+        parses += 1
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", record_parse)
+    for name in ("one", "two", "one"):
+        analyze_python_source_bindings(
+            "pass\n", policy=PythonBindingPolicy(module_name=name)
+        )
+    assert parses == 1
+    from molt.compiler_analysis import python_imports
+
+    project = python_imports._analyze_module_import_flow_uncached
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError("projection interrupted")
+        return project(*args, **kwargs)
+
+    monkeypatch.setattr(
+        python_imports, "_analyze_module_import_flow_uncached", fail_once
+    )
+    with pytest.raises(ValueError, match="projection interrupted"):
+        analyze_python_source_bindings("__package__ = 'pkg'\nfrom . import child\n")
+    index = analyze_python_source_bindings("__package__ = 'pkg'\nfrom . import child\n")
+    assert index.module_import_flow
+    assert attempts == 2
+    assert parses == 3
+    assert flow.python_binding_core_computations() == 2
+
+
+def test_concurrent_contexts_share_one_single_flight_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = python_binding_flow
+    monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
+    entered, release = Event(), Event()
+    analyze = flow._Analyzer.analyze
+
+    def blocked(self, tree):
+        entered.set()
+        assert release.wait(5)
+        return analyze(self, tree)
+
+    monkeypatch.setattr(flow._Analyzer, "analyze", blocked)
+    source = "__package__ = 'pkg'\nfrom . import child\n"
+
+    def fetch(number):
+        return analyze_python_source_bindings(
+            source, policy=PythonBindingPolicy(module_name=f"pkg.mod{number % 4}")
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(fetch, number) for number in range(24)]
+        assert entered.wait(5)
+        release.set()
+        indexes = [future.result() for future in futures]
+    assert flow.python_binding_core_computations() == 1
+    for number, index in enumerate(indexes):
+        assert index is indexes[number % 4]
+        assert index.calls is indexes[0].calls
+        assert index._statement_lookup is indexes[0]._statement_lookup
+
+
+def test_completed_assignment_effects_do_not_alias_mutable_analyzer() -> None:
+    flow = python_binding_flow
+    analyzer = flow._Analyzer(PythonBindingFlowPolicy(), "frozen-assignment-effects")
+    analysis = analyzer.analyze(ast.parse("value = arbitrary\nvalue = 1\n"))
+    assert analysis.module_import_flow_required
+    expected = dict(analysis.assignment_effects)
+    assert expected
+    analyzer.assignment_effects.clear()
+    assert dict(analysis.assignment_effects) == expected
+    with pytest.raises(TypeError):
+        analysis.assignment_effects[next(iter(expected))] = 0
 
 
 def test_reparse_query_uses_stable_source_keys_not_ast_identity() -> None:

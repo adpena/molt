@@ -14,9 +14,10 @@ import hashlib
 import struct
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
 from threading import Event, RLock
+from types import MappingProxyType
 from typing import Final, Literal, Sequence, cast
 
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
@@ -31,6 +32,7 @@ from molt.compiler_analysis.python_binding_facts import (
     UNBOUND_IDENTITY,
     IdentityMask,
     MemberMask,
+    PythonBindingFacts,
     PythonBindingIndex,
     PythonBindingTelemetry,
     PythonCallSiteFact,
@@ -114,7 +116,7 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
-_ANALYSIS_SCHEMA: Final = 30
+_ANALYSIS_SCHEMA: Final = 31
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -170,17 +172,42 @@ _CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
 
 
 @dataclass(frozen=True, slots=True)
-class PythonBindingPolicy:
-    """Semantic assumptions which are part of the deterministic cache key."""
+class PythonBindingFlowPolicy:
+    """Only assumptions that can change lexical fixpoint facts."""
 
     target_python: tuple[int, int] = (3, 12)
     target_sys_platform: str | None = None
+    standard_imports_are_canonical: bool = True
+    analyze_deferred_bodies: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class PythonBindingPolicy(PythonBindingFlowPolicy):
+    """Complete analysis identity, including the module-context projection."""
+
     module_name: str | None = None
     module_spec_name: str | None = None
     module_is_package: bool = False
     module_execution_kind: Literal["imported", "module", "script"] = "imported"
-    standard_imports_are_canonical: bool = True
-    analyze_deferred_bodies: bool = True
+
+    def flow_policy(self) -> PythonBindingFlowPolicy:
+        # The analyzer receives this narrower type, never module identity.
+        return PythonBindingFlowPolicy(
+            target_python=self.target_python,
+            target_sys_platform=self.target_sys_platform,
+            standard_imports_are_canonical=self.standard_imports_are_canonical,
+            analyze_deferred_bodies=self.analyze_deferred_bodies,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _BindingAnalysis:
+    facts: PythonBindingFacts
+    assignment_effects: Mapping[PythonNodeKey, EffectMask]
+    module_import_flow_required: bool
+    projections: _BindingCache[PythonBindingIndex] = field(
+        default_factory=lambda: _BindingCache(max_entries=8), compare=False, repr=False
+    )
 
 
 _BINDING_CHUNK_SHIFT: Final = 5
@@ -1999,7 +2026,7 @@ class _ObservedStateFrame:
 
 
 class _Analyzer:
-    def __init__(self, policy: PythonBindingPolicy, source_digest: str) -> None:
+    def __init__(self, policy: PythonBindingFlowPolicy, source_digest: str) -> None:
         self.policy = policy
         self.source_digest = source_digest
         self.states = _StatePool()
@@ -5341,7 +5368,7 @@ class _Analyzer:
             )
         return self.states.set_bindings(state_id, updates)
 
-    def analyze(self, tree: ast.Module) -> PythonBindingIndex:
+    def analyze(self, tree: ast.Module) -> _BindingAnalysis:
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
             and statement.module == "__future__"
@@ -5433,20 +5460,6 @@ class _Analyzer:
             )
             for scope in self.scopes
         )
-        from molt.compiler_analysis.python_imports import (
-            ModuleImportContext,
-            ModuleImportFlow,
-            _analyze_module_import_flow_uncached,
-            context_import_state,
-        )
-
-        import_context = ModuleImportContext(
-            module_name=self.policy.module_name,
-            is_package=self.policy.module_is_package,
-            spec_name=self.policy.module_spec_name,
-            target_python=self.policy.target_python,
-            execution_kind=self.policy.module_execution_kind,
-        )
         # The invariant-state fast path is valid only when completed binding
         # effects cannot change import metadata. A release, descriptor store,
         # unpack, deletion, or named-expression assignment can invoke Python
@@ -5457,27 +5470,10 @@ class _Analyzer:
             effects & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA)
             for effects in self.assignment_effects.values()
         )
-        if self._module_import_flow_required or import_relevant_assignment_effects:
-            module_import_flow = _analyze_module_import_flow_uncached(
-                tree,
-                import_context,
-                statement_facts=self.statements,
-                expression_facts=self.expressions,
-                assignment_effects=self.assignment_effects,
-                call_facts=self.calls,
-            )
-        else:
-            import_state = context_import_state(import_context)
-            module_import_flow = ModuleImportFlow({}, (import_state,), (import_state,))
-        return PythonBindingIndex.create(
+        facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
-            module_name=self.policy.module_name,
-            module_spec_name=self.policy.module_spec_name,
-            module_is_package=self.policy.module_is_package,
-            module_execution_kind=self.policy.module_execution_kind,
-            module_import_flow=module_import_flow,
             expressions=tuple(
                 sorted(self.expressions.values(), key=lambda fact: fact.node)
             ),
@@ -5520,12 +5516,62 @@ class _Analyzer:
             ),
             slot_names=tuple(self.slot_names),
         )
+        flow_required = (
+            self._module_import_flow_required or import_relevant_assignment_effects
+        )
+        return _BindingAnalysis(
+            facts,
+            MappingProxyType(dict(self.assignment_effects) if flow_required else {}),
+            flow_required,
+        )
+
+
+def _project_binding_index(
+    analysis: _BindingAnalysis,
+    policy: PythonBindingPolicy,
+    tree: Callable[[], ast.Module],
+) -> PythonBindingIndex:
+    from molt.compiler_analysis.python_imports import (
+        ModuleImportContext,
+        ModuleImportFlow,
+        _analyze_module_import_flow_uncached,
+        context_import_state,
+    )
+
+    context = ModuleImportContext(
+        module_name=policy.module_name,
+        is_package=policy.module_is_package,
+        spec_name=policy.module_spec_name,
+        target_python=policy.target_python,
+        execution_kind=policy.module_execution_kind,
+    )
+    facts = analysis.facts
+    if analysis.module_import_flow_required:
+        flow = _analyze_module_import_flow_uncached(
+            tree(),
+            context,
+            statement_facts=facts._statement_lookup,
+            expression_facts=facts._expression_lookup,
+            assignment_effects=analysis.assignment_effects,
+            call_facts=facts._call_lookup,
+        )
+    else:
+        state = context_import_state(context)
+        flow = ModuleImportFlow({}, (state,), (state,))
+    return PythonBindingIndex.from_facts(
+        facts,
+        module_name=policy.module_name,
+        module_spec_name=policy.module_spec_name,
+        module_is_package=policy.module_is_package,
+        module_execution_kind=policy.module_execution_kind,
+        module_import_flow=flow,
+    )
 
 
 @dataclass(slots=True)
-class _PendingAnalysis:
+class _PendingAnalysis[T]:
     ready: Event = field(default_factory=Event)
-    result: PythonBindingIndex | None = None
+    result: T | None = None
     error: _AnalysisFailure | None = None
 
 
@@ -5552,20 +5598,26 @@ class _AnalysisFailure:
         return error
 
 
-class _BindingIndexCache:
+class _BindingCache[T]:
     """Free-thread-safe single-flight cache with bounded FIFO completion eviction."""
 
     def __init__(self, max_entries: int = 128) -> None:
         self._max_entries = max_entries
         self._lock = RLock()
-        self._ready: OrderedDict[tuple[object, ...], PythonBindingIndex] = OrderedDict()
-        self._pending: dict[tuple[object, ...], _PendingAnalysis] = {}
+        self._ready: OrderedDict[tuple[object, ...], T] = OrderedDict()
+        self._pending: dict[tuple[object, ...], _PendingAnalysis[T]] = {}
+        self._computations = 0
+
+    def computation_count(self) -> int:
+        """Actual owner computations, including failed attempts, not fact reuse."""
+        with self._lock:
+            return self._computations
 
     def get_or_compute(
         self,
         key: tuple[object, ...],
-        compute: Callable[[], PythonBindingIndex],
-    ) -> PythonBindingIndex:
+        compute: Callable[[], T],
+    ) -> T:
         owner = False
         with self._lock:
             cached = self._ready.get(key)
@@ -5575,6 +5627,7 @@ class _BindingIndexCache:
             if pending is None:
                 pending = _PendingAnalysis()
                 self._pending[key] = pending
+                self._computations += 1
                 owner = True
         if not owner:
             pending.ready.wait()
@@ -5600,7 +5653,12 @@ class _BindingIndexCache:
         return result
 
 
-_INDEX_CACHE = _BindingIndexCache()
+_CORE_CACHE = _BindingCache[_BindingAnalysis]()
+
+
+def python_binding_core_computations() -> int:
+    """Process-lifetime count of fixpoints started, including failed attempts."""
+    return _CORE_CACHE.computation_count()
 
 
 def python_source_digest(source: str) -> str:
@@ -5734,11 +5792,52 @@ def analyze_python_bindings(
 ) -> PythonBindingIndex:
     """Analyze an AST through the canonical content-addressed index cache."""
 
-    key = (_ANALYSIS_SCHEMA, source_digest, policy)
-    return _INDEX_CACHE.get_or_compute(
-        key,
-        lambda: _Analyzer(policy, source_digest).analyze(tree),
+    return _cached_binding_index(lambda: tree, source_digest, policy)
+
+
+def _cached_binding_index(
+    load_tree: Callable[[], ast.Module],
+    source_digest: str,
+    policy: PythonBindingPolicy,
+) -> PythonBindingIndex:
+    parsed: ast.Module | None = None
+
+    def tree() -> ast.Module:
+        nonlocal parsed
+        if parsed is None:
+            parsed = load_tree()
+        return parsed
+
+    analysis = _binding_analysis(tree, source_digest, policy.flow_policy())
+    # Projections are owned by their core, so eviction cannot leave a second
+    # global cache retaining orphaned facts. Each source retains at most eight
+    # module contexts; computing either level uses the same single-flight law.
+    return analysis.projections.get_or_compute(
+        (policy,), lambda: _project_binding_index(analysis, policy, tree)
     )
+
+
+def _binding_analysis(
+    tree: Callable[[], ast.Module],
+    source_digest: str,
+    policy: PythonBindingFlowPolicy,
+) -> _BindingAnalysis:
+    if type(policy) is not PythonBindingFlowPolicy:
+        raise TypeError("binding fixpoint requires an exact flow-only policy")
+    return _CORE_CACHE.get_or_compute(
+        (_ANALYSIS_SCHEMA, source_digest, policy),
+        lambda: _Analyzer(policy, source_digest).analyze(tree()),
+    )
+
+
+def analyze_python_binding_facts(
+    tree: ast.Module,
+    *,
+    source_digest: str,
+    policy: PythonBindingFlowPolicy = PythonBindingFlowPolicy(),
+) -> PythonBindingFacts:
+    """Query shared lexical facts without computing an unused import context."""
+    return _binding_analysis(lambda: tree, source_digest, policy).facts
 
 
 def analyze_python_source_bindings(
@@ -5750,21 +5849,22 @@ def analyze_python_source_bindings(
     """Parse and analyze source through the deterministic single-flight cache."""
 
     digest = python_source_digest(source)
-    key = (_ANALYSIS_SCHEMA, digest, policy)
-
-    def compute() -> PythonBindingIndex:
-        tree = ast.parse(
+    return _cached_binding_index(
+        lambda: ast.parse(
             source, filename=filename, feature_version=policy.target_python
-        )
-        return _Analyzer(policy, digest).analyze(tree)
-
-    return _INDEX_CACHE.get_or_compute(key, compute)
+        ),
+        digest,
+        policy,
+    )
 
 
 __all__ = [
+    "PythonBindingFlowPolicy",
     "PythonBindingPolicy",
+    "analyze_python_binding_facts",
     "analyze_python_bindings",
     "analyze_python_source_bindings",
     "python_ast_digest",
+    "python_binding_core_computations",
     "python_source_digest",
 ]
