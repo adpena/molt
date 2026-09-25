@@ -166,7 +166,7 @@ def test_resolver_rejects_escaping_and_broken_symlinks(tmp_path):
     assert resolver.source_for_module("broken") is None
 
 
-def test_dirty_semantic_fingerprint_reads_python_once_and_keeps_assets(
+def test_semantic_fingerprint_reads_python_once_without_git_and_keeps_assets(
     tmp_path, monkeypatch
 ):
     frontend = tmp_path / "src/molt/frontend"
@@ -188,11 +188,14 @@ def test_dirty_semantic_fingerprint_reads_python_once_and_keeps_assets(
         reads[path] += 1
         return hash_file(path)
 
+    def redundant_git_query(*args):
+        raise AssertionError("captured semantic identity must not query Git")
+
     monkeypatch.setattr(Path, "read_bytes", read)
     monkeypatch.setattr(fingerprints, "_sha256_file", hash_unread_source)
     monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
     monkeypatch.setattr(
-        fingerprints, "_compiler_clean_pathspec_source_state", lambda *args: None
+        fingerprints, "_compiler_clean_pathspec_source_state", redundant_git_query
     )
     before = fingerprints._frontend_semantic_tooling_fingerprint()
     assert reads[seed] == reads[helper] == reads[asset] == 1

@@ -55,9 +55,10 @@ paths, per-file hashes, a root-relative content digest, and captured byte count.
 Python and dynamic-import manifest identities use the exact bytes parsed by
 discovery. Frontend fingerprints, native benchmark provenance, and WASM linker
 identities consume this receipt instead of reopening those sources. Non-Python
-frontend assets remain fingerprint inputs; clean Git scopes retain their
-pathspec-based identity. Receipts retain neither source bytes nor ASTs and may
-be reused only within the explicit immutable tooling operation.
+frontend assets remain fingerprint inputs. Captured semantic inputs use their
+byte identity directly without a redundant Git query; uncaptured backend/runtime
+trees retain the clean-pathspec shortcut. Receipts retain neither source bytes
+nor ASTs and may be reused only within the explicit immutable tooling operation.
 
 Path admission belongs to discovery: missing candidates stop at the filesystem
 probe; existing candidates retain their kind and resolve symlinks before search
