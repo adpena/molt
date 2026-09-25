@@ -63,15 +63,22 @@ _PACKAGE_KEYS = frozenset({"version", "module_set", "identity_sha256"})
 _WINDOWS_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
 
-def _e3_role(coordinate_id: str) -> str:
-    return f"e3_verified_subset.{coordinate_id}"
+VERIFIED_SUBSET_EVIDENCE_PREFIX = "e3_verified_subset."
+
+
+def verified_subset_evidence_role(coordinate_id: str) -> str:
+    """The E3 evidence-role identity shared by bundle, phase, and publication."""
+    return f"{VERIFIED_SUBSET_EVIDENCE_PREFIX}{coordinate_id}"
 
 
 def _expected_evidence_roles() -> frozenset[str]:
     return frozenset(
         {
             *BASE_EVIDENCE_ROLES,
-            *(_e3_role(coordinate.id) for coordinate in verified_subset_coordinates()),
+            *(
+                verified_subset_evidence_role(coordinate.id)
+                for coordinate in verified_subset_coordinates()
+            ),
         }
     )
 
@@ -648,7 +655,7 @@ def verify_release_bundle(
     }
     seen_e3_coordinates: set[str] = set()
     for coordinate_id in sorted(expected_e3_coordinates):
-        role = _e3_role(coordinate_id)
+        role = verified_subset_evidence_role(coordinate_id)
         path = evidence.get(role)
         if path is None or not expected_source_sha:
             continue
@@ -1025,7 +1032,9 @@ def assemble_release_bundle(
             )
             evidence.append(
                 _evidence_record(
-                    _e3_role(coordinate_id), copied, manifest_path=stage_manifest
+                    verified_subset_evidence_role(coordinate_id),
+                    copied,
+                    manifest_path=stage_manifest,
                 )
             )
         typed_roles = {
