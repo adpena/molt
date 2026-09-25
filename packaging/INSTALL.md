@@ -1,11 +1,12 @@
 # Molt install (binary release)
 
-This bundle includes the Molt CLI, a production-optimized compiler, matching
+This bundle includes the Molt CLI, a production-optimized compiler, and matching
 compiler/runtime sources. The optional `molt-worker` helper is a separate package
 with its own command and data paths; installing both does not duplicate ownership.
-The Molt toolchain may bootstrap local build dependencies on the development machine,
-but binaries produced by `molt build` are expected to run on target machines without any
-host Python installation or hidden CPython fallback.
+Molt requires the local toolchains listed below; it does not install them on
+your behalf. Private CLI dependencies require the explicit setup command below.
+Binaries produced by `molt build` are expected to run on target machines without
+any host Python installation or hidden CPython fallback.
 
 ## Requirements
 
