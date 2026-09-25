@@ -206,6 +206,15 @@ def _run_captured(
 
 
 def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) -> Path:
+    if token in {"wasm-ld", "wasm-ld.exe"}:
+        from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
+
+        try:
+            token = str(
+                resolve_wasi_sdk_tool(proof_plan.ROOT, "wasm-ld", environ=dict(env))
+            )
+        except LlvmToolchainConfigError as exc:
+            raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
     candidate = Path(token)
     if candidate.is_absolute() or candidate.parent != Path("."):
         path = candidate if candidate.is_absolute() else cwd / candidate
@@ -728,6 +737,10 @@ def _which_in_command_environment(
     cwd: Path,
     env: Mapping[str, str],
 ) -> Path:
+    if name in {"wasm-ld", "wasm-ld.exe"}:
+        # uv's PATH is not a different authority for a manifest-owned SDK role.
+        # The returned absolute entrypoint is used for both launch and capture.
+        return _resolve_outer_executable(name, cwd=cwd, env=env)
     python = envelope.get("python")
     if isinstance(python, Mapping) and python.get("kind") in {
         "uv",
@@ -1212,9 +1225,11 @@ _ENVIRONMENT_PREFIXES = (
     "AR_",
     "CARGO_",
     "CC_",
+    "CFLAGS_",
     "CI_",
     "CMAKE_",
     "CXX_",
+    "CXXFLAGS_",
     "GITHUB_",
     "BINDGEN_EXTRA_CLANG_ARGS_",
     "LC_",
@@ -1222,10 +1237,12 @@ _ENVIRONMENT_PREFIXES = (
     "MOLT_",
     "PYO3_",
     "PYTHON",
+    "RANLIB_",
     "RUST",
     "SCCACHE_",
     "UV_",
     "WASM_",
+    "WASI_",
     "XDG_",
 )
 _ENVIRONMENT_BUILD_NAMES = frozenset(
@@ -1318,6 +1335,8 @@ _EXECUTABLE_ENV_NAMES = frozenset(
         "MESON",
         "NASM",
         "NINJA",
+        "MOLT_WASM_LD",
+        "MOLT_LLVM_NM",
         "NM",
         "OBJCOPY",
         "PERL",
@@ -1345,7 +1364,7 @@ _EXECUTABLE_ENV_NAMES = frozenset(
     }
 )
 _EXECUTABLE_ENV_PATTERNS = (
-    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_]+"),
+    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_-]+"),
     re.compile(r"CARGO_TARGET_[A-Z0-9_]+_(?:LINKER|RUNNER)"),
     re.compile(r"CMAKE_(?:C|CXX)_COMPILER"),
 )

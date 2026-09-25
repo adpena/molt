@@ -69,7 +69,103 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v3"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v4"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v5"
+# The installed guest matrix for every declared Python coordinate, in receipt
+# order: each shipped target with each program profile.
+CONSUMER_GUEST_CELLS = (
+    ("native", "dev"),
+    ("native", "release"),
+    ("wasm", "dev"),
+    ("wasm", "release"),
+)
+# A flag-shaped argument and an embedded space prove verbatim argv forwarding.
+CONSUMER_GUEST_ARGV = ("--guest-flag", "two words")
+CONSUMER_EXPECTED_STDOUT = (
+    "|".join((CONSUMER_EXPECTED_OUTPUT, *CONSUMER_GUEST_ARGV)) + "\n"
+)
+_CONSUMER_CELL_FIELDS = frozenset(
+    {
+        "target",
+        "profile",
+        "diagnostics",
+        "output",
+        "compiler_sha256",
+        "compiler_fingerprint",
+        "artifact",
+    }
+)
+
+
+def consumer_guest_source(python_minor: str) -> str:
+    """The one version-gated guest program; its stdout is a function of argv."""
+    major, minor = (int(part) for part in python_minor.split("."))
+    return (
+        "import sys\n"
+        f"assert sys.version_info[:2] == ({major}, {minor})\n"
+        f"print('|'.join([{CONSUMER_EXPECTED_OUTPUT!r}] + sys.argv[1:]))\n"
+    )
+
+
+def consumer_guest_command(
+    launcher: list[str],
+    *,
+    target: str,
+    profile: str,
+    python_minor: str,
+    diagnostics: str,
+    output: str,
+    source: str,
+) -> list[str]:
+    """Installed native build, or the one public WASM build-and-run command."""
+    if target == "native":
+        return [
+            *launcher,
+            "build",
+            "--target",
+            "native",
+            "--profile",
+            profile,
+            "--python-version",
+            python_minor,
+            "--diagnostics-file",
+            diagnostics,
+            "--output",
+            output,
+            source,
+        ]
+    if target != "wasm":
+        raise ValueError(f"release consumer has no guest command for {target}")
+    # `molt run` forwards build args verbatim to its single linked build.
+    return [
+        *launcher,
+        "run",
+        "--target",
+        "wasm",
+        "--profile",
+        profile,
+        "--python-version",
+        python_minor,
+        f"--build-arg=--diagnostics-file={diagnostics}",
+        f"--build-arg=--output={output}",
+        source,
+        "--",
+        *CONSUMER_GUEST_ARGV,
+    ]
+
+
+def consumer_command_roles() -> tuple[str, ...]:
+    """Installed setup, every guest cell, then native reruns after uninstall."""
+    roles = ["environment", "cli_setup", "cli_help", "worker_help"]
+    for target, profile in CONSUMER_GUEST_CELLS:
+        if target == "native":
+            roles.append(f"build_native_{profile}")
+        roles.append(f"run_{target}_{profile}")
+    roles.extend(
+        f"standalone_native_{profile}"
+        for target, profile in CONSUMER_GUEST_CELLS
+        if target == "native"
+    )
+    return tuple(roles)
 
 
 def consumer_python_policy(
@@ -418,35 +514,11 @@ def _load_candidate(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _validate_consumer_profile_proofs(profiles: object, *, compiler_sha256: str) -> str:
-    """Both guest profiles must identify the same admitted host compiler."""
-    if not isinstance(profiles, list) or len(profiles) != 2:
-        raise ValueError("release consumer profile proofs must cover dev and release")
-    fingerprints: set[str] = set()
-    for expected, proof in zip(("dev", "release"), profiles, strict=True):
-        if (
-            not isinstance(proof, dict)
-            or set(proof) != {"profile", "compiler_sha256", "compiler_fingerprint"}
-            or proof.get("profile") != expected
-            or not _valid_sha256(proof.get("compiler_sha256"))
-            or proof.get("compiler_sha256") != compiler_sha256
-            or not _valid_sha256(proof.get("compiler_fingerprint"))
-        ):
-            raise ValueError(f"release consumer {expected} profile proof is invalid")
-        fingerprints.add(proof["compiler_fingerprint"])
-    if len(fingerprints) != 1:
-        raise ValueError("release consumer guest profiles changed compiler fingerprint")
-    return next(iter(fingerprints))
-
-
 def _validate_consumer_command_records(
     commands: object,
 ) -> dict[str, dict[str, Any]]:
     """Admit the exact ordered roles and typed successful command records."""
-    roles = ["environment", "cli_setup", "cli_help"]
-    roles.extend(
-        ("worker_help", "build_dev", "run_dev", "build_release", "run_release")
-    )
+    roles = consumer_command_roles()
     if not isinstance(commands, list) or len(commands) != len(roles):
         raise ValueError("release consumer command evidence is incomplete")
     by_role: dict[str, dict[str, Any]] = {}
@@ -487,11 +559,10 @@ def _validate_consumer_command_bindings(
     *,
     windows: bool,
     version: str,
-    python_minor: str,
     reference_python: str,
     python_executable: str,
-) -> None:
-    """Bind installed launchers, profile builds and executions into one flow."""
+) -> list[str]:
+    """Bind the shipped launcher, private setup, worker and interpreter."""
     path_type = PureWindowsPath if windows else PurePosixPath
     help_argv = by_role["cli_help"]["argv"]
     launcher = help_argv[:-1]
@@ -540,42 +611,99 @@ def _validate_consumer_command_bindings(
         )
     ):
         raise ValueError("release consumer environment command is invalid")
+    return launcher
 
+
+def _validate_consumer_guest_cells(
+    cells: object,
+    by_role: dict[str, dict[str, Any]],
+    *,
+    windows: bool,
+    launcher: list[str],
+    python_minor: str,
+    source: str,
+    compiler_sha256: str,
+) -> tuple[str, set[PurePosixPath | PureWindowsPath]]:
+    """Bind each installed target/profile cell to its command, compiler and bytes.
+
+    Returns the one compiler fingerprint and every cell output directory.
+    """
+    if not isinstance(cells, list) or len(cells) != len(CONSUMER_GUEST_CELLS):
+        raise ValueError("release consumer guest cells are incomplete")
+    path_type = PureWindowsPath if windows else PurePosixPath
     expected_stdout = hashlib.sha256(
-        (CONSUMER_EXPECTED_OUTPUT + "\n").encode("utf-8")
+        CONSUMER_EXPECTED_STDOUT.encode("utf-8")
     ).hexdigest()
-    outputs: set[str] = set()
-    sources: set[str] = set()
-    for profile in ("dev", "release"):
-        build = by_role[f"build_{profile}"]["argv"]
-        suffix = build[len(launcher) :]
+    guest_argv = list(CONSUMER_GUEST_ARGV)
+    fingerprints: set[str] = set()
+    diagnostics: set[str] = set()
+    directories: set[PurePosixPath | PureWindowsPath] = set()
+    for (target, profile), cell in zip(CONSUMER_GUEST_CELLS, cells, strict=True):
+        name = f"{target}/{profile}"
+        artifact = cell.get("artifact") if isinstance(cell, dict) else None
         if (
-            build[: len(launcher)] != launcher
-            or len(suffix) != 12
-            or suffix[:5] != ["build", "--target", "native", "--profile", profile]
-            or suffix[5:7] != ["--python-version", python_minor]
-            or suffix[7] != "--diagnostics-file"
-            or suffix[9] != "--output"
-        ):
-            raise ValueError(f"release consumer {profile} build command is invalid")
-        output, source = suffix[10:12]
-        run = by_role[f"run_{profile}"]
-        if (
-            not all(
-                path_type(path).is_absolute() for path in (suffix[8], output, source)
+            not isinstance(cell, dict)
+            or set(cell) != _CONSUMER_CELL_FIELDS
+            or cell["target"] != target
+            or cell["profile"] != profile
+            or not all(
+                isinstance(cell[key], str) and path_type(cell[key]).is_absolute()
+                for key in ("diagnostics", "output")
             )
-            or run["argv"] != [output]
-            or run["stdout_sha256"] != expected_stdout
+            or cell["compiler_sha256"] != compiler_sha256
+            or not _valid_sha256(cell["compiler_fingerprint"])
+            or not isinstance(artifact, dict)
+            or set(artifact) != {"path", "sha256", "size"}
+            or not isinstance(artifact["path"], str)
+            or not path_type(artifact["path"]).is_absolute()
+            or not _valid_sha256(artifact["sha256"])
+            or type(artifact["size"]) is not int
+            or artifact["size"] <= 0
         ):
-            raise ValueError(
-                f"release consumer {profile} execution is not bound to its build"
-            )
-        outputs.add(output)
-        sources.add(source)
-    if len(outputs) != 2 or len(sources) != 1:
-        raise ValueError(
-            "release consumer profiles must build distinct outputs from one source"
+            raise ValueError(f"release consumer {name} cell is invalid")
+        command = consumer_guest_command(
+            launcher,
+            target=target,
+            profile=profile,
+            python_minor=python_minor,
+            diagnostics=cell["diagnostics"],
+            output=cell["output"],
+            source=source,
         )
+        output = path_type(cell["output"])
+        run = by_role[f"run_{target}_{profile}"]
+        if target == "native":
+            # The requested executable runs installed and again after uninstall.
+            guest = [cell["output"], *guest_argv]
+            standalone = by_role[f"standalone_native_{profile}"]
+            bound = (
+                by_role[f"build_native_{profile}"]["argv"] == command
+                and run["argv"] == guest
+                and standalone["argv"] == guest
+                and standalone["stdout_sha256"] == expected_stdout
+                and path_type(artifact["path"]) == output
+            )
+        else:
+            # One public build-and-run; its manifest-bound linked module is
+            # produced beside the requested output.
+            bound = (
+                run["argv"] == command
+                and path_type(artifact["path"]).parent == output.parent
+            )
+        if not bound or run["stdout_sha256"] != expected_stdout:
+            raise ValueError(
+                f"release consumer {name} execution is not bound to its installed build"
+            )
+        fingerprints.add(cell["compiler_fingerprint"])
+        diagnostics.add(cell["diagnostics"])
+        directories.add(output.parent)
+    if len(directories) != len(cells) or len(diagnostics) != len(cells):
+        raise ValueError(
+            "release consumer guest cells must use distinct output directories"
+        )
+    if len(fingerprints) != 1:
+        raise ValueError("release consumer guest cells changed compiler fingerprint")
+    return next(iter(fingerprints)), directories
 
 
 def _validate_consumer_python_identity(
@@ -623,9 +751,9 @@ def _validate_consumer_python_identity(
 
 
 def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None:
-    """Admit the exact source-bound installed Python/profile execution closure."""
+    """Admit the exact installed Python x target x profile execution closure."""
     coordinates, policy_sha256 = consumer_python_policy()
-    count = len(coordinates) * 2
+    count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
     if (
         not isinstance(consumer, dict)
         or set(consumer)
@@ -642,10 +770,10 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "errors",
             "compiler",
             "launcher",
-            "guest_profiles",
+            "guest_cells",
+            "expected_stdout",
             "python_policy_sha256",
             "python_proofs",
-            "standalone_native_output",
             "uninstall_verified",
         }
         or consumer.get("schema") != CONSUMER_SCHEMA
@@ -667,16 +795,19 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
         or consumer.get("uninstall_verified") is not True
         or consumer.get("compiler") != candidate["compiler"]
         or consumer.get("launcher") != candidate["launcher"]
-        or consumer.get("guest_profiles") != ["dev", "release"]
-        or consumer.get("standalone_native_output") != CONSUMER_EXPECTED_OUTPUT
+        or consumer.get("guest_cells") != [list(cell) for cell in CONSUMER_GUEST_CELLS]
+        or consumer.get("expected_stdout") != CONSUMER_EXPECTED_STDOUT
     ):
         raise ValueError("release consumer proof header is invalid")
     proofs = consumer["python_proofs"]
     if not isinstance(proofs, list) or len(proofs) != len(coordinates):
         raise ValueError("release consumer Python proof closure is incomplete")
     windows = candidate["target"]["platform"] == "windows"
+    path_type = PureWindowsPath if windows else PurePosixPath
     fingerprints: set[str] = set()
     interpreter_paths: set[str] = set()
+    launchers: set[tuple[str, ...]] = set()
+    directories: set[PurePosixPath | PureWindowsPath] = set()
     for (minor, reference), proof in zip(coordinates, proofs, strict=True):
         if (
             not isinstance(proof, dict)
@@ -685,31 +816,43 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
                 "python",
                 "reference_python",
                 "execution",
+                "source",
+                "source_sha256",
                 "commands",
-                "profile_proofs",
+                "cells",
             }
             or proof.get("python") != minor
             or proof.get("reference_python") != reference
+            or not isinstance(proof.get("source"), str)
+            or not path_type(proof["source"]).is_absolute()
+            or proof.get("source_sha256")
+            != hashlib.sha256(consumer_guest_source(minor).encode("utf-8")).hexdigest()
         ):
             raise ValueError(f"release consumer Python coordinate {minor} is invalid")
         executable = _validate_consumer_python_identity(
             proof["execution"], target=candidate["target"], reference_python=reference
         )
         interpreter_paths.add(executable)
-        fingerprints.add(
-            _validate_consumer_profile_proofs(
-                proof["profile_proofs"], compiler_sha256=candidate["compiler"]["sha256"]
-            )
-        )
         commands = _validate_consumer_command_records(proof["commands"])
-        _validate_consumer_command_bindings(
+        launcher = _validate_consumer_command_bindings(
             commands,
             windows=windows,
             version=candidate["version"],
-            python_minor=minor,
             reference_python=reference,
             python_executable=executable,
         )
+        launchers.add(tuple(launcher))
+        fingerprint, cell_directories = _validate_consumer_guest_cells(
+            proof["cells"],
+            commands,
+            windows=windows,
+            launcher=launcher,
+            python_minor=minor,
+            source=proof["source"],
+            compiler_sha256=candidate["compiler"]["sha256"],
+        )
+        fingerprints.add(fingerprint)
+        directories.update(cell_directories)
     if len(fingerprints) != 1:
         raise ValueError(
             "release consumer Python coordinates changed compiler fingerprint"
@@ -717,6 +860,11 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
     if len(interpreter_paths) != len(coordinates):
         raise ValueError(
             "release consumer Python coordinates must use separate environments"
+        )
+    if len(launchers) != 1 or len(directories) != count:
+        raise ValueError(
+            "release consumer coordinates must share one installed launcher "
+            "and build into separate output directories"
         )
 
 

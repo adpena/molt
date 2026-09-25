@@ -215,22 +215,34 @@ def prefer_tool_release_prefixes(
 def prefer_canonical_llvm_prefix(
     env: Mapping[str, str], toolchains: object, *, cwd: Path
 ) -> tuple[dict[str, str], str | None]:
-    """Put the pinned LLVM SDK ahead of the ambient PATH for LLVM-family lanes.
+    """Select declared SDK WASM roles and the independent native LLVM prefix.
 
-    Declared toolchains are located through the execution PATH, so an ambient
+    Native toolchains are located through the execution PATH, so an ambient
     system LLVM (a different point release) used to shadow the canonical SDK
     that molt.llvm_toolchain discovers under the checkout custody root and the
     proof then failed closed on the version policy. The discovery authority is
-    the same one `molt doctor` reports; when it finds no SDK the environment is
-    left untouched and the policy check still fails closed.
+    the same one `molt doctor` reports; without a native SDK, PATH is unchanged
+    and the native policy check still fails closed. A declared WASM role must
+    independently resolve its SDK entrypoint before capture; lookup never
+    provisions either SDK.
     """
     resolved = dict(env)
     declared = (
         {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
     )
-    if not declared & llvm_family_toolchains(proof_plan.ProofPlan.load()):
+    llvm_tools = declared & llvm_family_toolchains(proof_plan.ProofPlan.load())
+    if not llvm_tools:
         return resolved, None
-    from molt.llvm_toolchain import discover_llvm_toolchain
+    from molt.llvm_toolchain import discover_llvm_toolchain, resolve_wasi_sdk_tool
+
+    if "wasm-ld" in llvm_tools:
+        # Select and later attest the real SDK entrypoint. Never copy it into a
+        # PATH lane or promote the WebAssembly-only SDK's native-looking tools.
+        resolved["MOLT_WASM_LD"] = str(
+            resolve_wasi_sdk_tool(state.ROOT, "wasm-ld", environ=resolved)
+        )
+    if not llvm_tools - {"wasm-ld"}:
+        return resolved, None
 
     discovery = discover_llvm_toolchain(Path(cwd), environ=dict(resolved))
     if discovery is None:

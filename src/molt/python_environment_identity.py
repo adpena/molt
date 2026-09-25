@@ -132,6 +132,7 @@ def python_capture_authority_paths(
         "_version",
         "_host_exit",
         "pytest_memory_guard_bootstrap",
+        "source_root",
         "temporary_artifacts",
         "file_deletion",
         "file_locks",

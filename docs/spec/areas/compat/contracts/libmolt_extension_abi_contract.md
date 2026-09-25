@@ -65,6 +65,35 @@ for C/C++ extensions recompiled against Molt.
   - package-owned header semantics track the package version being recompiled
   - Molt owns only the libmolt/CPython-ABI C API tier and package-custody wiring
 
+### Shared target C data model and linked headers
+
+Both Python header transports consume `include/molt/shared/`: one scalar object
+layout, GIL-state enum, and target C data-model authority. `SIZEOF_VOID_P`,
+`SIZEOF_INT`, `SIZEOF_LONG`, `SIZEOF_LONG_LONG`, `SIZEOF_SIZE_T`, and `LONG_BIT`
+are preprocessing integer constants derived from the target standard headers,
+not the build host. Conflicting definitions fail compilation. This distinguishes
+Windows LLP64 from Linux/macOS LP64 and wasm32 ILP32 without equating C `long`
+with a pointer-sized word.
+
+For the linked CPython-ABI tier, install
+`runtime/molt-cpython-abi/include/` and `include/molt/shared/`, and pass both as
+include roots. Their relative location is not prescribed. Do not add the
+source-compat `include/` root to resolve linked-tier dependencies. For the source
+tier, install `include/` with its nested shared directory intact. Neither header
+uses a source-checkout-relative path to reach another tier.
+
+`runtime/molt-cpython-abi/src/abi_types.rs` remains the Rust `repr(C)` authority.
+`tools/gen_cpython_abi_layout.py` projects struct sizes, offsets, and integer
+field widths for the target data models; the linked header and runtime C build
+compile these assertions using the same target compiler/sysroot as the shims.
+`tp_flags` is C `unsigned long`; `tp_version_tag` is C `unsigned int`.
+
+This does not broaden version admission: Molt targets Python 3.12+ semantics,
+but the linked header currently declares the CPython 3.12 object layout.
+Source-extension admission must match that declared version; successful scalar
+layout checks do not establish CPython 3.13/3.14 binary compatibility, package
+support, or execution on an unverified target.
+
 ---
 
 ## 3. Explicit Exclusions

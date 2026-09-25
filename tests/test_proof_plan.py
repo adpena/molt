@@ -44,6 +44,7 @@ def test_python_capture_source_closure_is_proof_authority(
         root / "src/molt/_version.py",
         root / "src/sitecustomize.py",
         root / "src/molt/pytest_memory_guard_bootstrap.py",
+        root / "src/molt/source_root.py",
         root / "src/molt/temporary_artifacts.py",
         root / "src/molt/file_deletion.py",
         root / "src/molt/file_locks.py",
@@ -1024,6 +1025,72 @@ def test_lean_toolchain_probe_cwd_is_project_authority() -> None:
     ]
 
 
+@pytest.mark.parametrize("name", ["wasm-ld", "llvm-nm", "ld.lld"])
+def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    import molt.llvm_toolchain as llvm_toolchain
+
+    selected = tmp_path / name
+    selected.write_bytes(b"selected role bytes")
+    policy = next(policy for policy in PLAN.toolchain_policies if policy.name == name)
+    monkeypatch.setenv("MOLT_WASM_LD", str(selected))
+    monkeypatch.setenv("MOLT_LLVM_NM", "not-the-native-reader")
+    selections = []
+
+    def sdk_role(root, role, *, environ):
+        assert name == "wasm-ld"
+        assert root == proof_plan.ROOT and role == "wasm-ld"
+        assert environ["MOLT_WASM_LD"] == str(selected)
+        selections.append("sdk")
+        return selected
+
+    def native_role(requested):
+        assert name != "wasm-ld", "SDK role must not resolve through native PATH"
+        assert requested == name
+        selections.append("native")
+        return str(selected)
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
+    monkeypatch.setattr(proof_plan.shutil, "which", native_role)
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        version = "22.1.0" if name == "wasm-ld" else "22.1.8"
+        banner = f"LLVM version {version}" if name == "llvm-nm" else f"LLD {version}"
+        return proof_plan.subprocess.CompletedProcess(command, 0, banner, "")
+
+    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    actual = proof_plan._version_fingerprint(policy)
+    assert actual is not None
+    assert actual["path"] == str(selected)
+    assert (
+        actual["executable_sha256"]
+        == hashlib.sha256(b"selected role bytes").hexdigest()
+    )
+    assert commands == [[str(selected), "--version"]]
+    assert selections == (["sdk"] if name == "wasm-ld" else ["native"])
+
+
+def test_missing_sdk_role_is_a_toolchain_preflight_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import molt.llvm_toolchain as llvm_toolchain
+
+    def missing(*_args, **_kwargs):
+        raise llvm_toolchain.LlvmToolchainConfigError("provision SDK explicitly")
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", missing)
+    monkeypatch.setattr(
+        proof_plan.shutil, "which", lambda *_a, **_k: pytest.fail("no PATH fallback")
+    )
+    with pytest.raises(
+        ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
+    ):
+        proof_plan.toolchain_fingerprints(PLAN, ("wasm-ld",))
+
+
 def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) -> None:
     policy = proof_plan.ToolchainPolicy(
         "probe",
@@ -1283,7 +1350,17 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         ("windows", "windows-2022"),
     ]
     assert all(entry["family"] == "platform_portability" for entry in matrix)
-    assert [len(entry["command_ids"]) for entry in matrix] == [2, 3, 3]
+    assert {entry["cell"]: entry["command_ids"] for entry in matrix} == {
+        "linux-x86_64-py312-queue-portability": ["portability.queue.linux"],
+        "macos-arm64-py312-queue-portability": [
+            "portability.queue.macos",
+            "portability.ir.macos",
+        ],
+        "windows-x86_64-py312-queue-portability": [
+            "portability.queue.windows",
+            "portability.ir.windows",
+        ],
+    }
     for entry in matrix:
         commands = proof_plan._topological_commands(
             PLAN,

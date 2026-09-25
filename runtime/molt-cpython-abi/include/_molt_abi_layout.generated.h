@@ -17,10 +17,10 @@
 #define MOLT_ABI_LAYOUT_GENERATED_H
 
 /* This file is included by <Python.h> AFTER the struct definitions. It uses
- * only stddef.h (offsetof), stdint.h (UINTPTR_MAX) and the C11
+ * the shared target C data model, stddef.h (offsetof) and the C11
  * _Static_assert facility. */
 #include <stddef.h>
-#include <stdint.h>
+#include <_c_data_model.h>
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define _MOLT_ABI_SASSERT(cond, msg) _Static_assert((cond), msg)
@@ -30,27 +30,19 @@
     typedef char _molt_abi_sassert_##__LINE__[(cond) ? 1 : -1]
 #endif
 
-/* Pointer-width model select. The traditional ob_refcnt/ob_type object model
- * is authored once in Rust repr(C); its byte layout differs only by pointer
- * width. The 64-bit branch pins the LP64 (Linux/macOS x86-64 & aarch64) and
- * LLP64 (Windows) layout (8-byte pointer); the 32-bit branch pins the wasm32
- * ILP32 layout (4-byte pointer) used by the WASM/WASI extension tier. Each
- * target compiles ONLY its own branch, so the assertions hold on every
- * supported pointer width. Both branches are derived from the same Rust
- * authority by the generator — there is no second hand-maintained table. */
-#if UINTPTR_MAX == 0xFFFFFFFFu
-#define _MOLT_ABI_PTR32 1
-#elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu
-#define _MOLT_ABI_PTR32 0
-#else
-#error "molt cpython-abi layout: unsupported pointer width (expected 32 or 64 bit)"
-#endif
+/* Rust repr(C) is the struct authority; SIZEOF_VOID_P and SIZEOF_LONG
+ * select its ILP32, LLP64 or LP64 projection from the target C data model.
+ * Windows conditional fields are independent of scalar width. */
 
 /* PyObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyObject) == 8u, "layout drift: sizeof(PyObject) != 8 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyObject, ob_refcnt) == 0u, "layout drift: offsetof(PyObject, ob_refcnt) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyObject, ob_type) == 4u, "layout drift: offsetof(PyObject, ob_type) != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyObject) == 16u, "layout drift: sizeof(PyObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyObject, ob_refcnt) == 0u, "layout drift: offsetof(PyObject, ob_refcnt) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyObject, ob_type) == 8u, "layout drift: offsetof(PyObject, ob_type) != 8");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyObject) == 16u, "layout drift: sizeof(PyObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyObject, ob_refcnt) == 0u, "layout drift: offsetof(PyObject, ob_refcnt) != 0");
@@ -58,16 +50,19 @@ _MOLT_ABI_SASSERT(offsetof(PyObject, ob_type) == 8u, "layout drift: offsetof(PyO
 #endif
 
 /* PyVarObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyVarObject) == 12u, "layout drift: sizeof(PyVarObject) != 12 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyVarObject, ob_size) == 8u, "layout drift: offsetof(PyVarObject, ob_size) != 8");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyVarObject) == 24u, "layout drift: sizeof(PyVarObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyVarObject, ob_size) == 16u, "layout drift: offsetof(PyVarObject, ob_size) != 16");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyVarObject) == 24u, "layout drift: sizeof(PyVarObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyVarObject, ob_size) == 16u, "layout drift: offsetof(PyVarObject, ob_size) != 16");
 #endif
 
 /* PyTypeObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyTypeObject) == 208u, "layout drift: sizeof(PyTypeObject) != 208 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_name) == 12u, "layout drift: offsetof(PyTypeObject, tp_name) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_basicsize) == 16u, "layout drift: offsetof(PyTypeObject, tp_basicsize) != 16");
@@ -118,6 +113,61 @@ _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_version_tag) == 192u, "layout drift:
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_finalize) == 196u, "layout drift: offsetof(PyTypeObject, tp_finalize) != 196");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_vectorcall) == 200u, "layout drift: offsetof(PyTypeObject, tp_vectorcall) != 200");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_watched) == 204u, "layout drift: offsetof(PyTypeObject, tp_watched) != 204");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_flags) == 4u, "layout drift: width of PyTypeObject.tp_flags != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_version_tag) == 4u, "layout drift: width of PyTypeObject.tp_version_tag != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyTypeObject) == 416u, "layout drift: sizeof(PyTypeObject) != 416 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_name) == 24u, "layout drift: offsetof(PyTypeObject, tp_name) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_basicsize) == 32u, "layout drift: offsetof(PyTypeObject, tp_basicsize) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_itemsize) == 40u, "layout drift: offsetof(PyTypeObject, tp_itemsize) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_dealloc) == 48u, "layout drift: offsetof(PyTypeObject, tp_dealloc) != 48");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_vectorcall_offset) == 56u, "layout drift: offsetof(PyTypeObject, tp_vectorcall_offset) != 56");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_getattr) == 64u, "layout drift: offsetof(PyTypeObject, tp_getattr) != 64");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_setattr) == 72u, "layout drift: offsetof(PyTypeObject, tp_setattr) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_as_async) == 80u, "layout drift: offsetof(PyTypeObject, tp_as_async) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_repr) == 88u, "layout drift: offsetof(PyTypeObject, tp_repr) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_as_number) == 96u, "layout drift: offsetof(PyTypeObject, tp_as_number) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_as_sequence) == 104u, "layout drift: offsetof(PyTypeObject, tp_as_sequence) != 104");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_as_mapping) == 112u, "layout drift: offsetof(PyTypeObject, tp_as_mapping) != 112");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_hash) == 120u, "layout drift: offsetof(PyTypeObject, tp_hash) != 120");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_call) == 128u, "layout drift: offsetof(PyTypeObject, tp_call) != 128");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_str) == 136u, "layout drift: offsetof(PyTypeObject, tp_str) != 136");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_getattro) == 144u, "layout drift: offsetof(PyTypeObject, tp_getattro) != 144");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_setattro) == 152u, "layout drift: offsetof(PyTypeObject, tp_setattro) != 152");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_as_buffer) == 160u, "layout drift: offsetof(PyTypeObject, tp_as_buffer) != 160");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_flags) == 168u, "layout drift: offsetof(PyTypeObject, tp_flags) != 168");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_doc) == 176u, "layout drift: offsetof(PyTypeObject, tp_doc) != 176");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_traverse) == 184u, "layout drift: offsetof(PyTypeObject, tp_traverse) != 184");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_clear) == 192u, "layout drift: offsetof(PyTypeObject, tp_clear) != 192");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_richcompare) == 200u, "layout drift: offsetof(PyTypeObject, tp_richcompare) != 200");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_weaklistoffset) == 208u, "layout drift: offsetof(PyTypeObject, tp_weaklistoffset) != 208");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_iter) == 216u, "layout drift: offsetof(PyTypeObject, tp_iter) != 216");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_iternext) == 224u, "layout drift: offsetof(PyTypeObject, tp_iternext) != 224");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_methods) == 232u, "layout drift: offsetof(PyTypeObject, tp_methods) != 232");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_members) == 240u, "layout drift: offsetof(PyTypeObject, tp_members) != 240");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_getset) == 248u, "layout drift: offsetof(PyTypeObject, tp_getset) != 248");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_base) == 256u, "layout drift: offsetof(PyTypeObject, tp_base) != 256");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_dict) == 264u, "layout drift: offsetof(PyTypeObject, tp_dict) != 264");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_descr_get) == 272u, "layout drift: offsetof(PyTypeObject, tp_descr_get) != 272");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_descr_set) == 280u, "layout drift: offsetof(PyTypeObject, tp_descr_set) != 280");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_dictoffset) == 288u, "layout drift: offsetof(PyTypeObject, tp_dictoffset) != 288");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_init) == 296u, "layout drift: offsetof(PyTypeObject, tp_init) != 296");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_alloc) == 304u, "layout drift: offsetof(PyTypeObject, tp_alloc) != 304");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_new) == 312u, "layout drift: offsetof(PyTypeObject, tp_new) != 312");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_free) == 320u, "layout drift: offsetof(PyTypeObject, tp_free) != 320");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_is_gc) == 328u, "layout drift: offsetof(PyTypeObject, tp_is_gc) != 328");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_bases) == 336u, "layout drift: offsetof(PyTypeObject, tp_bases) != 336");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_mro) == 344u, "layout drift: offsetof(PyTypeObject, tp_mro) != 344");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_cache) == 352u, "layout drift: offsetof(PyTypeObject, tp_cache) != 352");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_subclasses) == 360u, "layout drift: offsetof(PyTypeObject, tp_subclasses) != 360");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_weaklist) == 368u, "layout drift: offsetof(PyTypeObject, tp_weaklist) != 368");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_del) == 376u, "layout drift: offsetof(PyTypeObject, tp_del) != 376");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_version_tag) == 384u, "layout drift: offsetof(PyTypeObject, tp_version_tag) != 384");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_finalize) == 392u, "layout drift: offsetof(PyTypeObject, tp_finalize) != 392");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_vectorcall) == 400u, "layout drift: offsetof(PyTypeObject, tp_vectorcall) != 400");
+_MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_watched) == 408u, "layout drift: offsetof(PyTypeObject, tp_watched) != 408");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_flags) == 4u, "layout drift: width of PyTypeObject.tp_flags != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_version_tag) == 4u, "layout drift: width of PyTypeObject.tp_version_tag != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyTypeObject) == 416u, "layout drift: sizeof(PyTypeObject) != 416 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_name) == 24u, "layout drift: offsetof(PyTypeObject, tp_name) != 24");
@@ -169,31 +219,49 @@ _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_version_tag) == 384u, "layout drift:
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_finalize) == 392u, "layout drift: offsetof(PyTypeObject, tp_finalize) != 392");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_vectorcall) == 400u, "layout drift: offsetof(PyTypeObject, tp_vectorcall) != 400");
 _MOLT_ABI_SASSERT(offsetof(PyTypeObject, tp_watched) == 408u, "layout drift: offsetof(PyTypeObject, tp_watched) != 408");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_flags) == 8u, "layout drift: width of PyTypeObject.tp_flags != 8");
+_MOLT_ABI_SASSERT(sizeof(((PyTypeObject *)0)->tp_version_tag) == 4u, "layout drift: width of PyTypeObject.tp_version_tag != 4");
 #endif
 
 /* PyMethodDef  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyMethodDef) == 16u, "layout drift: sizeof(PyMethodDef) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_name) == 0u, "layout drift: offsetof(PyMethodDef, ml_name) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_meth) == 4u, "layout drift: offsetof(PyMethodDef, ml_meth) != 4");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_flags) == 8u, "layout drift: offsetof(PyMethodDef, ml_flags) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_doc) == 12u, "layout drift: offsetof(PyMethodDef, ml_doc) != 12");
+_MOLT_ABI_SASSERT(sizeof(((PyMethodDef *)0)->ml_flags) == 4u, "layout drift: width of PyMethodDef.ml_flags != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodDef) == 32u, "layout drift: sizeof(PyMethodDef) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_name) == 0u, "layout drift: offsetof(PyMethodDef, ml_name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_meth) == 8u, "layout drift: offsetof(PyMethodDef, ml_meth) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_flags) == 16u, "layout drift: offsetof(PyMethodDef, ml_flags) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_doc) == 24u, "layout drift: offsetof(PyMethodDef, ml_doc) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyMethodDef *)0)->ml_flags) == 4u, "layout drift: width of PyMethodDef.ml_flags != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyMethodDef) == 32u, "layout drift: sizeof(PyMethodDef) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_name) == 0u, "layout drift: offsetof(PyMethodDef, ml_name) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_meth) == 8u, "layout drift: offsetof(PyMethodDef, ml_meth) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_flags) == 16u, "layout drift: offsetof(PyMethodDef, ml_flags) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyMethodDef, ml_doc) == 24u, "layout drift: offsetof(PyMethodDef, ml_doc) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyMethodDef *)0)->ml_flags) == 4u, "layout drift: width of PyMethodDef.ml_flags != 4");
 #endif
 
 /* PyGetSetDef  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyGetSetDef) == 20u, "layout drift: sizeof(PyGetSetDef) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, name) == 0u, "layout drift: offsetof(PyGetSetDef, name) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, get) == 4u, "layout drift: offsetof(PyGetSetDef, get) != 4");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, set) == 8u, "layout drift: offsetof(PyGetSetDef, set) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, doc) == 12u, "layout drift: offsetof(PyGetSetDef, doc) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, closure) == 16u, "layout drift: offsetof(PyGetSetDef, closure) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyGetSetDef) == 40u, "layout drift: sizeof(PyGetSetDef) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDef, name) == 0u, "layout drift: offsetof(PyGetSetDef, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDef, get) == 8u, "layout drift: offsetof(PyGetSetDef, get) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDef, set) == 16u, "layout drift: offsetof(PyGetSetDef, set) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDef, doc) == 24u, "layout drift: offsetof(PyGetSetDef, doc) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyGetSetDef, closure) == 32u, "layout drift: offsetof(PyGetSetDef, closure) != 32");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyGetSetDef) == 40u, "layout drift: sizeof(PyGetSetDef) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, name) == 0u, "layout drift: offsetof(PyGetSetDef, name) != 0");
@@ -204,13 +272,24 @@ _MOLT_ABI_SASSERT(offsetof(PyGetSetDef, closure) == 32u, "layout drift: offsetof
 #endif
 
 /* PyMemberDef  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyMemberDef) == 20u, "layout drift: sizeof(PyMemberDef) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, name) == 0u, "layout drift: offsetof(PyMemberDef, name) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, type) == 4u, "layout drift: offsetof(PyMemberDef, type) != 4");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, offset) == 8u, "layout drift: offsetof(PyMemberDef, offset) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, flags) == 12u, "layout drift: offsetof(PyMemberDef, flags) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, doc) == 16u, "layout drift: offsetof(PyMemberDef, doc) != 16");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->type) == 4u, "layout drift: width of PyMemberDef.type != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->flags) == 4u, "layout drift: width of PyMemberDef.flags != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMemberDef) == 40u, "layout drift: sizeof(PyMemberDef) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDef, name) == 0u, "layout drift: offsetof(PyMemberDef, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDef, type) == 8u, "layout drift: offsetof(PyMemberDef, type) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDef, offset) == 16u, "layout drift: offsetof(PyMemberDef, offset) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDef, flags) == 24u, "layout drift: offsetof(PyMemberDef, flags) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyMemberDef, doc) == 32u, "layout drift: offsetof(PyMemberDef, doc) != 32");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->type) == 4u, "layout drift: width of PyMemberDef.type != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->flags) == 4u, "layout drift: width of PyMemberDef.flags != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyMemberDef) == 40u, "layout drift: sizeof(PyMemberDef) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, name) == 0u, "layout drift: offsetof(PyMemberDef, name) != 0");
@@ -218,10 +297,12 @@ _MOLT_ABI_SASSERT(offsetof(PyMemberDef, type) == 8u, "layout drift: offsetof(PyM
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, offset) == 16u, "layout drift: offsetof(PyMemberDef, offset) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, flags) == 24u, "layout drift: offsetof(PyMemberDef, flags) != 24");
 _MOLT_ABI_SASSERT(offsetof(PyMemberDef, doc) == 32u, "layout drift: offsetof(PyMemberDef, doc) != 32");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->type) == 4u, "layout drift: width of PyMemberDef.type != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyMemberDef *)0)->flags) == 4u, "layout drift: width of PyMemberDef.flags != 4");
 #endif
 
 /* PyModuleDef  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef) == 52u, "layout drift: sizeof(PyModuleDef) != 52 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_name) == 20u, "layout drift: offsetof(PyModuleDef, m_name) != 20");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_doc) == 24u, "layout drift: offsetof(PyModuleDef, m_doc) != 24");
@@ -231,6 +312,16 @@ _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_slots) == 36u, "layout drift: offsetof
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_traverse) == 40u, "layout drift: offsetof(PyModuleDef, m_traverse) != 40");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_clear) == 44u, "layout drift: offsetof(PyModuleDef, m_clear) != 44");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_free) == 48u, "layout drift: offsetof(PyModuleDef, m_free) != 48");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyModuleDef) == 104u, "layout drift: sizeof(PyModuleDef) != 104 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_name) == 40u, "layout drift: offsetof(PyModuleDef, m_name) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_doc) == 48u, "layout drift: offsetof(PyModuleDef, m_doc) != 48");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_size) == 56u, "layout drift: offsetof(PyModuleDef, m_size) != 56");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_methods) == 64u, "layout drift: offsetof(PyModuleDef, m_methods) != 64");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_slots) == 72u, "layout drift: offsetof(PyModuleDef, m_slots) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_traverse) == 80u, "layout drift: offsetof(PyModuleDef, m_traverse) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_clear) == 88u, "layout drift: offsetof(PyModuleDef, m_clear) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_free) == 96u, "layout drift: offsetof(PyModuleDef, m_free) != 96");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef) == 104u, "layout drift: sizeof(PyModuleDef) != 104 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_name) == 40u, "layout drift: offsetof(PyModuleDef, m_name) != 40");
@@ -244,22 +335,34 @@ _MOLT_ABI_SASSERT(offsetof(PyModuleDef, m_free) == 96u, "layout drift: offsetof(
 #endif
 
 /* PyModuleDef_Slot  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef_Slot) == 8u, "layout drift: sizeof(PyModuleDef_Slot) != 8 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, slot) == 0u, "layout drift: offsetof(PyModuleDef_Slot, slot) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, value) == 4u, "layout drift: offsetof(PyModuleDef_Slot, value) != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyModuleDef_Slot *)0)->slot) == 4u, "layout drift: width of PyModuleDef_Slot.slot != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyModuleDef_Slot) == 16u, "layout drift: sizeof(PyModuleDef_Slot) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, slot) == 0u, "layout drift: offsetof(PyModuleDef_Slot, slot) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, value) == 8u, "layout drift: offsetof(PyModuleDef_Slot, value) != 8");
+_MOLT_ABI_SASSERT(sizeof(((PyModuleDef_Slot *)0)->slot) == 4u, "layout drift: width of PyModuleDef_Slot.slot != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef_Slot) == 16u, "layout drift: sizeof(PyModuleDef_Slot) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, slot) == 0u, "layout drift: offsetof(PyModuleDef_Slot, slot) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Slot, value) == 8u, "layout drift: offsetof(PyModuleDef_Slot, value) != 8");
+_MOLT_ABI_SASSERT(sizeof(((PyModuleDef_Slot *)0)->slot) == 4u, "layout drift: width of PyModuleDef_Slot.slot != 4");
 #endif
 
 /* PyModuleDef_Base  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef_Base) == 20u, "layout drift: sizeof(PyModuleDef_Base) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_init) == 8u, "layout drift: offsetof(PyModuleDef_Base, m_init) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_index) == 12u, "layout drift: offsetof(PyModuleDef_Base, m_index) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_copy) == 16u, "layout drift: offsetof(PyModuleDef_Base, m_copy) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyModuleDef_Base) == 40u, "layout drift: sizeof(PyModuleDef_Base) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_init) == 16u, "layout drift: offsetof(PyModuleDef_Base, m_init) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_index) == 24u, "layout drift: offsetof(PyModuleDef_Base, m_index) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_copy) == 32u, "layout drift: offsetof(PyModuleDef_Base, m_copy) != 32");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyModuleDef_Base) == 40u, "layout drift: sizeof(PyModuleDef_Base) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_init) == 16u, "layout drift: offsetof(PyModuleDef_Base, m_init) != 16");
@@ -268,7 +371,7 @@ _MOLT_ABI_SASSERT(offsetof(PyModuleDef_Base, m_copy) == 32u, "layout drift: offs
 #endif
 
 /* Py_buffer  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(Py_buffer) == 44u, "layout drift: sizeof(Py_buffer) != 44 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, buf) == 0u, "layout drift: offsetof(Py_buffer, buf) != 0");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, obj) == 4u, "layout drift: offsetof(Py_buffer, obj) != 4");
@@ -281,6 +384,23 @@ _MOLT_ABI_SASSERT(offsetof(Py_buffer, shape) == 28u, "layout drift: offsetof(Py_
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, strides) == 32u, "layout drift: offsetof(Py_buffer, strides) != 32");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, suboffsets) == 36u, "layout drift: offsetof(Py_buffer, suboffsets) != 36");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, internal) == 40u, "layout drift: offsetof(Py_buffer, internal) != 40");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->readonly) == 4u, "layout drift: width of Py_buffer.readonly != 4");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->ndim) == 4u, "layout drift: width of Py_buffer.ndim != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(Py_buffer) == 80u, "layout drift: sizeof(Py_buffer) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, buf) == 0u, "layout drift: offsetof(Py_buffer, buf) != 0");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, obj) == 8u, "layout drift: offsetof(Py_buffer, obj) != 8");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, len) == 16u, "layout drift: offsetof(Py_buffer, len) != 16");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, itemsize) == 24u, "layout drift: offsetof(Py_buffer, itemsize) != 24");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, readonly) == 32u, "layout drift: offsetof(Py_buffer, readonly) != 32");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, ndim) == 36u, "layout drift: offsetof(Py_buffer, ndim) != 36");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, format) == 40u, "layout drift: offsetof(Py_buffer, format) != 40");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, shape) == 48u, "layout drift: offsetof(Py_buffer, shape) != 48");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, strides) == 56u, "layout drift: offsetof(Py_buffer, strides) != 56");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, suboffsets) == 64u, "layout drift: offsetof(Py_buffer, suboffsets) != 64");
+_MOLT_ABI_SASSERT(offsetof(Py_buffer, internal) == 72u, "layout drift: offsetof(Py_buffer, internal) != 72");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->readonly) == 4u, "layout drift: width of Py_buffer.readonly != 4");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->ndim) == 4u, "layout drift: width of Py_buffer.ndim != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(Py_buffer) == 80u, "layout drift: sizeof(Py_buffer) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, buf) == 0u, "layout drift: offsetof(Py_buffer, buf) != 0");
@@ -294,16 +414,25 @@ _MOLT_ABI_SASSERT(offsetof(Py_buffer, shape) == 48u, "layout drift: offsetof(Py_
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, strides) == 56u, "layout drift: offsetof(Py_buffer, strides) != 56");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, suboffsets) == 64u, "layout drift: offsetof(Py_buffer, suboffsets) != 64");
 _MOLT_ABI_SASSERT(offsetof(Py_buffer, internal) == 72u, "layout drift: offsetof(Py_buffer, internal) != 72");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->readonly) == 4u, "layout drift: width of Py_buffer.readonly != 4");
+_MOLT_ABI_SASSERT(sizeof(((Py_buffer *)0)->ndim) == 4u, "layout drift: width of Py_buffer.ndim != 4");
 #endif
 
 /* PyMemoryViewObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 584u, "layout drift: sizeof(PyMemoryViewObject) != 584 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 8u, "layout drift: offsetof(PyMemoryViewObject, view) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 52u, "layout drift: offsetof(PyMemoryViewObject, base) != 52");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 56u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 56");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 312u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 312");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 568u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 568");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1144u, "layout drift: sizeof(PyMemoryViewObject) != 1144 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 16u, "layout drift: offsetof(PyMemoryViewObject, view) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, base) == 96u, "layout drift: offsetof(PyMemoryViewObject, base) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_shape) == 104u, "layout drift: offsetof(PyMemoryViewObject, ob_shape) != 104");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_strides) == 616u, "layout drift: offsetof(PyMemoryViewObject, ob_strides) != 616");
+_MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 1128u, "layout drift: offsetof(PyMemoryViewObject, ob_format) != 1128");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyMemoryViewObject) == 1144u, "layout drift: sizeof(PyMemoryViewObject) != 1144 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, view) == 16u, "layout drift: offsetof(PyMemoryViewObject, view) != 16");
@@ -314,19 +443,26 @@ _MOLT_ABI_SASSERT(offsetof(PyMemoryViewObject, ob_format) == 1128u, "layout drif
 #endif
 
 /* PyTupleObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyTupleObject) == 16u, "layout drift: sizeof(PyTupleObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyTupleObject, ob_item) == 12u, "layout drift: offsetof(PyTupleObject, ob_item) != 12");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyTupleObject) == 32u, "layout drift: sizeof(PyTupleObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyTupleObject, ob_item) == 24u, "layout drift: offsetof(PyTupleObject, ob_item) != 24");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyTupleObject) == 32u, "layout drift: sizeof(PyTupleObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyTupleObject, ob_item) == 24u, "layout drift: offsetof(PyTupleObject, ob_item) != 24");
 #endif
 
 /* PyListObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyListObject) == 20u, "layout drift: sizeof(PyListObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyListObject, ob_item) == 12u, "layout drift: offsetof(PyListObject, ob_item) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyListObject, allocated) == 16u, "layout drift: offsetof(PyListObject, allocated) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyListObject) == 40u, "layout drift: sizeof(PyListObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, ob_item) == 24u, "layout drift: offsetof(PyListObject, ob_item) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyListObject, allocated) == 32u, "layout drift: offsetof(PyListObject, allocated) != 32");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyListObject) == 40u, "layout drift: sizeof(PyListObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyListObject, ob_item) == 24u, "layout drift: offsetof(PyListObject, ob_item) != 24");
@@ -334,10 +470,14 @@ _MOLT_ABI_SASSERT(offsetof(PyListObject, allocated) == 32u, "layout drift: offse
 #endif
 
 /* PyBytesObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyBytesObject) == 20u, "layout drift: sizeof(PyBytesObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_shash) == 12u, "layout drift: offsetof(PyBytesObject, ob_shash) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_sval) == 16u, "layout drift: offsetof(PyBytesObject, ob_sval) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyBytesObject) == 40u, "layout drift: sizeof(PyBytesObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_shash) == 24u, "layout drift: offsetof(PyBytesObject, ob_shash) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_sval) == 32u, "layout drift: offsetof(PyBytesObject, ob_sval) != 32");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyBytesObject) == 40u, "layout drift: sizeof(PyBytesObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_shash) == 24u, "layout drift: offsetof(PyBytesObject, ob_shash) != 24");
@@ -345,12 +485,18 @@ _MOLT_ABI_SASSERT(offsetof(PyBytesObject, ob_sval) == 32u, "layout drift: offset
 #endif
 
 /* PyByteArrayObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyByteArrayObject) == 28u, "layout drift: sizeof(PyByteArrayObject) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_alloc) == 12u, "layout drift: offsetof(PyByteArrayObject, ob_alloc) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_bytes) == 16u, "layout drift: offsetof(PyByteArrayObject, ob_bytes) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_start) == 20u, "layout drift: offsetof(PyByteArrayObject, ob_start) != 20");
 _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_exports) == 24u, "layout drift: offsetof(PyByteArrayObject, ob_exports) != 24");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyByteArrayObject) == 56u, "layout drift: sizeof(PyByteArrayObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_alloc) == 24u, "layout drift: offsetof(PyByteArrayObject, ob_alloc) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_bytes) == 32u, "layout drift: offsetof(PyByteArrayObject, ob_bytes) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_start) == 40u, "layout drift: offsetof(PyByteArrayObject, ob_start) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_exports) == 48u, "layout drift: offsetof(PyByteArrayObject, ob_exports) != 48");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyByteArrayObject) == 56u, "layout drift: sizeof(PyByteArrayObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_alloc) == 24u, "layout drift: offsetof(PyByteArrayObject, ob_alloc) != 24");
@@ -360,25 +506,43 @@ _MOLT_ABI_SASSERT(offsetof(PyByteArrayObject, ob_exports) == 48u, "layout drift:
 #endif
 
 /* PyComplexObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyComplexObject) == 24u, "layout drift: sizeof(PyComplexObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyComplexObject, cval) == 8u, "layout drift: offsetof(PyComplexObject, cval) != 8");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyComplexObject) == 32u, "layout drift: sizeof(PyComplexObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyComplexObject, cval) == 16u, "layout drift: offsetof(PyComplexObject, cval) != 16");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyComplexObject) == 32u, "layout drift: sizeof(PyComplexObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyComplexObject, cval) == 16u, "layout drift: offsetof(PyComplexObject, cval) != 16");
 #endif
 
 /* Py_complex  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(Py_complex) == 16u, "layout drift: sizeof(Py_complex) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(Py_complex, real) == 0u, "layout drift: offsetof(Py_complex, real) != 0");
 _MOLT_ABI_SASSERT(offsetof(Py_complex, imag) == 8u, "layout drift: offsetof(Py_complex, imag) != 8");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(Py_complex) == 16u, "layout drift: sizeof(Py_complex) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(Py_complex, real) == 0u, "layout drift: offsetof(Py_complex, real) != 0");
+_MOLT_ABI_SASSERT(offsetof(Py_complex, imag) == 8u, "layout drift: offsetof(Py_complex, imag) != 8");
+#else
+_MOLT_ABI_SASSERT(sizeof(Py_complex) == 16u, "layout drift: sizeof(Py_complex) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(Py_complex, real) == 0u, "layout drift: offsetof(Py_complex, real) != 0");
+_MOLT_ABI_SASSERT(offsetof(Py_complex, imag) == 8u, "layout drift: offsetof(Py_complex, imag) != 8");
+#endif
 
 /* PySliceObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PySliceObject) == 20u, "layout drift: sizeof(PySliceObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, start) == 8u, "layout drift: offsetof(PySliceObject, start) != 8");
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, stop) == 12u, "layout drift: offsetof(PySliceObject, stop) != 12");
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, step) == 16u, "layout drift: offsetof(PySliceObject, step) != 16");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PySliceObject) == 40u, "layout drift: sizeof(PySliceObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PySliceObject, start) == 16u, "layout drift: offsetof(PySliceObject, start) != 16");
+_MOLT_ABI_SASSERT(offsetof(PySliceObject, stop) == 24u, "layout drift: offsetof(PySliceObject, stop) != 24");
+_MOLT_ABI_SASSERT(offsetof(PySliceObject, step) == 32u, "layout drift: offsetof(PySliceObject, step) != 32");
 #else
 _MOLT_ABI_SASSERT(sizeof(PySliceObject) == 40u, "layout drift: sizeof(PySliceObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySliceObject, start) == 16u, "layout drift: offsetof(PySliceObject, start) != 16");
@@ -387,19 +551,26 @@ _MOLT_ABI_SASSERT(offsetof(PySliceObject, step) == 32u, "layout drift: offsetof(
 #endif
 
 /* PyDictProxyObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 12u, "layout drift: sizeof(PyDictProxyObject) != 12 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 8u, "layout drift: offsetof(PyDictProxyObject, mapping) != 8");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 24u, "layout drift: sizeof(PyDictProxyObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 16u, "layout drift: offsetof(PyDictProxyObject, mapping) != 16");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyDictProxyObject) == 24u, "layout drift: sizeof(PyDictProxyObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyDictProxyObject, mapping) == 16u, "layout drift: offsetof(PyDictProxyObject, mapping) != 16");
 #endif
 
 /* PyGenericAliasObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 16u, "layout drift: sizeof(PyGenericAliasObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 8u, "layout drift: offsetof(PyGenericAliasObject, origin) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 12u, "layout drift: offsetof(PyGenericAliasObject, args) != 12");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 32u, "layout drift: sizeof(PyGenericAliasObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 16u, "layout drift: offsetof(PyGenericAliasObject, origin) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 24u, "layout drift: offsetof(PyGenericAliasObject, args) != 24");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyGenericAliasObject) == 32u, "layout drift: sizeof(PyGenericAliasObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, origin) == 16u, "layout drift: offsetof(PyGenericAliasObject, origin) != 16");
@@ -407,13 +578,20 @@ _MOLT_ABI_SASSERT(offsetof(PyGenericAliasObject, args) == 24u, "layout drift: of
 #endif
 
 /* PyCFunctionObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyCFunctionObject) == 28u, "layout drift: sizeof(PyCFunctionObject) != 28 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_ml) == 8u, "layout drift: offsetof(PyCFunctionObject, m_ml) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_self) == 12u, "layout drift: offsetof(PyCFunctionObject, m_self) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_module) == 16u, "layout drift: offsetof(PyCFunctionObject, m_module) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_weakreflist) == 20u, "layout drift: offsetof(PyCFunctionObject, m_weakreflist) != 20");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, vectorcall) == 24u, "layout drift: offsetof(PyCFunctionObject, vectorcall) != 24");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyCFunctionObject) == 56u, "layout drift: sizeof(PyCFunctionObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_ml) == 16u, "layout drift: offsetof(PyCFunctionObject, m_ml) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_self) == 24u, "layout drift: offsetof(PyCFunctionObject, m_self) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_module) == 32u, "layout drift: offsetof(PyCFunctionObject, m_module) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_weakreflist) == 40u, "layout drift: offsetof(PyCFunctionObject, m_weakreflist) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, vectorcall) == 48u, "layout drift: offsetof(PyCFunctionObject, vectorcall) != 48");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyCFunctionObject) == 56u, "layout drift: sizeof(PyCFunctionObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_ml) == 16u, "layout drift: offsetof(PyCFunctionObject, m_ml) != 16");
@@ -424,19 +602,26 @@ _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, vectorcall) == 48u, "layout drift:
 #endif
 
 /* PyLongObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyLongObject) == 16u, "layout drift: sizeof(PyLongObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyLongObject, long_value) == 8u, "layout drift: offsetof(PyLongObject, long_value) != 8");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyLongObject) == 32u, "layout drift: sizeof(PyLongObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyLongObject, long_value) == 16u, "layout drift: offsetof(PyLongObject, long_value) != 16");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyLongObject) == 32u, "layout drift: sizeof(PyLongObject) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyLongObject, long_value) == 16u, "layout drift: offsetof(PyLongObject, long_value) != 16");
 #endif
 
 /* PyLongValue  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(_PyLongValue) == 8u, "layout drift: sizeof(_PyLongValue) != 8 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(_PyLongValue, lv_tag) == 0u, "layout drift: offsetof(_PyLongValue, lv_tag) != 0");
 _MOLT_ABI_SASSERT(offsetof(_PyLongValue, ob_digit) == 4u, "layout drift: offsetof(_PyLongValue, ob_digit) != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(_PyLongValue) == 16u, "layout drift: sizeof(_PyLongValue) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(_PyLongValue, lv_tag) == 0u, "layout drift: offsetof(_PyLongValue, lv_tag) != 0");
+_MOLT_ABI_SASSERT(offsetof(_PyLongValue, ob_digit) == 8u, "layout drift: offsetof(_PyLongValue, ob_digit) != 8");
 #else
 _MOLT_ABI_SASSERT(sizeof(_PyLongValue) == 16u, "layout drift: sizeof(_PyLongValue) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(_PyLongValue, lv_tag) == 0u, "layout drift: offsetof(_PyLongValue, lv_tag) != 0");
@@ -444,24 +629,44 @@ _MOLT_ABI_SASSERT(offsetof(_PyLongValue, ob_digit) == 8u, "layout drift: offseto
 #endif
 
 /* PyType_Slot  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyType_Slot) == 8u, "layout drift: sizeof(PyType_Slot) != 8 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyType_Slot, slot) == 0u, "layout drift: offsetof(PyType_Slot, slot) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyType_Slot, pfunc) == 4u, "layout drift: offsetof(PyType_Slot, pfunc) != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Slot *)0)->slot) == 4u, "layout drift: width of PyType_Slot.slot != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyType_Slot) == 16u, "layout drift: sizeof(PyType_Slot) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyType_Slot, slot) == 0u, "layout drift: offsetof(PyType_Slot, slot) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyType_Slot, pfunc) == 8u, "layout drift: offsetof(PyType_Slot, pfunc) != 8");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Slot *)0)->slot) == 4u, "layout drift: width of PyType_Slot.slot != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyType_Slot) == 16u, "layout drift: sizeof(PyType_Slot) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyType_Slot, slot) == 0u, "layout drift: offsetof(PyType_Slot, slot) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyType_Slot, pfunc) == 8u, "layout drift: offsetof(PyType_Slot, pfunc) != 8");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Slot *)0)->slot) == 4u, "layout drift: width of PyType_Slot.slot != 4");
 #endif
 
 /* PyType_Spec  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyType_Spec) == 20u, "layout drift: sizeof(PyType_Spec) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, name) == 0u, "layout drift: offsetof(PyType_Spec, name) != 0");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, basicsize) == 4u, "layout drift: offsetof(PyType_Spec, basicsize) != 4");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, itemsize) == 8u, "layout drift: offsetof(PyType_Spec, itemsize) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, flags) == 12u, "layout drift: offsetof(PyType_Spec, flags) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, slots) == 16u, "layout drift: offsetof(PyType_Spec, slots) != 16");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->basicsize) == 4u, "layout drift: width of PyType_Spec.basicsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->itemsize) == 4u, "layout drift: width of PyType_Spec.itemsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->flags) == 4u, "layout drift: width of PyType_Spec.flags != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyType_Spec) == 32u, "layout drift: sizeof(PyType_Spec) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyType_Spec, name) == 0u, "layout drift: offsetof(PyType_Spec, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyType_Spec, basicsize) == 8u, "layout drift: offsetof(PyType_Spec, basicsize) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyType_Spec, itemsize) == 12u, "layout drift: offsetof(PyType_Spec, itemsize) != 12");
+_MOLT_ABI_SASSERT(offsetof(PyType_Spec, flags) == 16u, "layout drift: offsetof(PyType_Spec, flags) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyType_Spec, slots) == 24u, "layout drift: offsetof(PyType_Spec, slots) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->basicsize) == 4u, "layout drift: width of PyType_Spec.basicsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->itemsize) == 4u, "layout drift: width of PyType_Spec.itemsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->flags) == 4u, "layout drift: width of PyType_Spec.flags != 4");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyType_Spec) == 32u, "layout drift: sizeof(PyType_Spec) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, name) == 0u, "layout drift: offsetof(PyType_Spec, name) != 0");
@@ -469,10 +674,13 @@ _MOLT_ABI_SASSERT(offsetof(PyType_Spec, basicsize) == 8u, "layout drift: offseto
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, itemsize) == 12u, "layout drift: offsetof(PyType_Spec, itemsize) != 12");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, flags) == 16u, "layout drift: offsetof(PyType_Spec, flags) != 16");
 _MOLT_ABI_SASSERT(offsetof(PyType_Spec, slots) == 24u, "layout drift: offsetof(PyType_Spec, slots) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->basicsize) == 4u, "layout drift: width of PyType_Spec.basicsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->itemsize) == 4u, "layout drift: width of PyType_Spec.itemsize != 4");
+_MOLT_ABI_SASSERT(sizeof(((PyType_Spec *)0)->flags) == 4u, "layout drift: width of PyType_Spec.flags != 4");
 #endif
 
 /* PyBaseExceptionObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyBaseExceptionObject) == 36u, "layout drift: sizeof(PyBaseExceptionObject) != 36 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, dict) == 8u, "layout drift: offsetof(PyBaseExceptionObject, dict) != 8");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, args) == 12u, "layout drift: offsetof(PyBaseExceptionObject, args) != 12");
@@ -481,6 +689,15 @@ _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, traceback) == 20u, "layout dri
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, context) == 24u, "layout drift: offsetof(PyBaseExceptionObject, context) != 24");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, cause) == 28u, "layout drift: offsetof(PyBaseExceptionObject, cause) != 28");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, suppress_context) == 32u, "layout drift: offsetof(PyBaseExceptionObject, suppress_context) != 32");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyBaseExceptionObject) == 72u, "layout drift: sizeof(PyBaseExceptionObject) != 72 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, dict) == 16u, "layout drift: offsetof(PyBaseExceptionObject, dict) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, args) == 24u, "layout drift: offsetof(PyBaseExceptionObject, args) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, notes) == 32u, "layout drift: offsetof(PyBaseExceptionObject, notes) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, traceback) == 40u, "layout drift: offsetof(PyBaseExceptionObject, traceback) != 40");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, context) == 48u, "layout drift: offsetof(PyBaseExceptionObject, context) != 48");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, cause) == 56u, "layout drift: offsetof(PyBaseExceptionObject, cause) != 56");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, suppress_context) == 64u, "layout drift: offsetof(PyBaseExceptionObject, suppress_context) != 64");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyBaseExceptionObject) == 72u, "layout drift: sizeof(PyBaseExceptionObject) != 72 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, dict) == 16u, "layout drift: offsetof(PyBaseExceptionObject, dict) != 16");
@@ -493,10 +710,14 @@ _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionObject, suppress_context) == 64u, "lay
 #endif
 
 /* PyBaseExceptionGroupObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyBaseExceptionGroupObject) == 44u, "layout drift: sizeof(PyBaseExceptionGroupObject) != 44 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, msg) == 36u, "layout drift: offsetof(PyBaseExceptionGroupObject, msg) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, excs) == 40u, "layout drift: offsetof(PyBaseExceptionGroupObject, excs) != 40");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyBaseExceptionGroupObject) == 88u, "layout drift: sizeof(PyBaseExceptionGroupObject) != 88 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, msg) == 72u, "layout drift: offsetof(PyBaseExceptionGroupObject, msg) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, excs) == 80u, "layout drift: offsetof(PyBaseExceptionGroupObject, excs) != 80");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyBaseExceptionGroupObject) == 88u, "layout drift: sizeof(PyBaseExceptionGroupObject) != 88 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, msg) == 72u, "layout drift: offsetof(PyBaseExceptionGroupObject, msg) != 72");
@@ -504,7 +725,7 @@ _MOLT_ABI_SASSERT(offsetof(PyBaseExceptionGroupObject, excs) == 80u, "layout dri
 #endif
 
 /* PySyntaxErrorObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PySyntaxErrorObject) == 68u, "layout drift: sizeof(PySyntaxErrorObject) != 68 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, msg) == 36u, "layout drift: offsetof(PySyntaxErrorObject, msg) != 36");
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, filename) == 40u, "layout drift: offsetof(PySyntaxErrorObject, filename) != 40");
@@ -514,6 +735,16 @@ _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, end_lineno) == 52u, "layout drif
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, end_offset) == 56u, "layout drift: offsetof(PySyntaxErrorObject, end_offset) != 56");
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, text) == 60u, "layout drift: offsetof(PySyntaxErrorObject, text) != 60");
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, print_file_and_line) == 64u, "layout drift: offsetof(PySyntaxErrorObject, print_file_and_line) != 64");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PySyntaxErrorObject) == 136u, "layout drift: sizeof(PySyntaxErrorObject) != 136 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, msg) == 72u, "layout drift: offsetof(PySyntaxErrorObject, msg) != 72");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, filename) == 80u, "layout drift: offsetof(PySyntaxErrorObject, filename) != 80");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, lineno) == 88u, "layout drift: offsetof(PySyntaxErrorObject, lineno) != 88");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, offset) == 96u, "layout drift: offsetof(PySyntaxErrorObject, offset) != 96");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, end_lineno) == 104u, "layout drift: offsetof(PySyntaxErrorObject, end_lineno) != 104");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, end_offset) == 112u, "layout drift: offsetof(PySyntaxErrorObject, end_offset) != 112");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, text) == 120u, "layout drift: offsetof(PySyntaxErrorObject, text) != 120");
+_MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, print_file_and_line) == 128u, "layout drift: offsetof(PySyntaxErrorObject, print_file_and_line) != 128");
 #else
 _MOLT_ABI_SASSERT(sizeof(PySyntaxErrorObject) == 136u, "layout drift: sizeof(PySyntaxErrorObject) != 136 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, msg) == 72u, "layout drift: offsetof(PySyntaxErrorObject, msg) != 72");
@@ -527,12 +758,18 @@ _MOLT_ABI_SASSERT(offsetof(PySyntaxErrorObject, print_file_and_line) == 128u, "l
 #endif
 
 /* PyImportErrorObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyImportErrorObject) == 52u, "layout drift: sizeof(PyImportErrorObject) != 52 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, msg) == 36u, "layout drift: offsetof(PyImportErrorObject, msg) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, name) == 40u, "layout drift: offsetof(PyImportErrorObject, name) != 40");
 _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, path) == 44u, "layout drift: offsetof(PyImportErrorObject, path) != 44");
 _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, name_from) == 48u, "layout drift: offsetof(PyImportErrorObject, name_from) != 48");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyImportErrorObject) == 104u, "layout drift: sizeof(PyImportErrorObject) != 104 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, msg) == 72u, "layout drift: offsetof(PyImportErrorObject, msg) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, name) == 80u, "layout drift: offsetof(PyImportErrorObject, name) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, path) == 88u, "layout drift: offsetof(PyImportErrorObject, path) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, name_from) == 96u, "layout drift: offsetof(PyImportErrorObject, name_from) != 96");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyImportErrorObject) == 104u, "layout drift: sizeof(PyImportErrorObject) != 104 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, msg) == 72u, "layout drift: offsetof(PyImportErrorObject, msg) != 72");
@@ -542,13 +779,20 @@ _MOLT_ABI_SASSERT(offsetof(PyImportErrorObject, name_from) == 96u, "layout drift
 #endif
 
 /* PyUnicodeErrorObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyUnicodeErrorObject) == 56u, "layout drift: sizeof(PyUnicodeErrorObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, encoding) == 36u, "layout drift: offsetof(PyUnicodeErrorObject, encoding) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, object) == 40u, "layout drift: offsetof(PyUnicodeErrorObject, object) != 40");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, start) == 44u, "layout drift: offsetof(PyUnicodeErrorObject, start) != 44");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, end) == 48u, "layout drift: offsetof(PyUnicodeErrorObject, end) != 48");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, reason) == 52u, "layout drift: offsetof(PyUnicodeErrorObject, reason) != 52");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyUnicodeErrorObject) == 112u, "layout drift: sizeof(PyUnicodeErrorObject) != 112 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, encoding) == 72u, "layout drift: offsetof(PyUnicodeErrorObject, encoding) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, object) == 80u, "layout drift: offsetof(PyUnicodeErrorObject, object) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, start) == 88u, "layout drift: offsetof(PyUnicodeErrorObject, start) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, end) == 96u, "layout drift: offsetof(PyUnicodeErrorObject, end) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, reason) == 104u, "layout drift: offsetof(PyUnicodeErrorObject, reason) != 104");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyUnicodeErrorObject) == 112u, "layout drift: sizeof(PyUnicodeErrorObject) != 112 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, encoding) == 72u, "layout drift: offsetof(PyUnicodeErrorObject, encoding) != 72");
@@ -559,9 +803,12 @@ _MOLT_ABI_SASSERT(offsetof(PyUnicodeErrorObject, reason) == 104u, "layout drift:
 #endif
 
 /* PySystemExitObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PySystemExitObject) == 40u, "layout drift: sizeof(PySystemExitObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySystemExitObject, code) == 36u, "layout drift: offsetof(PySystemExitObject, code) != 36");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PySystemExitObject) == 80u, "layout drift: sizeof(PySystemExitObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PySystemExitObject, code) == 72u, "layout drift: offsetof(PySystemExitObject, code) != 72");
 #else
 _MOLT_ABI_SASSERT(sizeof(PySystemExitObject) == 80u, "layout drift: sizeof(PySystemExitObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PySystemExitObject, code) == 72u, "layout drift: offsetof(PySystemExitObject, code) != 72");
@@ -569,7 +816,7 @@ _MOLT_ABI_SASSERT(offsetof(PySystemExitObject, code) == 72u, "layout drift: offs
 
 /* PyOSErrorObject  <-  abi_types.rs */
 #if defined(_WIN32) || defined(MS_WINDOWS)
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 60u, "layout drift: sizeof(PyOSErrorObject) != 60 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 36u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, strerror) == 40u, "layout drift: offsetof(PyOSErrorObject, strerror) != 40");
@@ -577,6 +824,14 @@ _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename) == 44u, "layout drift: off
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename2) == 48u, "layout drift: offsetof(PyOSErrorObject, filename2) != 48");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, winerror) == 52u, "layout drift: offsetof(PyOSErrorObject, winerror) != 52");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 56u, "layout drift: offsetof(PyOSErrorObject, written) != 56");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 120u, "layout drift: sizeof(PyOSErrorObject) != 120 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 72u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, strerror) == 80u, "layout drift: offsetof(PyOSErrorObject, strerror) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename) == 88u, "layout drift: offsetof(PyOSErrorObject, filename) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename2) == 96u, "layout drift: offsetof(PyOSErrorObject, filename2) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, winerror) == 104u, "layout drift: offsetof(PyOSErrorObject, winerror) != 104");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 112u, "layout drift: offsetof(PyOSErrorObject, written) != 112");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 120u, "layout drift: sizeof(PyOSErrorObject) != 120 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 72u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 72");
@@ -587,13 +842,20 @@ _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, winerror) == 104u, "layout drift: of
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 112u, "layout drift: offsetof(PyOSErrorObject, written) != 112");
 #endif
 #else
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 56u, "layout drift: sizeof(PyOSErrorObject) != 56 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 36u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, strerror) == 40u, "layout drift: offsetof(PyOSErrorObject, strerror) != 40");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename) == 44u, "layout drift: offsetof(PyOSErrorObject, filename) != 44");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename2) == 48u, "layout drift: offsetof(PyOSErrorObject, filename2) != 48");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 52u, "layout drift: offsetof(PyOSErrorObject, written) != 52");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 112u, "layout drift: sizeof(PyOSErrorObject) != 112 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 72u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, strerror) == 80u, "layout drift: offsetof(PyOSErrorObject, strerror) != 80");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename) == 88u, "layout drift: offsetof(PyOSErrorObject, filename) != 88");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, filename2) == 96u, "layout drift: offsetof(PyOSErrorObject, filename2) != 96");
+_MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 104u, "layout drift: offsetof(PyOSErrorObject, written) != 104");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyOSErrorObject) == 112u, "layout drift: sizeof(PyOSErrorObject) != 112 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, myerrno) == 72u, "layout drift: offsetof(PyOSErrorObject, myerrno) != 72");
@@ -605,28 +867,38 @@ _MOLT_ABI_SASSERT(offsetof(PyOSErrorObject, written) == 104u, "layout drift: off
 #endif
 
 /* PyStopIterationObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyStopIterationObject) == 40u, "layout drift: sizeof(PyStopIterationObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyStopIterationObject, value) == 36u, "layout drift: offsetof(PyStopIterationObject, value) != 36");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyStopIterationObject) == 80u, "layout drift: sizeof(PyStopIterationObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStopIterationObject, value) == 72u, "layout drift: offsetof(PyStopIterationObject, value) != 72");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyStopIterationObject) == 80u, "layout drift: sizeof(PyStopIterationObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyStopIterationObject, value) == 72u, "layout drift: offsetof(PyStopIterationObject, value) != 72");
 #endif
 
 /* PyNameErrorObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyNameErrorObject) == 40u, "layout drift: sizeof(PyNameErrorObject) != 40 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyNameErrorObject, name) == 36u, "layout drift: offsetof(PyNameErrorObject, name) != 36");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyNameErrorObject) == 80u, "layout drift: sizeof(PyNameErrorObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyNameErrorObject, name) == 72u, "layout drift: offsetof(PyNameErrorObject, name) != 72");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyNameErrorObject) == 80u, "layout drift: sizeof(PyNameErrorObject) != 80 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyNameErrorObject, name) == 72u, "layout drift: offsetof(PyNameErrorObject, name) != 72");
 #endif
 
 /* PyAttributeErrorObject  <-  abi_types.rs */
-#if _MOLT_ABI_PTR32
+#if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyAttributeErrorObject) == 44u, "layout drift: sizeof(PyAttributeErrorObject) != 44 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, obj) == 36u, "layout drift: offsetof(PyAttributeErrorObject, obj) != 36");
 _MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, name) == 40u, "layout drift: offsetof(PyAttributeErrorObject, name) != 40");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyAttributeErrorObject) == 88u, "layout drift: sizeof(PyAttributeErrorObject) != 88 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, obj) == 72u, "layout drift: offsetof(PyAttributeErrorObject, obj) != 72");
+_MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, name) == 80u, "layout drift: offsetof(PyAttributeErrorObject, name) != 80");
 #else
 _MOLT_ABI_SASSERT(sizeof(PyAttributeErrorObject) == 88u, "layout drift: sizeof(PyAttributeErrorObject) != 88 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
 _MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, obj) == 72u, "layout drift: offsetof(PyAttributeErrorObject, obj) != 72");
@@ -634,5 +906,4 @@ _MOLT_ABI_SASSERT(offsetof(PyAttributeErrorObject, name) == 80u, "layout drift: 
 #endif
 
 #undef _MOLT_ABI_SASSERT
-#undef _MOLT_ABI_PTR32
 #endif /* MOLT_ABI_LAYOUT_GENERATED_H */

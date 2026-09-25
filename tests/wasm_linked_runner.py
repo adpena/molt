@@ -143,7 +143,7 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
 def require_wasm_build_toolchain() -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for wasm parity test")
-    if not llvm_linker_candidates("wasm-ld"):
+    if not llvm_linker_candidates("wasm-ld", target_family="wasm"):
         pytest.skip("wasm-ld is required for linked wasm parity test")
 
 

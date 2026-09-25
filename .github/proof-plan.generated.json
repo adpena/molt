@@ -28,6 +28,7 @@
     "src/sitecustomize.py",
     "src/molt/_host_exit.py",
     "src/molt/pytest_memory_guard_bootstrap.py",
+    "src/molt/source_root.py",
     "src/molt/temporary_artifacts.py",
     "src/molt/disk_capacity.py",
     "src/molt/file_deletion.py",
@@ -43,6 +44,8 @@
     "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
+    "src/molt/wasi_sdk_identity.py",
+    "tools/provision_wasi_sdk.py",
     "tools/artifact_publish.py",
     "tools/nightly_prepare.py",
     "tools/nightly_profile_feedback.py",
@@ -185,7 +188,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4cc4b596505a0fa8d75590e5be4bfd865409581386e8142b8a43de0cc9dd2920",
+  "authority_sha256": "294e4730d43f4283970b293a51546eb79adc4147fe09fbfe5e4f1c9ad73246ea",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -431,6 +434,9 @@
         ".github/workflows/perf-gate.yml",
         "src/molt/cli/setup_readiness.py",
         "src/molt/llvm_toolchain.py",
+        "src/molt/wasi_sdk_identity.py",
+        "tools/provision_wasi_sdk.py",
+        "tests/tools/test_provision_wasi_sdk.py",
         "src/molt/cli/native_link*.py",
         "tests/test_bootstrap_llvm.py",
         "tests/test_llvm_toolchain.py",
@@ -2315,7 +2321,8 @@
         "-q",
         "tests/tools/test_release_supply_chain.py",
         "tests/tools/test_release_archive.py",
-        "tests/tools/test_release_remote.py"
+        "tests/tools/test_release_remote.py",
+        "tests/tools/test_provision_wasi_sdk.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -6038,13 +6045,14 @@
       "executable": "wasm-ld",
       "name": "wasm-ld",
       "setup_evidence": [
-        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+        "config/llvm_toolchain_releases.toml::llvm_version = \"22.1.0\"",
+        ".github/actions/setup-llvm/action.yml::python -m tools.provision_wasi_sdk"
       ],
-      "setup_value": "22.1.8",
+      "setup_value": "22.1.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "\\bLLD 22\\.1\\.8\\b"
+      "version_pattern": "\\bLLD 22\\.1\\.0\\b"
     },
     {
       "executable": "wasm-tools",

@@ -1,5 +1,6 @@
 use super::add_reloc_sections;
 use super::symbols::is_manifest_call_indirect_import_name;
+use crate::wasm::test_execution::wasm_ld_path;
 use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE, TypeSectionExt};
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
@@ -444,7 +445,8 @@ fn missing_callable_table_relocation_owner_fails_closed() {
 
 #[test]
 fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
-    let wasm_ld_probe = Command::new("wasm-ld").arg("--version").output();
+    let wasm_ld = wasm_ld_path();
+    let wasm_ld_probe = Command::new(&wasm_ld).arg("--version").output();
     if !matches!(wasm_ld_probe, Ok(output) if output.status.success()) {
         if std::env::var_os("CI").is_some()
             || std::env::var_os("MOLT_REQUIRE_REAL_WASM_LD_TESTS").is_some()
@@ -601,7 +603,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
     let runtime_path = temp.join("runtime.wasm");
     fs::write(&object_path, object).expect("write relocatable wasm object");
     fs::write(&runtime_path, runtime).expect("write fixed-prefix runtime wasm");
-    let status = Command::new("wasm-ld")
+    let status = Command::new(&wasm_ld)
         .args([
             "--no-entry",
             "--import-table",

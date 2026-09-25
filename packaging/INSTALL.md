@@ -20,6 +20,10 @@ any host Python installation or hidden CPython fallback.
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Linux: clang/llvm + build essentials
   - Windows: LLVM clang or set `CC` to a compatible compiler
+- **WASM (optional)**: the [WASM toolchain](../docs/spec/areas/tooling/0001-toolchains.md)
+  supplies target-specific C tools and the WASI sysroot. Public
+  `molt run --target wasm` also requires Node.js. Keep WASI SDK compilers
+  separate from the native C/C++ toolchain; they are not native replacements.
 
 Set `PYTHON` to a CPython executable path to select an interpreter explicitly;
 the native launcher on every platform honors the same override.

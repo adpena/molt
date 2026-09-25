@@ -18,8 +18,8 @@ passed release acceptance. For a source-checkout install, use
 
 [PACKAGING.md](PACKAGING.md) defines the executable candidate → verify → attest → promote
 authority. Tag the exact version from `pyproject.toml`; every target must prove
-reproducibility and clean-consumer native execution before the one protected
-promotion job can make a draft GitHub Release public.
+reproducibility and clean-consumer native and WASM smoke execution before the
+one protected promotion job can make a draft GitHub Release public.
 
 ## Packaging invariants
 

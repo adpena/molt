@@ -11,14 +11,19 @@ from pathlib import Path
 import tarfile
 import tempfile
 import time
+from typing import Any
 
 from tools.command_execution import CommandExecutor
 
 from .archive import extract_zip_strict
 from .build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY
 from .release_authority import (
-    CONSUMER_EXPECTED_OUTPUT,
+    CONSUMER_EXPECTED_STDOUT,
+    CONSUMER_GUEST_ARGV,
+    CONSUMER_GUEST_CELLS,
     CONSUMER_SCHEMA,
+    consumer_guest_command,
+    consumer_guest_source,
     consumer_python_policy,
     _load_candidate,
     validate_consumer_proof,
@@ -27,14 +32,20 @@ from molt.compiler_distribution import InstalledCompiler, installed_compiler
 from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.file_publication import durable_remove_path
 from molt.python_interpreter import probe_python_command
-from molt.toolchain_identity import executable_content_identity
+from molt.toolchain_identity import (
+    executable_content_identity,
+    stable_regular_file_content_identity,
+)
 from molt.verified_subset import current_host_coordinate, host_coordinate
+from molt.wasm_artifact import (
+    wasm_runtime_manifest_entry_path,
+    wasm_runtime_manifest_path,
+)
 from .release_model import sha256_file, write_json
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-EXPECTED_OUTPUT = CONSUMER_EXPECTED_OUTPUT
 _HOST_PROBE = (
     "import json,platform,struct,sysconfig;"
     "print(json.dumps({'system':platform.system(),'machine':platform.machine(),"
@@ -82,7 +93,7 @@ def _run(
     env: dict[str, str],
     timeout: int,
     role: str,
-    expected_output: str | None = None,
+    expected_stdout: str | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     result = _COMMANDS.run(
@@ -101,9 +112,9 @@ def _run(
             f"consumer command failed ({result.returncode}): {argv!r}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
-    if expected_output is not None and result.stdout != expected_output + "\n":
+    if expected_stdout is not None and result.stdout != expected_stdout:
         raise RuntimeError(
-            f"consumer command returned {result.stdout!r}; expected {expected_output!r}"
+            f"consumer command returned {result.stdout!r}; expected {expected_stdout!r}"
         )
     return {
         "role": role,
@@ -185,6 +196,7 @@ def _consumer_environment(root: Path) -> dict[str, str]:
         "PYTHONPATH",
         "PYTHONHOME",
         "VIRTUAL_ENV",
+        "PYTHON",
         "MOLT_BUNDLE_ROOT",
         "MOLT_SOURCE_ROOT",
         "MOLT_BACKEND_PROFILE",
@@ -201,6 +213,42 @@ def _consumer_environment(root: Path) -> dict[str, str]:
     return env
 
 
+def _diagnosed_compiler(
+    diagnostics: Path,
+    *,
+    compiler: InstalledCompiler,
+    target: str,
+    profile: str,
+) -> tuple[str, str]:
+    """Read one cell compiler and program identity from its own build diagnostics."""
+    if not diagnostics.is_file():
+        raise RuntimeError(f"{target}/{profile}: the cell build wrote no diagnostics")
+    observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
+    selected = observed.get("compiler") if isinstance(observed, dict) else None
+    program = observed.get("program") if isinstance(observed, dict) else None
+    if (
+        not isinstance(selected, dict)
+        or not isinstance(program, dict)
+        or selected.get("sha256") != compiler.record["sha256"]
+        or selected.get("cargo_profile") != "release"
+        or Path(str(selected.get("path", ""))).resolve() != compiler.binary.resolve()
+        or program.get("profile") != profile
+        or program.get("target") != target
+    ):
+        raise ValueError(f"{target}/{profile}: guest cell changed production compiler")
+    compiler.verify_binary((f"{target}-backend",), "release")
+    return selected["sha256"], selected["fingerprint"]
+
+
+def _linked_wasm_artifact(output: Path) -> dict[str, object]:
+    """Identify the module named by the execution manifest beside ``output``."""
+    module = wasm_runtime_manifest_entry_path(wasm_runtime_manifest_path(output))
+    identity = stable_regular_file_content_identity(
+        module, label="release consumer linked WASM"
+    )
+    return {"path": str(module), "sha256": identity["sha256"], "size": identity["size"]}
+
+
 def _verify_python_coordinate(
     *,
     root: Path,
@@ -210,7 +258,7 @@ def _verify_python_coordinate(
     target: dict[str, object],
     minor: str,
     reference: str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     project = root / "project"
     project.mkdir(parents=True)
     env = _consumer_environment(root)
@@ -263,75 +311,88 @@ def _verify_python_coordinate(
         )
     )
     source = project / "release_consumer.py"
-    major, minor_number = (int(part) for part in minor.split("."))
-    source.write_text(
-        f"import sys\nassert sys.version_info[:2] == ({major}, {minor_number})\n"
-        f"print({EXPECTED_OUTPUT!r})\n",
-        encoding="utf-8",
-    )
-    profiles = []
-    for profile in ("dev", "release"):
-        executable = project / (
-            f"release_consumer_{profile}" + (".exe" if os.name == "nt" else "")
+    # Bytes, not text mode: the receipt digest is the canonical program's.
+    source.write_bytes(consumer_guest_source(minor).encode("utf-8"))
+    runtime_env = env.copy()
+    runtime_env.pop("PYTHON", None)
+    cells: list[dict[str, object]] = []
+    for guest_target, profile in CONSUMER_GUEST_CELLS:
+        # One fresh directory per cell keeps outputs and manifests apart and
+        # proves every observed artifact came from this cell's command.
+        cell_root = project / f"{guest_target}-{profile}"
+        cell_root.mkdir()
+        diagnostics = cell_root / "diagnostics.json"
+        output = cell_root / (
+            "release_consumer.wasm"
+            if guest_target == "wasm"
+            else "release_consumer" + (".exe" if os.name == "nt" else "")
         )
-        diagnostics = project / f"diagnostics-{profile}.json"
-        commands.append(
-            _run(
-                [
-                    *launcher,
-                    "build",
-                    "--target",
-                    "native",
-                    "--profile",
-                    profile,
-                    "--python-version",
-                    minor,
-                    "--diagnostics-file",
-                    str(diagnostics),
-                    "--output",
-                    str(executable),
-                    str(source),
-                ],
-                cwd=root,
-                env=env,
-                timeout=2700,
-                role=f"build_{profile}",
-            )
+        command = consumer_guest_command(
+            launcher,
+            target=guest_target,
+            profile=profile,
+            python_minor=minor,
+            diagnostics=str(diagnostics),
+            output=str(output),
+            source=str(source),
         )
-        if not executable.is_file():
-            raise RuntimeError(
-                f"Molt did not produce the requested binary: {executable}"
+        if guest_target == "native":
+            commands.append(
+                _run(
+                    command,
+                    cwd=root,
+                    env=env,
+                    timeout=2700,
+                    role=f"build_native_{profile}",
+                )
             )
-        observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
-        selected = observed.get("compiler", {})
-        if (
-            selected.get("sha256") != compiler.record["sha256"]
-            or selected.get("cargo_profile") != "release"
-            or Path(str(selected.get("path", ""))).resolve()
-            != compiler.binary.resolve()
-            or observed.get("program", {}).get("profile") != profile
-        ):
-            raise ValueError(
-                f"{minor}/{profile}: guest coordinate changed production compiler"
+            if not output.is_file():
+                raise RuntimeError(
+                    f"Molt did not produce the requested binary: {output}"
+                )
+            identity = executable_content_identity(
+                output, label="release consumer guest executable"
             )
-        compiler.verify_binary(("native-backend",), "release")
-        runtime_env = env.copy()
-        runtime_env.pop("PYTHON", None)
-        commands.append(
-            _run(
-                [str(executable)],
-                cwd=project,
-                env=runtime_env,
-                timeout=60,
-                expected_output=EXPECTED_OUTPUT,
-                role=f"run_{profile}",
+            commands.append(
+                _run(
+                    [str(output), *CONSUMER_GUEST_ARGV],
+                    cwd=project,
+                    env=runtime_env,
+                    timeout=60,
+                    role=f"run_native_{profile}",
+                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
+                )
             )
+            artifact = {
+                "path": str(output),
+                "sha256": identity["sha256"],
+                "size": identity["size"],
+            }
+        else:
+            # Public `molt run` owns the one linked build and its Node host.
+            commands.append(
+                _run(
+                    command,
+                    cwd=project,
+                    env=env,
+                    timeout=2700,
+                    role=f"run_wasm_{profile}",
+                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
+                )
+            )
+            artifact = _linked_wasm_artifact(output)
+        compiler_sha256, fingerprint = _diagnosed_compiler(
+            diagnostics, compiler=compiler, target=guest_target, profile=profile
         )
-        profiles.append(
+        cells.append(
             {
+                "target": guest_target,
                 "profile": profile,
-                "compiler_sha256": selected["sha256"],
-                "compiler_fingerprint": selected["fingerprint"],
+                "diagnostics": str(diagnostics),
+                "output": str(output),
+                "compiler_sha256": compiler_sha256,
+                "compiler_fingerprint": fingerprint,
+                "artifact": artifact,
             }
         )
     if (
@@ -351,9 +412,67 @@ def _verify_python_coordinate(
         "python": minor,
         "reference_python": reference,
         "execution": execution,
+        "source": str(source),
+        "source_sha256": sha256_file(source),
         "commands": commands,
-        "profile_proofs": profiles,
+        "cells": cells,
     }
+
+
+def _uninstall_and_replay_native(
+    *,
+    root: Path,
+    bundle_root: Path,
+    worker_root: Path,
+    coordinates: tuple[tuple[str, str], ...],
+    proofs: list[dict[str, Any]],
+) -> None:
+    """Remove every installed owner before replaying the exact native products."""
+    durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
+    durable_remove_path(worker_root, retirement_scope="consumer-uninstall")
+    for minor, _ in coordinates:
+        coordinate_root = root / f"python-{minor}"
+        home = coordinate_root / "molt-home"
+        durable_remove_path(home, retirement_scope="consumer-uninstall")
+        if home.exists():
+            raise RuntimeError("Molt's private environment remained after uninstall")
+        _absent_probe(
+            _venv_python(coordinate_root / "venv"),
+            env=_consumer_environment(coordinate_root),
+            cwd=coordinate_root,
+        )
+    if bundle_root.exists() or worker_root.exists():
+        raise RuntimeError(
+            "Molt or worker remained installed after portable bundle removal"
+        )
+    for (minor, _), proof in zip(coordinates, proofs, strict=True):
+        coordinate_root = root / f"python-{minor}"
+        standalone_env = _consumer_environment(coordinate_root)
+        for cell in proof["cells"]:
+            if cell["target"] != "native":
+                continue
+            executable = Path(cell["output"])
+            identity = executable_content_identity(
+                executable, label="release consumer standalone executable"
+            )
+            if (identity["sha256"], identity["size"]) != (
+                cell["artifact"]["sha256"],
+                cell["artifact"]["size"],
+            ):
+                raise RuntimeError(
+                    f"{minor}/native/{cell['profile']}: guest executable "
+                    "changed before its standalone run"
+                )
+            proof["commands"].append(
+                _run(
+                    [str(executable), *CONSUMER_GUEST_ARGV],
+                    cwd=coordinate_root / "project",
+                    env=standalone_env,
+                    timeout=60,
+                    role=f"standalone_native_{cell['profile']}",
+                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
+                )
+            )
 
 
 def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
@@ -440,29 +559,15 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             for minor, reference in coordinates
         ]
         compiler.verify_sources()
-        # Remove both the portable bundle and its private installed environments;
-        # checking only the untouched bootstrap interpreter would miss residue.
-        durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
-        durable_remove_path(worker_root, retirement_scope="consumer-uninstall")
-        for minor, _ in coordinates:
-            coordinate_root = root / f"python-{minor}"
-            home = coordinate_root / "molt-home"
-            durable_remove_path(home, retirement_scope="consumer-uninstall")
-            if home.exists():
-                raise RuntimeError(
-                    "Molt's private environment remained after uninstall"
-                )
-            _absent_probe(
-                _venv_python(coordinate_root / "venv"),
-                env=_consumer_environment(coordinate_root),
-                cwd=coordinate_root,
-            )
-        if bundle_root.exists() or worker_root.exists():
-            raise RuntimeError(
-                "Molt or worker remained installed after portable bundle removal"
-            )
+        _uninstall_and_replay_native(
+            root=root,
+            bundle_root=bundle_root,
+            worker_root=worker_root,
+            coordinates=coordinates,
+            proofs=proofs,
+        )
 
-        count = len(coordinates) * 2
+        count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
         payload: dict[str, object] = {
             "schema": CONSUMER_SCHEMA,
             "candidate": candidate_path.name,
@@ -476,10 +581,10 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             "errors": 0,
             "compiler": compiler.record,
             "launcher": compiler.launcher,
-            "guest_profiles": ["dev", "release"],
+            "guest_cells": [list(cell) for cell in CONSUMER_GUEST_CELLS],
+            "expected_stdout": CONSUMER_EXPECTED_STDOUT,
             "python_policy_sha256": policy_sha256,
             "python_proofs": proofs,
-            "standalone_native_output": EXPECTED_OUTPUT,
             "uninstall_verified": True,
         }
         validate_consumer_proof(payload, candidate)

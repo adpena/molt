@@ -246,7 +246,12 @@ def validate_source_extension_compiler_command(
         ):
             index += 1
             continue
-        if option in {"-m32", "-m64", "-mx32"} or _safe_codegen_flag(option):
+        if option in {
+            "-m32",
+            "-m64",
+            "-mx32",
+            "--no-default-config",
+        } or _safe_codegen_flag(option):
             index += 1
             continue
         _reject_external_selector(option, role=role)

@@ -97,8 +97,9 @@ def test_generated_header_pins_wasm32_ilp32_layout() -> None:
     gen = _load()
     text = gen.build()
     # Pointer-width model select must be present.
-    assert "#if UINTPTR_MAX == 0xFFFFFFFFu" in text
-    assert "_MOLT_ABI_PTR32" in text
+    assert "#if SIZEOF_VOID_P == 4" in text
+    assert "#elif SIZEOF_LONG == 4" in text
+    assert "#include <_c_data_model.h>" in text
     # ILP32 pins: PyObject is 2 pointers = 8 bytes; ob_type at offset 4.
     assert "sizeof(PyObject) == 8u" in text
     assert "offsetof(PyObject, ob_type) == 4u" in text
@@ -119,14 +120,51 @@ def test_ilp32_and_lp64_layouts_derive_from_same_authority() -> None:
     size64, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_LP64)
     size32, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_ILP32)
     assert (size64, size32) == (16, 8)
-    tp64, off64 = gen._compute_layout("PyTypeObject", authority, gen._PTR_SIZE_LP64)
-    tp32, off32 = gen._compute_layout("PyTypeObject", authority, gen._PTR_SIZE_ILP32)
+    tp64, off64 = gen._compute_layout("PyTypeObject", authority, 8, long_size=8)
+    tp32, off32 = gen._compute_layout("PyTypeObject", authority, 4, long_size=4)
     assert (tp64, tp32) == (416, 208)
     # Every pointer-dependent offset scales; fixed-width leading field stays at 0.
     off64_map = dict(off64)
     off32_map = dict(off32)
     assert off64_map["ob_base"] == off32_map["ob_base"] == 0
     assert off64_map["tp_name"] == 24 and off32_map["tp_name"] == 12
+
+
+def test_c_long_is_not_a_pointer_word_and_version_tag_is_unsigned_int() -> None:
+    gen = _load()
+    authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
+    fields = {f.name: f.category for f in authority["PyTypeObject"].fields}
+    assert fields["tp_flags"] == gen.LONG
+    assert fields["tp_version_tag"] == gen.I32
+    # Independent repr(C) example whose offsets expose LLP64 rather than hiding
+    # a wrong field width inside padding in the large PyTypeObject.
+    probe = gen.Struct(
+        "Probe",
+        (
+            gen.Field("flags", gen.LONG),
+            gen.Field("tag", gen.I32),
+            gen.Field("ptr", gen.PTR),
+        ),
+    )
+    models = {
+        (4, 4): (12, [("flags", 0), ("tag", 4), ("ptr", 8)]),
+        (8, 4): (16, [("flags", 0), ("tag", 4), ("ptr", 8)]),
+        (8, 8): (24, [("flags", 0), ("tag", 8), ("ptr", 16)]),
+    }
+    for (ptr_size, long_size), expected in models.items():
+        assert (
+            gen._compute_layout(
+                "Probe", {"Probe": probe}, ptr_size, long_size=long_size
+            )
+            == expected
+        )
+    with pytest.raises(gen.LayoutError, match="explicit target long width"):
+        gen._compute_layout("Probe", {"Probe": probe}, 8)
+
+    text = gen.emit_header(authority)
+    assert "sizeof(((PyTypeObject *)0)->tp_version_tag) == 4u" in text
+    assert "sizeof(((PyTypeObject *)0)->tp_flags) == 4u" in text
+    assert "sizeof(((PyTypeObject *)0)->tp_flags) == 8u" in text
 
 
 def test_negative_control_new_field_changes_emitted_layout(

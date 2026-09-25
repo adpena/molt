@@ -130,6 +130,11 @@ def _mock_native_tools(
         "resolve_explicit_tool_command",
         lambda command, **_kwargs: tuple(shlex.split(command)),
     )
+    monkeypatch.setattr(
+        source_extension_toolchain,
+        "llvm_tool_candidates",
+        lambda role, **_kwargs: (Path("clang"),) if role == "cc" else (),
+    )
 
     def tool(
         role: llvm_wasi_tools.LlvmToolRole, command: tuple[str, ...]
@@ -144,11 +149,13 @@ def _mock_native_tools(
 
     def family(
         *,
+        target_family: llvm_wasi_tools.LlvmTargetFamily,
         explicit_commands: dict[llvm_wasi_tools.LlvmToolRole, tuple[str, ...]],
         sibling_directories: tuple[Path, ...],
         environment: object,
     ) -> llvm_wasi_tools.LlvmWasiToolFamily:
         del sibling_directories, environment
+        assert target_family == "native"
         return llvm_wasi_tools.LlvmWasiToolFamily(
             cc=tool("cc", explicit_commands["cc"]),
             cxx=tool("cxx", explicit_commands.get("cxx", discovered_cpp)),

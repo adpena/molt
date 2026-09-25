@@ -466,12 +466,23 @@ def _consumer_transport_receipt(candidate):
     root = "C:/consumer" if windows else "/consumer"
     bin_dir = f"{root}/bundle/molt-{candidate['version']}/bin"
     launcher = [f"{bin_dir}/molt.exe" if windows else f"{bin_dir}/molt"]
+    guest_argv = ["--guest-flag", "two words"]
+    guest_stdout = "MOLT_RELEASE_CONSUMER_OK|--guest-flag|two words\n"
+    suffix = ".exe" if windows else ""
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
     references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
     python_proofs = []
     for reference in references:
         minor = ".".join(reference.split(".")[:2])
+        major, minor_number = minor.split(".")
         coordinate_root = f"{root}/python-{minor}"
+        project = f"{coordinate_root}/project"
+        source = f"{project}/release_consumer.py"
+        guest_source = (
+            "import sys\n"
+            f"assert sys.version_info[:2] == ({major}, {minor_number})\n"
+            "print('|'.join(['MOLT_RELEASE_CONSUMER_OK'] + sys.argv[1:]))\n"
+        )
         python = f"{coordinate_root}/venv/" + (
             "Scripts/python.exe" if windows else "bin/python"
         )
@@ -505,29 +516,75 @@ def _consumer_transport_receipt(candidate):
         worker = "molt-worker.exe" if windows else "molt-worker"
         worker_bin = f"{root}/worker/molt-worker-{candidate['version']}/bin"
         command("worker_help", [f"{worker_bin}/{worker}", "--help"])
+        cells = []
+        for target, profile in (
+            ("native", "dev"),
+            ("native", "release"),
+            ("wasm", "dev"),
+            ("wasm", "release"),
+        ):
+            cell = f"{project}/{target}-{profile}"
+            diagnostics = f"{cell}/diagnostics.json"
+            if target == "native":
+                output = artifact = f"{cell}/release_consumer{suffix}"
+                command(
+                    f"build_native_{profile}",
+                    [
+                        *launcher,
+                        "build",
+                        "--target",
+                        "native",
+                        "--profile",
+                        profile,
+                        "--python-version",
+                        minor,
+                        "--diagnostics-file",
+                        diagnostics,
+                        "--output",
+                        output,
+                        source,
+                    ],
+                )
+                command(f"run_native_{profile}", [output, *guest_argv], guest_stdout)
+            else:
+                output = f"{cell}/release_consumer.wasm"
+                artifact = f"{cell}/release_consumer_linked.wasm"
+                command(
+                    f"run_wasm_{profile}",
+                    [
+                        *launcher,
+                        "run",
+                        "--target",
+                        "wasm",
+                        "--profile",
+                        profile,
+                        "--python-version",
+                        minor,
+                        f"--build-arg=--diagnostics-file={diagnostics}",
+                        f"--build-arg=--output={output}",
+                        source,
+                        "--",
+                        *guest_argv,
+                    ],
+                    guest_stdout,
+                )
+            cells.append(
+                {
+                    "target": target,
+                    "profile": profile,
+                    "diagnostics": diagnostics,
+                    "output": output,
+                    "compiler_sha256": candidate["compiler"]["sha256"],
+                    "compiler_fingerprint": "b" * 64,
+                    "artifact": {"path": artifact, "sha256": "e" * 64, "size": 8192},
+                }
+            )
         for profile in ("dev", "release"):
-            output = f"{coordinate_root}/project/release_consumer_{profile}" + (
-                ".exe" if windows else ""
-            )
             command(
-                f"build_{profile}",
-                [
-                    *launcher,
-                    "build",
-                    "--target",
-                    "native",
-                    "--profile",
-                    profile,
-                    "--python-version",
-                    minor,
-                    "--diagnostics-file",
-                    f"{coordinate_root}/project/{profile}.json",
-                    "--output",
-                    output,
-                    f"{coordinate_root}/project/release_consumer.py",
-                ],
+                f"standalone_native_{profile}",
+                [f"{project}/native-{profile}/release_consumer{suffix}", *guest_argv],
+                guest_stdout,
             )
-            command(f"run_{profile}", [output], "MOLT_RELEASE_CONSUMER_OK\n")
         python_proofs.append(
             {
                 "python": minor,
@@ -547,18 +604,13 @@ def _consumer_transport_receipt(candidate):
                         "gil_disabled": False,
                     },
                 },
+                "source": source,
+                "source_sha256": hashlib.sha256(guest_source.encode()).hexdigest(),
                 "commands": commands,
-                "profile_proofs": [
-                    {
-                        "profile": profile,
-                        "compiler_sha256": candidate["compiler"]["sha256"],
-                        "compiler_fingerprint": "b" * 64,
-                    }
-                    for profile in ("dev", "release")
-                ],
+                "cells": cells,
             }
         )
-    count = len(references) * 2
+    count = len(references) * 4
     return {
         "schema": release_authority.CONSUMER_SCHEMA,
         "candidate": "candidate.json",
@@ -573,10 +625,15 @@ def _consumer_transport_receipt(candidate):
         "uninstall_verified": True,
         "compiler": candidate["compiler"],
         "launcher": candidate["launcher"],
-        "guest_profiles": ["dev", "release"],
+        "guest_cells": [
+            ["native", "dev"],
+            ["native", "release"],
+            ["wasm", "dev"],
+            ["wasm", "release"],
+        ],
+        "expected_stdout": guest_stdout,
         "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
         "python_proofs": python_proofs,
-        "standalone_native_output": "MOLT_RELEASE_CONSUMER_OK",
     }
 
 
@@ -962,7 +1019,106 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         assert not output.exists()
 
 
-def test_consumer_admission_requires_bound_profile_and_command_evidence(release_inputs):
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_consumer_replay_requires_uninstalled_owners_and_unchanged_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corrupt: bool
+):
+    # Exercise real removal and content identity; only process execution is
+    # substituted. This proves ordering/custody, not compiled-program behavior.
+    bundle = tmp_path / "bundle"
+    worker = tmp_path / "worker"
+    coordinates = (("3.12", "3.12.13"), ("3.13", "3.13.12"))
+    homes = [tmp_path / f"python-{minor}" / "molt-home" for minor, _ in coordinates]
+    for owner in (bundle, worker, *homes):
+        owner.mkdir(parents=True)
+        (owner / "installed").write_bytes(b"owner")
+    proofs = []
+    for minor, _ in coordinates:
+        project = tmp_path / f"python-{minor}" / "project"
+        project.mkdir()
+        cells = []
+        for profile in ("dev", "release"):
+            output = project / profile
+            content = f"{minor}/{profile}".encode()
+            output.write_bytes(content)
+            cells.append(
+                {
+                    "target": "native",
+                    "profile": profile,
+                    "output": str(output),
+                    "artifact": {
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "size": len(content),
+                    },
+                }
+            )
+        proofs.append({"cells": cells, "commands": []})
+    if corrupt:
+        Path(proofs[0]["cells"][0]["output"]).write_bytes(b"substituted")
+    probes = []
+    monkeypatch.setattr(
+        verify_consumer, "_absent_probe", lambda python, **kwargs: probes.append(python)
+    )
+    monkeypatch.setenv("PYTHON", "ambient-interpreter-must-not-leak")
+    calls = []
+
+    def run(argv, **kwargs):
+        assert all(not owner.exists() for owner in (bundle, worker, *homes))
+        assert len(probes) == 2
+        assert argv[1:] == ["--guest-flag", "two words"]
+        assert "PYTHON" not in kwargs["env"]
+        assert (
+            kwargs["expected_stdout"]
+            == "MOLT_RELEASE_CONSUMER_OK|--guest-flag|two words\n"
+        )
+        calls.append((argv[0], kwargs["role"]))
+        return {"role": kwargs["role"]}
+
+    monkeypatch.setattr(verify_consumer, "_run", run)
+    kwargs = dict(
+        root=tmp_path,
+        bundle_root=bundle,
+        worker_root=worker,
+        coordinates=coordinates,
+        proofs=proofs,
+    )
+    if corrupt:
+        with pytest.raises(RuntimeError, match="changed before its standalone run"):
+            verify_consumer._uninstall_and_replay_native(**kwargs)
+        assert calls == []
+        assert all(proof["commands"] == [] for proof in proofs)
+    else:
+        verify_consumer._uninstall_and_replay_native(**kwargs)
+        assert calls == [
+            (
+                str(tmp_path / f"python-{minor}" / "project" / profile),
+                f"standalone_native_{profile}",
+            )
+            for minor, _ in coordinates
+            for profile in ("dev", "release")
+        ]
+        assert all(len(proof["commands"]) == 2 for proof in proofs)
+
+
+def test_consumer_guest_program_stdout_is_its_argv_under_cpython(tmp_path: Path):
+    # CPython is the independent oracle every installed cell must reproduce.
+    minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+    source = tmp_path / "release_consumer.py"
+    source.write_bytes(release_authority.consumer_guest_source(minor).encode())
+    result = subprocess.run(
+        [sys.executable, "-I", str(source), "--guest-flag", "two words"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    stdout = result.stdout.replace(b"\r\n", b"\n")
+    assert stdout == b"MOLT_RELEASE_CONSUMER_OK|--guest-flag|two words\n"
+    assert stdout == release_authority.CONSUMER_EXPECTED_STDOUT.encode()
+
+
+def test_consumer_admission_requires_bound_target_profile_python_closure(
+    release_inputs,
+):
     candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
     candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
     receipt_path = candidate_dir / "consumer-verification.json"
@@ -981,29 +1137,32 @@ def test_consumer_admission_requires_bound_profile_and_command_evidence(release_
 
     assert admit(valid) == candidate["artifacts"]
     # Mutate independent transport transcripts, never validator expectations.
+    fabricated = hashlib.sha256(b"MOLT_RELEASE_CONSUMER_OK\n").hexdigest()
+    elsewhere = "/consumer/elsewhere/release_consumer.py"
+
+    def role(p, name):
+        return next(command for command in p["commands"] if command["role"] == name)
+
+    def collide_wasm_outputs(p):
+        # Internally consistent argv; only the per-cell directory invariant breaks.
+        dev, release = p["cells"][2:]
+        release.update(output=dev["output"], artifact=copy.deepcopy(dev["artifact"]))
+        role(p, "run_wasm_release")["argv"][9] = f"--build-arg=--output={dev['output']}"
+
     variants = []
-    cell = valid["python_proofs"][0]
-    for field in ("profile_proofs", "commands", "execution", "reference_python"):
+    for field in (
+        "cells",
+        "commands",
+        "execution",
+        "reference_python",
+        "source",
+        "source_sha256",
+    ):
         payload = copy.deepcopy(valid)
         del payload["python_proofs"][0][field]
         variants.append(payload)
-    for proofs in ([], cell["profile_proofs"][:1], [cell["profile_proofs"][0]] * 2):
-        payload = copy.deepcopy(valid)
-        payload["python_proofs"][0]["profile_proofs"] = proofs
-        variants.append(payload)
     for key, value in (
-        ("compiler_sha256", "f" * 64),
-        ("compiler_fingerprint", "c" * 64),
-        ("compiler_fingerprint", ""),
-        ("compiler_fingerprint", None),
-        ("compiler_fingerprint", True),
-        ("compiler_fingerprint", "z" * 64),
-    ):
-        payload = copy.deepcopy(valid)
-        payload["python_proofs"][0]["profile_proofs"][1][key] = value
-        variants.append(payload)
-    for key, value in (
-        ("role", "build_dev"),
+        ("role", "run_native_release"),
         ("returncode", False),
         ("returncode", 1),
         ("duration_seconds", True),
@@ -1014,20 +1173,51 @@ def test_consumer_admission_requires_bound_profile_and_command_evidence(release_
         payload["python_proofs"][0]["commands"][-1][key] = value
         variants.append(payload)
     for mutate in (
+        # Missing post-uninstall execution and unbound native runs.
         lambda p: p["commands"].pop(),
-        lambda p: p["commands"][-1].update(argv=["/another/executable"]),
-        lambda p: p["commands"][-1].update(
-            stdout_sha256=hashlib.sha256(b"wrong\n").hexdigest()
+        lambda p: p["commands"].__delitem__(slice(-2, None)),
+        lambda p: role(p, "standalone_native_dev").update(
+            argv=["/another/executable", "--guest-flag", "two words"]
         ),
-        lambda p: p["commands"][-2]["argv"].__setitem__(5, "dev"),
-        lambda p: p["commands"][1]["argv"].__setitem__(0, "/consumer/bootstrap.py"),
-        lambda p: p["commands"][2].update(argv=["/other/molt-worker", "--help"]),
-        lambda p: p["commands"][2].update(
-            argv=[p["commands"][2]["argv"][0], "--version"]
+        lambda p: role(p, "standalone_native_release").update(stdout_sha256=fabricated),
+        lambda p: role(p, "run_native_dev").update(stdout_sha256=fabricated),
+        lambda p: role(p, "run_native_release")["argv"].pop(),
+        # Wrong launcher, target, profile, Python, source and guest argv.
+        lambda p: role(p, "build_native_release")["argv"].__setitem__(5, "dev"),
+        lambda p: role(p, "build_native_dev")["argv"].__setitem__(7, "3.11"),
+        lambda p: role(p, "build_native_dev")["argv"].__delitem__(slice(6, 8)),
+        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(0, "/consumer/molt"),
+        lambda p: role(p, "run_wasm_release")["argv"].__setitem__(3, "native"),
+        lambda p: role(p, "run_wasm_release")["argv"].__setitem__(5, "dev"),
+        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(7, "3.11"),
+        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(10, elsewhere),
+        lambda p: role(p, "run_wasm_dev")["argv"].pop(),
+        lambda p: role(p, "run_wasm_release").update(stdout_sha256=fabricated),
+        lambda p: p.update(source=elsewhere),
+        lambda p: p.update(source="relative/release_consumer.py"),
+        lambda p: p.update(source_sha256="f" * 64),
+        lambda p: role(p, "cli_setup")["argv"].__setitem__(0, "/consumer/bootstrap.py"),
+        lambda p: role(p, "worker_help").update(argv=["/other/molt-worker", "--help"]),
+        lambda p: role(p, "worker_help")["argv"].__setitem__(1, "--version"),
+        lambda p: role(p, "environment")["argv"].__setitem__(4, "3.12"),
+        # Missing, duplicate, misordered and relabelled target/profile cells.
+        lambda p: p["cells"].pop(),
+        lambda p: p["cells"].__setitem__(3, copy.deepcopy(p["cells"][2])),
+        lambda p: p["cells"].reverse(),
+        lambda p: p["cells"][2].update(target="native"),
+        lambda p: p["cells"][1].update(profile="dev"),
+        lambda p: p["cells"][0].update(unexpected=True),
+        # Wrong production compiler and output binding.
+        lambda p: p["cells"][2].update(compiler_sha256="f" * 64),
+        lambda p: p["cells"][3].update(compiler_fingerprint="c" * 64),
+        lambda p: p["cells"][0].update(compiler_fingerprint="z" * 64),
+        lambda p: p["cells"][0]["artifact"].update(path=p["cells"][1]["output"]),
+        lambda p: p["cells"][2]["artifact"].update(
+            path=p["cells"][3]["artifact"]["path"]
         ),
-        lambda p: p["commands"][0]["argv"].__setitem__(4, "3.12"),
-        lambda p: p["commands"][-2]["argv"].__setitem__(7, "3.11"),
-        lambda p: p["commands"][-2]["argv"].__delitem__(slice(6, 8)),
+        lambda p: p["cells"][3]["artifact"].update(size=0),
+        lambda p: p["cells"][3]["artifact"].update(sha256="invalid"),
+        collide_wasm_outputs,
     ):
         payload = copy.deepcopy(valid)
         mutate(payload["python_proofs"][0])
@@ -1069,19 +1259,21 @@ def test_consumer_admission_requires_bound_profile_and_command_evidence(release_
         payload["python_proofs"][0]["execution"][section][key] = value
         variants.append(payload)
     for key, value in (
-        ("schema", "molt.release-consumer-proof.v2"),
+        ("schema", "molt.release-consumer-proof.v4"),
         ("python_policy_sha256", "f" * 64),
         ("candidate_sha256", "f" * 64),
         ("passed", True),
-        ("selected", 2),
-        ("executed", 6.0),
+        ("selected", len(valid["python_proofs"]) * 2),
+        ("executed", float(valid["executed"])),
+        ("guest_cells", [["native", "dev"], ["native", "release"]]),
+        ("expected_stdout", "MOLT_RELEASE_CONSUMER_OK\n"),
     ):
         payload = copy.deepcopy(valid)
         payload[key] = value
         variants.append(payload)
     payload = copy.deepcopy(valid)
-    for proof in payload["python_proofs"][1]["profile_proofs"]:
-        proof["compiler_fingerprint"] = "c" * 64
+    for cell in payload["python_proofs"][1]["cells"]:
+        cell["compiler_fingerprint"] = "c" * 64
     variants.append(payload)
     payload = copy.deepcopy(valid)
     first, second = payload["python_proofs"][:2]
@@ -1089,6 +1281,14 @@ def test_consumer_admission_requires_bound_profile_and_command_evidence(release_
         "executable"
     ]
     second["commands"][0]["argv"][-1] = first["commands"][0]["argv"][-1]
+    variants.append(payload)
+    # A consistent coordinate from another installed bundle is not one install.
+    payload = copy.deepcopy(valid)
+    payload["python_proofs"][1] = json.loads(
+        json.dumps(payload["python_proofs"][1]).replace(
+            "/consumer/bundle/", "/consumer/other/"
+        )
+    )
     variants.append(payload)
     for payload in variants:
         with pytest.raises(ValueError, match="release consumer"):

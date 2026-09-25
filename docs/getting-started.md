@@ -123,9 +123,9 @@ uv run --python 3.12 python -m molt.cli run examples/hello.py
 
 - For a Python/toolchain failure, retain the exact version, platform, command,
   and diagnostic; do not assume a failure on one version applies to all builds.
-- WASM linked builds require `wasm-ld` and `wasm-tools`; running WASM also
-  requires the appropriate host, such as Wasmtime for `molt run --target wasm`.
-  A native build does not verify the WASM cell.
+- WASM linked builds need the [WASM toolchain](spec/areas/tooling/0001-toolchains.md).
+  `molt run --target wasm` uses the bundled linked-module runner on Node.js,
+  not Wasmtime. A native build does not verify the WASM cell.
 - After changing `pyproject.toml` or dependency groups, rerun `uv sync` so the
   editable `molt` install in `.venv` stays current.
 
