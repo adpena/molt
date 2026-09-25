@@ -14,10 +14,10 @@ from molt.compiler_analysis import native_support_slice as _native_support_slice
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_bindings,
-    python_ast_digest,
 )
 from molt.compiler_analysis.python_imports import resolve_relative_import
 from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
     static_expression_result,

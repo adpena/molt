@@ -33,9 +33,9 @@ from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
     PythonBindingPolicy,
     analyze_python_bindings,
     analyze_python_source_bindings,
-    python_source_digest,
 )
 from molt.compiler_analysis import python_binding_flow  # noqa: E402
+from molt.compiler_analysis.python_source_keys import python_source_digest  # noqa: E402
 
 try:
     from tools.command_execution import CommandExecutor

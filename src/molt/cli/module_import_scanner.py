@@ -43,7 +43,6 @@ from molt.compiler_analysis.python_binding_flow import (
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
-    _PythonAstDigestAdmission,
     analyze_module_import_flow,
     bind_static_import_call_arguments,
     dunder_globals_state_from_expression,
@@ -54,6 +53,7 @@ from molt.compiler_analysis.python_imports import (
     static_import_candidates,
     UnresolvedStaticImportError,
 )
+from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 
 
 # Runtime helper bodies whose imports are required static graph edges. This is

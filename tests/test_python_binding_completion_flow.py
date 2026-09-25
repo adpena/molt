@@ -12,12 +12,12 @@ from molt.compiler_analysis.python_binding_facts import (
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
-    python_ast_digest,
 )
 from molt.compiler_analysis.python_effects_generated import (
     INVOKES_COMPARISON_CALLBACK,
     RAISES,
 )
+from molt.compiler_analysis.python_source_keys import python_ast_digest
 
 
 def _join_events(left: frozenset[str], right: frozenset[str]) -> frozenset[str]:
