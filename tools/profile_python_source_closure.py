@@ -16,7 +16,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
+from molt.cli.python_source_closure import (  # noqa: E402
+    local_python_import_closure,
+    python_source_closure_cache_path,
+)
 
 
 DEFAULT_OUTPUT = ROOT / "tmp" / "python_source_closure" / "profile.json"
@@ -59,7 +62,7 @@ def main() -> int:
 
     ordered = sorted(elapsed_ns)
     p95_index = min(len(ordered) - 1, max(0, (len(ordered) * 95 + 99) // 100 - 1))
-    cache_path = ROOT / ".molt_cache" / "python_source_closure_graph.json"
+    cache_path = python_source_closure_cache_path(ROOT)
     payload = {
         "cache_bytes": cache_path.stat().st_size,
         "closure_count": len(warm.paths),

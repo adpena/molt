@@ -13,6 +13,9 @@ from molt.cli import python_source_closure as graph
 from molt.cli.python_import_resolution import PythonImportPolicy
 
 
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
+
+
 def test_local_python_import_closure_follows_tools_and_src_packages(
     tmp_path: Path,
 ) -> None:
@@ -80,7 +83,7 @@ def test_repository_wasm_linker_closure_reaches_binding_authority(
     root = Path(__file__).resolve().parents[2]
     seed = root / "tools" / "wasm_link.py"
     # Exercise the real cold consumer, not a prior successful graph projection.
-    monkeypatch.setattr(graph, "_GRAPH_CACHE_RELPATH", tmp_path / "closure.json")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     closure = local_python_import_closure(root, (seed,)).paths
     assert seed in closure
     assert root / "src/molt/compiler_analysis/python_binding_flow.py" in closure
@@ -625,6 +628,32 @@ def test_subpackage_precedes_same_location_submodule(tmp_path: Path) -> None:
     assert "src/pkg/item.py" not in paths
 
 
+def test_graph_cache_preserves_source_trees_and_separates_projects(
+    tmp_path: Path, isolated_molt_cache: Path
+) -> None:
+    roots = [tmp_path / name for name in ("installed source", "other project")]
+    before = {}
+    for root, dependency in zip(roots, ("first", "second"), strict=True):
+        root.mkdir()
+        (root / "entry.py").write_text(f"import {dependency}\n", encoding="utf-8")
+        (root / f"{dependency}.py").write_text("VALUE = 1\n", encoding="utf-8")
+        before[root] = {path.name: path.read_bytes() for path in root.iterdir()}
+
+    for root, dependency in zip(roots * 2, ("first", "second") * 2, strict=True):
+        closure = local_python_import_closure(root, (root / "entry.py",))
+        assert {path.name for path in closure.paths} == {"entry.py", f"{dependency}.py"}
+        # The real persistent graph writer must not add even a directory to
+        # immutable inputs, on either the cold or warm path.
+        assert {path.name: path.read_bytes() for path in root.iterdir()} == before[root]
+
+    caches = [graph.python_source_closure_cache_path(root) for root in roots]
+    assert caches[0] != caches[1]
+    for cache, dependency in zip(caches, ("first", "second"), strict=True):
+        assert cache.is_relative_to(isolated_molt_cache)
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        assert set(payload["entries"]) == {"entry.py", f"{dependency}.py"}
+
+
 def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -642,9 +671,7 @@ def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
 
     assert len({closure for closure in closures}) == 1
     cache = json.loads(
-        (tmp_path / ".molt_cache" / "python_source_closure_graph.json").read_text(
-            encoding="utf-8"
-        )
+        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
     )
     assert cache["schema_version"] == graph._GRAPH_CACHE_SCHEMA_VERSION
     assert set(cache["entries"]) == {"tools/entry.py", "tools/helper.py"}
@@ -652,9 +679,9 @@ def test_concurrent_graph_cache_publication_is_atomic(tmp_path: Path) -> None:
 
 def test_non_mapping_graph_cache_is_ignored_and_replaced(tmp_path: Path) -> None:
     tools = tmp_path / "tools"
-    cache_path = tmp_path / ".molt_cache" / "python_source_closure_graph.json"
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
     tools.mkdir()
-    cache_path.parent.mkdir()
+    cache_path.parent.mkdir(parents=True)
     seed = tools / "entry.py"
     seed.write_text("import helper\n", encoding="utf-8")
     (tools / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -705,7 +732,7 @@ def test_grouped_fromlist_graph_preserves_distinct_consumer_policies(
             expected.update((initializer, aggregate))
         assert paths == expected
     cache = json.loads(
-        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
     )
     assert len(cache["entries"]["src/pkg/entry.py"]) == 2
 
@@ -782,7 +809,7 @@ def test_source_capture_keys_and_parses_the_same_byte_generation(
     assert set(local_python_import_closure(tmp_path, (seed,)).paths) == {seed, first}
     assert captures.count(seed) == 1
     cache = json.loads(
-        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
     )
     row = next(iter(cache["entries"]["tools/entry.py"].values()))
     assert row["source_sha256"] == hashlib.sha256(original).hexdigest()
@@ -810,7 +837,7 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
     first.unlink()
     local_python_import_closure(tmp_path, (seed,)).paths
     cache = json.loads(
-        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
     )
     assert set(cache["entries"]) == {"tools/entry.py", "tools/later.py"}
     assert len(cache["entries"]["tools/entry.py"]) == 1
@@ -851,7 +878,7 @@ def test_graph_reparses_after_parser_or_binding_authority_change(
     local_python_import_closure(tmp_path, (seed,)).paths
     assert analyzed == [seed]
     cache = json.loads(
-        (tmp_path / graph._GRAPH_CACHE_RELPATH).read_text(encoding="utf-8")
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
     )
     assert len(cache["entries"]["tools/entry.py"]) == 1
 
@@ -1195,7 +1222,7 @@ def test_import_alias_contexts_share_bytes_not_analysis(
     assert child in local_python_import_closure(tmp_path, (seed,)).paths
     assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
     assert captures.count(helper) == 1
-    cache = json.loads((tmp_path / graph._GRAPH_CACHE_RELPATH).read_text())
+    cache = json.loads((graph.python_source_closure_cache_path(tmp_path)).read_text())
     assert len(cache["entries"]["tools/pkg/helper.py"]) == 2
     contexts.clear()
     assert child in local_python_import_closure(tmp_path, (seed,)).paths

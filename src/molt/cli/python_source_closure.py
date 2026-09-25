@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -15,6 +16,7 @@ import tomllib
 from typing import Literal, cast
 
 from molt.cli.atomic_io import _atomic_write_text
+from molt.cli.default_paths import _default_molt_cache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
@@ -37,7 +39,6 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
 _GRAPH_CACHE_SCHEMA_VERSION = 5
-_GRAPH_CACHE_RELPATH = Path(".molt_cache/python_source_closure_graph.json")
 _GraphQuery = tuple[Path, tuple[Path, ...], tuple[Path, ...], PythonImportPolicy]
 _GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, LocalPythonSourceClosure] | None] = (
     ContextVar("_GRAPH_TRANSACTION", default=None)
@@ -76,10 +77,22 @@ def local_python_import_graph_transaction() -> Iterator[None]:
         _GRAPH_TRANSACTION.reset(previous_context)
 
 
+def python_source_closure_cache_path(project_root: Path) -> Path:
+    """Keep project-scoped analysis hints under the shared mutable-cache authority.
+
+    Callers supply the resolved source root, which namespaces relative entry
+    names but never becomes a write destination. Source bytes, import policy
+    and analysis identity still decide reuse; cache placement grants no source
+    authority.
+    """
+    namespace = hashlib.sha256(os.fsencode(project_root)).hexdigest()
+    return _default_molt_cache() / "python_source_closure" / f"{namespace}.json"
+
+
 def _read_graph_cache(
     project_root: Path,
 ) -> tuple[dict[str, dict[str, object]], bool]:
-    cache_path = project_root / _GRAPH_CACHE_RELPATH
+    cache_path = python_source_closure_cache_path(project_root)
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -122,7 +135,7 @@ def _write_graph_cache(
     project_root: Path,
     entries: dict[str, dict[str, object]],
 ) -> None:
-    cache_path = project_root / _GRAPH_CACHE_RELPATH
+    cache_path = python_source_closure_cache_path(project_root)
     payload = {
         "schema_version": _GRAPH_CACHE_SCHEMA_VERSION,
         "entries": entries,

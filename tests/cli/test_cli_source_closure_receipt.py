@@ -14,6 +14,9 @@ from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.python_import_resolution import LocalPythonModuleResolver
 
 
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
+
+
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -78,13 +81,13 @@ def test_unchanged_request_cache_is_not_republished(tmp_path, monkeypatch):
     helper.unlink()
     graph.local_python_import_closure(tmp_path, (seed,))
     assert len(publications) == 3
-    payload = json.loads((tmp_path / graph._GRAPH_CACHE_RELPATH).read_text())
+    payload = json.loads((graph.python_source_closure_cache_path(tmp_path)).read_text())
     assert set(payload["entries"]) == {"entry.py"}
 
 
 def test_cache_keys_do_not_resolve_or_grant_source_authority(tmp_path, monkeypatch):
     source = _write(tmp_path / "source.py", "VALUE = 1\n")
-    cache = tmp_path / graph._GRAPH_CACHE_RELPATH
+    cache = graph.python_source_closure_cache_path(tmp_path)
     _write(
         cache,
         json.dumps(
@@ -131,7 +134,7 @@ def test_inaccessible_cache_hint_is_pruned_without_source_admission(
 ):
     source = _write(tmp_path / "denied.py", "VALUE = 1\n")
     _write(
-        tmp_path / graph._GRAPH_CACHE_RELPATH,
+        graph.python_source_closure_cache_path(tmp_path),
         json.dumps(
             {
                 "schema_version": graph._GRAPH_CACHE_SCHEMA_VERSION,

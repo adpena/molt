@@ -17,6 +17,14 @@ _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
 
 
 @pytest.fixture
+def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
+    """Opt-in disposable cache outside a test's compiler/project source tree."""
+    cache = tmp_path_factory.mktemp("molt-cache")
+    monkeypatch.setenv("MOLT_CACHE", str(cache))
+    return cache
+
+
+@pytest.fixture
 def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     """Separate writable synthetic runtime tools from compiler source custody."""
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
